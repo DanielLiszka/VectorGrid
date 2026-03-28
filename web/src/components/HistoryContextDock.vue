@@ -62,16 +62,33 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 <style scoped>
 .historyDock {
+  --dock-accent: var(--accent);
+  --dock-accent-ink: var(--selection-text);
+  --dock-accent-soft: var(--accent-soft);
+  --dock-surface: linear-gradient(
+    158deg,
+    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
+    color-mix(in oklab, var(--accent-soft) 34%, var(--surface-sticky))
+  );
+  --dock-border: color-mix(in oklab, var(--dock-accent) 40%, var(--border));
+  --dock-field-border: color-mix(in oklab, var(--dock-accent) 34%, var(--border));
+  --dock-field-surface: color-mix(in oklab, var(--dock-accent-soft) 48%, var(--surface-inline));
+  --dock-text: var(--text);
+  --dock-title: color-mix(in oklab, var(--dock-accent) 76%, var(--dock-text));
+  --dock-stamp: color-mix(in oklab, var(--dock-accent-ink) 78%, var(--dock-text));
+  --dock-label: color-mix(in oklab, var(--dock-accent) 64%, var(--dock-text));
+  --dock-action-text: color-mix(in oklab, var(--dock-accent-ink) 82%, var(--dock-text));
   position: fixed;
   right: 10px;
   bottom: 442px;
   z-index: 4036;
   width: min(430px, calc(100vw - 20px));
   border-radius: 12px;
-  border: 1px solid rgba(125, 211, 252, 0.42);
-  background: linear-gradient(158deg, rgba(15, 23, 42, 0.94), rgba(15, 60, 86, 0.9));
-  color: #e2e8f0;
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45);
+  border: 1px solid var(--dock-border);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  box-shadow: var(--shadow-focus);
+  backdrop-filter: blur(12px);
   padding: 10px;
   display: grid;
   gap: 8px;
@@ -89,12 +106,12 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #7dd3fc;
+  color: var(--dock-title);
 }
 
 .stamp {
   font-size: 0.72rem;
-  color: #bae6fd;
+  color: var(--dock-stamp);
 }
 
 .rows {
@@ -111,14 +128,14 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 .row span {
   font-size: 0.72rem;
-  color: #38bdf8;
+  color: var(--dock-label);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 .row strong {
   font-size: 0.78rem;
-  color: #e2e8f0;
+  color: var(--dock-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -135,12 +152,12 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 }
 
 .actions button {
-  border: 1px solid rgba(125, 211, 252, 0.38);
+  border: 1px solid var(--dock-field-border);
   border-radius: 8px;
   padding: 4px 8px;
   font-size: 0.72rem;
-  background: rgba(15, 60, 86, 0.82);
-  color: #e0f2fe;
+  background: var(--dock-field-surface);
+  color: var(--dock-action-text);
 }
 
 @media (max-width: 760px) {

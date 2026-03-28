@@ -1,6 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import {
+  ArrowRightLeft,
+  Check,
+  Database,
+  FileSpreadsheet,
+  Folder,
+  FolderOpen,
+  FolderSearch,
+  PanelLeftClose,
+  RotateCcw,
+  SlidersHorizontal,
+} from 'lucide-vue-next'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
@@ -10,6 +22,7 @@ const workflowState = useWorkflowStore()
 const {
   theme,
   effect,
+  helpMode,
   workflowAdvanced,
   controlsCollapsed,
   marketDataDir,
@@ -71,6 +84,7 @@ function updateSelect(id: string, nextValue: string): void {
           <option value="vibrancy">vibrancy</option>
         </select>
       </div>
+      <div class="row"><span>Help</span><strong class="mono">{{ helpMode }}</strong></div>
       <div class="row"><span>Advanced</span><strong class="mono">{{ workflowAdvanced ? 'on' : 'off' }}</strong></div>
       <div class="row"><span>Collapsed</span><strong class="mono">{{ controlsCollapsed ? 'yes' : 'no' }}</strong></div>
       <div class="row"><span>Move cache</span><strong class="mono">{{ moveExisting ? 'yes' : 'no' }}</strong></div>
@@ -79,32 +93,79 @@ function updateSelect(id: string, nextValue: string): void {
       <div class="row"><span>Status</span><strong class="mono">{{ statusLine }}</strong></div>
     </div>
     <div class="actions">
-      <button type="button" @click="setCheckboxValue('settingsWorkflowAdvanced', !workflowAdvanced)">Toggle advanced</button>
-      <button type="button" @click="setCheckboxValue('settingsControlsCollapsed', !controlsCollapsed)">Toggle panel</button>
-      <button type="button" @click="setCheckboxValue('settingsMoveExisting', !moveExisting)">Toggle move cache</button>
-      <button type="button" @click="settings.browseMarketDataDir()">Browse dir</button>
-      <button type="button" @click="setMarketDataDir">Set dir</button>
-      <button type="button" @click="settings.resetMarketDataDir()">Reset dir</button>
-      <button type="button" @click="settings.openMarketDataDir()">Open dir</button>
-      <button type="button" @click="settings.openRunsDir()">Runs</button>
-      <button type="button" @click="settings.openReportsDir()">Reports</button>
-      <button type="button" @click="settings.openWorkflowData()">Workflow data</button>
+      <button type="button" @click="setCheckboxValue('settingsWorkflowAdvanced', !workflowAdvanced)">
+        <SlidersHorizontal class="actionIcon" aria-hidden="true" />
+        <span>Toggle advanced</span>
+      </button>
+      <button type="button" @click="setCheckboxValue('settingsControlsCollapsed', !controlsCollapsed)">
+        <PanelLeftClose class="actionIcon" aria-hidden="true" />
+        <span>Toggle panel</span>
+      </button>
+      <button type="button" @click="setCheckboxValue('settingsMoveExisting', !moveExisting)">
+        <ArrowRightLeft class="actionIcon" aria-hidden="true" />
+        <span>Toggle move cache</span>
+      </button>
+      <button type="button" @click="settings.browseMarketDataDir()">
+        <FolderSearch class="actionIcon" aria-hidden="true" />
+        <span>Browse dir</span>
+      </button>
+      <button type="button" @click="setMarketDataDir">
+        <Check class="actionIcon" aria-hidden="true" />
+        <span>Set dir</span>
+      </button>
+      <button type="button" @click="settings.resetMarketDataDir()">
+        <RotateCcw class="actionIcon" aria-hidden="true" />
+        <span>Reset dir</span>
+      </button>
+      <button type="button" @click="settings.openMarketDataDir()">
+        <FolderOpen class="actionIcon" aria-hidden="true" />
+        <span>Open dir</span>
+      </button>
+      <button type="button" @click="settings.openRunsDir()">
+        <Folder class="actionIcon" aria-hidden="true" />
+        <span>Runs</span>
+      </button>
+      <button type="button" @click="settings.openReportsDir()">
+        <FileSpreadsheet class="actionIcon" aria-hidden="true" />
+        <span>Reports</span>
+      </button>
+      <button type="button" @click="settings.openWorkflowData()">
+        <Database class="actionIcon" aria-hidden="true" />
+        <span>Workflow data</span>
+      </button>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .settingsDock {
+  --dock-accent: var(--warning);
+  --dock-accent-ink: var(--warning-ink);
+  --dock-accent-soft: var(--warning-soft);
+  --dock-surface: linear-gradient(
+    158deg,
+    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
+    color-mix(in oklab, var(--warning-soft) 34%, var(--surface-sticky))
+  );
+  --dock-border: color-mix(in oklab, var(--dock-accent) 40%, var(--border));
+  --dock-field-border: color-mix(in oklab, var(--dock-accent) 34%, var(--border));
+  --dock-field-surface: color-mix(in oklab, var(--dock-accent-soft) 48%, var(--surface-inline));
+  --dock-text: var(--text);
+  --dock-title: color-mix(in oklab, var(--dock-accent) 76%, var(--dock-text));
+  --dock-stamp: color-mix(in oklab, var(--dock-accent-ink) 72%, var(--dock-text));
+  --dock-label: color-mix(in oklab, var(--dock-accent) 64%, var(--dock-text));
+  --dock-action-text: color-mix(in oklab, var(--dock-accent-ink) 82%, var(--dock-text));
   position: fixed;
   left: 10px;
   top: 134px;
   z-index: 4037;
   width: min(440px, calc(100vw - 20px));
   border-radius: 12px;
-  border: 1px solid rgba(251, 191, 36, 0.42);
-  background: linear-gradient(158deg, rgba(15, 23, 42, 0.94), rgba(69, 26, 3, 0.9));
-  color: #e2e8f0;
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45);
+  border: 1px solid var(--dock-border);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  box-shadow: var(--shadow-focus);
+  backdrop-filter: blur(12px);
   padding: 10px;
   display: grid;
   gap: 8px;
@@ -122,12 +183,12 @@ function updateSelect(id: string, nextValue: string): void {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #fcd34d;
+  color: var(--dock-title);
 }
 
 .stamp {
   font-size: 0.72rem;
-  color: #fde68a;
+  color: var(--dock-stamp);
 }
 
 .rows {
@@ -144,14 +205,14 @@ function updateSelect(id: string, nextValue: string): void {
 
 .row span {
   font-size: 0.72rem;
-  color: #fbbf24;
+  color: var(--dock-label);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 .row strong {
   font-size: 0.78rem;
-  color: #e2e8f0;
+  color: var(--dock-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -159,12 +220,12 @@ function updateSelect(id: string, nextValue: string): void {
 
 .row select {
   width: 100%;
-  border: 1px solid rgba(251, 191, 36, 0.36);
+  border: 1px solid var(--dock-field-border);
   border-radius: 8px;
   padding: 3px 6px;
   font-size: 0.75rem;
-  background: rgba(69, 26, 3, 0.82);
-  color: #fef3c7;
+  background: var(--dock-field-surface);
+  color: var(--dock-action-text);
 }
 
 .mono {
@@ -178,12 +239,22 @@ function updateSelect(id: string, nextValue: string): void {
 }
 
 .actions button {
-  border: 1px solid rgba(251, 191, 36, 0.38);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--dock-field-border);
   border-radius: 8px;
   padding: 4px 8px;
   font-size: 0.72rem;
-  background: rgba(69, 26, 3, 0.82);
-  color: #fef3c7;
+  background: var(--dock-field-surface);
+  color: var(--dock-action-text);
+}
+
+.actionIcon {
+  width: 0.82rem;
+  height: 0.82rem;
+  flex: none;
+  stroke-width: 2;
 }
 
 @media (max-width: 760px) {

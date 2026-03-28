@@ -14,6 +14,7 @@ const workflowStore = useWorkflowStore()
 const {
   theme,
   effect,
+  helpMode,
   workflowAdvanced,
   controlsCollapsed,
   marketDataDir,
@@ -43,12 +44,14 @@ let runtimeObserver: MutationObserver | null = null
 
 const themeDraft = ref('system')
 const effectDraft = ref('none')
+const helpModeDraft = ref('full')
 const marketDataDirDraft = ref('')
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
 const settingsSummaryChips = computed(() => [
   `Theme ${String(themeDraft.value || 'system').trim() || 'system'}`,
   `Effect ${String(effectDraft.value || 'none').trim() || 'none'}`,
+  `Help ${String(helpModeDraft.value || 'full').trim() || 'full'}`,
   workflowAdvanced.value ? 'Advanced controls on' : 'Advanced controls off',
   controlsCollapsed.value ? 'Controls collapsed first' : 'Controls expanded first',
   marketDataDirDraft.value.trim().length > 0 ? 'Custom data folder' : 'Default data folder',
@@ -60,11 +63,13 @@ watch(
   () => [
     String(theme.value || 'system').trim() || 'system',
     String(effect.value || 'none').trim() || 'none',
+    String(helpMode.value || 'full').trim() || 'full',
     String(marketDataDir.value || ''),
   ] as const,
-  ([nextTheme, nextEffect, nextMarketDataDir]) => {
+  ([nextTheme, nextEffect, nextHelpMode, nextMarketDataDir]) => {
     if (themeDraft.value !== nextTheme) themeDraft.value = nextTheme
     if (effectDraft.value !== nextEffect) effectDraft.value = nextEffect
+    if (helpModeDraft.value !== nextHelpMode) helpModeDraft.value = nextHelpMode
     if (marketDataDirDraft.value !== nextMarketDataDir) marketDataDirDraft.value = nextMarketDataDir
   },
   { immediate: true },
@@ -171,6 +176,21 @@ onBeforeUnmount(() => {
                 <option value="acrylic">Acrylic</option>
                 <option value="vibrancy">Vibrancy</option>
               </select>
+            </div>
+          </div>
+          <div class="rowSingle">
+            <label for="vueSettingsHelpMode">Help and guidance</label>
+            <select
+              id="vueSettingsHelpMode"
+              :value="helpModeDraft"
+              @change="helpModeDraft = String(($event.target as HTMLSelectElement).value || 'full'); setSelectValue('settingsHelpMode', helpModeDraft)"
+            >
+              <option value="full">Full help (tooltips + long-hover callouts)</option>
+              <option value="concise">Concise help (tooltips only)</option>
+              <option value="off">Off (hide non-essential help overlays)</option>
+            </select>
+            <div class="panelMuted">
+              Use this as the global policy for optional in-app help. Safety notices, errors, and runtime status still stay visible.
             </div>
           </div>
           <div class="checks">
@@ -315,6 +335,12 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.7rem;
+}
+
+.rowSingle {
+  margin-top: 0.7rem;
+  display: grid;
+  gap: 0.35rem;
 }
 
 .checks {

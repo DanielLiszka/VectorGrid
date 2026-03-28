@@ -426,6 +426,10 @@ Suggested implementation anchors:
 
 This should run alongside major frontend restructuring work.
 
+Current companion document:
+
+- `frontend_functional_coverage_matrix_2026-03-28.md`
+
 ### Required deliverables
 
 1. capability inventory
@@ -622,6 +626,12 @@ Focus:
 - central setting in `settingsStore`
 - `reka-ui` tooltip/toggletip-style primitives
 - phased rollout on the densest screens first
+
+Current implementation status:
+
+- `settingsStore` now owns a persistent `helpMode` preference with `full`, `concise`, and `off`
+- the first shared help primitive ships as `ContextHelpTip.vue`
+- first-rollout help affordances are active in Data, Validation, Meta, and Execution
 
 ### Phase D: Table And Chart Technology Upgrades
 

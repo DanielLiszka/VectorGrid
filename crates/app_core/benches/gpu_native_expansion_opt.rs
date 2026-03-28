@@ -7,7 +7,7 @@ use ta_app_core::composite_cpu::{MaczGateParams, OttGateParams};
 use ta_app_core::double_ma::HalfTrendRegimeFilter;
 use ta_app_core::{
     Backend, BackendUsed, CarmStrategyParams, CdmcStrategyParams, CompositeCpuRequest,
-    CompositeSignalMode, KqsrStrategyParams, KvdfStrategyParams,
+    CompositeSignalMode, KqsrStrategyParams, KvdfStrategyParams, MkcsStrategyParams,
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
@@ -174,6 +174,36 @@ fn make_cdmc_cycle_candles(len: usize) -> Candles {
     Candles::new(ts, open, high, low, close, vol)
 }
 
+fn make_mkcs_squeeze_candles(len: usize) -> Candles {
+    let len = len.max(280);
+    let mut ts = Vec::with_capacity(len);
+    let mut open = Vec::with_capacity(len);
+    let mut high = Vec::with_capacity(len);
+    let mut low = Vec::with_capacity(len);
+    let mut close = Vec::with_capacity(len);
+    let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+    for i in 0..len {
+        ts.push(i as i64);
+        let px = if i < 70 {
+            100.0 + (i as f64 * 0.22).sin() * 0.35
+        } else if i < 140 {
+            100.6 + (i - 70) as f64 * 0.16 + ((i - 70) as f64 * 0.18).sin() * 0.9
+        } else if i < 210 {
+            111.4 + ((i - 140) as f64 * 0.21).cos() * 0.28
+        } else {
+            111.0 - (i - 210) as f64 * 0.12 + ((i - 210) as f64 * 0.16).sin() * 1.1
+        };
+        open.push(px * 0.9985);
+        high.push(px * 1.0045);
+        low.push(px * 0.9955);
+        close.push(px);
+        vol.push(1_180.0 + (i % 23) as f64 * 31.0);
+    }
+
+    Candles::new(ts, open, high, low, close, vol)
+}
+
 fn make_kqsr_req(
     backend: Backend,
     fast_range: (u32, u32, u32),
@@ -217,6 +247,18 @@ fn make_cdmc_req(
 ) -> CompositeCpuRequest {
     let mut req = base_req(backend);
     req.cdmc = Some(CdmcStrategyParams::default());
+    req.fast_range = fast_range;
+    req.slow_range = slow_range;
+    req
+}
+
+fn make_mkcs_req(
+    backend: Backend,
+    fast_range: (u32, u32, u32),
+    slow_range: (u32, u32, u32),
+) -> CompositeCpuRequest {
+    let mut req = base_req(backend);
+    req.mkcs = Some(MkcsStrategyParams::default());
     req.fast_range = fast_range;
     req.slow_range = slow_range;
     req
@@ -415,6 +457,14 @@ fn bench_cdmc_cpu(c: &mut Criterion) {
     bench_cpu_cases(c, "cdmc/cpu/200k", &candles, make_cdmc_req);
 }
 
+fn bench_mkcs_cpu(c: &mut Criterion) {
+    if !bench_target_enabled("mkcs") {
+        return;
+    }
+    let candles = make_mkcs_squeeze_candles(200_000);
+    bench_cpu_cases(c, "mkcs/cpu/200k", &candles, make_mkcs_req);
+}
+
 fn bench_kqsr_gpu_kernel(c: &mut Criterion) {
     if !bench_target_enabled("kqsr") {
         return;
@@ -471,6 +521,20 @@ fn bench_cdmc_gpu_kernel(c: &mut Criterion) {
     );
 }
 
+fn bench_mkcs_gpu_kernel(c: &mut Criterion) {
+    if !bench_target_enabled("mkcs") {
+        return;
+    }
+    let candles = make_mkcs_squeeze_candles(200_000);
+    bench_gpu_cases(
+        c,
+        "mkcs/gpu_kernel/200k",
+        "mkcs/gpu_kernel/200k",
+        &candles,
+        make_mkcs_req,
+    );
+}
+
 criterion_group!(
     gpu_native_expansion_benches,
     bench_kqsr_cpu,
@@ -480,6 +544,8 @@ criterion_group!(
     bench_kvdf_cpu,
     bench_kvdf_gpu_kernel,
     bench_cdmc_cpu,
-    bench_cdmc_gpu_kernel
+    bench_cdmc_gpu_kernel,
+    bench_mkcs_cpu,
+    bench_mkcs_gpu_kernel
 );
 criterion_main!(gpu_native_expansion_benches);

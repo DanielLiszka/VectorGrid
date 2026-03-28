@@ -412,7 +412,7 @@ onBeforeUnmount(() => {
           </div>
           <ul
             v-if="visibleSessionRuns.length"
-            class="runList"
+            class="runList overflowShadowY surfaceWorking"
             aria-label="Session history runs"
           >
             <li
@@ -528,7 +528,7 @@ onBeforeUnmount(() => {
           </div>
           <ul
             v-if="visibleSavedRuns.length"
-            class="runList savedRunList"
+            class="runList savedRunList overflowShadowY surfaceWorking"
             aria-label="Saved run artifacts"
           >
             <li
@@ -639,7 +639,7 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <section v-if="historyStage === 'ready'" class="detailCard panelProminentPane">
+      <section v-if="historyStage === 'ready'" class="detailCard panelProminentPane surfaceFocus selectionRail">
         <div class="panelSectionHeader">
           <div>
             <div class="panelEyebrow">Selected run</div>
@@ -808,7 +808,7 @@ onBeforeUnmount(() => {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: color-mix(in oklab, var(--surface) 96%, var(--panel));
+  background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
 }
 
 .savedRunList {
@@ -829,10 +829,15 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 0.35rem;
   text-align: left;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .runListButton:hover:not(:disabled) {
   background: color-mix(in oklab, var(--panel) 92%, var(--surface));
+  transform: translateX(1px);
 }
 
 .runListButton:focus-visible {
@@ -841,7 +846,8 @@ onBeforeUnmount(() => {
 }
 
 .runListButton.active {
-  background: color-mix(in oklab, var(--accent-soft) 58%, var(--surface));
+  background: color-mix(in oklab, var(--selection-fill-strong) 82%, var(--surface-working));
+  box-shadow: inset 3px 0 0 var(--selection-rail);
 }
 
 .runListPrimary {
@@ -890,8 +896,13 @@ onBeforeUnmount(() => {
 .detailCard {
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--surface2);
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklab, var(--surface-focus) 92%, var(--panel-footer)),
+    color-mix(in oklab, var(--panel-footer) 94%, var(--surface-working))
+  );
   padding: 0.75rem 0.8rem;
+  box-shadow: var(--shadow-focus);
 }
 
 .detailTitle {

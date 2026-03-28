@@ -124,6 +124,24 @@ function toggleDock(): void {
 
 <style scoped>
 .analysisDockRoot {
+  --dock-accent: var(--accent);
+  --dock-accent-ink: var(--selection-text);
+  --dock-accent-soft: var(--accent-soft);
+  --dock-surface: linear-gradient(
+    158deg,
+    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
+    color-mix(in oklab, var(--accent-soft) 34%, var(--surface-sticky))
+  );
+  --dock-surface-quiet: color-mix(in oklab, var(--surface-sticky) 94%, var(--panel-footer));
+  --dock-border: color-mix(in oklab, var(--dock-accent) 40%, var(--border));
+  --dock-border-soft: color-mix(in oklab, var(--dock-accent) 26%, var(--border));
+  --dock-badge-border: color-mix(in oklab, var(--dock-accent-ink) 34%, var(--border));
+  --dock-badge-surface: color-mix(in oklab, var(--dock-accent-soft) 44%, var(--surface-inline));
+  --dock-text: var(--text);
+  --dock-title: color-mix(in oklab, var(--dock-accent) 74%, var(--dock-text));
+  --dock-stamp: color-mix(in oklab, var(--dock-accent-ink) 76%, var(--dock-text));
+  --dock-label: color-mix(in oklab, var(--dock-accent) 62%, var(--dock-text));
+  --dock-action-text: color-mix(in oklab, var(--dock-accent-ink) 82%, var(--dock-text));
   position: fixed;
   right: 220px;
   bottom: 18px;
@@ -144,15 +162,16 @@ function toggleDock(): void {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid rgba(45, 212, 191, 0.38);
+  border: 1px solid var(--dock-border);
   border-radius: 999px;
-  background: rgba(4, 47, 46, 0.82);
-  color: #ccfbf1;
+  background: var(--dock-surface-quiet);
+  color: var(--dock-action-text);
   padding: 6px 10px;
   font-size: 0.75rem;
   font-weight: 650;
   letter-spacing: 0.04em;
-  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.36);
+  box-shadow: var(--shadow-inline);
+  backdrop-filter: blur(10px);
   transition:
     opacity 140ms ease,
     transform 140ms ease,
@@ -163,10 +182,10 @@ function toggleDock(): void {
 .dockToggle.quiet {
   gap: 6px;
   padding: 5px 9px;
-  background: rgba(4, 47, 46, 0.7);
-  border-color: rgba(45, 212, 191, 0.24);
+  background: color-mix(in oklab, var(--dock-surface-quiet) 94%, var(--panel));
+  border-color: var(--dock-border-soft);
   opacity: 0.82;
-  box-shadow: 0 8px 20px rgba(2, 6, 23, 0.22);
+  box-shadow: var(--shadow-inline);
 }
 
 .dockToggle.quiet:hover {
@@ -179,25 +198,27 @@ function toggleDock(): void {
 }
 
 .dockToggleState {
-  border: 1px solid rgba(153, 246, 228, 0.28);
+  border: 1px solid var(--dock-badge-border);
   border-radius: 999px;
   padding: 1px 6px;
   font-size: 0.66rem;
-  color: #99f6e4;
+  color: var(--dock-stamp);
+  background: var(--dock-badge-surface);
 }
 
 .analysisDock {
   z-index: 4038;
   width: min(430px, calc(100vw - 20px));
   border-radius: 12px;
-  border: 1px solid rgba(45, 212, 191, 0.42);
-  background: linear-gradient(158deg, rgba(15, 23, 42, 0.94), rgba(4, 47, 46, 0.9));
-  color: #e2e8f0;
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45);
+  border: 1px solid var(--dock-border);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  box-shadow: var(--shadow-focus);
   padding: 10px;
   display: grid;
   gap: 8px;
   pointer-events: auto;
+  backdrop-filter: blur(12px);
 }
 
 .dockHeader {
@@ -211,12 +232,12 @@ function toggleDock(): void {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #5eead4;
+  color: var(--dock-title);
 }
 
 .stamp {
   font-size: 0.72rem;
-  color: #99f6e4;
+  color: var(--dock-stamp);
 }
 
 .rows {
@@ -233,14 +254,14 @@ function toggleDock(): void {
 
 .row span {
   font-size: 0.72rem;
-  color: #2dd4bf;
+  color: var(--dock-label);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 .row strong {
   font-size: 0.78rem;
-  color: #e2e8f0;
+  color: var(--dock-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -257,12 +278,12 @@ function toggleDock(): void {
 }
 
 .actions button {
-  border: 1px solid rgba(45, 212, 191, 0.38);
+  border: 1px solid var(--dock-border);
   border-radius: 8px;
   padding: 4px 8px;
   font-size: 0.72rem;
-  background: rgba(4, 47, 46, 0.82);
-  color: #ccfbf1;
+  background: var(--dock-badge-surface);
+  color: var(--dock-action-text);
 }
 
 @media (max-width: 760px) {

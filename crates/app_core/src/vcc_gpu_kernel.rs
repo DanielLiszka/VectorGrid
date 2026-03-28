@@ -3,6 +3,7 @@
 use crate::composite_gpu_metric_decode::{
     decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
 };
+use crate::standalone_gpu_runtime::checked_i32;
 use crate::vcc::VccStrategyParams;
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
@@ -42,6 +43,12 @@ pub struct VccGpuMetricEval {
     pub metrics: Metrics,
     pub step_return_sum: f64,
     pub step_return_sumsq: f64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VccGpuEvalMode {
+    MetricsOnly,
+    Detailed,
 }
 
 struct VccCudaRuntime {
@@ -176,13 +183,54 @@ fn validate_inputs_device_rows(
         return Err("VCC GPU trend row-pointer length mismatch".to_string());
     }
 
+    let cols_i32 = checked_i32("VCC GPU cols", signals.cols)?;
+    let fast_rows_i32 = checked_i32("VCC GPU fast row count", signals.fast_rows)?;
+    let trend_rows_i32 = checked_i32("VCC GPU trend row count", signals.trend_rows)?;
     let combos_len = combos.fast_row_index.len();
+    checked_i32("VCC GPU combo count", combos_len)?;
     if combos.trend_row_index.len() != combos_len
         || combos.start_t.len() != combos_len
         || combos.metric_start_t.len() != combos_len
         || combos.end_t.len() != combos_len
     {
         return Err("VCC GPU combo vector length mismatch".to_string());
+    }
+    for (idx, (((&fast_row, &trend_row), &start_t), (&metric_start_t, &end_t))) in combos
+        .fast_row_index
+        .iter()
+        .zip(combos.trend_row_index.iter())
+        .zip(combos.start_t.iter())
+        .zip(combos.metric_start_t.iter().zip(combos.end_t.iter()))
+        .enumerate()
+    {
+        if fast_row < 0 || fast_row >= fast_rows_i32 {
+            return Err(format!(
+                "VCC GPU fast_row_index[{idx}] out of bounds: {fast_row} not in [0, {fast_rows_i32})"
+            ));
+        }
+        if trend_row < 0 || trend_row >= trend_rows_i32 {
+            return Err(format!(
+                "VCC GPU trend_row_index[{idx}] out of bounds: {trend_row} not in [0, {trend_rows_i32})"
+            ));
+        }
+        if start_t < 0 || metric_start_t < 0 || end_t < 0 {
+            return Err(format!("VCC GPU combo window[{idx}] must be non-negative"));
+        }
+        if start_t >= end_t {
+            return Err(format!(
+                "VCC GPU combo window[{idx}] requires start_t < end_t but got {start_t} >= {end_t}"
+            ));
+        }
+        if metric_start_t < start_t || metric_start_t > end_t {
+            return Err(format!(
+                "VCC GPU combo window[{idx}] requires start_t <= metric_start_t <= end_t but got start={start_t}, metric_start={metric_start_t}, end={end_t}"
+            ));
+        }
+        if end_t > cols_i32 {
+            return Err(format!(
+                "VCC GPU combo window[{idx}] end_t {end_t} exceeds cols {cols_i32}"
+            ));
+        }
     }
     Ok(())
 }
@@ -208,14 +256,14 @@ fn launch_pack_rows_u64_ptr_f32(
         .ok_or_else(|| "VCC GPU pack rows overflow".to_string())?;
 
     let mut row_ptrs_ptr = row_ptrs.as_device_ptr().as_raw();
-    let mut rows_i =
-        i32::try_from(rows).map_err(|_| "VCC GPU rows exceed i32 range".to_string())?;
-    let mut cols_i =
-        i32::try_from(cols).map_err(|_| "VCC GPU cols exceed i32 range".to_string())?;
+    let mut rows_i = checked_i32("VCC GPU pack row count", rows)?;
+    let mut cols_i = checked_i32("VCC GPU pack cols", cols)?;
     let mut out_ptr = out_row_major.as_device_ptr().as_raw();
 
     let block_x = 256u32;
-    let grid_x = ((total as u32) + block_x - 1) / block_x;
+    let total_u32 =
+        u32::try_from(total).map_err(|_| "VCC GPU pack workload exceeds u32 range".to_string())?;
+    let grid_x = (total_u32 + block_x - 1) / block_x;
     unsafe {
         let args: &mut [*mut c_void] = &mut [
             &mut row_ptrs_ptr as *mut _ as *mut c_void,
@@ -230,12 +278,13 @@ fn launch_pack_rows_u64_ptr_f32(
     Ok(())
 }
 
-pub fn eval_vcc_metrics_gpu_kernel_device_rows_detailed(
+fn eval_vcc_metrics_gpu_kernel_device_rows_impl(
     device_id: u32,
     signals: &VccGpuDeviceSignalMatrices<'_>,
     combos: &VccGpuComboBatch<'_>,
     strategy: &StrategyConfig,
     vcc: &VccStrategyParams,
+    mode: VccGpuEvalMode,
 ) -> Result<Vec<VccGpuMetricEval>, String> {
     validate_inputs_device_rows(signals, combos)?;
     let combo_count = combos.fast_row_index.len();
@@ -264,6 +313,7 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows_detailed(
     let slice_out_len = combo_count
         .checked_mul(2)
         .ok_or_else(|| "VCC GPU slice metrics buffer overflow".to_string())?;
+    let need_slice_readback = matches!(mode, VccGpuEvalMode::Detailed);
 
     VCC_GPU_RUNTIME.with(|cell| {
         let mut runtimes = cell.borrow_mut();
@@ -389,21 +439,23 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows_detailed(
         let mut out_ptr = d_out.as_device_ptr().as_raw();
         let mut slice_out_ptr = d_slice_out.as_device_ptr().as_raw();
 
-        let mut t_i = signals.cols as i32;
-        let mut fast_rows_i = signals.fast_rows as i32;
-        let mut fast_stride_i = signals.cols as i32;
-        let mut trend_rows_i = signals.trend_rows as i32;
-        let mut trend_stride_i = signals.cols as i32;
-        let mut combo_count_i = combo_count as i32;
+        let mut t_i = checked_i32("VCC GPU cols", signals.cols)?;
+        let mut fast_rows_i = checked_i32("VCC GPU fast row count", signals.fast_rows)?;
+        let mut fast_stride_i = checked_i32("VCC GPU fast stride", signals.cols)?;
+        let mut trend_rows_i = checked_i32("VCC GPU trend row count", signals.trend_rows)?;
+        let mut trend_stride_i = checked_i32("VCC GPU trend stride", signals.cols)?;
+        let mut combo_count_i = checked_i32("VCC GPU combo count", combo_count)?;
         let mut flags_u = flags;
         let mut commission_f = commission;
         let mut require_mom_accel_i = i32::from(vcc.require_momentum_accel);
         let mut confirm_bars_i = i32::from(vcc.confirm_bars);
         let mut max_trade_bars_i = i32::from(vcc.max_trade_bars);
-        let mut out_stride_i = out_stride as i32;
+        let mut out_stride_i = checked_i32("VCC GPU metrics stride", out_stride)?;
 
         let block_x = vcc_eval_block_x(combo_count);
-        let grid_x = ((combo_count as u32) + block_x - 1) / block_x;
+        let combo_count_u32 = u32::try_from(combo_count)
+            .map_err(|_| "VCC GPU combo count exceeds u32 range".to_string())?;
+        let grid_x = (combo_count_u32 + block_x - 1) / block_x;
         unsafe {
             let args: &mut [*mut c_void] = &mut [
                 &mut close_ptr as *mut _ as *mut c_void,
@@ -441,17 +493,26 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows_detailed(
 
         let mut host_out = vec![0.0f32; out_len];
         d_out.copy_to(&mut host_out).map_err(|e| e.to_string())?;
-        let mut host_slice_out = vec![0.0f64; slice_out_len];
-        d_slice_out
-            .copy_to(&mut host_slice_out)
-            .map_err(|e| e.to_string())?;
+        let host_slice_out = if need_slice_readback {
+            let mut host_slice_out = vec![0.0f64; slice_out_len];
+            d_slice_out
+                .copy_to(&mut host_slice_out)
+                .map_err(|e| e.to_string())?;
+            Some(host_slice_out)
+        } else {
+            None
+        };
 
         let mut metrics = Vec::with_capacity(combo_count);
         for i in 0..combo_count {
             let base = i * out_stride;
-            let slice_base = i * 2;
-            let step_return_sum = host_slice_out[slice_base];
-            let step_return_sumsq = host_slice_out[slice_base + 1];
+            let (step_return_sum, step_return_sumsq) =
+                if let Some(slice_out) = host_slice_out.as_ref() {
+                    let slice_base = i * 2;
+                    (slice_out[slice_base], slice_out[slice_base + 1])
+                } else {
+                    (0.0, 0.0)
+                };
 
             metrics.push(VccGpuMetricEval {
                 metrics: decode_non_double_ma_gpu_metrics_row(&host_out[base..base + out_stride]),
@@ -471,6 +532,23 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows_detailed(
     })
 }
 
+pub fn eval_vcc_metrics_gpu_kernel_device_rows_detailed(
+    device_id: u32,
+    signals: &VccGpuDeviceSignalMatrices<'_>,
+    combos: &VccGpuComboBatch<'_>,
+    strategy: &StrategyConfig,
+    vcc: &VccStrategyParams,
+) -> Result<Vec<VccGpuMetricEval>, String> {
+    eval_vcc_metrics_gpu_kernel_device_rows_impl(
+        device_id,
+        signals,
+        combos,
+        strategy,
+        vcc,
+        VccGpuEvalMode::Detailed,
+    )
+}
+
 pub fn eval_vcc_metrics_gpu_kernel_device_rows(
     device_id: u32,
     signals: &VccGpuDeviceSignalMatrices<'_>,
@@ -478,6 +556,112 @@ pub fn eval_vcc_metrics_gpu_kernel_device_rows(
     strategy: &StrategyConfig,
     vcc: &VccStrategyParams,
 ) -> Result<Vec<Metrics>, String> {
-    eval_vcc_metrics_gpu_kernel_device_rows_detailed(device_id, signals, combos, strategy, vcc)
-        .map(|rows| rows.into_iter().map(|row| row.metrics).collect())
+    eval_vcc_metrics_gpu_kernel_device_rows_impl(
+        device_id,
+        signals,
+        combos,
+        strategy,
+        vcc,
+        VccGpuEvalMode::MetricsOnly,
+    )
+    .map(|rows| rows.into_iter().map(|row| row.metrics).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_signals(close_f64: &[f64]) -> VccGpuDeviceSignalMatrices<'_> {
+        const FAST_PTRS: [u64; 2] = [11, 12];
+        const MOM_PTRS: [u64; 2] = [13, 14];
+        const TREND_PTRS: [u64; 2] = [15, 16];
+        VccGpuDeviceSignalMatrices {
+            close_f64,
+            cols: close_f64.len(),
+            fast_rows: 2,
+            trend_rows: 2,
+            fast_squeeze_rows: &FAST_PTRS,
+            fast_squeeze_host_row_major: None,
+            fast_momentum_rows: &MOM_PTRS,
+            fast_momentum_host_row_major: None,
+            trend_rows_ptr: &TREND_PTRS,
+            trend_host_row_major: None,
+        }
+    }
+
+    #[test]
+    fn validate_inputs_rejects_out_of_range_combo_rows() {
+        let close = [100.0f64, 101.0, 102.0, 103.0];
+        let signals = sample_signals(&close);
+        let combos = VccGpuComboBatch {
+            fast_row_index: &[2],
+            trend_row_index: &[0],
+            start_t: &[1],
+            metric_start_t: &[1],
+            end_t: &[4],
+        };
+
+        let err = validate_inputs_device_rows(&signals, &combos).expect_err("row bounds");
+        assert!(err.contains("fast_row_index[0]"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_invalid_windows() {
+        let close = [100.0f64, 101.0, 102.0, 103.0];
+        let signals = sample_signals(&close);
+
+        let negative = VccGpuComboBatch {
+            fast_row_index: &[0],
+            trend_row_index: &[0],
+            start_t: &[-1],
+            metric_start_t: &[0],
+            end_t: &[4],
+        };
+        let err = validate_inputs_device_rows(&signals, &negative).expect_err("negative bounds");
+        assert!(err.contains("must be non-negative"));
+
+        let unordered = VccGpuComboBatch {
+            fast_row_index: &[0],
+            trend_row_index: &[0],
+            start_t: &[2],
+            metric_start_t: &[1],
+            end_t: &[4],
+        };
+        let err = validate_inputs_device_rows(&signals, &unordered).expect_err("unordered");
+        assert!(err.contains("start_t <= metric_start_t <= end_t"));
+    }
+
+    #[test]
+    fn validate_inputs_rejects_host_matrix_length_mismatch() {
+        let close = [100.0f64, 101.0, 102.0, 103.0];
+        let bad_fast = [1.0f32; 3];
+        let signals = VccGpuDeviceSignalMatrices {
+            close_f64: &close,
+            cols: close.len(),
+            fast_rows: 2,
+            trend_rows: 2,
+            fast_squeeze_rows: &[],
+            fast_squeeze_host_row_major: Some(&bad_fast),
+            fast_momentum_rows: &[13, 14],
+            fast_momentum_host_row_major: None,
+            trend_rows_ptr: &[15, 16],
+            trend_host_row_major: None,
+        };
+        let combos = VccGpuComboBatch {
+            fast_row_index: &[0],
+            trend_row_index: &[0],
+            start_t: &[1],
+            metric_start_t: &[1],
+            end_t: &[4],
+        };
+
+        let err = validate_inputs_device_rows(&signals, &combos).expect_err("host len mismatch");
+        assert!(err.contains("fast squeeze host matrix length mismatch"));
+    }
+
+    #[test]
+    fn checked_i32_rejects_overflow() {
+        let err = checked_i32("VCC GPU test value", usize::MAX).expect_err("overflow");
+        assert!(err.contains("exceeds i32 range"));
+    }
 }

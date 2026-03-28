@@ -176,13 +176,17 @@ const contextItems = computed(() => {
   const status = String(progressMeta.value || '').trim() || String(runReadinessHint.value || '').trim()
   const loaded = String(dataId.value || '').trim()
   return [
-    { key: 'Dataset', value: dataset && dataset !== '—' ? dataset : 'No dataset' },
-    { key: 'Range', value: range && range !== '—' ? range : 'No range' },
-    { key: 'Rows', value: rows && rows !== '—' ? rows : '—' },
-    { key: 'Strategy', value: strategy || '—' },
-    { key: 'Backend', value: backendLabel || '—' },
-    { key: 'Status', value: status || 'Ready.' },
-    { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—' },
+    {
+      key: 'Dataset',
+      value: dataset && dataset !== '—' ? dataset : 'No dataset',
+      current: !dataset || dataset === '—',
+    },
+    { key: 'Range', value: range && range !== '—' ? range : 'No range', current: false },
+    { key: 'Rows', value: rows && rows !== '—' ? rows : '—', current: false },
+    { key: 'Strategy', value: strategy || '—', current: currentWorkspace.value === 'workflow' && strategy.length > 0 },
+    { key: 'Backend', value: backendLabel || '—', current: false },
+    { key: 'Status', value: status || 'Ready.', current: true },
+    { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—', current: false },
   ]
 })
 
@@ -482,8 +486,13 @@ onBeforeUnmount(() => {
         {{ shellSelectionAnnouncement }}
       </div>
 
-      <section class="contextStrip" aria-label="Run context">
-        <article v-for="item in contextItems" :key="`ctx_${item.key}`" class="contextCard">
+      <section class="contextStrip surfaceSunken" aria-label="Run context">
+        <article
+          v-for="item in contextItems"
+          :key="`ctx_${item.key}`"
+          class="contextCard"
+          :class="{ current: item.current }"
+        >
           <div class="contextKey">{{ item.key }}</div>
           <div class="contextValue mono">{{ item.value }}</div>
         </article>
@@ -509,7 +518,7 @@ onBeforeUnmount(() => {
           <nav
             v-if="controlsTabsVisible"
             id="controlsTabBar"
-            class="tabsRow compact"
+            class="tabsRow compact shellStickyTabs surfaceSticky"
             aria-label="Setup panels"
             role="tablist"
             aria-orientation="horizontal"
@@ -608,7 +617,7 @@ onBeforeUnmount(() => {
           <nav
             v-if="resultsTabsVisible"
             id="resultsTabBar"
-            class="tabsRow compact"
+            class="tabsRow compact shellStickyTabs surfaceSticky"
             aria-label="Result panels"
             role="tablist"
             aria-orientation="horizontal"
@@ -824,33 +833,62 @@ onBeforeUnmount(() => {
 .tabBtn {
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--surface2);
+  background: color-mix(in oklab, var(--surface-sunken) 90%, var(--panel));
   color: inherit;
   font-size: 0.76rem;
   padding: 0.38rem 0.7rem;
   font-weight: 600;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .tabBtn.active {
-  border-color: color-mix(in oklab, var(--accent) 64%, var(--border));
-  background: color-mix(in oklab, var(--accent-soft) 68%, var(--surface2));
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent-soft) 28%, transparent);
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 76%, var(--accent));
+  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-working));
+  box-shadow: inset 0 -2px 0 var(--selection-rail), var(--shadow-inline);
+}
+
+.tabBtn:hover:not(:disabled) {
+  transform: translateY(-1px);
 }
 
 .contextStrip {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.32rem;
+  padding: 0.22rem;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 14px;
+  box-shadow: var(--shadow-inline);
 }
 
 .contextCard {
   min-width: 0;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--surface) 98%, var(--panel));
+  background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
   padding: 0.34rem 0.48rem;
   display: grid;
   gap: 0.08rem;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+.contextCard.current {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 74%, var(--border));
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
+    color-mix(in oklab, var(--panel-footer) 92%, var(--surface-working))
+  );
+  box-shadow: var(--shadow-inline);
 }
 
 .contextKey {
@@ -964,6 +1002,16 @@ onBeforeUnmount(() => {
   width: 1px;
   transform: translateX(-50%);
   background: color-mix(in oklab, var(--border) 88%, transparent);
+}
+
+.shellStickyTabs {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  margin: -0.15rem -0.15rem 0.1rem;
+  padding: 0.25rem 0.15rem 0.55rem;
+  border-radius: 14px 14px 12px 12px;
+  box-shadow: 0 12px 18px -18px rgb(var(--shadow-overflow-rgb) / 0.8);
 }
 
 .srOnly {

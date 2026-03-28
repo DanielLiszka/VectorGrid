@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useShellMount } from '../composables/useShellMount'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import ContextHelpTip from './ContextHelpTip.vue'
 import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
@@ -15,7 +16,6 @@ const {
   sampleCsvOptions,
   sampleCsvVisible,
   marketDataDir,
-  marketDataMoveExisting,
   marketDataDirHint,
   dataId,
   datasetLabel,
@@ -31,9 +31,6 @@ const {
   canPolygonOpen,
   canLoadCsv,
   canClearData,
-  canBrowseMarketDataDir,
-  canSetMarketDataDir,
-  canResetMarketDataDir,
   canOpenMarketDataDir,
   canApplyTimeframe,
   polygonOpen,
@@ -190,9 +187,8 @@ function applyTimeframeFromDraft(): void {
   dataStore.applyTimeframe(String(timeframeDraft.value || '').trim())
 }
 
-function setMarketDataDirFromDraft(): void {
-  flushQueuedInputValuesNow()
-  dataStore.setMarketDataDir(String(marketDataDirDraft.value || '').trim(), !!marketDataMoveExisting.value)
+function openStorageSettings(): void {
+  workflowStore.selectWorkspace('settings')
 }
 
 function setCheckboxValue(id: string, checked: boolean): void {
@@ -474,6 +470,12 @@ onBeforeUnmount(() => {
             <div class="panelEyebrow">Storage</div>
             <h3 class="panelPaneTitle">Storage and cache</h3>
           </div>
+          <ContextHelpTip
+            title="Storage controls"
+            summary="Review the active market-data folder here and jump to Settings when you need to change or migrate it."
+            detail="Directory-level storage management is centralized in Settings so the data step stays focused on loading, downloading, and validating datasets. Opening the folder remains available here for quick inspection."
+            aria-label="Storage controls help"
+          />
         </div>
         <label for="vueMarketDataDir">Market data folder</label>
         <div class="inputWithActions">
@@ -482,26 +484,11 @@ onBeforeUnmount(() => {
             type="text"
             :value="marketDataDirDraft"
             placeholder="Default (AppData)"
-            @input="marketDataDirDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('marketDataDir', marketDataDirDraft)"
-            @change="commitInputValue('marketDataDir', marketDataDirDraft)"
+            readonly
           />
           <div class="actions">
-            <button type="button" :disabled="!canBrowseMarketDataDir" @click="dataStore.browseMarketDataDir()">Browse</button>
-            <button type="button" :disabled="!canSetMarketDataDir" @click="setMarketDataDirFromDraft">Set</button>
-          </div>
-        </div>
-        <div class="rowInline">
-          <label class="inlineCheck">
-            <input
-              type="checkbox"
-              :checked="marketDataMoveExisting"
-              @change="setCheckboxValue('marketDataMoveExisting', ($event.target as HTMLInputElement).checked)"
-            />
-            Move existing Polygon cache
-          </label>
-          <div class="actions">
-            <button type="button" :disabled="!canResetMarketDataDir" @click="dataStore.resetMarketDataDir()">Reset</button>
-            <button type="button" :disabled="!canOpenMarketDataDir" @click="dataStore.openMarketDataDir()">Open</button>
+            <button type="button" :disabled="!canOpenMarketDataDir" @click="dataStore.openMarketDataDir()">Open folder</button>
+            <button type="button" @click="openStorageSettings">Manage in Settings</button>
           </div>
         </div>
         <div class="muted mono">{{ marketDataDirHint }}</div>

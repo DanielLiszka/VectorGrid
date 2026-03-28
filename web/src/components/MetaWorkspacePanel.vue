@@ -5,6 +5,7 @@ import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import ContextHelpTip from './ContextHelpTip.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
@@ -627,6 +628,12 @@ onBeforeUnmount(() => {
               Choose the dataset set, holdout settings, and retry behavior for the next batch-generation sweep.
             </div>
           </div>
+          <ContextHelpTip
+            title="Batch generation queue"
+            summary="Use this batch surface for dataset selection, holdout policy, and retry behavior before launching a sweep."
+            detail="The queue is designed to expose the next run's selection, holdout tag, and auto-meta policy without opening another panel. Long-running output stays behind disclosure so the dataset list remains the dominant surface."
+            aria-label="Batch generation queue help"
+          />
         </div>
         <div class="gridFour">
           <div>

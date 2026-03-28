@@ -90,8 +90,9 @@ fn bench_mkcs_cpu(c: &mut Criterion) {
     let cancel = AtomicBool::new(false);
 
     let cases: &[(&str, (u32, u32, u32), (u32, u32, u32))] = &[
-        ("small", (5, 20, 1), (20, 80, 1)),
-        ("medium", (5, 30, 1), (30, 120, 1)),
+        ("small/975pairs", (5, 20, 1), (20, 80, 1)),
+        ("medium/2365pairs", (5, 30, 1), (30, 120, 1)),
+        ("large/13385pairs", (5, 80, 1), (20, 220, 1)),
     ];
 
     let mut group = c.benchmark_group("mkcs/cpu/200k");
@@ -160,6 +161,12 @@ fn bench_mkcs_gpu_kernel(c: &mut Criterion) {
         "expected no fallback reason for MKCS route probe, got {:?}",
         route_probe.backend_fallback_reason
     );
+    assert_eq!(
+        route_probe.backend_route.as_deref(),
+        Some("GpuKernel"),
+        "expected exact GpuKernel route for MKCS route probe, got route={:?}",
+        route_probe.backend_route
+    );
 
     for (label, fast_range, slow_range) in cases.iter().copied() {
         let req = make_mkcs_req(Backend::GpuKernel { device_id: 0 }, fast_range, slow_range);
@@ -181,6 +188,12 @@ fn bench_mkcs_gpu_kernel(c: &mut Criterion) {
                     res.backend_fallback_reason.is_none(),
                     "expected no fallback reason for MKCS bench, got {:?}",
                     res.backend_fallback_reason
+                );
+                assert_eq!(
+                    res.backend_route.as_deref(),
+                    Some("GpuKernel"),
+                    "expected exact GpuKernel route for MKCS bench, got route={:?}",
+                    res.backend_route
                 );
             })
         });

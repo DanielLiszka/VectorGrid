@@ -31,6 +31,15 @@ export const useCommandPaletteStore = defineStore('commandPalette', {
       this.selectedIndex = 0
     },
 
+    setSelection(index: number, total: number): void {
+      const max = Math.max(0, Math.floor(Number(total || 0)))
+      if (max <= 0) {
+        this.selectedIndex = 0
+        return
+      }
+      this.selectedIndex = Math.max(0, Math.min(max - 1, Math.trunc(index)))
+    },
+
     moveSelection(delta: number, total: number): void {
       const max = Math.max(0, Math.floor(Number(total || 0)))
       if (max <= 0) {

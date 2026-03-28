@@ -5,6 +5,7 @@ import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import ContextHelpTip from './ContextHelpTip.vue'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { previewValidationExecutionSummaryFromStores } from '../services/validationService'
@@ -440,6 +441,12 @@ onBeforeUnmount(() => {
               Choose shortlist size, guardrails, and export behavior for the next robustness pass.
             </div>
           </div>
+          <ContextHelpTip
+            title="Validation actions"
+            summary="Run validation and export its evidence package from this panel; the validation dock now stays focused on status and navigation."
+            detail="This is the canonical validation action surface for shortlist export, report export, and reports-folder access. The dock still preserves a clear shortcut into validation without duplicating all of those buttons."
+            aria-label="Validation actions help"
+          />
         </div>
         <div class="panelAdvisory">{{ validationHint }}</div>
         <div class="gridFive">

@@ -65,16 +65,33 @@ function runValidationAction(): void {
 
 <style scoped>
 .optDock {
+  --dock-accent: var(--warning);
+  --dock-accent-ink: var(--warning-ink);
+  --dock-accent-soft: var(--warning-soft);
+  --dock-surface: linear-gradient(
+    160deg,
+    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
+    color-mix(in oklab, var(--warning-soft) 34%, var(--surface-sticky))
+  );
+  --dock-border: color-mix(in oklab, var(--dock-accent) 40%, var(--border));
+  --dock-field-border: color-mix(in oklab, var(--dock-accent) 34%, var(--border));
+  --dock-field-surface: color-mix(in oklab, var(--dock-accent-soft) 48%, var(--surface-inline));
+  --dock-text: var(--text);
+  --dock-title: color-mix(in oklab, var(--dock-accent) 74%, var(--dock-text));
+  --dock-stamp: color-mix(in oklab, var(--dock-accent-ink) 78%, var(--dock-text));
+  --dock-label: color-mix(in oklab, var(--dock-accent) 62%, var(--dock-text));
+  --dock-action-text: color-mix(in oklab, var(--dock-accent-ink) 82%, var(--dock-text));
   position: fixed;
   left: 10px;
   bottom: 212px;
   z-index: 4038;
   width: min(380px, calc(100vw - 20px));
   border-radius: 12px;
-  border: 1px solid rgba(251, 191, 36, 0.42);
-  background: linear-gradient(160deg, rgba(15, 23, 42, 0.94), rgba(66, 32, 6, 0.9));
-  color: #e2e8f0;
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45);
+  border: 1px solid var(--dock-border);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  box-shadow: var(--shadow-focus);
+  backdrop-filter: blur(12px);
   padding: 10px;
   display: grid;
   gap: 8px;
@@ -92,12 +109,12 @@ function runValidationAction(): void {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #fcd34d;
+  color: var(--dock-title);
 }
 
 .stamp {
   font-size: 0.72rem;
-  color: #fde68a;
+  color: var(--dock-stamp);
 }
 
 .rows {
@@ -114,14 +131,14 @@ function runValidationAction(): void {
 
 .row span {
   font-size: 0.72rem;
-  color: #fbbf24;
+  color: var(--dock-label);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 .row strong {
   font-size: 0.78rem;
-  color: #e2e8f0;
+  color: var(--dock-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -137,12 +154,12 @@ function runValidationAction(): void {
 }
 
 .actions button {
-  border: 1px solid rgba(251, 191, 36, 0.38);
+  border: 1px solid var(--dock-field-border);
   border-radius: 8px;
   padding: 4px 8px;
   font-size: 0.72rem;
-  background: rgba(66, 32, 6, 0.82);
-  color: #fef3c7;
+  background: var(--dock-field-surface);
+  color: var(--dock-action-text);
 }
 
 .actions button:disabled {

@@ -117,16 +117,33 @@ function setCheckboxValue(id: string, checked: boolean): void {
 
 <style scoped>
 .execDock {
+  --dock-accent: var(--ok);
+  --dock-accent-ink: var(--ok-ink);
+  --dock-accent-soft: var(--ok-soft);
+  --dock-surface: linear-gradient(
+    158deg,
+    color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
+    color-mix(in oklab, var(--ok-soft) 34%, var(--surface-sticky))
+  );
+  --dock-border: color-mix(in oklab, var(--dock-accent) 40%, var(--border));
+  --dock-field-border: color-mix(in oklab, var(--dock-accent) 34%, var(--border));
+  --dock-field-surface: color-mix(in oklab, var(--dock-accent-soft) 48%, var(--surface-inline));
+  --dock-text: var(--text);
+  --dock-title: color-mix(in oklab, var(--dock-accent) 74%, var(--dock-text));
+  --dock-stamp: color-mix(in oklab, var(--dock-accent-ink) 76%, var(--dock-text));
+  --dock-label: color-mix(in oklab, var(--dock-accent) 62%, var(--dock-text));
+  --dock-action-text: color-mix(in oklab, var(--dock-accent-ink) 82%, var(--dock-text));
   position: fixed;
   right: 10px;
   top: 134px;
   z-index: 4037;
   width: min(460px, calc(100vw - 20px));
   border-radius: 12px;
-  border: 1px solid rgba(34, 197, 94, 0.42);
-  background: linear-gradient(158deg, rgba(15, 23, 42, 0.94), rgba(20, 83, 45, 0.9));
-  color: #e2e8f0;
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45);
+  border: 1px solid var(--dock-border);
+  background: var(--dock-surface);
+  color: var(--dock-text);
+  box-shadow: var(--shadow-focus);
+  backdrop-filter: blur(12px);
   padding: 10px;
   display: grid;
   gap: 8px;
@@ -146,12 +163,12 @@ function setCheckboxValue(id: string, checked: boolean): void {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #86efac;
+  color: var(--dock-title);
 }
 
 .stamp {
   font-size: 0.72rem;
-  color: #bbf7d0;
+  color: var(--dock-stamp);
 }
 
 .rows {
@@ -168,14 +185,14 @@ function setCheckboxValue(id: string, checked: boolean): void {
 
 .row span {
   font-size: 0.72rem;
-  color: #4ade80;
+  color: var(--dock-label);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 .row strong {
   font-size: 0.78rem;
-  color: #e2e8f0;
+  color: var(--dock-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -184,12 +201,12 @@ function setCheckboxValue(id: string, checked: boolean): void {
 .row input,
 .row select {
   width: 100%;
-  border: 1px solid rgba(34, 197, 94, 0.38);
+  border: 1px solid var(--dock-field-border);
   border-radius: 8px;
   padding: 3px 6px;
   font-size: 0.75rem;
-  background: rgba(20, 83, 45, 0.82);
-  color: #dcfce7;
+  background: var(--dock-field-surface);
+  color: var(--dock-action-text);
 }
 
 .mono {
@@ -203,12 +220,12 @@ function setCheckboxValue(id: string, checked: boolean): void {
 }
 
 .actions button {
-  border: 1px solid rgba(74, 222, 128, 0.4);
+  border: 1px solid var(--dock-field-border);
   border-radius: 8px;
   padding: 4px 8px;
   font-size: 0.72rem;
-  background: rgba(20, 83, 45, 0.82);
-  color: #dcfce7;
+  background: var(--dock-field-surface);
+  color: var(--dock-action-text);
 }
 
 .actions button:disabled {

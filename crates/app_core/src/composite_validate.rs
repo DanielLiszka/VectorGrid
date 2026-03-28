@@ -82,7 +82,7 @@ use crate::mkcs::{
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::mkcs::{
-    compute_mkcs_donchian_output_sweep_cuda_device, compute_mkcs_stddev_sweep_cuda_device,
+    compute_mkcs_donchian_sweeps_cuda_device, compute_mkcs_stddev_sweep_cuda_device,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::mkcs_gpu_kernel::{
@@ -2136,7 +2136,6 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
     let first_valid_low =
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
-
     let prepared_cuda_inputs =
         prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let upper_sweep = compute_rocb_donchian_output_sweep_cuda_device(
@@ -2374,26 +2373,18 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
         first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let first_valid_low =
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
-    let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
-
     let prepared_cuda_inputs =
         prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let stddev_sweep =
         compute_mkcs_stddev_sweep_cuda_device(&prepared_cuda_inputs, min_stddev, max_stddev, 1)?;
-    let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
+    let donchian_sweeps = compute_mkcs_donchian_sweeps_cuda_device(
         &prepared_cuda_inputs,
-        &["upper_band", "upper", "up"],
         min_breakout,
         max_breakout,
         1,
     )?;
-    let lower_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["lower_band", "lower", "down"],
-        min_breakout,
-        max_breakout,
-        1,
-    )?;
+    let upper_sweep = donchian_sweeps.upper;
+    let lower_sweep = donchian_sweeps.lower;
 
     let mut stddev_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
     let mut breakout_row_index: Vec<i32> = Vec::with_capacity(req.candidates.len());
@@ -2440,7 +2431,8 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
     }
 
     let signals = MkcsGpuDeviceSignalMatrices {
-        close_f32: &close_f32,
+        close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         stddev_row_major_ptr: stddev_sweep.matrix.device_ptr,
         stddev_rows: stddev_sweep.matrix.rows,
@@ -2566,8 +2558,6 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let first_valid_low =
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
-    let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
-
     let prepared_cuda_inputs =
         prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let periods = resolve_mkcs_periods(mkcs, params.fast_len, params.slow_len);
@@ -2577,20 +2567,14 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         periods.stddev,
         1,
     )?;
-    let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
+    let donchian_sweeps = compute_mkcs_donchian_sweeps_cuda_device(
         &prepared_cuda_inputs,
-        &["upper_band", "upper", "up"],
         periods.breakout,
         periods.breakout,
         1,
     )?;
-    let lower_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["lower_band", "lower", "down"],
-        periods.breakout,
-        periods.breakout,
-        1,
-    )?;
+    let upper_sweep = donchian_sweeps.upper;
+    let lower_sweep = donchian_sweeps.lower;
 
     let stddev_row = stddev_sweep
         .row_index_for_period(periods.stddev)
@@ -2628,7 +2612,8 @@ fn compute_mkcs_gpu_walk_forward_stats_for_candidate(
         .map_err(|_| "MKCS GPU walk_forward breakout row index exceeds i32 range".to_string())?;
 
     let signals = MkcsGpuDeviceSignalMatrices {
-        close_f32: &close_f32,
+        close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         stddev_row_major_ptr: stddev_sweep.matrix.device_ptr,
         stddev_rows: stddev_sweep.matrix.rows,
@@ -2755,8 +2740,6 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let first_valid_low =
         first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
-    let close_f32: Vec<f32> = close.iter().map(|v| *v as f32).collect();
-
     let mut min_stddev = u16::MAX;
     let mut max_stddev = 0u16;
     let mut min_breakout = u16::MAX;
@@ -2808,20 +2791,14 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         prepared_cuda_inputs_for_source_hlc_on_device(candles, &req.ma_source, device_id as usize)?;
     let stddev_sweep =
         compute_mkcs_stddev_sweep_cuda_device(&prepared_cuda_inputs, min_stddev, max_stddev, 1)?;
-    let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
+    let donchian_sweeps = compute_mkcs_donchian_sweeps_cuda_device(
         &prepared_cuda_inputs,
-        &["upper_band", "upper", "up"],
         min_breakout,
         max_breakout,
         1,
     )?;
-    let lower_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["lower_band", "lower", "down"],
-        min_breakout,
-        max_breakout,
-        1,
-    )?;
+    let upper_sweep = donchian_sweeps.upper;
+    let lower_sweep = donchian_sweeps.lower;
 
     let mut stddev_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
     let mut breakout_row_index: Vec<i32> = Vec::with_capacity(finalists.len());
@@ -2862,7 +2839,8 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
     }
 
     let signals = MkcsGpuDeviceSignalMatrices {
-        close_f32: &close_f32,
+        close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         stddev_row_major_ptr: stddev_sweep.matrix.device_ptr,
         stddev_rows: stddev_sweep.matrix.rows,
@@ -6498,7 +6476,7 @@ fn try_prepare_kqsr_gpu_fixed_candidate_validation(
 
     let signals = KqsrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
-        close_device_ptr: prepared_cuda_inputs.close_device().as_device_ptr().as_raw() as u64,
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         j_row_major_ptr: d_j.buffer().as_device_ptr().as_raw() as u64,
         fast_rows,
@@ -6839,7 +6817,7 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = KqsrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
-        close_device_ptr: prepared_cuda_inputs.close_device().as_device_ptr().as_raw() as u64,
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         j_row_major_ptr: d_j.buffer().as_device_ptr().as_raw() as u64,
         fast_rows,
@@ -9002,6 +8980,7 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
 
     let signals = CdmcGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         dpo_row_major_ptr: d_dpo.buffer().as_device_ptr().as_raw() as u64,
         dpo_rows: total,
@@ -9292,6 +9271,7 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
 
     let signals = CdmcGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         dpo_row_major_ptr: d_dpo.buffer().as_device_ptr().as_raw() as u64,
         dpo_rows: total,

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import {
   CONTROLS_COLLAPSED_KEY,
+  HELP_MODE_KEY,
   THEME_PREF_KEY,
   WINDOW_EFFECT_KEY,
   WORKFLOW_ADVANCED_KEY,
@@ -17,6 +18,9 @@ import { useWorkflowStore } from './workflowStore'
 
 const THEME_KEYS = new Set(['light', 'dark', 'system'])
 const EFFECT_KEYS = new Set(['none', 'mica', 'acrylic', 'vibrancy'])
+const HELP_MODE_KEYS = new Set(['full', 'concise', 'off'])
+
+export type HelpMode = 'full' | 'concise' | 'off'
 
 function normalizeTheme(value: unknown): string {
   const next = String(value ?? '').trim().toLowerCase()
@@ -26,6 +30,12 @@ function normalizeTheme(value: unknown): string {
 function normalizeEffect(value: unknown): string {
   const next = String(value ?? '').trim().toLowerCase()
   return EFFECT_KEYS.has(next) ? next : 'none'
+}
+
+function normalizeHelpMode(value: unknown): HelpMode {
+  const next = String(value ?? '').trim().toLowerCase()
+  if (HELP_MODE_KEYS.has(next)) return next as HelpMode
+  return 'full'
 }
 
 function resolveTheme(pref: string): string {
@@ -53,6 +63,16 @@ function persistEffect(effect: string): void {
       return
     }
     localStorage.setItem(WINDOW_EFFECT_KEY, effect)
+  } catch {}
+}
+
+function persistHelpMode(mode: HelpMode): void {
+  try {
+    if (mode === 'full') {
+      localStorage.removeItem(HELP_MODE_KEY)
+      return
+    }
+    localStorage.setItem(HELP_MODE_KEY, mode)
   } catch {}
 }
 
@@ -89,6 +109,12 @@ function applyControlsCollapsedLocally(enabled: boolean): void {
   persistBoolFlag(CONTROLS_COLLAPSED_KEY, enabled)
 }
 
+function applyHelpModeLocally(mode: HelpMode): void {
+  const normalized = normalizeHelpMode(mode)
+  setRootDataAttr('helpMode', normalized)
+  persistHelpMode(normalized)
+}
+
 function runtimeCanMutateSettings(): boolean {
   if (typeof document === 'undefined') return true
   const root = document.documentElement as HTMLElement | undefined
@@ -99,6 +125,7 @@ function runtimeCanMutateSettings(): boolean {
 interface SettingsState {
   theme: string
   effect: string
+  helpMode: HelpMode
   workflowAdvanced: boolean
   controlsCollapsed: boolean
   marketDataDir: string
@@ -123,6 +150,7 @@ export const useSettingsStore = defineStore('settings', {
   state: (): SettingsState => ({
     theme: 'system',
     effect: 'none',
+    helpMode: 'full',
     workflowAdvanced: false,
     controlsCollapsed: false,
     marketDataDir: '',
@@ -152,6 +180,7 @@ export const useSettingsStore = defineStore('settings', {
     applyLegacySnapshot(snapshot: Partial<SettingsState>): void {
       this.theme = String(snapshot.theme ?? this.theme ?? 'system').trim() || 'system'
       this.effect = String(snapshot.effect ?? this.effect ?? 'none').trim() || 'none'
+      this.helpMode = normalizeHelpMode(snapshot.helpMode ?? this.helpMode ?? 'full')
       this.workflowAdvanced = Boolean(snapshot.workflowAdvanced ?? this.workflowAdvanced)
       this.controlsCollapsed = Boolean(snapshot.controlsCollapsed ?? this.controlsCollapsed)
       this.marketDataDir = String(snapshot.marketDataDir ?? this.marketDataDir ?? '').trim()
@@ -196,6 +225,11 @@ export const useSettingsStore = defineStore('settings', {
         const normalized = normalizeEffect(next)
         this.effect = normalized
         applyEffectLocally(normalized)
+        this.markVueUpdate()
+      } else if (key === 'settingsHelpMode') {
+        const normalized = normalizeHelpMode(next)
+        this.helpMode = normalized
+        applyHelpModeLocally(normalized)
         this.markVueUpdate()
       }
     },

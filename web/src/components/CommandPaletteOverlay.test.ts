@@ -81,4 +81,83 @@ describe('CommandPaletteOverlay', () => {
 
     wrapper.unmount()
   })
+
+  it('uses fuzzy search so typo-tolerant queries still surface the intended command', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    paletteStore.openPalette()
+
+    const wrapper = mount(CommandPaletteOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    paletteStore.setQuery('polygn')
+    await nextTick()
+
+    const commandRows = Array.from(document.querySelectorAll<HTMLElement>('.cmdPaletteDialog [role="option"]'))
+    expect(commandRows.length).toBeGreaterThan(0)
+    expect(commandRows[0]?.textContent).toContain('Open Polygon Downloader')
+
+    const summary = document.querySelector<HTMLElement>('.cmdPaletteDialog .summary')
+    expect(summary?.textContent).toContain('match')
+
+    wrapper.unmount()
+  })
+
+  it('prefers direct name-prefix matches over incidental fuzzy hits for short queries', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    paletteStore.openPalette()
+
+    const wrapper = mount(CommandPaletteOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    paletteStore.setQuery('go')
+    await nextTick()
+
+    const commandRows = Array.from(document.querySelectorAll<HTMLElement>('.cmdPaletteDialog [role="option"]'))
+    expect(commandRows.length).toBeGreaterThan(0)
+    expect(commandRows[0]?.textContent).toContain('Go to Workflow Step 1 (Data)')
+
+    wrapper.unmount()
+  })
+
+  it('supports Home and End keyboard navigation across the filtered command set', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    paletteStore.openPalette()
+
+    const wrapper = mount(CommandPaletteOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const dialog = document.querySelector<HTMLElement>('.cmdPaletteDialog')
+    const input = document.querySelector<HTMLInputElement>('.cmdPaletteDialog .query')
+    const commandRows = Array.from(document.querySelectorAll<HTMLElement>('.cmdPaletteDialog [role="option"]'))
+    const firstRow = commandRows[0]
+    const lastRow = commandRows[commandRows.length - 1]
+
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await nextTick()
+    expect(input?.getAttribute('aria-activedescendant')).toBe(lastRow?.id)
+
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    await nextTick()
+    expect(input?.getAttribute('aria-activedescendant')).toBe(firstRow?.id)
+
+    wrapper.unmount()
+  })
 })

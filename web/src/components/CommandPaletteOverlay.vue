@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import Fuse from 'fuse.js'
+import type { FuseResult } from 'fuse.js'
 import { computed, nextTick, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { DialogContent, DialogDescription, DialogOverlay, DialogPortal, DialogRoot, DialogTitle } from 'reka-ui'
@@ -11,12 +13,27 @@ import { useWorkflowStore } from '../stores/workflowStore'
 
 interface PaletteCommand {
   id: string
+  group: 'actions' | 'data' | 'exports' | 'layout' | 'navigation'
   name: string
   desc: string
   keys: string[]
   keywords: string[]
   enabled: boolean
   run: () => void
+}
+
+interface PaletteCommandSearchEntry {
+  command: PaletteCommand
+  shortcut: string
+}
+
+interface PaletteCommandGroup {
+  id: PaletteCommand['group']
+  label: string
+  items: Array<{
+    command: PaletteCommand
+    index: number
+  }>
 }
 
 const analysisStore = useAnalysisStore()
@@ -33,6 +50,15 @@ const { canBrowseCsv, canPolygonOpen } = storeToRefs(dataStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
 const { workspace, workflowStep } = storeToRefs(workflowStore)
 const commandListId = 'commandPaletteListbox'
+
+const commandGroupMeta: Record<PaletteCommand['group'], string> = {
+  actions: 'Run control',
+  data: 'Data sources',
+  exports: 'Exports and reports',
+  layout: 'Layout',
+  navigation: 'Navigation',
+}
+const commandGroupOrder: PaletteCommand['group'][] = ['actions', 'data', 'exports', 'layout', 'navigation']
 
 function setWorkflowStepIfNeeded(step: string): void {
   if (String(workspace.value || '').trim() === 'workflow' && String(workflowStep.value || '').trim() === step) return
@@ -52,6 +78,7 @@ const commands = computed<PaletteCommand[]>(() => {
   return [
     {
       id: 'run',
+      group: 'actions',
       name: 'Run optimization',
       desc: 'Start optimization for current setup.',
       keys: ['Ctrl', 'Enter'],
@@ -63,6 +90,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'cancel',
+      group: 'actions',
       name: 'Cancel run',
       desc: 'Cancel active optimization or validation task.',
       keys: ['Esc'],
@@ -74,6 +102,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'validate',
+      group: 'actions',
       name: 'Run validation',
       desc: 'Execute validation checks for shortlisted candidates.',
       keys: ['Ctrl', 'Shift', 'V'],
@@ -85,6 +114,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'browse_csv',
+      group: 'data',
       name: 'Browse CSV',
       desc: 'Pick dataset CSV from disk.',
       keys: ['Ctrl', 'O'],
@@ -96,6 +126,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'open_polygon',
+      group: 'data',
       name: 'Open Polygon Downloader',
       desc: 'Open Polygon dataset downloader modal.',
       keys: ['Ctrl', 'Shift', 'O'],
@@ -107,6 +138,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'export_csv',
+      group: 'exports',
       name: 'Export Top CSV',
       desc: 'Export current top table as CSV.',
       keys: ['Ctrl', 'Shift', 'C'],
@@ -118,6 +150,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'export_json',
+      group: 'exports',
       name: 'Export Top JSON',
       desc: 'Export current top result as JSON.',
       keys: ['Ctrl', 'Shift', 'J'],
@@ -129,6 +162,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'open_latest_report',
+      group: 'exports',
       name: 'Open latest report',
       desc: 'Open most recent generated report.',
       keys: ['Ctrl', 'Shift', 'R'],
@@ -140,6 +174,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'open_latest_meta_report',
+      group: 'exports',
       name: 'Open latest meta report',
       desc: 'Open most recent meta-analysis report.',
       keys: ['Ctrl', 'Shift', 'M'],
@@ -151,6 +186,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'toggle_controls',
+      group: 'layout',
       name: 'Toggle controls panel',
       desc: 'Collapse or expand controls column.',
       keys: ['Ctrl', '\\'],
@@ -162,6 +198,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_step_data',
+      group: 'navigation',
       name: 'Go to Workflow Step 1 (Data)',
       desc: 'Switch to data-source workflow step.',
       keys: [],
@@ -173,6 +210,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_step_optimize',
+      group: 'navigation',
       name: 'Go to Workflow Step 2 (Optimize)',
       desc: 'Switch to strategy setup workflow step.',
       keys: [],
@@ -184,6 +222,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_step_validate',
+      group: 'navigation',
       name: 'Go to Workflow Step 3 (Validate)',
       desc: 'Switch to validation workflow step.',
       keys: [],
@@ -195,6 +234,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_step_analyze',
+      group: 'navigation',
       name: 'Go to Workflow Step 4 (Analyze)',
       desc: 'Switch to analysis workflow step.',
       keys: [],
@@ -206,6 +246,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_step_finalize',
+      group: 'navigation',
       name: 'Go to Workflow Step 5 (Finalizer)',
       desc: 'Switch to the post-meta ML confidence and Stage 5 workflow step.',
       keys: [],
@@ -217,6 +258,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_workspace_library',
+      group: 'navigation',
       name: 'Go to Run Library',
       desc: 'Switch to saved run library workspace.',
       keys: [],
@@ -228,6 +270,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_workspace_aggregate',
+      group: 'navigation',
       name: 'Go to Aggregate Analysis',
       desc: 'Switch to aggregate/meta analysis workspace.',
       keys: [],
@@ -239,6 +282,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_workspace_pro',
+      group: 'navigation',
       name: 'Go to Pro Tools',
       desc: 'Switch to pro/debug workspace.',
       keys: [],
@@ -250,6 +294,7 @@ const commands = computed<PaletteCommand[]>(() => {
     },
     {
       id: 'go_workspace_settings',
+      group: 'navigation',
       name: 'Go to Settings',
       desc: 'Switch to global settings workspace.',
       keys: [],
@@ -262,30 +307,99 @@ const commands = computed<PaletteCommand[]>(() => {
   ]
 })
 
-function commandScore(command: PaletteCommand, tokens: string[]): number | null {
-  const haystack = `${command.name} ${command.desc} ${command.keywords.join(' ')}`.toLowerCase()
-  let score = 0
-  for (const token of tokens) {
-    const idx = haystack.indexOf(token)
-    if (idx < 0) return null
-    score += idx
-  }
-  return score
+const commandSearchIndex = computed<PaletteCommandSearchEntry[]>(() => commands.value.map((command) => ({
+  command,
+  shortcut: command.keys.join(' '),
+})))
+const commandOrder = computed(() => new Map(commands.value.map((command, index) => [command.id, index])))
+
+const commandFuse = computed(() => new Fuse(commandSearchIndex.value, {
+  includeScore: true,
+  ignoreLocation: true,
+  threshold: 0.34,
+  keys: [
+    { name: 'command.name', weight: 0.38 },
+    { name: 'command.keywords', weight: 0.28 },
+    { name: 'command.desc', weight: 0.18 },
+    { name: 'shortcut', weight: 0.1 },
+    { name: 'command.group', weight: 0.06 },
+  ],
+}))
+
+function rankingBucket(command: PaletteCommandSearchEntry, tokens: string[]): number {
+  if (!tokens.length) return 3
+
+  const nameWords = command.command.name.toLowerCase().split(/\s+/g)
+  const keywordValues = command.command.keywords.map((keyword) => keyword.toLowerCase())
+  const shortcut = command.shortcut.toLowerCase()
+  const exactNamePrefix = tokens.every((token) => nameWords.some((word) => word.startsWith(token)))
+  if (exactNamePrefix) return 0
+
+  const keywordPrefix = tokens.every((token) => keywordValues.some((keyword) => keyword.startsWith(token)))
+  if (keywordPrefix) return 1
+
+  const shortcutPrefix = tokens.every((token) => shortcut.includes(token))
+  if (shortcutPrefix) return 2
+
+  return 3
 }
 
 const filteredCommands = computed<PaletteCommand[]>(() => {
-  const q = String(query.value || '').trim().toLowerCase()
-  const tokens = q ? q.split(/\s+/g).filter((token) => token.length > 0) : []
-  if (!tokens.length) return commands.value
+  const q = String(query.value || '').trim()
+  if (!q) return commands.value
+  const tokens = q.toLowerCase().split(/\s+/g).filter((token) => token.length > 0)
 
-  const scored: Array<{ command: PaletteCommand; score: number }> = []
-  for (const command of commands.value) {
-    const score = commandScore(command, tokens)
-    if (score == null) continue
-    scored.push({ command, score })
-  }
-  scored.sort((a, b) => a.score - b.score)
-  return scored.map((entry) => entry.command)
+  const prefixMatches = commandSearchIndex.value
+    .filter((entry) => rankingBucket(entry, tokens) <= 1)
+    .sort((a: PaletteCommandSearchEntry, b: PaletteCommandSearchEntry) =>
+      rankingBucket(a, tokens) - rankingBucket(b, tokens)
+      || (commandOrder.value.get(a.command.id) ?? 0) - (commandOrder.value.get(b.command.id) ?? 0),
+    )
+  const seen = new Set(prefixMatches.map((entry) => entry.command.id))
+
+  const fuzzyMatches = commandFuse.value
+    .search(q)
+    .sort((a: FuseResult<PaletteCommandSearchEntry>, b: FuseResult<PaletteCommandSearchEntry>) => {
+      const bucketDiff = rankingBucket(a.item, tokens) - rankingBucket(b.item, tokens)
+      if (bucketDiff !== 0) return bucketDiff
+      return (a.score ?? Number.POSITIVE_INFINITY) - (b.score ?? Number.POSITIVE_INFINITY) || a.refIndex - b.refIndex
+    })
+    .map((entry: FuseResult<PaletteCommandSearchEntry>) => entry.item)
+    .filter((entry: PaletteCommandSearchEntry) => !seen.has(entry.command.id))
+
+  return [...prefixMatches, ...fuzzyMatches].map((entry) => entry.command)
+})
+
+const groupedFilteredCommands = computed<PaletteCommandGroup[]>(() => {
+  const groups = new Map<PaletteCommand['group'], PaletteCommandGroup['items']>()
+  const q = String(query.value || '').trim()
+  const orderedGroupIds: PaletteCommand['group'][] = []
+  filteredCommands.value.forEach((command, index) => {
+    const items = groups.get(command.group) ?? []
+    items.push({ command, index })
+    groups.set(command.group, items)
+    if (q && !orderedGroupIds.includes(command.group)) {
+      orderedGroupIds.push(command.group)
+    }
+  })
+  const visibleGroupOrder = q ? orderedGroupIds : commandGroupOrder
+  return visibleGroupOrder
+    .map((groupId) => ({
+      id: groupId,
+      label: commandGroupMeta[groupId],
+      items: groups.get(groupId) ?? [],
+    }))
+    .filter((group) => group.items.length > 0)
+})
+
+const searchSummaryId = 'commandPaletteSummary'
+const searchSummary = computed(() => {
+  const total = commands.value.length
+  const matches = filteredCommands.value.length
+  const q = String(query.value || '').trim()
+  if (!q) return `${total} commands. Search by action, view, report, or shortcut.`
+  const label = matches === 1 ? 'match' : 'matches'
+  return `${matches} ${label} for “${q}”.`
 })
 
 function commandOptionId(commandId: string): string {
@@ -352,6 +466,16 @@ function onKeydown(event: KeyboardEvent): void {
     commandPaletteStore.moveSelection(-1, filteredCommands.value.length)
     return
   }
+  if (event.key === 'Home') {
+    event.preventDefault()
+    commandPaletteStore.setSelection(0, filteredCommands.value.length)
+    return
+  }
+  if (event.key === 'End') {
+    event.preventDefault()
+    commandPaletteStore.setSelection(filteredCommands.value.length - 1, filteredCommands.value.length)
+    return
+  }
   if (event.key === 'Enter') {
     event.preventDefault()
     runSelected()
@@ -366,7 +490,7 @@ function onKeydown(event: KeyboardEvent): void {
       <DialogContent class="cmdPaletteDialog" aria-label="Command palette" @keydown.capture="onKeydown">
         <header class="head">
           <DialogTitle class="title">Command Palette</DialogTitle>
-          <button type="button" class="closeBtn" @click="closePalette">x</button>
+          <button type="button" class="closeBtn" aria-label="Close command palette" @click="closePalette">Close</button>
         </header>
         <DialogDescription class="srOnly">
           Search commands, navigate workflow views, and execute supported actions.
@@ -381,33 +505,44 @@ function onKeydown(event: KeyboardEvent): void {
           :aria-expanded="open ? 'true' : 'false'"
           :aria-controls="commandListId"
           :aria-activedescendant="selectedCommandId"
+          :aria-describedby="searchSummaryId"
           :value="query"
           placeholder="Type a command…"
           @input="commandPaletteStore.setQuery(String(($event.target as HTMLInputElement).value || ''))"
         />
-        <div :id="commandListId" class="list" role="listbox" aria-label="Available commands">
-          <div
-            v-for="(command, index) in filteredCommands"
-            :key="command.id"
-            :id="commandOptionId(command.id)"
-            class="row"
-            :class="{ selected: selectedIndex === index, disabled: !command.enabled }"
-            role="option"
-            :aria-selected="selectedIndex === index"
-            :aria-disabled="!command.enabled"
-            @mouseenter="commandPaletteStore.selectedIndex = index"
-            @mousedown.prevent
-            @click="runCommand(command)"
+        <div :id="searchSummaryId" class="summary" aria-live="polite">{{ searchSummary }}</div>
+        <div :id="commandListId" class="list overflowShadowY" role="listbox" aria-label="Available commands">
+          <section
+            v-for="group in groupedFilteredCommands"
+            :key="group.id"
+            class="group"
+            role="group"
+            :aria-labelledby="`commandPaletteGroup_${group.id}`"
           >
-            <div class="meta">
-              <div class="name">{{ command.name }}</div>
-              <div class="desc">{{ command.desc }}</div>
+            <div :id="`commandPaletteGroup_${group.id}`" class="groupLabel">{{ group.label }}</div>
+            <div
+              v-for="{ command, index } in group.items"
+              :key="command.id"
+              :id="commandOptionId(command.id)"
+              class="row"
+              :class="{ selected: selectedIndex === index, disabled: !command.enabled }"
+              role="option"
+              :aria-selected="selectedIndex === index"
+              :aria-disabled="!command.enabled"
+              @mouseenter="commandPaletteStore.setSelection(index, filteredCommands.length)"
+              @mousedown.prevent
+              @click="runCommand(command)"
+            >
+              <div class="meta">
+                <div class="name">{{ command.name }}</div>
+                <div class="desc">{{ command.desc }}</div>
+              </div>
+              <div class="keys">
+                <kbd v-for="key in command.keys" :key="`${command.id}_${key}`">{{ key }}</kbd>
+              </div>
             </div>
-            <div class="keys">
-              <kbd v-for="key in command.keys" :key="`${command.id}_${key}`">{{ key }}</kbd>
-            </div>
-          </div>
-          <div v-if="!filteredCommands.length" class="empty">No matching commands.</div>
+          </section>
+          <div v-if="!filteredCommands.length" class="empty">No matching commands. Try workflow, report, or shortcut terms.</div>
         </div>
       </DialogContent>
     </DialogPortal>
@@ -420,7 +555,7 @@ function onKeydown(event: KeyboardEvent): void {
   inset: 0;
   z-index: 9998;
   border: 0;
-  background: color-mix(in oklab, var(--bg) 25%, #000);
+  background: color-mix(in oklab, var(--backdrop) 88%, var(--bg));
 }
 
 .cmdPaletteDialog {
@@ -430,9 +565,13 @@ function onKeydown(event: KeyboardEvent): void {
   transform: translateX(-50%);
   z-index: 9999;
   width: min(760px, calc(100vw - 24px));
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 72%, var(--border));
   border-radius: 14px;
-  background: var(--panel);
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklab, var(--surface-focus) 92%, var(--panel-footer)),
+    color-mix(in oklab, var(--panel-footer) 94%, var(--surface-working))
+  );
   box-shadow: var(--shadow-lg);
   padding: 0.7rem;
   display: grid;
@@ -456,7 +595,7 @@ function onKeydown(event: KeyboardEvent): void {
 .closeBtn {
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--surface2);
+  background: color-mix(in oklab, var(--surface-inline) 92%, var(--panel));
   padding: 0.15rem 0.4rem;
 }
 
@@ -464,17 +603,35 @@ function onKeydown(event: KeyboardEvent): void {
   width: 100%;
 }
 
+.summary {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
 .list {
   max-height: min(56vh, 480px);
   overflow: auto;
   display: grid;
+  gap: 0.75rem;
+}
+
+.group {
+  display: grid;
   gap: 0.35rem;
+}
+
+.groupLabel {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--muted) 86%, var(--ink));
 }
 
 .row {
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--surface2);
+  background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
   color: inherit;
   cursor: pointer;
   text-align: left;
@@ -485,8 +642,9 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 .row.selected {
-  border-color: color-mix(in oklab, var(--accent) 62%, var(--border));
-  background: color-mix(in oklab, var(--accent-soft) 68%, var(--surface2));
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 74%, var(--accent));
+  background: color-mix(in oklab, var(--selection-fill-strong) 82%, var(--surface-working));
+  box-shadow: inset 3px 0 0 var(--selection-rail);
 }
 
 .row.disabled {

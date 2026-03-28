@@ -11,6 +11,7 @@ use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::CudaDeviceVectorF32;
@@ -83,6 +84,20 @@ pub struct MkcsBreakoutSignals {
     pub upper: Vec<f64>,
     pub lower: Vec<f64>,
     pub first_valid: usize,
+}
+
+#[cfg(feature = "cuda")]
+pub struct MkcsDonchianSweepsDevice {
+    pub upper: MkcsPeriodSweepDevice,
+    pub lower: MkcsPeriodSweepDevice,
+}
+
+struct MkcsIndicatorIds {
+    stddev_period_key: String,
+    stddev_output: String,
+    donchian_period_key: String,
+    donchian_upper_output: String,
+    donchian_lower_output: String,
 }
 
 #[cfg(feature = "cuda")]
@@ -318,6 +333,31 @@ fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
     ))
 }
 
+fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
+    static IDS: OnceLock<Result<MkcsIndicatorIds, String>> = OnceLock::new();
+
+    IDS.get_or_init(|| {
+        Ok(MkcsIndicatorIds {
+            stddev_period_key: resolve_param_key("stddev", &["period", "length", "timeperiod"])?,
+            stddev_output: resolve_output_id("stddev", &["value", "stddev", "stdev"])?,
+            donchian_period_key: resolve_param_key(
+                "donchian",
+                &["period", "length", "timeperiod"],
+            )?,
+            donchian_upper_output: resolve_output_id(
+                "donchian",
+                &["upper_band", "upperband", "upper", "up", "value"],
+            )?,
+            donchian_lower_output: resolve_output_id(
+                "donchian",
+                &["lower_band", "lowerband", "lower", "down"],
+            )?,
+        })
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
 #[cfg(feature = "cuda")]
 fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
@@ -340,19 +380,21 @@ fn compute_indicator_period_sweep_cuda_host_rows(
     let rows = usize::from(((end - start) / step) + 1);
     let cols = prepared_inputs.len();
     let mut row_major: Vec<f32> = Vec::with_capacity(rows.saturating_mul(cols));
+    let mut params: Vec<IndicatorParamKV> = Vec::with_capacity(base_params.len() + 1);
+    params.extend_from_slice(base_params);
+    let period_slot = params.len();
+    params.push(IndicatorParamKV {
+        key: period_key.to_string(),
+        value: IndicatorParamValue::Int(i64::from(start)),
+    });
 
     for period in (start..=end).step_by(usize::from(step)) {
-        let mut params: Vec<IndicatorParamKV> = Vec::with_capacity(base_params.len() + 1);
-        params.extend_from_slice(base_params);
-        params.push(IndicatorParamKV {
-            key: period_key.to_string(),
-            value: IndicatorParamValue::Int(i64::from(period)),
-        });
+        params[period_slot].value = IndicatorParamValue::Int(i64::from(period));
         let out = compute_dynamic_indicator_cuda_with_inputs(
             prepared_inputs,
             indicator_id,
             Some(output_id),
-            params.as_slice(),
+            &params,
             Kernel::Auto,
             vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
         )
@@ -367,10 +409,30 @@ fn compute_indicator_period_sweep_cuda_host_rows(
         row_major.append(&mut row);
     }
 
+    mkcs_period_sweep_device_from_host_rows(
+        prepared_inputs,
+        row_major.as_slice(),
+        rows,
+        start,
+        end,
+        step,
+    )
+}
+
+#[cfg(feature = "cuda")]
+fn mkcs_period_sweep_device_from_host_rows(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    row_major: &[f32],
+    rows: usize,
+    start: u16,
+    end: u16,
+    step: u16,
+) -> Result<MkcsPeriodSweepDevice, String> {
+    let cols = prepared_inputs.len();
     let matrix = MkcsDeviceMatrix::from_raw(
         prepared_inputs
             .runtime()
-            .upload_f32(row_major.as_slice())
+            .upload_f32(row_major)
             .map_err(|e| e.to_string())?,
         rows,
         cols,
@@ -391,18 +453,97 @@ pub fn compute_mkcs_stddev_sweep_cuda_device(
     period_end: u16,
     period_step: u16,
 ) -> Result<MkcsPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("stddev", &["period", "length", "timeperiod"])?;
-    let output_id = resolve_output_id("stddev", &["value", "stddev", "stdev"])?;
+    let ids = mkcs_indicator_ids()?;
     compute_indicator_period_sweep_cuda_host_rows(
         prepared_inputs,
         "stddev",
-        output_id.as_str(),
-        period_key.as_str(),
+        ids.stddev_output.as_str(),
+        ids.stddev_period_key.as_str(),
         period_start,
         period_end,
         period_step,
         &[],
     )
+}
+
+#[cfg(feature = "cuda")]
+pub fn compute_mkcs_donchian_sweeps_cuda_device(
+    prepared_inputs: &PreparedCudaIndicatorInputs,
+    period_start: u16,
+    period_end: u16,
+    period_step: u16,
+) -> Result<MkcsDonchianSweepsDevice, String> {
+    let ids = mkcs_indicator_ids()?;
+    let start = period_start.max(1);
+    let end = period_end.max(start);
+    let step = period_step.max(1);
+    let rows = usize::from(((end - start) / step) + 1);
+    let cols = prepared_inputs.len();
+    let mut upper_row_major: Vec<f32> = Vec::with_capacity(rows.saturating_mul(cols));
+    let mut lower_row_major: Vec<f32> = Vec::with_capacity(rows.saturating_mul(cols));
+    let mut params = vec![IndicatorParamKV {
+        key: ids.donchian_period_key.clone(),
+        value: IndicatorParamValue::Int(i64::from(start)),
+    }];
+
+    for period in (start..=end).step_by(usize::from(step)) {
+        params[0].value = IndicatorParamValue::Int(i64::from(period));
+
+        let upper_out = compute_dynamic_indicator_cuda_with_inputs(
+            prepared_inputs,
+            "donchian",
+            Some(ids.donchian_upper_output.as_str()),
+            &params,
+            Kernel::Auto,
+            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut upper_row = cuda_series_to_host_f32(upper_out)?;
+        if upper_row.len() != cols {
+            return Err(format!(
+                "MKCS CUDA host sweep column mismatch for indicator 'donchian' upper period={period}: expected {cols}, got {}",
+                upper_row.len()
+            ));
+        }
+        upper_row_major.append(&mut upper_row);
+
+        let lower_out = compute_dynamic_indicator_cuda_with_inputs(
+            prepared_inputs,
+            "donchian",
+            Some(ids.donchian_lower_output.as_str()),
+            &params,
+            Kernel::Auto,
+            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut lower_row = cuda_series_to_host_f32(lower_out)?;
+        if lower_row.len() != cols {
+            return Err(format!(
+                "MKCS CUDA host sweep column mismatch for indicator 'donchian' lower period={period}: expected {cols}, got {}",
+                lower_row.len()
+            ));
+        }
+        lower_row_major.append(&mut lower_row);
+    }
+
+    Ok(MkcsDonchianSweepsDevice {
+        upper: mkcs_period_sweep_device_from_host_rows(
+            prepared_inputs,
+            upper_row_major.as_slice(),
+            rows,
+            start,
+            end,
+            step,
+        )?,
+        lower: mkcs_period_sweep_device_from_host_rows(
+            prepared_inputs,
+            lower_row_major.as_slice(),
+            rows,
+            start,
+            end,
+            step,
+        )?,
+    })
 }
 
 #[cfg(feature = "cuda")]
@@ -413,13 +554,22 @@ pub fn compute_mkcs_donchian_output_sweep_cuda_device(
     period_end: u16,
     period_step: u16,
 ) -> Result<MkcsPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("donchian", &["period", "length", "timeperiod"])?;
-    let output_id = resolve_output_id("donchian", output_preferred_ids)?;
+    let ids = mkcs_indicator_ids()?;
+    let output_id = if output_preferred_ids.iter().any(|id| {
+        matches!(
+            id.to_ascii_lowercase().as_str(),
+            "lower_band" | "lowerband" | "lower" | "down"
+        )
+    }) {
+        ids.donchian_lower_output.as_str()
+    } else {
+        ids.donchian_upper_output.as_str()
+    };
     compute_indicator_period_sweep_cuda_host_rows(
         prepared_inputs,
         "donchian",
-        output_id.as_str(),
-        period_key.as_str(),
+        output_id,
+        ids.donchian_period_key.as_str(),
         period_start,
         period_end,
         period_step,
@@ -485,18 +635,17 @@ pub fn compute_mkcs_compression_signals(
     stddev_period: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<MkcsCompressionSignals, String> {
-    let period_key = resolve_param_key("stddev", &["period", "length", "timeperiod"])?;
+    let ids = mkcs_indicator_ids()?;
     let params = vec![IndicatorParamKV {
-        key: period_key,
+        key: ids.stddev_period_key.clone(),
         value: IndicatorParamValue::Int(i64::from(stddev_period)),
     }];
-    let output_id = resolve_output_id("stddev", &["value", "stddev", "stdev"])?;
     let stddev = compute_indicator_f64(
         candles,
         ma_source,
         backend,
         "stddev",
-        output_id.as_str(),
+        ids.stddev_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -516,20 +665,17 @@ pub fn compute_mkcs_breakout_signals(
     breakout_lookback: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<MkcsBreakoutSignals, String> {
-    let period_key = resolve_param_key("donchian", &["period", "length", "timeperiod"])?;
+    let ids = mkcs_indicator_ids()?;
     let params = vec![IndicatorParamKV {
-        key: period_key,
+        key: ids.donchian_period_key.clone(),
         value: IndicatorParamValue::Int(i64::from(breakout_lookback)),
     }];
-    let upper_output = resolve_output_id("donchian", &["upperband", "upper", "value"])?;
-    let lower_output = resolve_output_id("donchian", &["lowerband", "lower"])?;
-
     let upper = compute_indicator_f64(
         candles,
         ma_source,
         backend,
         "donchian",
-        upper_output.as_str(),
+        ids.donchian_upper_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -539,7 +685,7 @@ pub fn compute_mkcs_breakout_signals(
         ma_source,
         backend,
         "donchian",
-        lower_output.as_str(),
+        ids.donchian_lower_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -603,6 +749,9 @@ pub fn build_mkcs_desired_positions(
     if start_t >= n {
         return desired;
     }
+    if compression.stddev.len() != n || breakout.upper.len() != n || breakout.lower.len() != n {
+        return desired;
+    }
 
     let trade_offset = if strategy.trade_on_next_bar {
         1usize
@@ -615,12 +764,12 @@ pub fn build_mkcs_desired_positions(
         let sig_t = t.saturating_sub(trade_offset);
         let prev_t = sig_t.saturating_sub(1);
 
-        let close_now = close.get(sig_t).copied().unwrap_or(f64::NAN);
-        let close_prev = close.get(prev_t).copied().unwrap_or(f64::NAN);
-        let stddev_prev = compression.stddev.get(prev_t).copied().unwrap_or(f64::NAN);
-        let stddev_now = compression.stddev.get(sig_t).copied().unwrap_or(f64::NAN);
-        let upper_prev = breakout.upper.get(prev_t).copied().unwrap_or(f64::NAN);
-        let lower_prev = breakout.lower.get(prev_t).copied().unwrap_or(f64::NAN);
+        let close_now = close[sig_t];
+        let close_prev = close[prev_t];
+        let stddev_prev = compression.stddev[prev_t];
+        let stddev_now = compression.stddev[sig_t];
+        let upper_prev = breakout.upper[prev_t];
+        let lower_prev = breakout.lower[prev_t];
 
         let compressed_prev = {
             let ratio = stddev_ratio(stddev_prev, close_prev);

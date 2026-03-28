@@ -41,6 +41,11 @@ const errorDetail = computed(() => {
 
 <style scoped>
 .runtimeBanner {
+  --runtime-accent: var(--accent);
+  --runtime-accent-soft: var(--accent-soft);
+  --runtime-border: color-mix(in oklab, var(--runtime-accent) 42%, var(--border));
+  --runtime-surface: color-mix(in oklab, var(--surface-sticky) 94%, var(--panel-footer));
+  --runtime-text: var(--text);
   position: fixed;
   top: 10px;
   left: 10px;
@@ -48,16 +53,18 @@ const errorDetail = computed(() => {
   border-radius: 10px;
   padding: 6px 10px;
   max-width: min(56ch, calc(100vw - 22px));
-  border: 1px solid rgba(56, 189, 248, 0.42);
-  background: rgba(15, 23, 42, 0.92);
-  color: #e2e8f0;
-  box-shadow: 0 8px 20px rgba(2, 6, 23, 0.35);
+  border: 1px solid var(--runtime-border);
+  background: var(--runtime-surface);
+  color: var(--runtime-text);
+  box-shadow: var(--shadow-focus);
   backdrop-filter: blur(8px);
 }
 
 .runtimeBanner.error {
-  border-color: rgba(244, 63, 94, 0.52);
-  background: rgba(76, 5, 25, 0.92);
+  --runtime-accent: var(--danger);
+  --runtime-accent-soft: var(--danger-soft);
+  --runtime-border: color-mix(in oklab, var(--runtime-accent) 48%, var(--border));
+  --runtime-surface: color-mix(in oklab, var(--danger-soft) 54%, var(--surface-sticky));
 }
 
 .runtimeLabel {

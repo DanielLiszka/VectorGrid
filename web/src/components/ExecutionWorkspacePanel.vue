@@ -7,6 +7,7 @@ import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import ConfirmationDialog from './ConfirmationDialog.vue'
+import ContextHelpTip from './ContextHelpTip.vue'
 
 const execStore = useExecutionStore()
 const workflowStore = useWorkflowStore()
@@ -265,9 +266,17 @@ watch(visible, (isVisible) => {
       </div>
 
       <section class="pane panelProminentPane">
-        <div class="safetyNotice">
-          <div class="safetyTitle">Execution safety</div>
-          <div class="safetyBody">{{ safetyModeLabel }}</div>
+        <div class="paneTopBar">
+          <div class="safetyNotice">
+            <div class="safetyTitle">Execution safety</div>
+            <div class="safetyBody">{{ safetyModeLabel }}</div>
+          </div>
+          <ContextHelpTip
+            title="Execution modes"
+            summary="Keep paper and live actions grouped here; high-stakes broker-facing actions still require confirmation."
+            detail="Use this surface to review account inputs, source selection, and automation state together before starting anything live. The confirm step protects Start live, Start runner, and Clear keys without removing access to the underlying execution capabilities."
+            aria-label="Execution mode help"
+          />
         </div>
 
         <div class="grid">
@@ -561,6 +570,14 @@ watch(visible, (isVisible) => {
   display: grid;
   justify-items: end;
   gap: 0.35rem;
+}
+
+.paneTopBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.7rem;
 }
 
 .modeBadge {

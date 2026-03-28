@@ -2,7 +2,14 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStorage } from '@vueuse/core'
-import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui'
+import {
+  PopoverContent,
+  PopoverPortal,
+  PopoverRoot,
+  PopoverTrigger,
+  ToolbarButton,
+  ToolbarRoot,
+} from 'reka-ui'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const store = useWorkflowStore()
@@ -33,8 +40,6 @@ const stepItems = [
   { key: 'finalize', label: '5' },
 ] as const
 
-type SwitchItem = { key: string }
-
 const subtitle = computed(() => workflowSubtitle.value || '—')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const currentWorkflow = computed(() => String(workflow.value || '').trim() || 'data')
@@ -62,54 +67,6 @@ function clickWorkflowStep(key: string): void {
 function switchItemId(group: string, key: string): string {
   return `workflow_switch_${group}_${key}`
 }
-
-function focusSelector(selector: string): void {
-  const element = document.querySelector<HTMLElement>(selector)
-  element?.focus()
-}
-
-function resolveFocusedKey(event: KeyboardEvent): string | null {
-  const target = event.target instanceof Element ? (event.target.closest('[data-switch-key]') as HTMLElement | null) : null
-  return String(target?.dataset.switchKey || '').trim() || null
-}
-
-function moveGroupFocus(
-  event: KeyboardEvent,
-  items: readonly SwitchItem[],
-  currentKey: string,
-  selectValue: (key: string) => void,
-  selectorForKey: (key: string) => string,
-): void {
-  if (items.length <= 1) return
-  const originKey = resolveFocusedKey(event) ?? currentKey
-  const currentIndex = items.findIndex((item) => item.key === originKey)
-  if (currentIndex < 0) return
-
-  let nextIndex = currentIndex
-  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length
-  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length
-  else if (event.key === 'Home') nextIndex = 0
-  else if (event.key === 'End') nextIndex = items.length - 1
-  else return
-
-  event.preventDefault()
-  const nextKey = items[nextIndex]?.key
-  if (!nextKey) return
-  selectValue(nextKey)
-  focusSelector(selectorForKey(nextKey))
-}
-
-function onWorkspaceKeydown(event: KeyboardEvent): void {
-  moveGroupFocus(event, wsItems, currentWorkspace.value, clickWorkspace, (key) => `[data-switch-group="workspace"] [data-switch-key="${key}"]`)
-}
-
-function onWorkflowKeydown(event: KeyboardEvent): void {
-  moveGroupFocus(event, wfItems, currentWorkflow.value, clickWorkflow, (key) => `[data-switch-group="workflow"] [data-switch-key="${key}"]`)
-}
-
-function onStepKeydown(event: KeyboardEvent): void {
-  moveGroupFocus(event, stepItems, currentWorkflowStep.value, clickWorkflowStep, (key) => `[data-switch-group="step"] [data-switch-key="${key}"]`)
-}
 </script>
 
 <template>
@@ -130,58 +87,61 @@ function onStepKeydown(event: KeyboardEvent): void {
           <div class="subtitle mono">{{ subtitle }}</div>
           <nav class="groupBlock" aria-label="Workspace quick switch">
             <div class="groupLabel">Workspace</div>
-            <div class="group" data-switch-group="workspace" @keydown="onWorkspaceKeydown">
-              <button
+            <ToolbarRoot class="group" data-switch-group="workspace" as="div" aria-label="Workspace choices" :loop="true">
+              <ToolbarButton
                 v-for="item in wsItems"
                 :key="`ws_${item.key}`"
                 :id="switchItemId('workspace', item.key)"
-                type="button"
                 :class="{ active: currentWorkspace === item.key }"
                 :aria-current="currentWorkspace === item.key ? 'page' : undefined"
-                :tabindex="currentWorkspace === item.key ? 0 : -1"
+                :data-active="currentWorkspace === item.key ? '' : undefined"
                 :data-switch-key="item.key"
+                :data-workspace="item.key"
                 @click="clickWorkspace(item.key)"
+                @focus="clickWorkspace(item.key)"
               >
                 {{ item.label }}
-              </button>
-            </div>
+              </ToolbarButton>
+            </ToolbarRoot>
           </nav>
           <nav class="groupBlock" aria-label="Workflow quick switch">
             <div class="groupLabel">Workflow</div>
-            <div class="group" data-switch-group="workflow" @keydown="onWorkflowKeydown">
-              <button
+            <ToolbarRoot class="group" data-switch-group="workflow" as="div" aria-label="Workflow choices" :loop="true">
+              <ToolbarButton
                 v-for="item in wfItems"
                 :key="`wf_${item.key}`"
                 :id="switchItemId('workflow', item.key)"
-                type="button"
                 :class="{ active: currentWorkflow === item.key }"
                 :aria-current="currentWorkflow === item.key ? 'page' : undefined"
-                :tabindex="currentWorkflow === item.key ? 0 : -1"
+                :data-active="currentWorkflow === item.key ? '' : undefined"
                 :data-switch-key="item.key"
+                :data-workflow="item.key"
                 @click="clickWorkflow(item.key)"
+                @focus="clickWorkflow(item.key)"
               >
                 {{ item.label }}
-              </button>
-            </div>
+              </ToolbarButton>
+            </ToolbarRoot>
           </nav>
           <nav class="groupBlock" aria-label="Workflow step quick switch">
             <div class="groupLabel">Step</div>
-            <div class="group" data-switch-group="step" @keydown="onStepKeydown">
-              <button
+            <ToolbarRoot class="group" data-switch-group="step" as="div" aria-label="Workflow step choices" :loop="true">
+              <ToolbarButton
                 v-for="item in stepItems"
                 :key="`step_${item.key}`"
                 :id="switchItemId('step', item.key)"
-                type="button"
                 class="step"
                 :class="{ active: currentWorkflowStep === item.key }"
                 :aria-current="currentWorkflowStep === item.key ? 'step' : undefined"
-                :tabindex="currentWorkflowStep === item.key ? 0 : -1"
+                :data-active="currentWorkflowStep === item.key ? '' : undefined"
                 :data-switch-key="item.key"
+                :data-workflow-step="item.key"
                 @click="clickWorkflowStep(item.key)"
+                @focus="clickWorkflowStep(item.key)"
               >
                 {{ item.label }}
-              </button>
-            </div>
+              </ToolbarButton>
+            </ToolbarRoot>
           </nav>
         </PopoverContent>
       </PopoverPortal>
@@ -191,6 +151,18 @@ function onStepKeydown(event: KeyboardEvent): void {
 
 <style scoped>
 .workflowSwitchRoot {
+  --switch-accent: var(--accent);
+  --switch-accent-ink: var(--selection-text);
+  --switch-accent-soft: var(--selection-fill);
+  --switch-border: color-mix(in oklab, var(--switch-accent) 40%, var(--border));
+  --switch-surface: color-mix(in oklab, var(--surface-sticky) 94%, var(--panel-footer));
+  --switch-surface-strong: linear-gradient(
+    150deg,
+    color-mix(in oklab, var(--surface-focus) 92%, var(--panel-footer)),
+    color-mix(in oklab, var(--selection-fill) 34%, var(--surface-sticky))
+  );
+  --switch-text: var(--text);
+  --switch-muted: var(--muted);
   position: fixed;
   top: 84px;
   left: 12px;
@@ -203,30 +175,33 @@ function onStepKeydown(event: KeyboardEvent): void {
 }
 
 .workflowSwitchToggle {
-  border: 1px solid rgba(129, 140, 248, 0.5);
+  border: 1px solid var(--switch-border);
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.88);
-  color: #e0e7ff;
+  background: var(--switch-surface);
+  color: var(--switch-text);
   padding: 6px 11px;
   font-size: 0.76rem;
   font-weight: 650;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.35);
+  box-shadow: var(--shadow-inline);
+  backdrop-filter: blur(10px);
 }
 
 .workflowSwitch {
   z-index: 4040;
   width: min(880px, calc(100vw - 24px));
-  border: 1px solid rgba(99, 102, 241, 0.4);
+  border: 1px solid var(--switch-border);
   border-radius: 12px;
-  background: linear-gradient(150deg, rgba(15, 23, 42, 0.95), rgba(30, 27, 75, 0.92));
-  color: #e2e8f0;
+  background: var(--switch-surface-strong);
+  color: var(--switch-text);
   padding: 8px;
   display: grid;
   gap: 6px;
   pointer-events: auto;
   transform-origin: top left;
+  box-shadow: var(--shadow-focus);
+  backdrop-filter: blur(12px);
 }
 
 .workflowSwitch[data-state='open'] {
@@ -263,19 +238,19 @@ function onStepKeydown(event: KeyboardEvent): void {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #a5b4fc;
+  color: color-mix(in oklab, var(--switch-accent) 74%, var(--switch-text));
 }
 
 .state {
   font-size: 0.72rem;
-  color: #c4b5fd;
+  color: color-mix(in oklab, var(--switch-accent-ink) 78%, var(--switch-text));
 }
 
 .closeBtn {
-  border: 1px solid rgba(148, 163, 184, 0.34);
+  border: 1px solid color-mix(in oklab, var(--switch-border) 88%, transparent);
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.7);
-  color: #e2e8f0;
+  background: color-mix(in oklab, var(--surface-inline) 94%, var(--panel));
+  color: var(--switch-text);
   font-size: 0.7rem;
   line-height: 1;
   padding: 4px 8px;
@@ -283,7 +258,7 @@ function onStepKeydown(event: KeyboardEvent): void {
 
 .subtitle {
   font-size: 0.72rem;
-  color: #cbd5e1;
+  color: var(--switch-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -299,7 +274,7 @@ function onStepKeydown(event: KeyboardEvent): void {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #c4b5fd;
+  color: color-mix(in oklab, var(--switch-accent-ink) 78%, var(--switch-text));
 }
 
 .group {
@@ -309,12 +284,12 @@ function onStepKeydown(event: KeyboardEvent): void {
 }
 
 .group button {
-  border: 1px solid rgba(129, 140, 248, 0.38);
+  border: 1px solid color-mix(in oklab, var(--switch-accent) 34%, var(--border));
   border-radius: 8px;
   padding: 3px 8px;
   font-size: 0.72rem;
-  background: rgba(30, 27, 75, 0.82);
-  color: #e0e7ff;
+  background: color-mix(in oklab, var(--switch-accent-soft) 48%, var(--surface-inline));
+  color: var(--switch-text);
 }
 
 .group button.step {
@@ -322,8 +297,9 @@ function onStepKeydown(event: KeyboardEvent): void {
 }
 
 .group button.active {
-  border-color: rgba(196, 181, 253, 0.9);
-  background: rgba(79, 70, 229, 0.35);
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 82%, var(--switch-accent));
+  background: color-mix(in oklab, var(--selection-fill-strong) 84%, var(--surface-working));
+  box-shadow: inset 3px 0 0 var(--selection-rail);
 }
 
 .mono {

@@ -722,6 +722,7 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
     bench_cpu_profile("kqsr", 100_000, make_kqsr_candidates(32));
     bench_cpu_profile("carm", 100_000, make_carm_candidates(32));
     bench_cpu_profile("cdmc", 100_000, make_cdmc_candidates(32));
+    bench_cpu_profile("mkcs", 100_000, make_mkcs_candidates(32));
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -987,6 +988,7 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
     bench_profile("kvdf", 100_000, make_kvdf_candidates(64));
     bench_profile("carm", 100_000, make_carm_candidates(32));
     bench_profile("cdmc", 100_000, make_cdmc_candidates(32));
+    bench_profile("mkcs", 100_000, make_mkcs_candidates(32));
 }
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]

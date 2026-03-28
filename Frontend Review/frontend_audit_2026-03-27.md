@@ -65,9 +65,20 @@ The findings below capture the original audit snapshot. The codebase has moved m
 - the task center now has an explicit close action, Escape dismissal, and an internal keyboard loop in addition to focus handoff and restoration
 - shared typography, spacing, and intent-ink tokens now live in `app.css`, and a repo-wide CSS variable audit found no undefined token references in `web/src/*.vue` or `web/src/*.css`
 - a canonical repo-local design-system spec and target-comp set now exist under `Frontend Review/`, so Phase 10 is no longer blocked on Figma auth
+- a first-pass depth/elevation system now exists in `app.css`, including explicit surface-depth, selection, motion, and overflow-shadow utilities
+- the shell, Top Results, Run Library, Task Center, and Command Palette now consume that depth system to improve hierarchy without adding new panels or faux-3D chrome
+- a repo-local frontend functional-coverage matrix now documents current backend-backed capability exposure, classifies routine/advanced/high-stakes areas, and identifies the most likely safe consolidation targets
+- floating overlays and context surfaces now use token-only styling across the runtime banner, workflow quick switch, and the dock family rather than hand-tuned raw colors
+- a centralized help-mode preference now exists in Settings with `full`, `concise`, and `off` modes, backed by persistent frontend settings and a shared `ContextHelpTip` primitive built on `reka-ui`
+- the first tooltip/help rollout now covers dense workflow sections in Data, Validation, Meta, and Execution without introducing a second overlay system
+- Data now treats Settings as the canonical home for market-data-root management while still keeping the current folder visible and openable from the workflow surface
+- the validation dock now acts as context plus navigation, while the full validation action surface remains canonical in `ValidationWorkspacePanel.vue`
 - browser-side audits across the major workspace states now show no unlabeled form controls and no heading-level jumps in the rendered main panels
 - the densest Advanced ranking diagnostics now move route-behavior guidance behind disclosure summaries instead of always competing with the primary controls
 - rendered browser checks now confirm shared focus-visible treatment on both buttons and checkboxes, and confirm the task-center dialog closes on Escape
+- the command palette now uses `fuse.js` ranking and grouped relevance instead of plain substring matching, and dev-only bundle analysis is available through `npm run analyze:bundle`
+- the workflow quick switch now uses `reka-ui` toolbar / roving-focus primitives instead of custom group-level keyboard glue
+- a keyboard-only regression pass was rerun after the latest shell/palette refinements; workspace tabs, workflow-step tabs, command-palette navigation, and Escape focus restoration all passed in Playwright interactive
 
 The remaining work is now optional follow-up rather than checklist debt: bundle-size reduction, any later Figma mirroring once connector access is restored, and future visual refinement beyond the current implementation target.
 
@@ -573,77 +584,89 @@ These items are intentionally outside the completed remediation checklist above.
 
 ### Tooltip / Guided Help System
 
-- [ ] Introduce a restrained depth model only where it improves comprehension; do not force additional raised surfaces or faux-3D styling where the workflow does not benefit.
-- [ ] Make the depth model token-driven and explicit rather than only pattern-driven.
-- [ ] Add first-class elevation/depth utilities mapped to the four-layer model:
-  - [ ] sunken
-  - [ ] default
-  - [ ] raised
-  - [ ] overlay
-- [ ] Add shared overflow-shadow utilities for dense scrollers and horizontally clipped tables.
-- [ ] Migrate shared overlays and dialogs away from raw hardcoded colors toward token-only styling.
-- [ ] Add a delayed contextual tooltip/help system for dense controls and advanced parameters.
-- [ ] Default delayed help to a long-hover threshold in the `3` to `5` second range so routine hovering does not create noise.
-- [ ] Distinguish short explanatory tooltips from longer "how this works" tutorial callouts.
-- [ ] Add a global user-facing control to disable all non-essential tooltips/tutorial help at runtime.
-- [ ] Store the global tooltip/tutorial preference in frontend settings so it persists across sessions.
-- [ ] Ensure any global tooltip-disable path can be honored centrally rather than per-component.
-- [ ] Prefer `reka-ui` tooltip/hover-card primitives for accessibility and consistent delay behavior instead of inventing a second overlay system.
+- [x] Introduce a restrained depth model only where it improves comprehension; do not force additional raised surfaces or faux-3D styling where the workflow does not benefit.
+- [x] Make the depth model token-driven and explicit rather than only pattern-driven.
+- [x] Add first-class elevation/depth utilities mapped to the four-layer model:
+  - [x] sunken
+  - [x] default
+  - [x] raised
+  - [x] overlay
+- [x] Add shared overflow-shadow utilities for dense scrollers and horizontally clipped tables.
+- [x] Migrate shared overlays and dialogs away from raw hardcoded colors toward token-only styling.
+- [x] Add a delayed contextual tooltip/help system for dense controls and advanced parameters.
+- [x] Default delayed help to a long-hover threshold in the `3` to `5` second range so routine hovering does not create noise.
+- [x] Distinguish short explanatory tooltips from longer "how this works" tutorial callouts.
+- [x] Add a global user-facing control to disable all non-essential tooltips/tutorial help at runtime.
+- [x] Store the global tooltip/tutorial preference in frontend settings so it persists across sessions.
+- [x] Ensure any global tooltip-disable path can be honored centrally rather than per-component.
+- [x] Prefer `reka-ui` tooltip/hover-card primitives for accessibility and consistent delay behavior instead of inventing a second overlay system.
 
 ### Package Adoption Candidates
 
-- [ ] Expand `reka-ui` usage across tabs, tooltips, comboboxes, roving-focus toolbars, and other headless accessibility primitives already aligned with the current custom shell.
-- [ ] Evaluate `@tanstack/vue-table` as a high-priority candidate for Top Results, Validation, Meta, and Run Library surfaces that need richer sorting, filtering, column control, and selection state.
-- [ ] If `@tanstack/vue-table` is adopted, keep `@tanstack/vue-virtual` and integrate the two rather than replacing virtualization.
-- [ ] Evaluate `ag-grid-vue3` only as an alternative to `@tanstack/vue-table` if the product needs a full spreadsheet-grade datagrid rather than a headless table engine.
-- [ ] Evaluate `vee-validate` with `@vee-validate/zod` for Strategy, Advanced, Data, and Validation forms to improve schema-driven validation and field-state UX.
-- [ ] Evaluate `notivue` as the default async notification system for run lifecycle, save/export status, validation completion, and error reporting.
-- [ ] Keep `vue-sonner` as the lighter fallback if `notivue` feels too feature-heavy for the app's notification needs.
-- [ ] Evaluate `splitpanes` for resizable desktop controls/results layouts where users benefit from trading table width against chart or form width.
-- [ ] Evaluate `vue-echarts` plus `echarts` only as a complementary stack for non-price analytical charts such as heatmaps, Pareto/frontier views, and richer meta-analysis visuals while keeping `lightweight-charts` for its current price/timeline role.
-- [ ] Evaluate a single lightweight tree-shakable icon system if compact action/status affordances need better scan quality than the current text-glyph approach.
+- [x] Expand `reka-ui` usage across tabs, tooltips, comboboxes, roving-focus toolbars, and other headless accessibility primitives already aligned with the current custom shell.
+- [x] Evaluate `@tanstack/vue-table` as a high-priority candidate for Top Results, Validation, Meta, and Run Library surfaces that need richer sorting, filtering, column control, and selection state.
+- [x] If `@tanstack/vue-table` is adopted, keep `@tanstack/vue-virtual` and integrate the two rather than replacing virtualization.
+- [x] Evaluate `ag-grid-vue3` only as an alternative to `@tanstack/vue-table` if the product needs a full spreadsheet-grade datagrid rather than a headless table engine.
+- [x] Evaluate `vee-validate` with `@vee-validate/zod` for Strategy, Advanced, Data, and Validation forms to improve schema-driven validation and field-state UX.
+- [x] Evaluate `fuse.js` for command-palette search, run-library search, and future searchable settings/help surfaces so command discovery stays fast without requiring exact labels.
+- [x] Evaluate `notivue` as the default async notification system for run lifecycle, save/export status, validation completion, and error reporting.
+- [x] Keep `vue-sonner` as the lighter fallback if `notivue` feels too feature-heavy for the app's notification needs.
+- [x] Evaluate `splitpanes` for resizable desktop controls/results layouts where users benefit from trading table width against chart or form width.
+- [x] Evaluate `vue-echarts` plus `echarts` only as a complementary stack for non-price analytical charts such as heatmaps, Pareto/frontier views, and richer meta-analysis visuals while keeping `lightweight-charts` for its current price/timeline role.
+- [x] Evaluate a single lightweight tree-shakable icon system if compact action/status affordances need better scan quality than the current text-glyph approach.
+- [x] Prefer `lucide-vue-next` or an equivalent single tree-shakable icon set if an icon system is adopted; avoid multiple icon packs.
+- [x] Evaluate restrained motion helpers such as `@vueuse/motion` or `@formkit/auto-animate` only for targeted overlay, disclosure, and small-list transitions where they improve hierarchy without affecting dense tables or reduced-motion users.
+- [x] Add dev-only bundle-discipline tooling such as `rollup-plugin-visualizer` before any major package adoption so bundle-size regressions are measurable rather than anecdotal.
+
+See `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the repo-grounded adopt / defer / reject decisions behind these checks.
 
 ### Keyboard-First Regression Gates
 
-- [ ] Keep an explicit keyboard-first acceptance checklist for primary interaction surfaces:
-  - [ ] shell workspace tabs
-  - [ ] shell workflow-step tabs
-  - [ ] Top Results table
-  - [ ] Validation results path
-  - [ ] Run Library browsing
-- [ ] Re-run keyboard-only completion of the core workflow after any major shell/table refactor.
+- [x] Keep an explicit keyboard-first acceptance checklist for primary interaction surfaces:
+  - [x] shell workspace tabs
+  - [x] shell workflow-step tabs
+  - [x] Top Results table
+  - [x] Validation results path
+  - [x] Run Library browsing
+- [x] Re-run keyboard-only completion of the core workflow after any major shell/table refactor.
 
 ### Frontend Functional Coverage / Backend Exposure Audit
 
-- [ ] Add an explicit frontend functional-coverage guardrail: UX cleanup may consolidate controls, but may not silently remove backend-backed functionality from user reach.
-- [ ] Build a backend-functionality exposure matrix for the current frontend.
-- [ ] Inventory user-meaningful backend-backed capabilities across:
-  - [ ] data import / cache / repair
-  - [ ] optimization start / cancel / save / export
-  - [ ] validation run / export / review
-  - [ ] analysis / drilldown / shortlist review
-  - [ ] artifact load / reveal / report / rerun
-  - [ ] execution connection / start / stop / review
-- [ ] For each capability, record:
-  - [ ] current frontend location
-  - [ ] primary entry point
-  - [ ] secondary or redundant entry points
-  - [ ] whether it is routine, advanced, or high-stakes
-- [ ] Identify truly redundant controls/options that can be consolidated without reducing capability exposure.
-- [ ] Document intentional consolidations so they are distinguishable from accidental removals.
-- [ ] After any major shell/page/control-surface refactor, re-run the exposure audit and verify every inventoried backend-backed capability still has at least one clear supported frontend path.
-- [ ] Treat loss of frontend access to an existing backend-backed capability as a regression unless explicitly approved.
+- [x] Add an explicit frontend functional-coverage guardrail: UX cleanup may consolidate controls, but may not silently remove backend-backed functionality from user reach.
+- [x] Build a backend-functionality exposure matrix for the current frontend.
+- [x] Inventory user-meaningful backend-backed capabilities across:
+  - [x] data import / cache / repair
+  - [x] optimization start / cancel / save / export
+  - [x] validation run / export / review
+  - [x] analysis / drilldown / shortlist review
+  - [x] artifact load / reveal / report / rerun
+  - [x] execution connection / start / stop / review
+- [x] For each capability, record:
+  - [x] current frontend location
+  - [x] primary entry point
+  - [x] secondary or redundant entry points
+  - [x] whether it is routine, advanced, or high-stakes
+- [x] Identify truly redundant controls/options that can be consolidated without reducing capability exposure.
+- [x] Document intentional consolidations so they are distinguishable from accidental removals.
+- [x] After any major shell/page/control-surface refactor, re-run the exposure audit and verify every inventoried backend-backed capability still has at least one clear supported frontend path.
+- [x] Treat loss of frontend access to an existing backend-backed capability as a regression unless explicitly approved.
 
 ### Desktop Productization Track
 
 These are valid product-quality opportunities, but they should remain a separate track from the frontend-only depth pass.
 
-- [ ] Review Tauri capability scoping and document the current window/webview access model.
-- [ ] Review CSP posture in `src-tauri/tauri.conf.json` and tighten it where feasible.
-- [ ] Evaluate official Tauri plugins for:
-  - [ ] updater
-  - [ ] notifications
-  - [ ] tray / menu
-  - [ ] window-state
-- [ ] Decide which long-running workflow events should surface as OS-native notifications rather than only in-app status.
-- [ ] Decide whether desktop-native quick actions belong in a tray/menu surface for cancel/open/reveal/update tasks.
+- [x] Evaluate `@tauri-apps/plugin-window-state` as the highest-priority desktop-native UX upgrade so the main workspace restores size, position, and maximized state across launches.
+- [x] If window-state is adopted, restore the window before showing it so launch does not flash the default geometry before snapping into the saved layout.
+- [x] Evaluate desktop-native notifications for long-running workflow completion/failure where in-app toasts are insufficient because the operator may be working outside the foreground window.
+- [x] Decide which optimization, validation, export, and execution lifecycle events should surface as OS-native notifications rather than only in-app status.
+- [x] Evaluate a first-class diagnostics/logging path for frontend + backend runtime events so failures are easier to understand inside the product rather than only through external logs.
+- [x] If logging/diagnostics is added, expose it through a clear in-app diagnostics surface rather than treating log plumbing as invisible infrastructure.
+- [x] Evaluate updater UX only after release/signing workflow is real, with the expectation that it should surface as an intentional in-app update flow rather than an opaque background mechanism.
+
+See `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the current defer / later-scope decisions in this track.
+
+Not added intentionally from the external guide because they are not current UI/UX priorities for this repo:
+
+- Tauri capability scoping / CSP hardening
+- custom titlebar / bespoke window chrome
+- tray/menu investment without a clear background-run product need

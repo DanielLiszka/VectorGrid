@@ -477,6 +477,13 @@ function toastClass(toast: TaskToastItem): string {
   display: grid;
   gap: 8px;
   justify-items: end;
+  --task-border: color-mix(in oklab, var(--panel-focus-edge) 76%, var(--border));
+  --task-surface: color-mix(in oklab, var(--surface-focus) 92%, var(--panel));
+  --task-surface-muted: color-mix(in oklab, var(--surface-sunken) 88%, var(--panel));
+  --task-surface-sticky: color-mix(in oklab, var(--surface-sticky) 92%, var(--panel-footer));
+  --task-text: var(--text);
+  --task-muted: var(--muted-strong);
+  --task-muted-soft: var(--muted);
 }
 
 .taskOverlayRoot > * {
@@ -496,20 +503,21 @@ function toastClass(toast: TaskToastItem): string {
   cursor: grab;
   user-select: none;
   touch-action: none;
-  border: 1px solid rgba(2, 132, 199, 0.45);
+  border: 1px solid var(--task-border);
   border-radius: 999px;
   padding: 7px 12px;
-  background: rgba(7, 33, 53, 0.84);
-  color: #e0f2fe;
+  background: color-mix(in oklab, var(--task-surface) 76%, var(--bg));
+  color: var(--task-text);
   font-weight: 600;
   letter-spacing: 0.01em;
   backdrop-filter: blur(10px);
-  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.35);
+  box-shadow: var(--shadow-focus);
   transition:
-    opacity 140ms ease,
-    transform 140ms ease,
-    box-shadow 140ms ease,
-    background-color 140ms ease;
+    opacity var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
 }
 
 .overlayToggle.dragging {
@@ -519,11 +527,11 @@ function toastClass(toast: TaskToastItem): string {
 .overlayToggle.quiet {
   gap: 6px;
   padding: 5px 10px;
-  background: rgba(7, 33, 53, 0.72);
-  border-color: rgba(2, 132, 199, 0.26);
-  color: #cfe8f8;
+  background: color-mix(in oklab, var(--task-surface-muted) 78%, var(--panel));
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 56%, var(--border));
+  color: var(--task-muted);
   opacity: 0.84;
-  box-shadow: 0 8px 18px rgba(2, 6, 23, 0.22);
+  box-shadow: var(--shadow-inline);
 }
 
 .overlayToggle.quiet:hover {
@@ -541,20 +549,22 @@ function toastClass(toast: TaskToastItem): string {
   padding: 1px 6px;
   text-align: center;
   font-size: 0.78rem;
-  background: rgba(56, 189, 248, 0.25);
+  background: color-mix(in oklab, var(--selection-fill-strong) 84%, var(--surface-working));
+  color: var(--selection-text);
 }
 
 .togglePct {
   font-size: 0.78rem;
-  color: #bae6fd;
+  color: var(--selection-text);
 }
 
 .toggleState {
   font-size: 0.7rem;
-  color: #cbd5e1;
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: var(--task-muted);
+  border: 1px solid color-mix(in oklab, var(--border-strong) 74%, transparent);
   border-radius: 999px;
   padding: 1px 6px;
+  background: color-mix(in oklab, var(--surface-inline) 88%, transparent);
 }
 
 .toastStack {
@@ -572,24 +582,28 @@ function toastClass(toast: TaskToastItem): string {
   border-radius: 10px;
   padding: 7px 10px;
   font-size: 0.75rem;
-  border: 1px solid rgba(125, 211, 252, 0.25);
-  background: rgba(15, 23, 42, 0.9);
-  color: #e2e8f0;
+  border: 1px solid color-mix(in oklab, var(--border-strong) 78%, transparent);
+  background: var(--task-surface-sticky);
+  color: var(--task-text);
+  box-shadow: var(--shadow-inline);
 }
 
 .toastCard.success {
-  border-color: rgba(34, 197, 94, 0.35);
-  background: rgba(6, 78, 59, 0.85);
+  border-color: color-mix(in oklab, var(--ok) 42%, var(--border));
+  background: color-mix(in oklab, var(--surface-success) 92%, var(--task-surface-sticky));
+  color: var(--ok-ink);
 }
 
 .toastCard.warn {
-  border-color: rgba(234, 179, 8, 0.4);
-  background: rgba(113, 63, 18, 0.88);
+  border-color: color-mix(in oklab, var(--warning) 42%, var(--border));
+  background: color-mix(in oklab, var(--surface-warning) 92%, var(--task-surface-sticky));
+  color: var(--warning-ink);
 }
 
 .toastCard.error {
-  border-color: rgba(244, 63, 94, 0.4);
-  background: rgba(127, 29, 29, 0.88);
+  border-color: color-mix(in oklab, var(--danger) 42%, var(--border));
+  background: color-mix(in oklab, var(--surface-danger) 92%, var(--task-surface-sticky));
+  color: var(--danger-ink);
 }
 
 .toastBody {
@@ -599,25 +613,29 @@ function toastClass(toast: TaskToastItem): string {
 }
 
 .toastClose {
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  border: 1px solid color-mix(in oklab, var(--border-strong) 72%, transparent);
   border-radius: 6px;
   background: transparent;
-  color: #e2e8f0;
+  color: inherit;
   font-size: 0.7rem;
   padding: 2px 6px;
 }
 
 .taskPanel {
   width: min(460px, calc(100vw - 24px));
-  border: 1px solid rgba(14, 116, 144, 0.4);
+  border: 1px solid var(--task-border);
   border-radius: 16px;
   padding: 10px;
   display: grid;
   gap: 10px;
   background:
-    linear-gradient(145deg, rgba(15, 23, 42, 0.94), rgba(12, 74, 110, 0.82));
-  color: #e2e8f0;
-  box-shadow: 0 20px 45px rgba(2, 6, 23, 0.48);
+    linear-gradient(
+      145deg,
+      color-mix(in oklab, var(--task-surface) 94%, var(--panel-footer)),
+      color-mix(in oklab, var(--surface-working) 88%, var(--task-surface))
+    );
+  color: var(--task-text);
+  box-shadow: var(--shadow-lg);
   max-height: min(72vh, 760px);
   overflow: auto;
 }
@@ -641,7 +659,7 @@ function toastClass(toast: TaskToastItem): string {
 
 .overallTitle {
   font-size: 0.8rem;
-  color: #93c5fd;
+  color: var(--selection-text);
 }
 
 .section {
@@ -653,7 +671,7 @@ function toastClass(toast: TaskToastItem): string {
   font-size: 0.75rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #7dd3fc;
+  color: color-mix(in oklab, var(--accent) 70%, var(--muted-strong));
 }
 
 .panelCloseBtn {
@@ -664,7 +682,7 @@ function toastClass(toast: TaskToastItem): string {
 
 .muted {
   font-size: 0.78rem;
-  color: #94a3b8;
+  color: var(--task-muted-soft);
 }
 
 .taskList {
@@ -673,12 +691,13 @@ function toastClass(toast: TaskToastItem): string {
 }
 
 .taskCard {
-  border: 1px solid rgba(56, 189, 248, 0.2);
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 64%, var(--border));
   border-radius: 12px;
   padding: 8px;
   display: grid;
   gap: 6px;
-  background: rgba(15, 23, 42, 0.6);
+  background: color-mix(in oklab, var(--surface-working) 92%, var(--panel));
+  box-shadow: var(--shadow-inline);
 }
 
 .taskRow {
@@ -695,7 +714,7 @@ function toastClass(toast: TaskToastItem): string {
 .taskName {
   font-weight: 600;
   font-size: 0.81rem;
-  color: #e2e8f0;
+  color: var(--task-text);
 }
 
 .taskStatus {
@@ -709,44 +728,44 @@ function toastClass(toast: TaskToastItem): string {
 }
 
 .taskStatus.running {
-  color: #67e8f9;
-  border-color: rgba(34, 211, 238, 0.35);
-  background: rgba(34, 211, 238, 0.12);
+  color: var(--selection-text);
+  border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
+  background: color-mix(in oklab, var(--selection-fill-strong) 82%, var(--surface-working));
 }
 
 .taskStatus.queued {
-  color: #bfdbfe;
-  border-color: rgba(59, 130, 246, 0.35);
-  background: rgba(30, 64, 175, 0.22);
+  color: var(--task-text);
+  border-color: color-mix(in oklab, var(--accent-hover) 32%, var(--border));
+  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-inline));
 }
 
 .taskStatus.cancelling {
-  color: #fde68a;
-  border-color: rgba(234, 179, 8, 0.35);
-  background: rgba(146, 64, 14, 0.22);
+  color: var(--warning-ink);
+  border-color: color-mix(in oklab, var(--warning) 36%, var(--border));
+  background: var(--surface-warning);
 }
 
 .taskStatus.success {
-  color: #86efac;
-  border-color: rgba(34, 197, 94, 0.35);
-  background: rgba(34, 197, 94, 0.12);
+  color: var(--ok-ink);
+  border-color: color-mix(in oklab, var(--ok) 36%, var(--border));
+  background: var(--surface-success);
 }
 
 .taskStatus.cancelled {
-  color: #fef08a;
-  border-color: rgba(234, 179, 8, 0.35);
-  background: rgba(234, 179, 8, 0.12);
+  color: var(--warning-ink);
+  border-color: color-mix(in oklab, var(--warning) 36%, var(--border));
+  background: color-mix(in oklab, var(--warning-soft) 88%, var(--surface-inline));
 }
 
 .taskStatus.failed {
-  color: #fda4af;
-  border-color: rgba(244, 63, 94, 0.35);
-  background: rgba(244, 63, 94, 0.12);
+  color: var(--danger-ink);
+  border-color: color-mix(in oklab, var(--danger) 36%, var(--border));
+  background: var(--surface-danger);
 }
 
 .taskMeta {
   font-size: 0.76rem;
-  color: #cbd5e1;
+  color: var(--task-muted);
   word-break: break-word;
 }
 
@@ -754,7 +773,7 @@ function toastClass(toast: TaskToastItem): string {
   height: 7px;
   border-radius: 999px;
   overflow: hidden;
-  background: rgba(148, 163, 184, 0.18);
+  background: color-mix(in oklab, var(--surface-sunken) 82%, var(--panel));
 }
 
 .bar.thin {
@@ -764,21 +783,21 @@ function toastClass(toast: TaskToastItem): string {
 .fill {
   height: 100%;
   min-width: 2px;
-  background: linear-gradient(90deg, #22d3ee, #38bdf8, #0ea5e9);
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover), var(--ok));
 }
 
 .time {
   font-size: 0.7rem;
-  color: #94a3b8;
+  color: var(--task-muted-soft);
 }
 
 .cancelBtn {
-  border: 1px solid rgba(244, 63, 94, 0.48);
+  border: 1px solid color-mix(in oklab, var(--danger) 44%, var(--border));
   border-radius: 8px;
   padding: 3px 8px;
   font-size: 0.72rem;
-  color: #fecdd3;
-  background: rgba(136, 19, 55, 0.42);
+  color: var(--danger-ink);
+  background: color-mix(in oklab, var(--surface-danger) 88%, var(--surface-inline));
 }
 
 .cancelBtn:disabled {
@@ -800,7 +819,7 @@ function toastClass(toast: TaskToastItem): string {
 }
 
 .miniName {
-  color: #cbd5e1;
+  color: var(--task-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -815,11 +834,11 @@ function toastClass(toast: TaskToastItem): string {
 }
 
 .eventTime {
-  color: #94a3b8;
+  color: var(--task-muted-soft);
 }
 
 .eventText {
-  color: #cbd5e1;
+  color: var(--task-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

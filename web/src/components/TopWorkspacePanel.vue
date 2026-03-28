@@ -250,7 +250,6 @@ onBeforeUnmount(() => {
       <div class="panelSummaryChips" aria-label="Top results summary">
         <div v-for="chip in topSummaryChips" :key="chip" class="panelSummaryChip">{{ chip }}</div>
       </div>
-      <div id="topSelectionStatus" class="srOnly" role="status" aria-live="polite">{{ selectedTopSummary }}</div>
 
       <section v-if="topStage === 'ready'" class="pane panelProminentPane">
         <div class="panelSectionHeader">
@@ -332,6 +331,17 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+        <div
+          v-if="topStage === 'ready'"
+          id="topSelectionStatus"
+          class="stickySelectionSummary selectionRail topSelectionSummary"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <div class="stickySelectionSummaryTitle">Current candidate</div>
+          <div class="stickySelectionSummaryBody">{{ selectedTopSummary }}</div>
+        </div>
         <div v-if="topStage !== 'ready' || !hasTopResults" class="emptyState topEmptyState">
           <div class="emptyTitle">{{ emptyTitle }}</div>
           <div class="emptyBody">{{ emptyBody }}</div>
@@ -345,7 +355,7 @@ onBeforeUnmount(() => {
         <div
           v-else
           ref="tableScrollElementRef"
-          class="tableWrap"
+          class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
           tabindex="0"
           aria-label="Top optimization results table"
           aria-describedby="topSelectionStatus"
@@ -470,18 +480,6 @@ onBeforeUnmount(() => {
   min-width: 760px;
 }
 
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 .topTableVue th,
 .topTableVue td {
   border-bottom: 1px solid var(--border);
@@ -509,7 +507,16 @@ onBeforeUnmount(() => {
 }
 
 .topTableVue tbody tr.selected {
-  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  background: color-mix(in oklab, var(--selection-fill-strong) 84%, var(--surface-working));
+}
+
+.topTableVue tbody tr.selected td:first-child {
+  box-shadow: inset 3px 0 0 var(--selection-rail);
+}
+
+.topSelectionSummary {
+  margin-bottom: 0.65rem;
+  top: -0.1rem;
 }
 
 .topTableVue tbody tr.spacerRow {

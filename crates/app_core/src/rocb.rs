@@ -11,6 +11,7 @@ use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
@@ -83,6 +84,14 @@ pub struct RocbBreakoutSignals {
 pub struct RocbRiskSignals {
     pub atr: Vec<f64>,
     pub first_valid: usize,
+}
+
+struct RocbIndicatorIds {
+    donchian_period_key: String,
+    donchian_upper_output: String,
+    donchian_lower_output: String,
+    atr_period_key: String,
+    atr_output: String,
 }
 
 #[cfg(feature = "cuda")]
@@ -184,12 +193,7 @@ fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
 }
 
 fn first_finite_idx_expected_or_scan(values: &[f64], expected: usize) -> Option<usize> {
-    if values
-        .get(expected)
-        .copied()
-        .unwrap_or(f64::NAN)
-        .is_finite()
-    {
+    if expected < values.len() && values[expected].is_finite() {
         Some(expected)
     } else {
         first_finite_idx_local(values)
@@ -201,8 +205,10 @@ fn first_joint_finite_idx_expected_or_scan(
     rhs: &[f64],
     expected: usize,
 ) -> Option<usize> {
-    if lhs.get(expected).copied().unwrap_or(f64::NAN).is_finite()
-        && rhs.get(expected).copied().unwrap_or(f64::NAN).is_finite()
+    if expected < lhs.len()
+        && expected < rhs.len()
+        && lhs[expected].is_finite()
+        && rhs[expected].is_finite()
     {
         Some(expected)
     } else {
@@ -334,6 +340,41 @@ fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
     ))
 }
 
+fn rocb_indicator_ids() -> Result<&'static RocbIndicatorIds, String> {
+    static IDS: OnceLock<Result<RocbIndicatorIds, String>> = OnceLock::new();
+
+    IDS.get_or_init(|| {
+        Ok(RocbIndicatorIds {
+            donchian_period_key: resolve_param_key(
+                "donchian",
+                &["period", "length", "timeperiod"],
+            )?,
+            donchian_upper_output: resolve_output_id(
+                "donchian",
+                &["upper_band", "upperband", "upper", "up", "value"],
+            )?,
+            donchian_lower_output: resolve_output_id(
+                "donchian",
+                &["lower_band", "lowerband", "lower", "down"],
+            )?,
+            atr_period_key: resolve_param_key("atr", &["period", "length", "timeperiod"])?,
+            atr_output: resolve_output_id("atr", &["value", "atr"])?,
+        })
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
+#[cfg(feature = "cuda")]
+fn rocb_prefers_lower_output(output_preferred_ids: &[&str]) -> bool {
+    output_preferred_ids.iter().any(|id| {
+        matches!(
+            id.to_ascii_lowercase().as_str(),
+            "lower_band" | "lowerband" | "lower" | "down"
+        )
+    })
+}
+
 #[cfg(feature = "cuda")]
 fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
@@ -400,13 +441,17 @@ pub fn compute_rocb_donchian_output_sweep_cuda_device(
     period_end: u16,
     period_step: u16,
 ) -> Result<RocbPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("donchian", &["period", "length", "timeperiod"])?;
-    let output_id = resolve_output_id("donchian", output_preferred_ids)?;
+    let ids = rocb_indicator_ids()?;
+    let output_id = if rocb_prefers_lower_output(output_preferred_ids) {
+        ids.donchian_lower_output.as_str()
+    } else {
+        ids.donchian_upper_output.as_str()
+    };
     compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "donchian",
-        output_id.as_str(),
-        period_key.as_str(),
+        output_id,
+        ids.donchian_period_key.as_str(),
         period_start,
         period_end,
         period_step,
@@ -421,13 +466,12 @@ pub fn compute_rocb_atr_sweep_cuda_device(
     period_end: u16,
     period_step: u16,
 ) -> Result<RocbPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("atr", &["period", "length", "timeperiod"])?;
-    let output_id = resolve_output_id("atr", &["value", "atr"])?;
+    let ids = rocb_indicator_ids()?;
     compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "atr",
-        output_id.as_str(),
-        period_key.as_str(),
+        ids.atr_output.as_str(),
+        ids.atr_period_key.as_str(),
         period_start,
         period_end,
         period_step,
@@ -493,20 +537,18 @@ pub fn compute_rocb_breakout_signals(
     channel_period: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<RocbBreakoutSignals, String> {
-    let period_key = resolve_param_key("donchian", &["period", "length", "timeperiod"])?;
+    let ids = rocb_indicator_ids()?;
     let params = [IndicatorParamKV {
-        key: period_key,
+        key: ids.donchian_period_key.clone(),
         value: IndicatorParamValue::Int(i64::from(channel_period)),
     }];
-    let upper_output = resolve_output_id("donchian", &["upperband", "upper", "value"])?;
-    let lower_output = resolve_output_id("donchian", &["lowerband", "lower"])?;
 
     let upper = compute_indicator_f64(
         candles,
         ma_source,
         backend,
         "donchian",
-        upper_output.as_str(),
+        ids.donchian_upper_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -516,7 +558,7 @@ pub fn compute_rocb_breakout_signals(
         ma_source,
         backend,
         "donchian",
-        lower_output.as_str(),
+        ids.donchian_lower_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -547,18 +589,17 @@ pub fn compute_rocb_risk_signals(
     atr_period: u16,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<RocbRiskSignals, String> {
-    let period_key = resolve_param_key("atr", &["period", "length", "timeperiod"])?;
+    let ids = rocb_indicator_ids()?;
     let params = [IndicatorParamKV {
-        key: period_key,
+        key: ids.atr_period_key.clone(),
         value: IndicatorParamValue::Int(i64::from(atr_period)),
     }];
-    let output_id = resolve_output_id("atr", &["value", "atr"])?;
     let atr = compute_indicator_f64(
         candles,
         ma_source,
         backend,
         "atr",
-        output_id.as_str(),
+        ids.atr_output.as_str(),
         params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -607,13 +648,15 @@ pub fn build_rocb_desired_positions_into(
     if start_t >= n {
         return;
     }
+    if breakout.upper.len() != n || breakout.lower.len() != n || risk.atr.len() != n {
+        return;
+    }
 
-    let trade_offset = if strategy.trade_on_next_bar {
-        1usize
-    } else {
-        0usize
-    };
+    let trade_offset = usize::from(strategy.trade_on_next_bar);
+    let long_only = strategy.long_only;
+    let allow_flip = strategy.allow_flip;
     let max_trade_bars = usize::from(cfg.max_trade_bars.max(1));
+    let atr_stop_mult = cfg.atr_stop_mult;
     let mut pos: i32 = 0;
     let mut bars_in_trade: usize = 0;
     let mut entry_price = f64::NAN;
@@ -622,10 +665,10 @@ pub fn build_rocb_desired_positions_into(
         let sig_t = t.saturating_sub(trade_offset);
         let prev_t = sig_t.saturating_sub(1);
 
-        let close_now = close.get(sig_t).copied().unwrap_or(f64::NAN);
-        let upper_prev = breakout.upper.get(prev_t).copied().unwrap_or(f64::NAN);
-        let lower_prev = breakout.lower.get(prev_t).copied().unwrap_or(f64::NAN);
-        let atr_now = risk.atr.get(sig_t).copied().unwrap_or(f64::NAN);
+        let close_now = close[sig_t];
+        let upper_prev = breakout.upper[prev_t];
+        let lower_prev = breakout.lower[prev_t];
+        let atr_now = risk.atr[sig_t];
 
         let long_breakout =
             close_now.is_finite() && upper_prev.is_finite() && close_now > upper_prev;
@@ -639,14 +682,14 @@ pub fn build_rocb_desired_positions_into(
                 pos = 1;
                 bars_in_trade = 1;
                 entry_price = close_now;
-            } else if !strategy.long_only && short_breakout {
+            } else if !long_only && short_breakout {
                 pos = -1;
                 bars_in_trade = 1;
                 entry_price = close_now;
             }
         } else if pos > 0 {
             let stop_dist = if atr_now.is_finite() {
-                cfg.atr_stop_mult * atr_now
+                atr_stop_mult * atr_now
             } else {
                 f64::NAN
             };
@@ -658,8 +701,8 @@ pub fn build_rocb_desired_positions_into(
                 close_now.is_finite() && upper_prev.is_finite() && close_now <= upper_prev;
             let mut exit_now = stop_hit || channel_exit || bars_in_trade >= max_trade_bars;
 
-            if !strategy.long_only && short_breakout {
-                if strategy.allow_flip {
+            if !long_only && short_breakout {
+                if allow_flip {
                     pos = -1;
                     bars_in_trade = 1;
                     entry_price = close_now;
@@ -678,7 +721,7 @@ pub fn build_rocb_desired_positions_into(
             }
         } else {
             let stop_dist = if atr_now.is_finite() {
-                cfg.atr_stop_mult * atr_now
+                atr_stop_mult * atr_now
             } else {
                 f64::NAN
             };
@@ -691,7 +734,7 @@ pub fn build_rocb_desired_positions_into(
             let mut exit_now = stop_hit || channel_exit || bars_in_trade >= max_trade_bars;
 
             if long_breakout {
-                if strategy.allow_flip {
+                if allow_flip {
                     pos = 1;
                     bars_in_trade = 1;
                     entry_price = close_now;

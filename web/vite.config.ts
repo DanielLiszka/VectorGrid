@@ -1,9 +1,22 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { visualizer } from 'rollup-plugin-visualizer'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [vue()],
+export default defineConfig(({ mode }) => ({
+  plugins: [
+    vue(),
+    ...(mode === 'analyze'
+      ? [
+          visualizer({
+            filename: 'dist/bundle-stats.html',
+            gzipSize: true,
+            brotliSize: true,
+            open: false,
+          }),
+        ]
+      : []),
+  ],
   server: {
     host: '127.0.0.1',
     port: 1420,
@@ -24,4 +37,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

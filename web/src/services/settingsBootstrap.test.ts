@@ -43,6 +43,7 @@ describe('settings bootstrap service', () => {
     installStorage({
       vta_theme_pref_v1: 'Dark',
       vta_window_effect_v1: 'MICA',
+      vta_help_mode_v1: 'concise',
       vta_workflow_advanced_v1: '1',
       vta_controls_collapsed_v1: 'false',
     })
@@ -50,6 +51,7 @@ describe('settings bootstrap service', () => {
     expect(readSettingsBootstrapState()).toEqual({
       theme: 'dark',
       effect: 'mica',
+      helpMode: 'concise',
       workflowAdvanced: true,
       controlsCollapsed: false,
     })
@@ -59,6 +61,7 @@ describe('settings bootstrap service', () => {
     installStorage({
       vta_theme_pref_v1: 'midnight',
       vta_window_effect_v1: 'blur',
+      vta_help_mode_v1: 'verbose',
       vta_workflow_advanced_v1: 'maybe',
       vta_controls_collapsed_v1: 'sometimes',
     })
@@ -66,6 +69,7 @@ describe('settings bootstrap service', () => {
     expect(readSettingsBootstrapState()).toEqual({
       theme: '',
       effect: '',
+      helpMode: '',
       workflowAdvanced: null,
       controlsCollapsed: null,
     })
@@ -75,6 +79,7 @@ describe('settings bootstrap service', () => {
     installStorage({
       vta_theme_pref_v1: 'light',
       vta_window_effect_v1: 'acrylic',
+      vta_help_mode_v1: 'off',
       vta_workflow_advanced_v1: 'true',
       vta_controls_collapsed_v1: '1',
     })
@@ -84,10 +89,12 @@ describe('settings bootstrap service', () => {
     const store = useSettingsStore(pinia)
     expect(store.theme).toBe('light')
     expect(store.effect).toBe('acrylic')
+    expect(store.helpMode).toBe('off')
     expect(store.workflowAdvanced).toBe(true)
     expect(store.controlsCollapsed).toBe(true)
     expect(dataset.themePref).toBe('light')
     expect(dataset.windowEffect).toBe('acrylic')
+    expect(dataset.helpMode).toBe('off')
     expect(dataset.workflowAdvanced).toBe('1')
     expect(dataset.controlsCollapsed).toBe('1')
     expect(invokeCommandMock).toHaveBeenCalledWith(

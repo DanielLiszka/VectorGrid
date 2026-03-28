@@ -103,7 +103,7 @@ use crate::mkcs::{
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::mkcs::{
-    compute_mkcs_donchian_output_sweep_cuda_device, compute_mkcs_stddev_sweep_cuda_device,
+    compute_mkcs_donchian_sweeps_cuda_device, compute_mkcs_stddev_sweep_cuda_device,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::mkcs_gpu_kernel::{
@@ -6556,20 +6556,14 @@ fn run_mkcs_optimization_gpu(
     }
     let breakout_min = *breakout_keys.first().unwrap_or(&1);
     let breakout_max = *breakout_keys.last().unwrap_or(&breakout_min);
-    let upper_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
+    let donchian_sweeps = compute_mkcs_donchian_sweeps_cuda_device(
         &prepared_cuda_inputs,
-        &["upper", "upperband", "value"],
         breakout_min,
         breakout_max,
         1,
     )?;
-    let lower_sweep = compute_mkcs_donchian_output_sweep_cuda_device(
-        &prepared_cuda_inputs,
-        &["lower", "lowerband"],
-        breakout_min,
-        breakout_max,
-        1,
-    )?;
+    let upper_sweep = donchian_sweeps.upper;
+    let lower_sweep = donchian_sweeps.lower;
     if upper_sweep.matrix.cols != n || lower_sweep.matrix.cols != n {
         return Err("MKCS donchian sweep column mismatch".to_string());
     }
@@ -6659,6 +6653,7 @@ fn run_mkcs_optimization_gpu(
 
     let signals = MkcsGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         stddev_row_major_ptr: stddev_sweep.matrix.device_ptr,
         stddev_rows: stddev_sweep.matrix.rows,
@@ -7090,7 +7085,7 @@ fn run_kqsr_optimization_gpu(
 
     let signals = KqsrGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
-        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr().as_raw() as u64,
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         j_row_major_ptr: d_j.buffer().as_device_ptr().as_raw() as u64,
         fast_rows,
@@ -9148,6 +9143,7 @@ fn run_cdmc_optimization_gpu(
 
     let signals = CdmcGpuDeviceSignalMatrices {
         close_f32: prepared_cuda_inputs.close(),
+        close_device_ptr: prepared_cuda_inputs.close_device().device_ptr(),
         cols: n,
         dpo_row_major_ptr: dpo_sweep.matrix.device_ptr,
         dpo_rows: dpo_sweep.matrix.rows,
@@ -15813,6 +15809,80 @@ mod tests {
                 .expect("mkcs gpu optimization");
         assert!(res.num_combos > 0);
         assert!(!res.top.is_empty());
+        assert!(
+            matches!(res.backend_used, BackendUsed::Gpu),
+            "backend_used={:?} route={:?} fallback={:?}",
+            res.backend_used,
+            res.backend_route,
+            res.backend_fallback_reason
+        );
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn mkcs_gpu_kernel_request_falls_back_to_cpu_with_stop_loss_overlay() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: Some(MkcsStrategyParams::default()),
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "mkcs-gpu-fallback".to_string(),
+            fast_range: (5, 15, 5),
+            slow_range: (20, 40, 10),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig {
+                stop_loss_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("mkcs gpu fallback optimization");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without overlays/stop-loss/take-profit"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
