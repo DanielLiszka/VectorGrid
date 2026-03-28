@@ -143,7 +143,7 @@ fn force_vcet_cuda_cpu_fallback_for_test() -> bool {
     FORCE_VCET_CUDA_CPU_FALLBACK.with(|cell| cell.get())
 }
 
-#[cfg(not(all(test, feature = "cuda")))]
+#[cfg(all(feature = "cuda", not(test)))]
 fn force_vcet_cuda_cpu_fallback_for_test() -> bool {
     false
 }
@@ -153,7 +153,7 @@ fn force_vcet_vidya_host_stage_fallback_for_test() -> bool {
     FORCE_VCET_VIDYA_HOST_STAGE_FALLBACK.with(|cell| cell.get())
 }
 
-#[cfg(not(all(test, feature = "cuda")))]
+#[cfg(all(feature = "cuda", not(test)))]
 fn force_vcet_vidya_host_stage_fallback_for_test() -> bool {
     false
 }

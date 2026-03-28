@@ -1077,6 +1077,7 @@ fn clear_strategy_route_diagnostics_for_request(req: &CompositeCpuRequest) {
     }
 }
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn take_strategy_route_diagnostics_for_request(
     req: &CompositeCpuRequest,
 ) -> Option<Vec<String>> {

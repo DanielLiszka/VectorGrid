@@ -176,7 +176,7 @@ fn force_vemr_cuda_cpu_fallback_for_test() -> bool {
     FORCE_VEMR_CUDA_CPU_FALLBACK.with(|cell| cell.get())
 }
 
-#[cfg(not(all(test, feature = "cuda")))]
+#[cfg(all(feature = "cuda", not(test)))]
 fn force_vemr_cuda_cpu_fallback_for_test() -> bool {
     false
 }
@@ -1300,6 +1300,10 @@ pub fn build_vemr_desired_positions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    use crate::dynamic_indicator_adapter::PreparedCudaIndicatorInputs;
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    use vector_ta::utilities::data_loader::Candles;
 
     #[test]
     fn resolve_vemr_periods_maps_fast_and_slow_when_enabled() {
@@ -1316,5 +1320,68 @@ mod tests {
         cfg.max_trade_bars = 0;
         let err = validate_vemr_params(&cfg).expect_err("should reject max_trade_bars=0");
         assert!(err.contains("max_trade_bars"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vemr_risk_signals_record_route_diagnostics_on_cuda_cpu_fallback() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        struct ResetVemrCpuFallback;
+
+        impl Drop for ResetVemrCpuFallback {
+            fn drop(&mut self) {
+                set_force_vemr_cuda_cpu_fallback_for_test(false);
+                clear_vemr_route_diagnostics();
+            }
+        }
+
+        clear_vemr_route_diagnostics();
+        set_force_vemr_cuda_cpu_fallback_for_test(true);
+        let _reset = ResetVemrCpuFallback;
+
+        let len = 512usize;
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64 * 0.05;
+            open.push(base);
+            high.push(base + 0.75);
+            low.push(base - 0.75);
+            close.push(base + ((i % 9) as f64 - 4.0) * 0.01);
+            vol.push(1_000.0 + i as f64);
+        }
+        let candles = Candles::new(ts, open, high, low, close, vol);
+        let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+            &candles, "close", 0,
+        )
+        .expect("prepared cuda inputs");
+
+        let signals = compute_vemr_risk_signals(
+            &candles,
+            "close",
+            &Backend::GpuKernel { device_id: 0 },
+            21,
+            Some(&prepared_cuda_inputs),
+        )
+        .expect("vemr risk signals with forced cpu fallback");
+        assert_eq!(signals.atr.len(), candles.close.len());
+
+        let route_diagnostics = take_vemr_route_diagnostics().unwrap_or_default();
+        assert!(
+            route_diagnostics.iter().any(|entry| {
+                entry.contains("VEMR indicator atr/")
+                    && entry.contains("forced test fallback")
+            }),
+            "expected VEMR helper fallback diagnostic, got {:?}",
+            route_diagnostics
+        );
     }
 }

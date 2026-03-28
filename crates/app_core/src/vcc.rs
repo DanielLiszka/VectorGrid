@@ -149,7 +149,7 @@ fn force_vcc_cuda_cpu_fallback_for_test() -> bool {
     FORCE_VCC_CUDA_CPU_FALLBACK.with(|cell| cell.get())
 }
 
-#[cfg(not(all(test, feature = "cuda")))]
+#[cfg(all(feature = "cuda", not(test)))]
 fn force_vcc_cuda_cpu_fallback_for_test() -> bool {
     false
 }

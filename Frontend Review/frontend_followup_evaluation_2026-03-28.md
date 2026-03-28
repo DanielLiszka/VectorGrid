@@ -10,6 +10,12 @@ Purpose:
 - record the keyboard-only regression evidence after the latest shell/palette refinements
 - classify desktop-native productization items without expanding the current implementation pass beyond frontend scope
 
+Status note:
+
+- the frontend-only follow-up phases in this file are complete
+- the next active implementation plan now lives in `Frontend Review/desktop_productization_plan_2026-03-28.md`
+- use that document as the source of truth for open Tauri/runtime desktop-productization work
+
 ## Next Implementation Checklist
 
 This is the active open checklist for the next frontend wave. Unlike the completed remediation checklist in

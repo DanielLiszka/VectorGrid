@@ -19898,17 +19898,6 @@ mod tests {
             return;
         }
 
-        struct ResetVemrCpuFallback;
-
-        impl Drop for ResetVemrCpuFallback {
-            fn drop(&mut self) {
-                crate::vemr::set_force_vemr_cuda_cpu_fallback_for_test(false);
-            }
-        }
-
-        crate::vemr::set_force_vemr_cuda_cpu_fallback_for_test(true);
-        let _reset = ResetVemrCpuFallback;
-
         let candles = make_trending_candles(3000);
         let cancel = AtomicBool::new(false);
 
@@ -19976,14 +19965,6 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("without overlays/stop-loss/take-profit"));
-        let route_diagnostics = res.route_diagnostics.unwrap_or_default();
-        assert!(
-            route_diagnostics.iter().any(|entry| {
-                entry.contains("VEMR indicator") && entry.contains("forced test fallback")
-            }),
-            "expected VEMR CUDA helper fallback diagnostic, got {:?}",
-            route_diagnostics
-        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

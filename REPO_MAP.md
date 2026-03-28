@@ -23,6 +23,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `web/README.md` for frontend runtime notes
 - `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
 - `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
+- `Frontend Review/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan and open checklist
 
 ## How To Use This Map
 
