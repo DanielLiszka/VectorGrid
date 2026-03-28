@@ -589,28 +589,36 @@ Observed result:
 - rerunning from an elevated PowerShell changes the `2026.2.1` result materially:
   - `nsys profile --trace=none ... cmd /c exit 0` now succeeds and writes `target\nsight\nsys_2026_smoke_elevated.nsys-rep`
   - a whole-process Double MA runner capture with `--trace=cuda,nvtx` now succeeds and writes `target\nsight\nvtx_2026_elevated_whole.nsys-rep`
-  - `nsys stats --report nvtx_sum --report nvtx_gpu_proj_sum` still says that elevated report contains no NVTX data
-- rebuilding the runner with `nvtx-profiling` under elevated `2026.2.1` does not recover NVTX visibility either
+  - probing the installed `nvToolsExt64_1.dll` then exposed the concrete repo-side interop issue:
+    - `GetProcAddress` succeeds for `nvtxRangePushEx` / `nvtxRangePop`
+    - `GetProcAddress` fails for `nvtxDomainCreateA`, `nvtxDomainRangePushEx`, and `nvtxDomainRangePop`
+    - the installed standalone `nvToolsExt64_1.dll` is therefore only exposing the global push/pop API on this machine
+  - `crates\app_core\src\nvtx.rs` now falls back to default-domain push/pop ranges when those domain exports are absent instead of disabling NVTX entirely
+  - after that change, the elevated whole-process capture `target\nsight\nvtx_2026_elevated_whole_fallback.nsys-rep` now produces real NVTX tables:
+    - `nvtx_sum` contains ranges such as `:double_ma_opt_total`, `:engine::gpu_kernel_dispatch`, `:kernel::executor_impl`, and `:kernel::backtest_core`
+    - `nvtx_gpu_proj_sum` now projects those ranges onto the CUDA work as expected
+- rebuilding the runner with `nvtx-profiling` under elevated `2026.2.1` is still not the preferred path
   - the raw-dylib build initially failed to start cleanly because `C:\Program Files\NVIDIA Corporation\NvToolsExt\bin\x64` was not on `PATH`
-  - once that directory was added to `PATH`, the runner and the elevated `2026.2.1` capture both completed successfully
-  - the resulting report still contained no NVTX data
-  - the installed standalone `nvToolsExt64_1.dll` at that path is the legacy 2016 package, which is now a concrete interop suspect for the remaining NVTX gap
+  - that path is no longer needed for profiler-visible NVTX in the normal release build because the runtime-loaded fallback now works
 
 Interpretation:
 
 - the newer-profiler startup blocker is now confirmed to be an elevation / local tooling issue on this machine, not a repo issue
-- the remaining NVTX visibility issue is no longer just local Nsight startup; it is now bounded to the current Rust NVTX emission / runtime interop path because both `2023.3.3` and elevated `2026.2.1` still record zero NVTX tables
+- the remaining NVTX visibility issue was not just local Nsight startup; it was also a Rust NVTX runtime interop problem on this branch
+- the whole-process NVTX path is now fixed under elevated `2026.2.1`
 - the repo-side follow-up was still worth doing:
   - the helper script now accepts an explicit `-NsysExePath`
   - the helper now precreates the local `Temp\\nvidia\\nsight_systems` directory before launching `nsys`
+  - `crates\app_core\src\nvtx.rs` now tolerates older NVTX runtimes that only export the global push/pop API
 - the practical next remedies on this machine are outside the repo:
   - keep using an elevated shell for newer `nsys` on this machine
   - clear `%TEMP%\\nvidia` state if the unelevated startup path needs to be revisited
-  - if NVTX work continues, inspect the Rust-side NVTX interop path itself instead of assuming the remaining gap is still an Nsight startup problem
-- but there is not yet a working profiler-visible NVTX capture-range workflow on this machine
+- the remaining profiler-visible NVTX gap is narrower now:
+  - the whole-process path works
+  - but the helper's `--capture-range=nvtx` flow still reaches `StartRange` / `RangeImportation` without writing the expected bounded report file
 
 ## Next Steps
 
 1. Treat Rust-side launch orchestration cost on this route as measured and bounded; it is in the tens of microseconds, not a first-order optimization target.
 2. If performance work continues, stay on GPU kernel/runtime investigation and use the current exact 10-row specialization as the new baseline for further Nsight Compute-guided work.
-3. Keep NVTX visibility on the local Nsight Systems install as a compatibility task, but do not block further performance work on it.
+3. Keep the remaining NVTX task focused on bounded capture output generation under `--capture-range=nvtx`; whole-process NVTX visibility is now working under elevated `2026.2.1`.

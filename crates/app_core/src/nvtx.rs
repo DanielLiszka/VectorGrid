@@ -18,6 +18,7 @@ type NvtxDomainCreateAFn = unsafe extern "system" fn(*const c_char) -> NvtxDomai
 type NvtxDomainRangePushExFn =
     unsafe extern "system" fn(NvtxDomainHandle, *const NvtxEventAttributes) -> c_int;
 type NvtxDomainRangePopFn = unsafe extern "system" fn(NvtxDomainHandle) -> c_int;
+type NvtxRangePushAFn = unsafe extern "system" fn(*const c_char) -> c_int;
 type NvtxRangePushExFn = unsafe extern "system" fn(*const NvtxEventAttributes) -> c_int;
 type NvtxRangePopFn = unsafe extern "system" fn() -> c_int;
 
@@ -48,6 +49,7 @@ struct NvtxApi {
     domain_create_a: Option<NvtxDomainCreateAFn>,
     domain_range_push_ex: Option<NvtxDomainRangePushExFn>,
     domain_range_pop: Option<NvtxDomainRangePopFn>,
+    range_push_a: NvtxRangePushAFn,
     range_push_ex: NvtxRangePushExFn,
     range_pop: NvtxRangePopFn,
 }
@@ -105,6 +107,7 @@ impl NvtxEventAttributes {
 pub struct RangeGuard {
     domain: Option<NvtxDomainHandle>,
     pushed_default_range: bool,
+    default_name: Option<CString>,
 }
 
 impl RangeGuard {
@@ -112,6 +115,7 @@ impl RangeGuard {
         Self {
             domain: None,
             pushed_default_range: false,
+            default_name: None,
         }
     }
 }
@@ -160,9 +164,9 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
     let Some(api) = api() else {
         return RangeGuard::disabled();
     };
-    let domain_handle = domain_handle(domain);
-    let can_use_domain_api = domain_handle.is_some() && api.domain_range_push_ex.is_some();
-    let pushed_default_range = !can_use_domain_api || should_mirror_default_range(domain, name);
+    let domain_handle = None;
+    let can_use_domain_api = false;
+    let pushed_default_range = true;
     let default_name = if pushed_default_range {
         fallback_default_range_name(domain, name)
     } else {
@@ -185,8 +189,8 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
     };
     unsafe {
         if let Some(ref default_name_c) = default_name_c {
-            let default_attrs = NvtxEventAttributes::ascii(default_name_c.as_c_str(), color);
-            (api.range_push_ex)(&default_attrs);
+            let _ = color;
+            (api.range_push_a)(default_name_c.as_ptr());
         }
         if let (Some(domain_handle), Some(domain_range_push_ex)) =
             (domain_handle, api.domain_range_push_ex)
@@ -205,6 +209,7 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
             None
         },
         pushed_default_range,
+        default_name: default_name_c,
     }
 }
 
@@ -250,6 +255,7 @@ extern "system" {
         event_attr: *const NvtxEventAttributes,
     ) -> c_int;
     fn nvtxDomainRangePop(domain: NvtxDomainHandle) -> c_int;
+    fn nvtxRangePushA(message: *const c_char) -> c_int;
     fn nvtxRangePushEx(event_attr: *const NvtxEventAttributes) -> c_int;
     fn nvtxRangePop() -> c_int;
 }
@@ -260,6 +266,7 @@ fn api() -> Option<NvtxApi> {
         domain_create_a: Some(nvtxDomainCreateA),
         domain_range_push_ex: Some(nvtxDomainRangePushEx),
         domain_range_pop: Some(nvtxDomainRangePop),
+        range_push_a: nvtxRangePushA,
         range_push_ex: nvtxRangePushEx,
         range_pop: nvtxRangePop,
     })
@@ -276,6 +283,10 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
         let Ok(lib) = Library::new(candidate) else {
             continue;
         };
+        let Some(range_push_a) = load_symbol::<NvtxRangePushAFn>(&lib, b"nvtxRangePushA\0")
+        else {
+            continue;
+        };
         let Some(range_push_ex) = load_symbol::<NvtxRangePushExFn>(&lib, b"nvtxRangePushEx\0")
         else {
             continue;
@@ -286,10 +297,10 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
         let domain_create_a = load_symbol::<NvtxDomainCreateAFn>(&lib, b"nvtxDomainCreateA\0");
         let domain_range_push_ex =
             load_symbol::<NvtxDomainRangePushExFn>(&lib, b"nvtxDomainRangePushEx\0");
-        let domain_range_pop =
-            load_symbol::<NvtxDomainRangePopFn>(&lib, b"nvtxDomainRangePop\0");
-        let has_full_domain_api =
-            domain_create_a.is_some() && domain_range_push_ex.is_some() && domain_range_pop.is_some();
+        let domain_range_pop = load_symbol::<NvtxDomainRangePopFn>(&lib, b"nvtxDomainRangePop\0");
+        let has_full_domain_api = domain_create_a.is_some()
+            && domain_range_push_ex.is_some()
+            && domain_range_pop.is_some();
         std::mem::forget(lib);
         return Some(NvtxApi {
             domain_create_a: if has_full_domain_api {
@@ -307,6 +318,7 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
             } else {
                 None
             },
+            range_push_a,
             range_push_ex,
             range_pop,
         });

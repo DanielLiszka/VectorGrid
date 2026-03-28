@@ -68,13 +68,18 @@ Completed on 2026-03-27:
     - rerunning from an elevated PowerShell fixes the `2026.2.1` startup blocker:
       - a minimal `--trace=none` smoke test now completes and writes `target\\nsight\\nsys_2026_smoke_elevated.nsys-rep`
       - a whole-process Double MA runner capture now completes and writes `target\\nsight\\nvtx_2026_elevated_whole.nsys-rep`
-    - even under an elevated `2026.2.1` capture, `nsys stats --report nvtx_sum --report nvtx_gpu_proj_sum` still reports no NVTX data from the current Rust path
-    - rebuilding the runner with `nvtx-profiling` still does not produce NVTX tables under elevated `2026.2.1`
-      - on this machine, that raw-dylib path also requires `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` on `PATH` just to start cleanly
-      - the installed standalone `nvToolsExt64_1.dll` is the legacy 2016 package from `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64`
+    - the remaining whole-process NVTX visibility issue is now fixed on this branch under elevated `2026.2.1`:
+      - the installed standalone `nvToolsExt64_1.dll` only exports `nvtxRangePushEx` / `nvtxRangePop`, not the domain APIs
+      - `crates\\app_core\\src\\nvtx.rs` now falls back to default-domain push/pop ranges when the domain exports are absent instead of disabling NVTX entirely
+      - the elevated whole-process capture `target\\nsight\\nvtx_2026_elevated_whole_fallback.nsys-rep` now produces `nvtx_sum` and `nvtx_gpu_proj_sum`
+      - top-level capture ranges such as `double_ma_opt_total` are preserved, while nested fallback ranges are prefixed like `engine::...` / `kernel::...`
+    - rebuilding the runner with `nvtx-profiling` is still not the recommended path on this machine:
+      - that raw-dylib build additionally requires `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` on `PATH` just to start cleanly
+      - the runtime-loaded fallback path is now sufficient for profiler-visible NVTX in the normal release build
   - Interpretation:
     - the newer-profiler startup blocker is a local privilege/tooling issue and is now confirmed to be solvable by an elevated shell on this machine
-    - the remaining NVTX visibility problem is no longer just profiler startup; it is now bounded to the current Rust NVTX emission / runtime interop path because both `2023.3.3` and elevated `2026.2.1` still record zero NVTX tables
+    - the remaining NVTX visibility problem was a Rust NVTX runtime interop issue on this branch, and the whole-process path is now fixed under elevated `2026.2.1`
+    - the remaining NVTX gap is narrower: the helper's `--capture-range=nvtx` flow still reaches `StartRange` / `RangeImportation`, but does not currently write the expected bounded report file
 - NVTX ranges now exist in app-core behind `VECTORBT_ENABLE_NVTX=1`, and the wrapper uses runtime-loaded NVTX symbols instead of static toolkit linkage.
 - The Tauri command path now also emits a `tauri_double_ma_request` NVTX range, so the app boundary is instrumented even though the local Nsight Systems install still does not expose NVTX records from this Rust path.
 - The default single-pass product-row policy for the exact `GpuKernel` route now uses the 10-metric reduced contract instead of widening to the full 17-metric contract.
@@ -187,10 +192,10 @@ Completed on 2026-03-27:
 Still not implemented:
 
 - a profiler-visible NVTX capture-range workflow on the local machine, because:
-  - Nsight Systems `2023.3.3` captures CUDA but still emits no NVTX tables from this Rust path
-  - Nsight Systems `2026.2.1` now captures successfully from an elevated shell, but it also emits no NVTX tables from this Rust path
-  - rebuilding the runner with `nvtx-profiling` does not change that outcome under elevated `2026.2.1`
-  - the `nvtx-profiling` raw-dylib path additionally depends on `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` being present on `PATH` for a clean process startup on this machine
+  - Nsight Systems `2023.3.3` still captures CUDA but emits no NVTX tables from this Rust path
+  - Nsight Systems `2026.2.1` now captures successfully from an elevated shell and does emit NVTX tables in whole-process mode on this branch
+  - the helper's `--capture-range=nvtx` flow still reaches the trigger state but does not currently write the expected bounded report file
+  - the optional `nvtx-profiling` raw-dylib path additionally depends on `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` being present on `PATH` for a clean process startup on this machine, so it is not the default verification path
 
 ## Scope
 

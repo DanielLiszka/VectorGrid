@@ -44,6 +44,18 @@ Instructions for AI coding agents working in this repository.
 - Never run multiple benchmarks at the same time. Before starting any benchmark or profiling run, verify no other benchmark process is still active, and serialize benchmark executions so timing conclusions are not contaminated by self-inflicted load.
 - For performance-sensitive changes, run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` before handoff (or `scripts/run_workflow_gate.ps1 -Mode candidate` at minimum).
 - For CUDA backtest-kernel changes, run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` (when GPU is available).
+- Nvidia Nsight and Nvidia CUDA profiling must be launched from an elevated PowerShell terminal. If `Nsight Compute`, `Nsight Systems`, or CUDA profiling scripts fail due to attach/permission issues, first verify the PowerShell session is running as Administrator.
+
+## Frontend work policy
+
+- For frontend-only work, stay within the Vue 3/web surface unless the user explicitly asks for backend or Tauri changes.
+- When working on frontend UI, presentation, Vue 3 behavior, or frontend verification, prefer the relevant available Codex plugins and skills when they improve implementation or review quality.
+- Default frontend tooling preference:
+  - `build-web-apps:frontend-skill` for UI implementation and presentation work
+  - `build-web-apps:web-design-guidelines` for UI/UX/accessibility review
+  - `Figma` skills when matching or implementing a provided design
+  - `playwright` and `screenshot` for browser-side and visual verification
+- Treat backend contracts as fixed during frontend-only work unless the user explicitly expands scope.
 
 ## Autonomy Policy
 If you're working towards goals, do NOT end your turn. This allows for continuous autonomous work.
