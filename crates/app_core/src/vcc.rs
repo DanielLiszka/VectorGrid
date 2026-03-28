@@ -11,6 +11,10 @@ use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(all(test, feature = "cuda"))]
+use std::cell::Cell;
+#[cfg(feature = "cuda")]
+use std::cell::RefCell;
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
@@ -90,6 +94,64 @@ fn default_vcc_confirm_bars() -> u16 {
 
 fn default_vcc_max_trade_bars() -> u16 {
     120
+}
+
+#[cfg(feature = "cuda")]
+thread_local! {
+    static VCC_ROUTE_DIAGNOSTICS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static FORCE_VCC_CUDA_CPU_FALLBACK: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "cuda")]
+fn record_vcc_route_diagnostic(message: String) {
+    VCC_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.iter().any(|entry| entry == &message) {
+            return;
+        }
+        diagnostics.push(message);
+    });
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn clear_vcc_route_diagnostics() {
+    VCC_ROUTE_DIAGNOSTICS.with(|cell| cell.borrow_mut().clear());
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn take_vcc_route_diagnostics() -> Option<Vec<String>> {
+    VCC_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut *diagnostics))
+        }
+    })
+}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn clear_vcc_route_diagnostics() {}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn take_vcc_route_diagnostics() -> Option<Vec<String>> {
+    None
+}
+
+#[cfg(all(test, feature = "cuda"))]
+pub(crate) fn set_force_vcc_cuda_cpu_fallback_for_test(enabled: bool) {
+    FORCE_VCC_CUDA_CPU_FALLBACK.with(|cell| cell.set(enabled));
+}
+
+#[cfg(all(test, feature = "cuda"))]
+fn force_vcc_cuda_cpu_fallback_for_test() -> bool {
+    FORCE_VCC_CUDA_CPU_FALLBACK.with(|cell| cell.get())
+}
+
+#[cfg(not(all(test, feature = "cuda")))]
+fn force_vcc_cuda_cpu_fallback_for_test() -> bool {
+    false
 }
 
 impl Default for VccStrategyParams {
@@ -395,20 +457,33 @@ fn compute_indicator_f64_with_warmup(
             && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
         if prefer_gpu {
             if let Some(prepared) = prepared_cuda_inputs {
-                let out = compute_dynamic_indicator_cuda_with_inputs(
-                    prepared,
-                    indicator_id,
-                    Some(output_id),
-                    params,
-                    Kernel::Auto,
-                    vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-                );
-                if let Ok(values) = out {
-                    let warmup = values.warmup;
-                    return Ok(IndicatorSeriesF64 {
-                        values: cuda_series_to_f64(values)?,
-                        warmup,
-                    });
+                if force_vcc_cuda_cpu_fallback_for_test() {
+                    record_vcc_route_diagnostic(format!(
+                        "VCC indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: forced test fallback"
+                    ));
+                } else {
+                    let out = compute_dynamic_indicator_cuda_with_inputs(
+                        prepared,
+                        indicator_id,
+                        Some(output_id),
+                        params,
+                        Kernel::Auto,
+                        vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+                    );
+                    match out {
+                        Ok(values) => {
+                            let warmup = values.warmup;
+                            return Ok(IndicatorSeriesF64 {
+                                values: cuda_series_to_f64(values)?,
+                                warmup,
+                            });
+                        }
+                        Err(err) => {
+                            record_vcc_route_diagnostic(format!(
+                                "VCC indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: {err}"
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -1031,6 +1106,53 @@ mod tests {
             vol.push(1_000.0);
         }
         Candles::new(ts, open, high, low, close, vol)
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcc_trend_signals_record_route_diagnostics_on_cuda_cpu_fallback() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        struct ResetVccCpuFallback;
+
+        impl Drop for ResetVccCpuFallback {
+            fn drop(&mut self) {
+                set_force_vcc_cuda_cpu_fallback_for_test(false);
+                clear_vcc_route_diagnostics();
+            }
+        }
+
+        clear_vcc_route_diagnostics();
+        set_force_vcc_cuda_cpu_fallback_for_test(true);
+        let _reset = ResetVccCpuFallback;
+
+        let candles = make_trending_candles(512);
+        let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
+            &candles, "close", 0,
+        )
+        .expect("prepared cuda inputs");
+
+        let signals = compute_vcc_trend_signals(
+            &candles,
+            "close",
+            &Backend::GpuKernel { device_id: 0 },
+            21,
+            Some(&prepared_cuda_inputs),
+        )
+        .expect("vcc trend signals with forced cpu fallback");
+        assert_eq!(signals.trend_state.len(), candles.close.len());
+
+        let route_diagnostics = take_vcc_route_diagnostics().unwrap_or_default();
+        assert!(
+            route_diagnostics.iter().any(|entry| {
+                entry.contains("VCC indicator ttm_trend/value CUDA helper fell back to CPU")
+                    && entry.contains("forced test fallback")
+            }),
+            "expected VCC helper fallback diagnostic, got {:?}",
+            route_diagnostics
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

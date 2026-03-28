@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-03-26
+Last updated: 2026-03-28
 
 ## Purpose
 
@@ -21,6 +21,8 @@ Do not treat this as the full implementation spec. Use it together with:
 - `ARCHITECTURE_NOTES.md` for backend/runtime notes
 - `RELEASE.md` for build/release/PTX packaging notes
 - `web/README.md` for frontend runtime notes
+- `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
+- `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
 
 ## How To Use This Map
 
@@ -70,6 +72,8 @@ Open these first before broad search:
 - `crates/app_core/src/lib.rs`
 - `crates/strategies/src/lib.rs`
 - `crates/optimizer/src/lib.rs`
+- `web/src/App.vue`
+- `web/src/components/VueWorkspaceShell.vue`
 - `web/src/utils/strategyOptimizationCapabilities.ts`
 - `web/src/strategies/compositeProfileGpuPolicy.ts`
 
@@ -565,6 +569,7 @@ If you are debugging navigation, visible panels, or why a tab is allowed or hidd
 - `web/src/components/CommandPaletteOverlay.vue`
 - `web/src/components/GlobalShortcutBridge.vue`
 - `web/src/components/AppRuntimeBanner.vue`
+- `web/src/components/TaskCenterOverlay.vue`
 - `web/src/components/RunFooterPanel.vue`
 - `web/src/components/WorkflowQuickSwitch.vue`
 
@@ -583,9 +588,9 @@ These are good first files when the task is global shortcuts, quick actions, run
 
 ### `web/src` structure
 
-- `components/`: `43` files
+- `components/`: `50` files
 - `services/`: `49` files
-- `stores/`: `29` files
+- `stores/`: `30` files
 - `strategies/`: `4` files
 
 ### Current frontend ownership model
@@ -649,10 +654,16 @@ These are good first files when the task is global shortcuts, quick actions, run
 
 - `web/src/composables/useQueuedInputWriter.ts`
   - shared queued/commit input writer used by panels such as optimize, advanced, settings, and meta
+- `web/src/composables/useShellMount.ts`
+  - shared shell mount helper for Vue-owned panel ownership over legacy shell slots
+- `web/src/composables/useTaskLifecycleSummary.ts`
+  - shared task/runtime summary model used by footer and diagnostics surfaces
+- `web/src/composables/useHeadlessMatrixTable.ts`
+  - shared TanStack-backed headless table model now used by Top, Validation, Meta, and execution-order review
 - `web/src/composables/useUiReadiness.ts`
   - derives empty-state and readiness stages for history, meta, top, and validation surfaces
 - `web/src/composables/useVirtualTableRows.ts`
-  - shared virtualization helper for large table-style panels, especially meta tables
+  - shared virtualization helper for large table-style panels, especially Top, Validation, Meta, and execution-order review
 - `web/src/composables/useAnchoredOverlay.ts`
   - shared anchored overlay positioning helper for floating UI surfaces
 
@@ -666,10 +677,14 @@ The frontend event path is:
   - patches invoke, subscribes to current event channels, and normalizes payloads
 - `web/src/stores/taskStore.ts`
   - task lifecycle, progress aggregation, live status capture, timeline, and toasts
+- `web/src/utils/statusPresentation.ts`
+  - shared lifecycle labels, severity labels, and timeline/alert summaries used by task/diagnostics UI
 - `web/src/components/TaskCenterOverlay.vue`
   - task-center UI
 - `web/src/components/RunFooterPanel.vue`
   - footer status summary
+- `web/src/components/SettingsWorkspacePanel.vue`
+  - current in-app diagnostics surface for runtime, task posture, timeline, and recent alerts
 
 Current named event channels handled on the frontend:
 
@@ -731,10 +746,14 @@ For command-palette and quick-action behavior, start with:
 
 - `web/src/utils/strategyOptimizationCapabilities.ts`
   - best high-level file for strategy support, backend summary, heatmap/export behavior, and special-case workflows
+- `web/src/utils/statusPresentation.ts`
+  - best high-level file for current task/runtime/alert presentation vocabulary across footer, task center, and diagnostics
 - `web/src/strategies/compositeProfileGpuPolicy.ts`
   - best high-level file for current composite route policy
 - `web/src/strategies/dynamicDoubleMaBuilder.ts`
   - best high-level file for frontend dynamic-strategy IR building and preview input shaping
+- `web/src/composables/useHeadlessMatrixTable.ts`
+  - best high-level file for the current shared dense-table model
 - `web/src/components/OptimizeWorkspacePanel.vue`
   - dense control-surface summary of what optimization UI currently exposes
 

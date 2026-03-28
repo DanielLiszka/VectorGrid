@@ -131,8 +131,9 @@ use crate::rocb_gpu_kernel::{
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::strategy_ir::StrategyProfileKind;
 use crate::vcc::{
-    build_vcc_desired_positions, compute_vcc_fast_signals, compute_vcc_start_t,
-    compute_vcc_trend_signals, resolve_vcc_periods, validate_vcc_params, VccStrategyParams,
+    build_vcc_desired_positions, clear_vcc_route_diagnostics, compute_vcc_fast_signals,
+    compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods, take_vcc_route_diagnostics,
+    validate_vcc_params, VccStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::{
@@ -143,8 +144,9 @@ use crate::vcc_gpu_kernel::{
     eval_vcc_metrics_gpu_kernel_device_rows, VccGpuComboBatch, VccGpuDeviceSignalMatrices,
 };
 use crate::vcet::{
-    build_vcet_desired_positions, compute_vcet_chandelier_signals, compute_vcet_start_t,
-    compute_vcet_vidya_signals, resolve_vcet_periods, validate_vcet_params, VcetStrategyParams,
+    build_vcet_desired_positions, clear_vcet_route_diagnostics, compute_vcet_chandelier_signals,
+    compute_vcet_start_t, compute_vcet_vidya_signals, resolve_vcet_periods, take_vcet_route_diagnostics,
+    validate_vcet_params, VcetStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet::{
@@ -156,8 +158,9 @@ use crate::vcet_gpu_kernel::{
     eval_vcet_metrics_gpu_kernel_device_rows, VcetGpuComboBatch, VcetGpuOwnedSignalTables,
 };
 use crate::vemr::{
-    build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
-    compute_vemr_start_t, resolve_vemr_periods, validate_vemr_params, VemrStrategyParams,
+    build_vemr_desired_positions, clear_vemr_route_diagnostics, compute_vemr_fast_signals,
+    compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods, take_vemr_route_diagnostics,
+    validate_vemr_params, VemrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vemr::{
@@ -1064,6 +1067,30 @@ fn composite_backend_label(backend: &Backend) -> &'static str {
     }
 }
 
+fn clear_strategy_route_diagnostics_for_request(req: &CompositeCpuRequest) {
+    if req.vcc.is_some() {
+        clear_vcc_route_diagnostics();
+    } else if req.vemr.is_some() {
+        clear_vemr_route_diagnostics();
+    } else if req.vcet.is_some() {
+        clear_vcet_route_diagnostics();
+    }
+}
+
+fn take_strategy_route_diagnostics_for_request(
+    req: &CompositeCpuRequest,
+) -> Option<Vec<String>> {
+    if req.vcc.is_some() {
+        take_vcc_route_diagnostics()
+    } else if req.vemr.is_some() {
+        take_vemr_route_diagnostics()
+    } else if req.vcet.is_some() {
+        take_vcet_route_diagnostics()
+    } else {
+        None
+    }
+}
+
 #[cfg(feature = "cuda")]
 fn backend_device_id(backend: &Backend) -> Option<usize> {
     match backend {
@@ -1933,6 +1960,7 @@ fn run_asr_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -2237,6 +2265,7 @@ fn run_asr_optimization_cpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -2251,6 +2280,8 @@ fn run_vcc_optimization(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
+    clear_strategy_route_diagnostics_for_request(&req);
+
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
         let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
@@ -2273,12 +2304,15 @@ fn run_vcc_optimization(
                         } else if !matches!(req.backend, Backend::GpuKernel { .. }) {
                             gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
                         }
+                        gpu_res.route_diagnostics = take_strategy_route_diagnostics_for_request(&req);
                         return Ok(gpu_res);
                     }
                     Err(err) => {
                         let mut cpu_res = run_vcc_optimization_cpu(req, candles, cancel, progress)?;
                         cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
                         cpu_res.backend_fallback_reason = Some(err);
+                        cpu_res.route_diagnostics =
+                            take_vcc_route_diagnostics().filter(|entries| !entries.is_empty());
                         return Ok(cpu_res);
                     }
                 }
@@ -2288,6 +2322,8 @@ fn run_vcc_optimization(
             cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
             cpu_res.backend_fallback_reason =
                 Some("CUDA unavailable; falling back to CPU VCC optimization.".to_string());
+            cpu_res.route_diagnostics =
+                take_vcc_route_diagnostics().filter(|entries| !entries.is_empty());
             return Ok(cpu_res);
         }
     }
@@ -2302,11 +2338,15 @@ fn run_vcc_optimization(
                 "VCC GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
                     .to_string(),
             );
+            cpu_res.route_diagnostics =
+                take_vcc_route_diagnostics().filter(|entries| !entries.is_empty());
             return Ok(cpu_res);
         }
     }
 
-    run_vcc_optimization_cpu(req, candles, cancel, progress)
+    let mut cpu_res = run_vcc_optimization_cpu(req, candles, cancel, progress)?;
+    cpu_res.route_diagnostics = take_vcc_route_diagnostics();
+    Ok(cpu_res)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -2705,6 +2745,7 @@ fn run_vcc_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -2976,6 +3017,7 @@ fn run_vcc_optimization_cpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -2990,6 +3032,8 @@ fn run_vemr_optimization(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
+    clear_strategy_route_diagnostics_for_request(&req);
+
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
         let normalized_backend = req.backend.clone().with_preferred_cuda_device()?;
@@ -3012,6 +3056,7 @@ fn run_vemr_optimization(
                         } else if !matches!(req.backend, Backend::GpuKernel { .. }) {
                             gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
                         }
+                        gpu_res.route_diagnostics = take_strategy_route_diagnostics_for_request(&req);
                         return Ok(gpu_res);
                     }
                     Err(err) => {
@@ -3019,6 +3064,8 @@ fn run_vemr_optimization(
                             run_vemr_optimization_cpu(req, candles, cancel, progress)?;
                         cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
                         cpu_res.backend_fallback_reason = Some(err);
+                        cpu_res.route_diagnostics =
+                            take_vemr_route_diagnostics().filter(|entries| !entries.is_empty());
                         return Ok(cpu_res);
                     }
                 }
@@ -3028,6 +3075,8 @@ fn run_vemr_optimization(
             cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
             cpu_res.backend_fallback_reason =
                 Some("CUDA unavailable; falling back to CPU VEMR optimization.".to_string());
+            cpu_res.route_diagnostics =
+                take_vemr_route_diagnostics().filter(|entries| !entries.is_empty());
             return Ok(cpu_res);
         }
     }
@@ -3042,11 +3091,15 @@ fn run_vemr_optimization(
                 "VEMR GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
                     .to_string(),
             );
+            cpu_res.route_diagnostics =
+                take_vemr_route_diagnostics().filter(|entries| !entries.is_empty());
             return Ok(cpu_res);
         }
     }
 
-    run_vemr_optimization_cpu(req, candles, cancel, progress)
+    let mut cpu_res = run_vemr_optimization_cpu(req, candles, cancel, progress)?;
+    cpu_res.route_diagnostics = take_vemr_route_diagnostics();
+    Ok(cpu_res)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3592,6 +3645,7 @@ fn run_vemr_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -3886,6 +3940,7 @@ fn run_vemr_optimization_impl(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -5386,6 +5441,7 @@ fn run_rocb_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -5681,6 +5737,7 @@ fn run_rocb_optimization_impl(
         gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -5695,6 +5752,8 @@ fn run_vcet_optimization(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
+    clear_strategy_route_diagnostics_for_request(&req);
+
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
         if !matches!(req.backend, Backend::CpuOnly) {
@@ -5716,6 +5775,7 @@ fn run_vcet_optimization(
                     "VCET optimization currently supports GpuKernel-compatible execution only."
                         .to_string(),
                 );
+                cpu_res.route_diagnostics = take_vcet_route_diagnostics();
                 return Ok(cpu_res);
             }
             match run_vcet_optimization_gpu(&req, candles, cancel, progress, device_id) {
@@ -5725,12 +5785,14 @@ fn run_vcet_optimization(
                     } else if !matches!(req.backend, Backend::GpuKernel { .. }) {
                         gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
                     }
+                    gpu_res.route_diagnostics = take_strategy_route_diagnostics_for_request(&req);
                     return Ok(gpu_res);
                 }
                 Err(err) => {
                     let mut cpu_res = run_vcet_optimization_cpu(req, candles, cancel, progress)?;
                     cpu_res.backend_route = Some(format!("{backend_label}->CpuOnly"));
                     cpu_res.backend_fallback_reason = Some(err);
+                    cpu_res.route_diagnostics = take_vcet_route_diagnostics();
                     return Ok(cpu_res);
                 }
             }
@@ -5747,11 +5809,14 @@ fn run_vcet_optimization(
                 "VCET GPU kernel backend is disabled (build without `cuda-backtest-kernel`)."
                     .to_string(),
             );
+            cpu_res.route_diagnostics = take_vcet_route_diagnostics();
             return Ok(cpu_res);
         }
     }
 
-    run_vcet_optimization_cpu(req, candles, cancel, progress)
+    let mut cpu_res = run_vcet_optimization_cpu(req, candles, cancel, progress)?;
+    cpu_res.route_diagnostics = take_vcet_route_diagnostics();
+    Ok(cpu_res)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -6096,6 +6161,7 @@ fn run_vcet_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: Some("GpuKernel".to_string()),
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -6386,6 +6452,7 @@ fn run_vcet_optimization_impl(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -6809,6 +6876,7 @@ fn run_mkcs_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -7247,6 +7315,7 @@ fn run_kqsr_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -7458,6 +7527,7 @@ fn run_kqsr_optimization_cpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -7909,6 +7979,7 @@ fn run_carm_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -8121,6 +8192,7 @@ fn run_carm_optimization_cpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -8607,6 +8679,7 @@ fn run_kvdf_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -8819,6 +8892,7 @@ fn run_kvdf_optimization_cpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -9306,6 +9380,7 @@ fn run_cdmc_optimization_gpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -9538,6 +9613,7 @@ fn run_cdmc_optimization_cpu(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -9845,6 +9921,7 @@ fn run_mkcs_optimization_impl(
         gpu_kernel_timing_ms: None,
         backend_route: None,
         backend_fallback_reason: None,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -10437,6 +10514,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         gpu_kernel_timing_ms: None,
         backend_route,
         backend_fallback_reason,
+        route_diagnostics: None,
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -15743,6 +15821,84 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn vcet_gpu_kernel_request_reports_host_stage_route_diagnostics() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        struct ResetVcetVidyaHostStageFallback;
+
+        impl Drop for ResetVcetVidyaHostStageFallback {
+            fn drop(&mut self) {
+                crate::vcet::set_force_vcet_vidya_host_stage_fallback_for_test(false);
+            }
+        }
+
+        crate::vcet::set_force_vcet_vidya_host_stage_fallback_for_test(true);
+        let _reset = ResetVcetVidyaHostStageFallback;
+
+        let candles = make_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: Some(VcetStrategyParams::default()),
+            data_id: "vcet-gpu-route-diagnostics".to_string(),
+            fast_range: (5, 11, 2),
+            slow_range: (20, 36, 4),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(8),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("vcet gpu optimization with route diagnostics");
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+        let route_diagnostics = res.route_diagnostics.unwrap_or_default();
+        assert!(
+            route_diagnostics.iter().any(|entry| {
+                entry.contains("VCET VIDYA device-output CUDA path fell back to host-staged CUDA upload")
+                    && entry.contains("forced test fallback")
+            }),
+            "expected VCET host-stage diagnostic, got {:?}",
+            route_diagnostics
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn vcet_gpu_kernel_request_falls_back_to_cpu_with_stop_loss_overlay() {
         if !vector_ta::cuda::cuda_available() {
             return;
@@ -16331,3 +16487,5 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("only one"));
     }
 }
+
+

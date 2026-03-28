@@ -232,7 +232,7 @@ The highest-signal current themes are:
 - cross-ticker throughput review
 - deterministic-measurement review
 
-## 5. Strategy-local GPU-native optimization and validation routes
+## 5. Strategy-local GPU-native optimization and validation routes  ******** _________
 
 ### Standalone strategy-local primary files
 
@@ -303,7 +303,7 @@ The highest-signal current themes are:
 - staging/fallback review
 - per-strategy benchmark review
 
-## 6. `CompositeMo` search efficiency and GPU prescan
+## 6. `CompositeMo` search efficiency and GPU prescan  ********
 
 ### Primary files
 
@@ -339,7 +339,7 @@ The highest-signal current themes are:
 - sampler-overhead review
 - request-shape and default-value review
 
-## 7. Benchmark harnesses, perf gates, and timing boundaries
+## 7. Benchmark harnesses, perf gates, and timing boundaries  ********
 
 ### Primary files
 

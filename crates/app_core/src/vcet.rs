@@ -13,6 +13,10 @@ use crate::indicator_catalog::{
 #[cfg(feature = "cuda")]
 use cust::memory::DeviceBuffer;
 use serde::{Deserialize, Serialize};
+#[cfg(all(test, feature = "cuda"))]
+use std::cell::Cell;
+#[cfg(feature = "cuda")]
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
@@ -77,6 +81,81 @@ fn default_vcet_ce_mult() -> f64 {
 
 fn default_vcet_max_trade_bars() -> u16 {
     120
+}
+
+#[cfg(feature = "cuda")]
+thread_local! {
+    static VCET_ROUTE_DIAGNOSTICS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static FORCE_VCET_CUDA_CPU_FALLBACK: Cell<bool> = const { Cell::new(false) };
+    #[cfg(test)]
+    static FORCE_VCET_VIDYA_HOST_STAGE_FALLBACK: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "cuda")]
+fn record_vcet_route_diagnostic(message: String) {
+    VCET_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.iter().any(|entry| entry == &message) {
+            return;
+        }
+        diagnostics.push(message);
+    });
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn clear_vcet_route_diagnostics() {
+    VCET_ROUTE_DIAGNOSTICS.with(|cell| cell.borrow_mut().clear());
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn take_vcet_route_diagnostics() -> Option<Vec<String>> {
+    VCET_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut *diagnostics))
+        }
+    })
+}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn clear_vcet_route_diagnostics() {}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn take_vcet_route_diagnostics() -> Option<Vec<String>> {
+    None
+}
+
+#[cfg(all(test, feature = "cuda"))]
+pub(crate) fn set_force_vcet_cuda_cpu_fallback_for_test(enabled: bool) {
+    FORCE_VCET_CUDA_CPU_FALLBACK.with(|cell| cell.set(enabled));
+}
+
+#[cfg(all(test, feature = "cuda"))]
+pub(crate) fn set_force_vcet_vidya_host_stage_fallback_for_test(enabled: bool) {
+    FORCE_VCET_VIDYA_HOST_STAGE_FALLBACK.with(|cell| cell.set(enabled));
+}
+
+#[cfg(all(test, feature = "cuda"))]
+fn force_vcet_cuda_cpu_fallback_for_test() -> bool {
+    FORCE_VCET_CUDA_CPU_FALLBACK.with(|cell| cell.get())
+}
+
+#[cfg(not(all(test, feature = "cuda")))]
+fn force_vcet_cuda_cpu_fallback_for_test() -> bool {
+    false
+}
+
+#[cfg(all(test, feature = "cuda"))]
+fn force_vcet_vidya_host_stage_fallback_for_test() -> bool {
+    FORCE_VCET_VIDYA_HOST_STAGE_FALLBACK.with(|cell| cell.get())
+}
+
+#[cfg(not(all(test, feature = "cuda")))]
+fn force_vcet_vidya_host_stage_fallback_for_test() -> bool {
+    false
 }
 
 impl Default for VcetStrategyParams {
@@ -419,20 +498,34 @@ fn compute_indicator_f64(
     {
         if !matches!(_backend, Backend::CpuOnly) {
             if let Some(inputs) = prepared_cuda_inputs {
-                let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
-                    format!("VCET indicator '{indicator_id}' is not registered for dynamic dispatch")
-                })?;
-                let out = compute_dynamic_indicator_cuda_direct_with_inputs(
-                    inputs,
-                    indicator_id,
-                    Some(output_id),
-                    descriptor.input_kind,
-                    params,
-                    Kernel::Auto,
-                    vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-                );
-                if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                if force_vcet_cuda_cpu_fallback_for_test() {
+                    record_vcet_route_diagnostic(format!(
+                        "VCET indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: forced test fallback"
+                    ));
+                } else {
+                    let descriptor =
+                        find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
+                            format!(
+                                "VCET indicator '{indicator_id}' is not registered for dynamic dispatch"
+                            )
+                        })?;
+                    let out = compute_dynamic_indicator_cuda_direct_with_inputs(
+                        inputs,
+                        indicator_id,
+                        Some(output_id),
+                        descriptor.input_kind,
+                        params,
+                        Kernel::Auto,
+                        vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+                    );
+                    match out {
+                        Ok(values) => return cuda_series_to_f64(values),
+                        Err(err) => {
+                            record_vcet_route_diagnostic(format!(
+                                "VCET indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: {err}"
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -593,18 +686,26 @@ pub fn compute_vcet_vidya_signal_cuda_device(
             value: IndicatorParamValue::Float(alpha),
         },
     ];
-    let out = compute_dynamic_indicator_cuda_direct_with_inputs(
-        prepared_inputs,
-        "vidya",
-        Some(ids.vidya_output.as_str()),
-        ids.vidya_input_kind,
-        params.as_slice(),
-        Kernel::Auto,
-        vector_ta::indicators::dispatch::CudaOutputTarget::DeviceF32,
-    );
+    let out = if force_vcet_vidya_host_stage_fallback_for_test() {
+        Err("forced test fallback".to_string())
+    } else {
+        compute_dynamic_indicator_cuda_direct_with_inputs(
+            prepared_inputs,
+            "vidya",
+            Some(ids.vidya_output.as_str()),
+            ids.vidya_input_kind,
+            params.as_slice(),
+            Kernel::Auto,
+            vector_ta::indicators::dispatch::CudaOutputTarget::DeviceF32,
+        )
+        .map_err(|e| e.to_string())
+    };
     match out {
         Ok(values) => cuda_series_to_device_f32(values),
-        Err(_) => {
+        Err(err) => {
+            record_vcet_route_diagnostic(format!(
+                "VCET VIDYA device-output CUDA path fell back to host-staged CUDA upload: {err}"
+            ));
             let host_out = compute_dynamic_indicator_cuda_direct_with_inputs(
                 prepared_inputs,
                 "vidya",

@@ -109,9 +109,9 @@ use crate::validation_pipeline::{
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::vcc_momentum_roundtrip_parity;
 use crate::vcc::{
-    build_vcc_desired_positions, compute_vcc_fast_signals, compute_vcc_start_t,
-    compute_vcc_trend_signals, resolve_vcc_periods, validate_vcc_params, VccFastSignals,
-    VccStrategyParams, VccTrendSignals,
+    build_vcc_desired_positions, clear_vcc_route_diagnostics, compute_vcc_fast_signals,
+    compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods, take_vcc_route_diagnostics,
+    validate_vcc_params, VccFastSignals, VccStrategyParams, VccTrendSignals,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::{
@@ -124,9 +124,9 @@ use crate::vcc_gpu_kernel::{
     VccGpuComboBatch, VccGpuDeviceSignalMatrices,
 };
 use crate::vcet::{
-    build_vcet_desired_positions, compute_vcet_chandelier_signals, compute_vcet_start_t,
-    compute_vcet_vidya_signals, resolve_vcet_periods, validate_vcet_params, VcetChandelierSignals,
-    VcetStrategyParams, VcetVidyaSignals,
+    build_vcet_desired_positions, clear_vcet_route_diagnostics, compute_vcet_chandelier_signals,
+    compute_vcet_start_t, compute_vcet_vidya_signals, resolve_vcet_periods, take_vcet_route_diagnostics,
+    validate_vcet_params, VcetChandelierSignals, VcetStrategyParams, VcetVidyaSignals,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet::{
@@ -139,9 +139,9 @@ use crate::vcet_gpu_kernel::{
     VcetGpuOwnedSignalTables,
 };
 use crate::vemr::{
-    build_vemr_desired_positions, compute_vemr_fast_signals, compute_vemr_risk_signals,
-    compute_vemr_start_t, resolve_vemr_periods, validate_vemr_params, VemrFastSignals,
-    VemrRiskSignals, VemrStrategyParams,
+    build_vemr_desired_positions, clear_vemr_route_diagnostics, compute_vemr_fast_signals,
+    compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods, take_vemr_route_diagnostics,
+    validate_vemr_params, VemrFastSignals, VemrRiskSignals, VemrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vemr::{
@@ -303,6 +303,34 @@ fn resolve_validation_backend_runtime(
                 )
             }),
         ),
+    }
+}
+
+fn clear_validation_strategy_route_diagnostics(candidates: &[CompositeParams]) {
+    let Some(first) = candidates.first() else {
+        return;
+    };
+    if first.vcc.is_some() {
+        clear_vcc_route_diagnostics();
+    } else if first.vemr.is_some() {
+        clear_vemr_route_diagnostics();
+    } else if first.vcet.is_some() {
+        clear_vcet_route_diagnostics();
+    }
+}
+
+fn take_validation_strategy_route_diagnostics(
+    candidates: &[CompositeParams],
+) -> Option<Vec<String>> {
+    let first = candidates.first()?;
+    if first.vcc.is_some() {
+        take_vcc_route_diagnostics()
+    } else if first.vemr.is_some() {
+        take_vemr_route_diagnostics()
+    } else if first.vcet.is_some() {
+        take_vcet_route_diagnostics()
+    } else {
+        None
     }
 }
 
@@ -9946,6 +9974,8 @@ pub struct CompositeValidationResult {
     pub backend_route: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_diagnostics: Option<Vec<String>>,
     pub candidates: Vec<CompositeValidationCandidateResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reopt_walk_forward: Option<ReoptWalkForwardStats>,
@@ -12512,6 +12542,8 @@ pub fn run_composite_validation_blocking_with_candles(
     #[cfg(feature = "cuda")]
     let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles(candles, &ma_source).ok();
 
+    clear_validation_strategy_route_diagnostics(&req.candidates);
+
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let mut gpu_backend_fallback_reason = None::<String>;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -13238,6 +13270,8 @@ pub fn run_composite_validation_blocking_with_candles(
         cscv_pbo.as_ref(),
         spa.as_ref(),
     );
+    let route_diagnostics = take_validation_strategy_route_diagnostics(&req.candidates)
+        .filter(|entries| !entries.is_empty());
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let (backend_used, backend_route, backend_fallback_reason) =
         if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
@@ -13258,6 +13292,7 @@ pub fn run_composite_validation_blocking_with_candles(
         backend_used,
         backend_route,
         backend_fallback_reason,
+        route_diagnostics,
         candidates: out,
         reopt_walk_forward,
         spa,
@@ -19863,6 +19898,17 @@ mod tests {
             return;
         }
 
+        struct ResetVemrCpuFallback;
+
+        impl Drop for ResetVemrCpuFallback {
+            fn drop(&mut self) {
+                crate::vemr::set_force_vemr_cuda_cpu_fallback_for_test(false);
+            }
+        }
+
+        crate::vemr::set_force_vemr_cuda_cpu_fallback_for_test(true);
+        let _reset = ResetVemrCpuFallback;
+
         let candles = make_trending_candles(3000);
         let cancel = AtomicBool::new(false);
 
@@ -19930,6 +19976,14 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("without overlays/stop-loss/take-profit"));
+        let route_diagnostics = res.route_diagnostics.unwrap_or_default();
+        assert!(
+            route_diagnostics.iter().any(|entry| {
+                entry.contains("VEMR indicator") && entry.contains("forced test fallback")
+            }),
+            "expected VEMR CUDA helper fallback diagnostic, got {:?}",
+            route_diagnostics
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -20777,7 +20831,6 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn vcc_validation_gpu_kernel_matches_cpu_metrics_on_roundtrip_unstable_fixture() {
         let candles = make_trending_candles(4096);

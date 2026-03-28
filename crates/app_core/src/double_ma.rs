@@ -550,6 +550,8 @@ pub struct BackendOptimizationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_diagnostics: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub indicator_route_plan: Option<IndicatorRoutePlanSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub residency: Option<GpuResidencySummary>,
@@ -7108,6 +7110,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 gpu_kernel_timing_ms: merged_gpu_kernel_timing_ms,
                 backend_route: merged_backend_route,
                 backend_fallback_reason: merged_backend_fallback_reason,
+                route_diagnostics: None,
                 indicator_route_plan: Some(indicator_route_plan_summary),
                 residency,
                 followup_cache_key,

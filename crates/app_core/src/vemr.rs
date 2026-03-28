@@ -11,6 +11,10 @@ use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(all(test, feature = "cuda"))]
+use std::cell::Cell;
+#[cfg(feature = "cuda")]
+use std::cell::RefCell;
 use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
@@ -117,6 +121,64 @@ fn default_vemr_confirm_bars() -> u16 {
 
 fn default_vemr_max_trade_bars() -> u16 {
     80
+}
+
+#[cfg(feature = "cuda")]
+thread_local! {
+    static VEMR_ROUTE_DIAGNOSTICS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static FORCE_VEMR_CUDA_CPU_FALLBACK: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "cuda")]
+fn record_vemr_route_diagnostic(message: String) {
+    VEMR_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.iter().any(|entry| entry == &message) {
+            return;
+        }
+        diagnostics.push(message);
+    });
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn clear_vemr_route_diagnostics() {
+    VEMR_ROUTE_DIAGNOSTICS.with(|cell| cell.borrow_mut().clear());
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn take_vemr_route_diagnostics() -> Option<Vec<String>> {
+    VEMR_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut *diagnostics))
+        }
+    })
+}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn clear_vemr_route_diagnostics() {}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn take_vemr_route_diagnostics() -> Option<Vec<String>> {
+    None
+}
+
+#[cfg(all(test, feature = "cuda"))]
+pub(crate) fn set_force_vemr_cuda_cpu_fallback_for_test(enabled: bool) {
+    FORCE_VEMR_CUDA_CPU_FALLBACK.with(|cell| cell.set(enabled));
+}
+
+#[cfg(all(test, feature = "cuda"))]
+fn force_vemr_cuda_cpu_fallback_for_test() -> bool {
+    FORCE_VEMR_CUDA_CPU_FALLBACK.with(|cell| cell.get())
+}
+
+#[cfg(not(all(test, feature = "cuda")))]
+fn force_vemr_cuda_cpu_fallback_for_test() -> bool {
+    false
 }
 
 impl Default for VemrStrategyParams {
@@ -882,16 +944,27 @@ fn compute_indicator_f64(
             && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
         if prefer_gpu {
             if let Some(prepared) = prepared_cuda_inputs {
-                let out = compute_dynamic_indicator_cuda_with_inputs(
-                    prepared,
-                    indicator_id,
-                    Some(output_id),
-                    params,
-                    Kernel::Auto,
-                    vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-                );
-                if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                if force_vemr_cuda_cpu_fallback_for_test() {
+                    record_vemr_route_diagnostic(format!(
+                        "VEMR indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: forced test fallback"
+                    ));
+                } else {
+                    let out = compute_dynamic_indicator_cuda_with_inputs(
+                        prepared,
+                        indicator_id,
+                        Some(output_id),
+                        params,
+                        Kernel::Auto,
+                        vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+                    );
+                    match out {
+                        Ok(values) => return cuda_series_to_f64(values),
+                        Err(err) => {
+                            record_vemr_route_diagnostic(format!(
+                                "VEMR indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: {err}"
+                            ));
+                        }
+                    }
                 }
             }
         }
