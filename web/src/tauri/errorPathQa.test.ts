@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { installTauriInstrumentation } from './instrumentation'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useTaskStore } from '../stores/taskStore'
 
 class MemoryStorage implements Storage {
@@ -86,6 +87,7 @@ describe('error-path QA through instrumented invoke', () => {
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const store = useTaskStore(pinia)

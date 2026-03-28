@@ -1,4 +1,4 @@
-import { getActivePinia } from 'pinia'
+import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { markRaw } from 'vue'
 import { invokeCommand } from '../tauri/invoke'
 import { applyTimeframe as applyDataTimeframe, loadCsv as loadDataCsv } from './dataService'
@@ -13,6 +13,7 @@ import { applyWorkflowArtifactsPayload, useWorkflowArtifactsStore } from '../sto
 import { LAST_BATCH_SUMMARY_KEY } from '../utils/core/storageKeys'
 import { computeConfigFingerprint, defaultBatchTag, dedupTags, splitHoldoutPaths } from '../utils/core/artifactIdentity'
 import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
+import { formatUiCount, formatUtcDateFromUnixMs } from '../utils/uiFormat'
 import { buildMetaBatchRequest } from './metaBatchRequestBuilder'
 import { buildMetaMlScope } from './metaMlScopeBuilder'
 import { buildMetaSelectionRequest } from './metaRequestBuilder'
@@ -288,7 +289,7 @@ function formatParamsCompact(params: Record<string, unknown>): string {
 }
 
 function readStoreRecord(storeKey: 'analysis' | 'validation'): Record<string, unknown> | null {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   const root = pinia.state.value as Record<string, unknown>
   const store = root[storeKey]
@@ -297,7 +298,7 @@ function readStoreRecord(storeKey: 'analysis' | 'validation'): Record<string, un
 }
 
 function readPiniaStoreRecord(storeKey: string): Record<string, unknown> | null {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   const root = pinia.state.value as Record<string, unknown>
   const store = root[storeKey]
@@ -306,31 +307,31 @@ function readPiniaStoreRecord(storeKey: string): Record<string, unknown> | null 
 }
 
 function getAnalysisStore(): AnalysisStore | null {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   return useAnalysisStore(pinia)
 }
 
 function getDataStore() {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   return useDataStore(pinia)
 }
 
 function getOptimizeStore() {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   return useOptimizeStore(pinia)
 }
 
 function getValidationStore() {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   return useValidationStore(pinia)
 }
 
 function getWorkflowArtifactsState() {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   return useWorkflowArtifactsStore(pinia)
 }
@@ -358,7 +359,7 @@ function setErrorStatus(error: unknown): void {
 }
 
 function selectMetaResultsTab(): void {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return
   const workflowStore = useWorkflowStore(pinia)
   workflowStore.selectResultsTab('meta')
@@ -1298,11 +1299,7 @@ function selectedPolicyEvalSavedEntry(): Record<string, unknown> | null {
 }
 
 function formatYmdUtc(value: unknown): string {
-  const ms = Number(value)
-  if (!Number.isFinite(ms)) return '—'
-  const date = new Date(ms)
-  if (!Number.isFinite(date.getTime())) return '—'
-  return date.toISOString().slice(0, 10)
+  return formatUtcDateFromUnixMs(value)
 }
 
 function normalizeMaybeInteger(value: unknown): number | null {
@@ -1367,9 +1364,7 @@ function normalizeMarketLabel(market: string, adjusted: boolean): string {
 }
 
 function normalizeRowsHint(value: unknown): string {
-  const rows = Number(value || 0)
-  if (!Number.isFinite(rows) || rows <= 0) return '—'
-  return rows.toLocaleString()
+  return formatUiCount(value)
 }
 
 function batchFailedCount(): number {

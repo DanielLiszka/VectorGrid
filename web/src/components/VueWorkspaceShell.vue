@@ -57,11 +57,54 @@ const resultsItems = {
   debug: { key: 'debug', label: 'Debug' },
 } as const
 
+type TabKeyItem = { key: string }
+
+const shellMainPanelId = 'shellMainPanel'
+const shellSelectionStatusId = 'shellSelectionStatus'
+
+function workspaceTabId(key: string): string {
+  return `workspace_tab_${key}`
+}
+
+function workflowStepTabId(key: string): string {
+  return `workflow_step_tab_${key}`
+}
+
+function controlTabId(key: string): string {
+  return `controls_tab_${key}`
+}
+
+function resultTabId(key: string): string {
+  return `results_tab_${key}`
+}
+
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const currentWorkflowStep = computed(() => String(workflowStep.value || '').trim() || 'data')
 const settingsWorkspaceActive = computed(() => currentWorkspace.value === 'settings')
+const currentWorkspaceLabel = computed(() => workspaceItems.find((item) => item.key === currentWorkspace.value)?.label || 'Workflow')
+const currentWorkflowStepLabel = computed(
+  () => workflowStepItems.find((item) => item.key === currentWorkflowStep.value)?.label || '1 Data Source',
+)
+const currentControlsLabel = computed(
+  () => visibleControlsItems.value.find((item) => item.key === activeControlsTab.value)?.label || 'No setup panel',
+)
+const currentResultsLabel = computed(
+  () => visibleResultsItems.value.find((item) => item.key === activeResultsTab.value)?.label || 'No result panel',
+)
+const selectedShellTabId = computed(() =>
+  currentWorkspace.value === 'workflow'
+    ? workflowStepTabId(currentWorkflowStep.value)
+    : workspaceTabId(currentWorkspace.value),
+)
+const shellSelectionAnnouncement = computed(() => {
+  const parts = [`Workspace ${currentWorkspaceLabel.value}.`]
+  if (currentWorkspace.value === 'workflow') parts.push(`Workflow step ${currentWorkflowStepLabel.value}.`)
+  if (visibleControlsItems.value.length > 0) parts.push(`Setup panel ${currentControlsLabel.value}.`)
+  if (visibleResultsItems.value.length > 0) parts.push(`Results panel ${currentResultsLabel.value}.`)
+  return parts.join(' ')
+})
 const shellSubtitle = computed(() => {
   const text = String(workflowSubtitle.value || '').trim()
   return text || '—'
@@ -120,6 +163,9 @@ const workspaceGridStyle = computed(() => {
     gridTemplateColumns: `${(fraction * 100).toFixed(3)}% 14px minmax(0, 1fr)`,
   }
 })
+const splitValuePercent = computed(() => Math.round(clampSplitFraction(splitFraction.value) * 100))
+const splitMinPercent = computed(() => Math.round(clampSplitFraction(0) * 100))
+const splitMaxPercent = computed(() => Math.round(clampSplitFraction(1) * 100))
 
 const contextItems = computed(() => {
   const dataset = String(datasetLabel.value || '').trim()
@@ -176,6 +222,104 @@ function selectControlsTab(key: string): void {
 function selectResultsTab(key: string): void {
   if (activeResultsTab.value === key) return
   workflowStore.selectResultsTab(key)
+}
+
+function focusSelector(selector: string): void {
+  const element = document.querySelector<HTMLElement>(selector)
+  element?.focus()
+}
+
+function controlsPanelId(key: string): string {
+  return `controls_panel_${key}`
+}
+
+function resultsPanelId(key: string): string {
+  return `results_panel_${key}`
+}
+
+function visibleItemKeys(items: readonly TabKeyItem[]): string[] {
+  return items.map((item) => item.key)
+}
+
+function resolveFocusedNavigationKey(event: KeyboardEvent): string | null {
+  const target =
+    event.target instanceof Element
+      ? (event.target.closest('[data-workspace], [data-workflow-step], [data-tab]') as HTMLElement | null)
+      : null
+  if (!target) return null
+  const focusedKey =
+    String(target.dataset.workspace || '').trim() ||
+    String(target.dataset.workflowStep || '').trim() ||
+    String(target.dataset.tab || '').trim()
+  return focusedKey || null
+}
+
+function isControlPanelVisible(key: string): boolean {
+  return visibleItemKeys(visibleControlsItems.value).includes(key) && activeControlsTab.value === key
+}
+
+function isResultsPanelVisible(key: string): boolean {
+  return visibleItemKeys(visibleResultsItems.value).includes(key) && activeResultsTab.value === key
+}
+
+function moveTabFocus(
+  event: KeyboardEvent,
+  items: readonly TabKeyItem[],
+  currentKey: string,
+  selectTab: (key: string) => void,
+  selectorForKey: (key: string) => string,
+): void {
+  if (items.length <= 1) return
+  const originKey = resolveFocusedNavigationKey(event) ?? currentKey
+  const currentIndex = items.findIndex((item) => item.key === originKey)
+  if (currentIndex < 0) return
+
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = items.length - 1
+  else return
+
+  event.preventDefault()
+  const nextKey = items[nextIndex]?.key
+  if (!nextKey) return
+  selectTab(nextKey)
+  void nextTick(() => focusSelector(selectorForKey(nextKey)))
+}
+
+function onWorkspaceKeydown(event: KeyboardEvent): void {
+  moveTabFocus(event, workspaceItems, currentWorkspace.value, selectWorkspace, (key) => `#workspaceBar [data-workspace="${key}"]`)
+}
+
+function onWorkflowStepKeydown(event: KeyboardEvent): void {
+  moveTabFocus(
+    event,
+    workflowStepItems,
+    currentWorkflowStep.value,
+    selectWorkflowStep,
+    (key) => `#workflowStepBar [data-workflow-step="${key}"]`,
+  )
+}
+
+function onControlsTabKeydown(event: KeyboardEvent): void {
+  moveTabFocus(
+    event,
+    visibleControlsItems.value,
+    activeControlsTab.value,
+    selectControlsTab,
+    (key) => `#controlsTabBar [data-tab="${key}"]`,
+  )
+}
+
+function onResultsTabKeydown(event: KeyboardEvent): void {
+  moveTabFocus(
+    event,
+    visibleResultsItems.value,
+    activeResultsTab.value,
+    selectResultsTab,
+    (key) => `#resultsTabBar [data-tab="${key}"]`,
+  )
 }
 
 function currentGridWidth(): number {
@@ -275,33 +419,68 @@ onBeforeUnmount(() => {
         <div class="subtitle mono">{{ shellSubtitle }}</div>
       </div>
 
-      <nav id="workspaceBar" class="tabsRow workspaceBar">
+      <nav
+        id="workspaceBar"
+        class="tabsRow workspaceBar"
+        aria-label="Workspace sections"
+        role="tablist"
+        aria-orientation="horizontal"
+        @keydown="onWorkspaceKeydown"
+      >
         <button
           v-for="item in workspaceItems"
           :key="`ws_${item.key}`"
+          :id="workspaceTabId(item.key)"
           type="button"
           class="tabBtn"
           :data-workspace="item.key"
           :class="{ active: currentWorkspace === item.key }"
+          role="tab"
+          :aria-selected="currentWorkspace === item.key"
+          :aria-controls="shellMainPanelId"
+          :tabindex="currentWorkspace === item.key ? 0 : -1"
           @click="selectWorkspace(item.key)"
         >
           {{ item.label }}
         </button>
       </nav>
 
-      <nav id="workflowStepBar" class="tabsRow workflowStepBar" v-if="currentWorkspace === 'workflow'">
+      <nav
+        id="workflowStepBar"
+        class="tabsRow workflowStepBar"
+        v-if="currentWorkspace === 'workflow'"
+        aria-label="Workflow steps"
+        role="tablist"
+        aria-orientation="horizontal"
+        @keydown="onWorkflowStepKeydown"
+      >
         <button
           v-for="item in workflowStepItems"
           :key="`step_${item.key}`"
+          :id="workflowStepTabId(item.key)"
           type="button"
           class="tabBtn"
           :data-workflow-step="item.key"
           :class="{ active: currentWorkflowStep === item.key }"
+          role="tab"
+          :aria-selected="currentWorkflowStep === item.key"
+          :aria-controls="shellMainPanelId"
+          :tabindex="currentWorkflowStep === item.key ? 0 : -1"
           @click="selectWorkflowStep(item.key)"
         >
           {{ item.label }}
         </button>
       </nav>
+
+      <div
+        :id="shellSelectionStatusId"
+        class="srOnly"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {{ shellSelectionAnnouncement }}
+      </div>
 
       <section class="contextStrip" aria-label="Run context">
         <article v-for="item in contextItems" :key="`ctx_${item.key}`" class="contextCard">
@@ -313,37 +492,93 @@ onBeforeUnmount(() => {
 
     <main class="shellMain">
       <section
-        ref="workspaceGridRef"
-        class="workspaceGrid"
-        :class="workspaceGridClass"
-        :style="workspaceGridStyle"
-        v-show="!settingsWorkspaceActive"
+        :id="shellMainPanelId"
+        class="shellMainPanel"
+        role="tabpanel"
+        :aria-labelledby="selectedShellTabId"
+        :aria-describedby="shellSelectionStatusId"
       >
-        <aside v-show="controlsColumnVisible" class="controlsColumn">
-          <nav v-if="controlsTabsVisible" id="controlsTabBar" class="tabsRow compact">
+        <section
+          ref="workspaceGridRef"
+          class="workspaceGrid"
+          :class="workspaceGridClass"
+          :style="workspaceGridStyle"
+          v-show="!settingsWorkspaceActive"
+        >
+        <aside id="shellControlsColumn" v-show="controlsColumnVisible" class="controlsColumn">
+          <nav
+            v-if="controlsTabsVisible"
+            id="controlsTabBar"
+            class="tabsRow compact"
+            aria-label="Setup panels"
+            role="tablist"
+            aria-orientation="horizontal"
+            @keydown="onControlsTabKeydown"
+          >
             <button
               v-for="item in visibleControlsItems"
               :key="`controls_${item.key}`"
+              :id="controlTabId(item.key)"
               type="button"
               class="tabBtn"
               :data-tab="item.key"
               :class="{ active: activeControlsTab === item.key }"
+              role="tab"
+              :aria-selected="activeControlsTab === item.key"
+              :aria-controls="controlsPanelId(item.key)"
+              :tabindex="activeControlsTab === item.key ? 0 : -1"
               @click="selectControlsTab(item.key)"
             >
               {{ item.label }}
             </button>
           </nav>
 
-          <div class="panelHost" data-vue-panel="data">
+          <div
+            :id="controlsPanelId('data')"
+            class="panelHost"
+            data-vue-panel="data"
+            :role="controlsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="controlsTabsVisible ? controlTabId('data') : undefined"
+            :aria-label="controlsTabsVisible ? undefined : 'Data'"
+            :aria-hidden="!isControlPanelVisible('data')"
+            v-show="isControlPanelVisible('data')"
+          >
             <div id="dataVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="opt">
+          <div
+            :id="controlsPanelId('opt')"
+            class="panelHost"
+            data-vue-panel="opt"
+            :role="controlsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="controlsTabsVisible ? controlTabId('opt') : undefined"
+            :aria-label="controlsTabsVisible ? undefined : 'Optimize'"
+            :aria-hidden="!isControlPanelVisible('opt')"
+            v-show="isControlPanelVisible('opt')"
+          >
             <div id="optVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="strategy">
+          <div
+            :id="controlsPanelId('strategy')"
+            class="panelHost"
+            data-vue-panel="strategy"
+            :role="controlsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="controlsTabsVisible ? controlTabId('strategy') : undefined"
+            :aria-label="controlsTabsVisible ? undefined : 'Strategy'"
+            :aria-hidden="!isControlPanelVisible('strategy')"
+            v-show="isControlPanelVisible('strategy')"
+          >
             <div id="strategyVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="advanced">
+          <div
+            :id="controlsPanelId('advanced')"
+            class="panelHost"
+            data-vue-panel="advanced"
+            :role="controlsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="controlsTabsVisible ? controlTabId('advanced') : undefined"
+            :aria-label="controlsTabsVisible ? undefined : 'Advanced'"
+            :aria-hidden="!isControlPanelVisible('advanced')"
+            v-show="isControlPanelVisible('advanced')"
+          >
             <div id="advancedVueShellMount"></div>
           </div>
         </aside>
@@ -353,6 +588,13 @@ onBeforeUnmount(() => {
           type="button"
           class="workspaceDivider"
           aria-label="Resize setup and results panels"
+          aria-controls="shellControlsColumn shellResultsColumn"
+          aria-orientation="vertical"
+          :aria-valuemin="splitMinPercent"
+          :aria-valuemax="splitMaxPercent"
+          :aria-valuenow="splitValuePercent"
+          :aria-valuetext="`${splitValuePercent}% setup width`"
+          role="separator"
           @pointerdown="onDividerPointerDown"
           @pointermove="onDividerPointerMove"
           @pointerup="onDividerPointerUp"
@@ -362,56 +604,151 @@ onBeforeUnmount(() => {
           <span class="workspaceDividerGrip" aria-hidden="true"></span>
         </button>
 
-        <section class="resultsColumn">
-          <nav v-if="resultsTabsVisible" id="resultsTabBar" class="tabsRow compact">
+        <section id="shellResultsColumn" class="resultsColumn">
+          <nav
+            v-if="resultsTabsVisible"
+            id="resultsTabBar"
+            class="tabsRow compact"
+            aria-label="Result panels"
+            role="tablist"
+            aria-orientation="horizontal"
+            @keydown="onResultsTabKeydown"
+          >
             <button
               v-for="item in visibleResultsItems"
               :key="`results_${item.key}`"
+              :id="resultTabId(item.key)"
               type="button"
               class="tabBtn"
               :data-tab="item.key"
               :class="{ active: activeResultsTab === item.key }"
+              role="tab"
+              :aria-selected="activeResultsTab === item.key"
+              :aria-controls="resultsPanelId(item.key)"
+              :tabindex="activeResultsTab === item.key ? 0 : -1"
               @click="selectResultsTab(item.key)"
             >
               {{ item.label }}
             </button>
           </nav>
 
-          <div class="panelHost" data-vue-panel="overview">
+          <div
+            :id="resultsPanelId('overview')"
+            class="panelHost"
+            data-vue-panel="overview"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('overview') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Overview'"
+            :aria-hidden="!isResultsPanelVisible('overview')"
+            v-show="isResultsPanelVisible('overview')"
+          >
             <div id="overviewVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="top">
+          <div
+            :id="resultsPanelId('top')"
+            class="panelHost"
+            data-vue-panel="top"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('top') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Top'"
+            :aria-hidden="!isResultsPanelVisible('top')"
+            v-show="isResultsPanelVisible('top')"
+          >
             <div id="topVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="pareto">
+          <div
+            :id="resultsPanelId('pareto')"
+            class="panelHost"
+            data-vue-panel="pareto"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('pareto') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Pareto'"
+            :aria-hidden="!isResultsPanelVisible('pareto')"
+            v-show="isResultsPanelVisible('pareto')"
+          >
             <div id="paretoVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="validate">
+          <div
+            :id="resultsPanelId('validate')"
+            class="panelHost"
+            data-vue-panel="validate"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('validate') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Validate'"
+            :aria-hidden="!isResultsPanelVisible('validate')"
+            v-show="isResultsPanelVisible('validate')"
+          >
             <div id="validationVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="drill">
+          <div
+            :id="resultsPanelId('drill')"
+            class="panelHost"
+            data-vue-panel="drill"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('drill') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Drilldown'"
+            :aria-hidden="!isResultsPanelVisible('drill')"
+            v-show="isResultsPanelVisible('drill')"
+          >
             <div id="drillVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="heatmap">
+          <div
+            :id="resultsPanelId('heatmap')"
+            class="panelHost"
+            data-vue-panel="heatmap"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('heatmap') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Heatmap'"
+            :aria-hidden="!isResultsPanelVisible('heatmap')"
+            v-show="isResultsPanelVisible('heatmap')"
+          >
             <div id="heatmapVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="history">
+          <div
+            :id="resultsPanelId('history')"
+            class="panelHost"
+            data-vue-panel="history"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('history') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'History'"
+            :aria-hidden="!isResultsPanelVisible('history')"
+            v-show="isResultsPanelVisible('history')"
+          >
             <div id="historyVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="meta">
+          <div
+            :id="resultsPanelId('meta')"
+            class="panelHost"
+            data-vue-panel="meta"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('meta') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Meta'"
+            :aria-hidden="!isResultsPanelVisible('meta')"
+            v-show="isResultsPanelVisible('meta')"
+          >
             <div id="metaVueShellMount"></div>
           </div>
-          <div class="panelHost" data-vue-panel="debug">
+          <div
+            :id="resultsPanelId('debug')"
+            class="panelHost"
+            data-vue-panel="debug"
+            :role="resultsTabsVisible ? 'tabpanel' : 'region'"
+            :aria-labelledby="resultsTabsVisible ? resultTabId('debug') : undefined"
+            :aria-label="resultsTabsVisible ? undefined : 'Debug'"
+            :aria-hidden="!isResultsPanelVisible('debug')"
+            v-show="isResultsPanelVisible('debug')"
+          >
             <div id="debugVueShellMount"></div>
           </div>
         </section>
-      </section>
+        </section>
 
-      <section v-show="settingsWorkspaceActive" id="settingsShellGrid">
-        <div id="settingsVueShellMount"></div>
-        <div id="executionShellPane">
-          <div id="executionVueShellMount"></div>
-        </div>
+        <section v-show="settingsWorkspaceActive" id="settingsShellGrid">
+          <div id="settingsVueShellMount"></div>
+          <div id="executionShellPane">
+            <div id="executionVueShellMount"></div>
+          </div>
+        </section>
       </section>
     </main>
 
@@ -539,6 +876,13 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
+.shellMainPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .workspaceGrid {
   flex: 1 1 auto;
   height: 100%;
@@ -620,6 +964,18 @@ onBeforeUnmount(() => {
   width: 1px;
   transform: translateX(-50%);
   background: color-mix(in oklab, var(--border) 88%, transparent);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .workspaceDividerGrip {

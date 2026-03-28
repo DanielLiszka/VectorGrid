@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import ConfirmationDialog from './ConfirmationDialog.vue'
 
 const execStore = useExecutionStore()
 const workflowStore = useWorkflowStore()
@@ -42,8 +45,12 @@ const {
 } = storeToRefs(execStore)
 const { workspace } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const paneRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#executionVueShellMount', {
+  paneSelector: '#executionShellPane',
+  paneDatasetKey: 'vueExecution',
+})
+
+type PendingExecutionAction = 'clearKeys' | 'startLive' | 'startRunner'
 
 const symbolDraft = ref('')
 const qtyDraft = ref('')
@@ -55,14 +62,56 @@ const apiKeyDraft = ref('')
 const apiSecretDraft = ref('')
 const modeDraft = ref('paper')
 const sourceDraft = ref('selected')
+const pendingAction = ref<PendingExecutionAction | null>(null)
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
-
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
+const liveModeArmed = computed(() => String(mode.value || modeDraft.value || 'paper').trim() === 'live')
+const modeBadgeLabel = computed(() => liveModeArmed.value ? 'Live mode armed' : 'Paper mode')
+const executionSummaryChips = computed(() => [
+  modeBadgeLabel.value,
+  `Source ${String(sourceDraft.value || 'selected').trim() || 'selected'}`,
+  dryRun.value ? 'Dry run on' : 'Dry run off',
+  liveUseDelayed.value ? 'Delayed feed' : 'Realtime feed',
+  `Orders ${orderCount.value}`,
+])
+const safetyModeLabel = computed(() => {
+  const nextMode = String(mode.value || modeDraft.value || 'paper').trim() || 'paper'
+  return nextMode === 'live'
+    ? 'Live mode is armed. Confirm before starting live data or the auto-runner.'
+    : 'Paper mode is active. Live data and runner controls still require confirmation.'
 })
+const confirmationTitle = computed(() => {
+  if (pendingAction.value === 'clearKeys') return 'Clear stored execution credentials?'
+  if (pendingAction.value === 'startLive') return 'Start live candle feed?'
+  if (pendingAction.value === 'startRunner') return 'Start the auto-runner?'
+  return ''
+})
+const confirmationBody = computed(() => {
+  if (pendingAction.value === 'clearKeys') {
+    return 'This removes the current API key and secret from the frontend state and clears persisted execution keys.'
+  }
+  if (pendingAction.value === 'startLive') {
+    return 'The app will begin consuming live candle updates for the current symbol. Review symbol, mode, and delayed-feed settings first.'
+  }
+  if (pendingAction.value === 'startRunner') {
+    return 'The auto-runner can issue repeated execution decisions as new bars arrive. Confirm mode, parameter source, and risk settings first.'
+  }
+  return ''
+})
+const confirmationConfirmLabel = computed(() => {
+  if (pendingAction.value === 'clearKeys') return 'Clear keys'
+  if (pendingAction.value === 'startLive') return 'Start live feed'
+  if (pendingAction.value === 'startRunner') return 'Start runner'
+  return 'Confirm'
+})
+const canConfirmPendingAction = computed(() => {
+  if (pendingAction.value === 'clearKeys') return !!canClearKeys.value
+  if (pendingAction.value === 'startLive') return !!canStartLive.value
+  if (pendingAction.value === 'startRunner') return !!canStartRunner.value
+  return false
+})
+
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 watch(
   () => [
@@ -157,26 +206,39 @@ function stopRunnerAction(): void {
   execStore.stopRunner()
 }
 
-function resolveMount(): void {
-  const pane = document.querySelector('#executionShellPane') as HTMLElement | null
-  const mount = document.querySelector('#executionVueShellMount') as HTMLElement | null
-  if (!pane || !mount) return
-  paneRoot.value = pane
-  pane.dataset.vueExecution = '1'
-  mountReady.value = true
+function queueConfirmation(action: PendingExecutionAction): void {
+  flushQueuedInputValuesNow()
+  pendingAction.value = action
 }
 
-onMounted(async () => {
-  await nextTick()
-  resolveMount()
-})
+function cancelPendingAction(): void {
+  pendingAction.value = null
+}
+
+function confirmPendingAction(): void {
+  const nextAction = pendingAction.value
+  if (!nextAction) return
+  pendingAction.value = null
+  if (nextAction === 'clearKeys') {
+    clearKeysAction()
+    return
+  }
+  if (nextAction === 'startLive') {
+    startLiveAction()
+    return
+  }
+  if (nextAction === 'startRunner') {
+    startRunnerAction()
+  }
+}
 
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow()
-  if (paneRoot.value) {
-    delete paneRoot.value.dataset.vueExecution
-    paneRoot.value = null
-  }
+  pendingAction.value = null
+})
+
+watch(visible, (isVisible) => {
+  if (!isVisible) pendingAction.value = null
 })
 </script>
 
@@ -184,11 +246,30 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#executionVueShellMount">
     <section class="execPanelVueRoot execVueMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Paper/Live Execution</div>
-        <div class="meta mono">{{ orderCount }} orders · {{ stamp }}</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Broker</div>
+          <h2 class="panelTitle">Paper/Live Execution</h2>
+          <div class="panelSubtitle">
+            Review account inputs, live-mode guardrails, and the current order surface before starting any broker-facing workflow.
+          </div>
+        </div>
+        <div class="headMeta">
+          <div class="modeBadge" :class="{ live: liveModeArmed }">{{ modeBadgeLabel }}</div>
+          <div class="panelMeta mono panelNumeric">{{ orderCount }} orders · {{ stamp }}</div>
+        </div>
       </header>
+      <div class="panelSummaryChips" aria-label="Execution summary">
+        <span v-for="chip in executionSummaryChips" :key="`execution_summary_${chip}`" class="panelSummaryChip mono">
+          {{ chip }}
+        </span>
+      </div>
 
-      <section class="pane">
+      <section class="pane panelProminentPane">
+        <div class="safetyNotice">
+          <div class="safetyTitle">Execution safety</div>
+          <div class="safetyBody">{{ safetyModeLabel }}</div>
+        </div>
+
         <div class="grid">
           <div>
             <label for="vueExecMode">Mode</label>
@@ -327,68 +408,138 @@ onBeforeUnmount(() => {
           </label>
         </div>
 
-        <div class="actions">
-          <button type="button" :disabled="!canTestConnection" @click="testConnectionAction">Test account</button>
-          <button type="button" :disabled="!canClearKeys" @click="clearKeysAction">Clear keys</button>
-          <button type="button" :disabled="!canRunOnce" @click="runOnceAction">Execute once</button>
-          <button type="button" :disabled="!canRefreshOrders" @click="refreshOrdersAction">Refresh orders</button>
-          <button type="button" :disabled="!canStartLive" @click="startLiveAction">Start live</button>
-          <button type="button" :disabled="!canStopLive" @click="stopLiveAction">Stop live</button>
-          <button type="button" :disabled="!canStartRunner" @click="startRunnerAction">Start runner</button>
-          <button type="button" :disabled="!canStopRunner" @click="stopRunnerAction">Stop runner</button>
+        <div class="actionGroups">
+          <section class="actionGroup">
+            <div class="actionGroupLabel">Account and review</div>
+            <div class="actions">
+              <button type="button" :disabled="!canTestConnection" @click="testConnectionAction">Test account</button>
+              <button type="button" :disabled="!canRefreshOrders" @click="refreshOrdersAction">Refresh orders</button>
+            </div>
+          </section>
+
+          <section class="actionGroup">
+            <div class="actionGroupLabel">Paper and manual actions</div>
+            <div class="actions">
+              <button type="button" :disabled="!canRunOnce" @click="runOnceAction">Execute once</button>
+            </div>
+          </section>
+
+          <section class="actionGroup">
+            <div class="actionGroupLabel">Live automation</div>
+            <div class="actions">
+              <button type="button" :disabled="!canStartLive" @click="queueConfirmation('startLive')">Start live</button>
+              <button type="button" :disabled="!canStopLive" @click="stopLiveAction">Stop live</button>
+              <button type="button" :disabled="!canStartRunner" @click="queueConfirmation('startRunner')">Start runner</button>
+              <button type="button" :disabled="!canStopRunner" @click="stopRunnerAction">Stop runner</button>
+            </div>
+          </section>
+
+          <section class="actionGroup actionGroupDanger">
+            <div class="actionGroupLabel">Destructive</div>
+            <div class="actions">
+              <button type="button" class="danger-btn" :disabled="!canClearKeys" @click="queueConfirmation('clearKeys')">Clear keys</button>
+            </div>
+          </section>
         </div>
       </section>
 
       <section class="pane">
-        <div class="statusGrid">
-          <div><span class="k">Live</span><span class="v mono">{{ liveStatusHint }}</span></div>
-          <div><span class="k">Runner</span><span class="v mono">{{ runnerStatusHint }}</span></div>
-          <div><span class="k">Execution</span><span class="v mono">{{ statusHint }}</span></div>
-          <div><span class="k">Position</span><span class="v mono">{{ positionMeta }}</span></div>
-          <div><span class="k">Chart</span><span class="v mono">{{ chartMeta }}</span></div>
-          <div><span class="k">App</span><span class="v mono">{{ statusLine }}</span></div>
-        </div>
-
-        <div class="chartBlock">
-          <div class="muted">Execution chart (loaded dataset + broker orders)</div>
-          <div class="tvChartFrame">
-            <div id="execTvChartVue" class="tvChartHost" role="img" aria-label="Execution chart"></div>
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Monitor</div>
+            <h3 class="panelPaneTitle">Execution review surface</h3>
+            <div class="panelSectionLead">
+              Review runtime state, chart context, and broker orders together before changing live automation state.
+            </div>
           </div>
-          <div id="execTvChartMetaVue" class="muted mono">{{ chartMeta }}</div>
         </div>
 
-        <div class="tableWrap">
-          <table class="execOrdersTableVue">
-            <thead>
-              <tr>
-                <th class="left">Time (UTC)</th>
-                <th class="left">Side</th>
-                <th class="left">Status</th>
-                <th>Qty</th>
-                <th>Filled</th>
-                <th>Avg Px</th>
-                <th class="left">Order ID</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="!orderRows.length">
-                <td class="left muted" colspan="7">No broker orders for current symbol.</td>
-              </tr>
-              <tr v-for="(row, rowIndex) in orderRows" :key="`exec_order_${rowIndex}_${row.cells[6] || row.cells[0]}`">
-                <td class="left mono">{{ row.cells[0] || '—' }}</td>
-                <td class="left">{{ row.cells[1] || '—' }}</td>
-                <td class="left">{{ row.cells[2] || '—' }}</td>
-                <td class="mono">{{ row.cells[3] || '—' }}</td>
-                <td class="mono">{{ row.cells[4] || '—' }}</td>
-                <td class="mono">{{ row.cells[5] || '—' }}</td>
-                <td class="left mono" :title="row.cells[6] || undefined">{{ row.cells[6] || '—' }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <section class="executionSubsection" aria-label="Execution runtime status">
+          <div class="executionSubsectionLabel panelMetricKey">Runtime status</div>
+          <div class="statusGrid">
+            <div><span class="panelMetricKey">Live</span><span class="panelMetricValue mono panelNumeric">{{ liveStatusHint }}</span></div>
+            <div><span class="panelMetricKey">Runner</span><span class="panelMetricValue mono panelNumeric">{{ runnerStatusHint }}</span></div>
+            <div><span class="panelMetricKey">Execution</span><span class="panelMetricValue mono panelNumeric">{{ statusHint }}</span></div>
+            <div><span class="panelMetricKey">Position</span><span class="panelMetricValue mono panelNumeric">{{ positionMeta }}</span></div>
+            <div><span class="panelMetricKey">Chart</span><span class="panelMetricValue mono panelNumeric">{{ chartMeta }}</span></div>
+            <div><span class="panelMetricKey">App</span><span class="panelMetricValue mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</span></div>
+          </div>
+          <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">
+            {{ liveStatusHint }} · {{ runnerStatusHint }} · {{ statusHint }}
+          </div>
+        </section>
 
-        <pre class="mono output">{{ outputPreview }}</pre>
+        <section class="executionSubsection" aria-label="Execution chart context">
+          <div class="executionSubsectionLabel panelMetricKey">Chart context</div>
+          <div class="chartBlock">
+            <div class="panelMuted">Execution chart (loaded dataset + broker orders)</div>
+            <div class="panelAdvisory">
+              If this chart remains blank, confirm the symbol has chart data loaded and refresh broker orders to repopulate markers before reviewing the raw preview below.
+            </div>
+            <div class="tvChartFrame">
+              <div id="execTvChartVue" class="tvChartHost" role="img" aria-label="Execution chart"></div>
+            </div>
+            <div id="execTvChartMetaVue" class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ chartMeta }}</div>
+          </div>
+        </section>
+
+        <section class="executionSubsection" aria-label="Broker order activity">
+          <div class="executionSubsectionLabel panelMetricKey">Broker orders</div>
+          <div class="tableWrap" tabindex="0" aria-label="Broker order activity table">
+            <table class="execOrdersTableVue">
+              <caption class="srOnly">
+                Broker order activity for the current execution symbol, including side, status, filled quantity, average price, and order identifiers.
+              </caption>
+              <thead>
+                <tr>
+                  <th class="left">Time (UTC)</th>
+                  <th class="left">Side</th>
+                  <th class="left">Status</th>
+                  <th>Qty</th>
+                  <th>Filled</th>
+                  <th>Avg Px</th>
+                  <th class="left">Order ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!orderRows.length">
+                  <td class="left panelMuted" colspan="7">No broker orders for current symbol.</td>
+                </tr>
+                <tr v-for="(row, rowIndex) in orderRows" :key="`exec_order_${rowIndex}_${row.cells[6] || row.cells[0]}`">
+                  <td class="left mono">{{ row.cells[0] || '—' }}</td>
+                  <td class="left">{{ row.cells[1] || '—' }}</td>
+                  <td class="left">{{ row.cells[2] || '—' }}</td>
+                  <td class="mono">{{ row.cells[3] || '—' }}</td>
+                  <td class="mono">{{ row.cells[4] || '—' }}</td>
+                  <td class="mono">{{ row.cells[5] || '—' }}</td>
+                  <td class="left mono" :title="row.cells[6] || undefined">{{ row.cells[6] || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <details class="panelDetails">
+          <summary>Execution output preview</summary>
+          <div class="panelDetailsBody">
+            <div class="panelMuted">
+              Raw broker/runtime output is available here for troubleshooting and operator review without dominating the main execution surface.
+            </div>
+            <pre class="mono output">{{ outputPreview }}</pre>
+          </div>
+        </details>
       </section>
+      <ConfirmationDialog
+        id-base="execution_confirmation"
+        :open="pendingAction !== null"
+        :title="confirmationTitle"
+        :body="confirmationBody"
+        :confirm-label="confirmationConfirmLabel"
+        :confirm-disabled="!canConfirmPendingAction"
+        danger
+        @cancel="cancelPendingAction"
+        @confirm="confirmPendingAction"
+      />
     </section>
   </Teleport>
 </template>
@@ -402,18 +553,32 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
 }
 
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
+.headMeta {
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
 }
 
-.meta {
-  font-size: 0.78rem;
+.modeBadge {
+  border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface2) 88%, transparent);
+  padding: 0.24rem 0.56rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--muted);
+}
+
+.modeBadge.live {
+  border-color: color-mix(in oklab, var(--danger-ink) 34%, var(--border));
+  background: color-mix(in oklab, var(--surface-danger) 88%, var(--surface));
+  color: var(--danger-ink);
 }
 
 .pane {
@@ -421,6 +586,29 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
+}
+
+.safetyNotice {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface) 94%, var(--panel));
+  padding: 0.7rem 0.75rem;
+}
+
+.safetyTitle,
+.actionGroupLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.safetyBody {
+  margin-top: 0.3rem;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.4;
 }
 
 .grid {
@@ -448,6 +636,36 @@ onBeforeUnmount(() => {
   font-size: 0.76rem;
 }
 
+.actionGroups {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.actionGroup {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface) 96%, var(--panel));
+  padding: 0.7rem 0.75rem;
+}
+
+.actionGroupDanger {
+  border-color: color-mix(in oklab, var(--danger) 34%, var(--border));
+}
+
+.executionSubsection {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.executionSubsection + .executionSubsection {
+  margin-top: 0.85rem;
+}
+
+.executionSubsectionLabel {
+  margin-bottom: 0.05rem;
+}
+
 .statusGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -466,6 +684,18 @@ onBeforeUnmount(() => {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .execOrdersTableVue {
@@ -487,24 +717,6 @@ onBeforeUnmount(() => {
   text-align: left;
 }
 
-.k {
-  display: block;
-  font-size: 0.68rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.v {
-  display: block;
-  margin-top: 0.1rem;
-  font-size: 0.78rem;
-  line-height: 1.15rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .output {
   margin-top: 0.55rem;
   max-height: 200px;
@@ -513,11 +725,6 @@ onBeforeUnmount(() => {
 
 .mono {
   font-family: var(--mono);
-}
-
-.muted {
-  color: var(--muted);
-  font-size: 0.8rem;
 }
 
 @media (max-width: 1180px) {
@@ -529,6 +736,10 @@ onBeforeUnmount(() => {
 @media (max-width: 760px) {
   .grid {
     grid-template-columns: 1fr;
+  }
+
+  .headMeta {
+    justify-items: start;
   }
 
   .statusGrid {

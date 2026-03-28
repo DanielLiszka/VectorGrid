@@ -8951,7 +8951,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let device_launch_caps = rt.launch_caps;
     let compute_returns = bt_module
         .get_function("compute_log_and_simple_returns_f32")
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("compute_log_and_simple_returns_f32: {e}"))?;
     let compute_returns_launch_caps =
         rt.launch_caps_for_kernel(CachedKernelKey::ComputeReturns, &compute_returns);
     let use_fast_path = kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str())
@@ -9093,7 +9093,8 @@ fn optimize_double_ma_gpu_kernel_impl(
         low,
         needs_volume,
         volume,
-    )?;
+    )
+    .map_err(|e| format!("ensure_resident_market_series: {e}"))?;
     let resident = resident_market
         .as_ref()
         .ok_or_else(|| "resident market cache missing after upload".to_string())?;
@@ -9159,7 +9160,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     if fast_ma == "sma" || slow_ma == "sma" {
         let _gpu_indicator_prep_scope = crate::nvtx::scope("kernel", "gpu_indicator_prep");
         let t0 = Instant::now();
-        ma.ensure_sma_prefix_f64(d_ma_prices, n, first_valid)?;
+        ma.ensure_sma_prefix_f64(d_ma_prices, n, first_valid)
+            .map_err(|e| format!("ensure_sma_prefix_f64: {e}"))?;
         gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
     }
     if fast_ma == "vwma" || slow_ma == "vwma" {
@@ -9172,7 +9174,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                 .ok_or_else(|| "vwma requires volume".to_string())?,
             n,
             first_valid,
-        )?;
+        )
+        .map_err(|e| format!("ensure_vwma_prefix_pv_vol_f64: {e}"))?;
         gpu_indicator_prep_elapsed = gpu_indicator_prep_elapsed.saturating_add(t0.elapsed());
     }
 
@@ -9197,7 +9200,8 @@ fn optimize_double_ma_gpu_kernel_impl(
         &compute_returns,
         device_launch_caps,
         compute_returns_launch_caps,
-    )?;
+    )
+    .map_err(|e| format!("ensure_log_and_simple_returns: {e}"))?;
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
     let d_ret1_ptr = scratch.d_ret1.as_ref().unwrap().as_device_ptr().as_raw();
 

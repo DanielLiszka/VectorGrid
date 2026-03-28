@@ -1,18 +1,18 @@
 <script setup lang="ts">
 import {
   computed,
-  nextTick,
   onBeforeUnmount,
-  onMounted,
   ref,
   watch,
 } from "vue";
 import { storeToRefs } from "pinia";
+import { useShellMount } from "../composables/useShellMount";
 import { useQueuedInputWriter } from "../composables/useQueuedInputWriter";
 import { useStrategyStore, type StrategyOption } from "../stores/strategyStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import { describeExecutionRisk } from "../utils/executionRisk";
+import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 
 const strategyStore = useStrategyStore();
 const optimizeStore = useOptimizeStore();
@@ -128,68 +128,10 @@ const {
 const { strategyKind } = storeToRefs(optimizeStore);
 const { controlsTab } = storeToRefs(workflowStore);
 
-const mountReady = ref(false);
-const panelRoot = ref<HTMLElement | null>(null);
-const adoptedNodes: {
-  node: HTMLElement;
-  parent: Node;
-  next: ChildNode | null;
-}[] = [];
-const compatCleanupFns: Array<() => void> = [];
-
-const LEGACY_STRATEGY_TEXT_IDS = [
-  "compositeSignalMode",
-  "halfTrendAmplitude",
-  "halfTrendAtrPeriod",
-  "halfTrendChannelDev",
-  "maczFastLength",
-  "maczSlowLength",
-  "maczSignalLength",
-  "maczLengthZ",
-  "maczLengthStdev",
-  "maczGamma",
-  "maczA",
-  "maczB",
-  "ottPeriod",
-  "ottPercent",
-  "ottMaType",
-  "trendLrPeriod",
-  "trendLrMinDeg",
-  "trendBbwPeriod",
-  "trendBbwMult",
-  "trendBbwMin",
-  "trendRocPeriod",
-  "trendAdxPeriod",
-  "trendAdxMin",
-  "regimeAdxPeriod",
-  "regimeAdxEnter",
-  "regimeAdxExit",
-  "regimeRevEntryRel",
-  "regimeRevExitRel",
-  "breakoutBbPeriod",
-  "breakoutBbMult",
-  "breakoutConfirmBars",
-  "breakoutMacdFast",
-  "breakoutMacdSlow",
-  "breakoutMacdSignal",
-  "breakoutCmoPeriod",
-  "breakoutCmoMinAbs",
-  "breakoutAdoscShort",
-  "breakoutAdoscLong",
-  "breakoutAdxPeriod",
-  "breakoutAdxMin",
-] as const;
-
-const LEGACY_STRATEGY_CHECKBOX_IDS = [
-  "longOnly",
-  "allowFlip",
-  "tradeOnNext",
-  "trendUseRoc",
-  "trendUseAdx",
-  "breakoutUseAdx",
-  "maczUseVolume",
-  "maczUseLag",
-] as const;
+const { mountReady } = useShellMount("#strategyVueShellMount", {
+  paneSelector: '[data-vue-panel="strategy"]',
+  paneDatasetKey: "vueStrategy",
+});
 
 const costPresetDraft = ref("custom");
 const feeDraft = ref("0");
@@ -333,11 +275,7 @@ const executionRisk = computed(() =>
   }),
 );
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0);
-  if (!Number.isFinite(ms) || ms <= 0) return "—";
-  return new Date(ms).toLocaleTimeString([], { hour12: false });
-});
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
 
 function resolvedOptions(
   options: StrategyOption[],
@@ -370,6 +308,33 @@ const exitModeOptionItems = computed(() =>
     exitMode.value || "cross",
   ),
 );
+function optionLabel(
+  options: StrategyOption[],
+  nextValue: string,
+  fallback: string,
+): string {
+  const match = options.find(
+    (option) => String(option.value || "").trim() === String(nextValue || "").trim(),
+  );
+  return String(match?.label || fallback || nextValue || "").trim() || fallback;
+}
+const selectedCostPresetLabel = computed(() =>
+  optionLabel(costPresetOptionItems.value, costPresetDraft.value, "Custom"),
+);
+const selectedExitModeLabel = computed(() =>
+  optionLabel(exitModeOptionItems.value, exitModeDraft.value, "Cross"),
+);
+const strategySummaryChips = computed(() => {
+  const chips = [
+    `Strategy ${strategyKindNormalized.value}`,
+    `Costs ${selectedCostPresetLabel.value}`,
+    `Exit ${selectedExitModeLabel.value}`,
+    longOnly.value ? "Long only" : "Long + short",
+    tradeOnNext.value ? "Trade on next bar" : "Trade on signal bar",
+  ];
+  if (showDmConstraints.value) chips.push("Constraints active");
+  return chips;
+});
 
 watch(
   () =>
@@ -705,24 +670,8 @@ watch(
   (v) => {
     const next = String(v || "cross");
     if (exitModeDraft.value !== next) exitModeDraft.value = next;
-    syncLegacyStrategyVisibility();
   },
   { immediate: true },
-);
-watch(
-  strategyKindNormalized,
-  () => {
-    syncLegacyStrategyVisibility();
-  },
-  { flush: "post" },
-);
-watch(
-  updatedAtUnixMs,
-  () => {
-    syncLegacyStrategyInputsFromStore();
-    syncLegacyStrategyVisibility();
-  },
-  { flush: "post" },
 );
 
 function setInputValue(id: string, nextValue: string): void {
@@ -741,269 +690,8 @@ function setSaferExecutionDefaults(): void {
   strategyStore.setCheckboxField("longOnly", true);
 }
 
-function queryLegacyById<T extends Element>(id: string): T | null {
-  const selector = `[id="${id}"]`;
-  const panel =
-    panelRoot.value ??
-    (document.querySelector(
-      '[data-vue-panel="strategy"]',
-    ) as HTMLElement | null);
-  if (panel) {
-    const scoped = panel.querySelector(selector) as T | null;
-    if (scoped) return scoped;
-  }
-  const byQuery =
-    typeof document.querySelector === "function"
-      ? document.querySelector(selector)
-      : null;
-  if (byQuery) return byQuery as T;
-  const getById = (
-    document as unknown as {
-      getElementById?: (nextId: string) => Element | null;
-    }
-  ).getElementById;
-  if (typeof getById !== "function") return null;
-  return (getById.call(document, id) as T | null) ?? null;
-}
-
-function setElementDisplay(id: string, visibleValue: boolean): void {
-  const el = queryLegacyById<HTMLElement>(id);
-  if (!el) return;
-  el.style.display = visibleValue ? "" : "none";
-}
-
-function setElementDisabled(id: string, disabled: boolean): void {
-  const el = queryLegacyById<
-    HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
-  >(id);
-  if (!el) return;
-  el.disabled = disabled;
-}
-
-function readChecked(id: string): boolean {
-  const el = queryLegacyById<HTMLInputElement>(id);
-  return !!el?.checked;
-}
-
-function clearCompatListeners(): void {
-  while (compatCleanupFns.length > 0) {
-    const cleanup = compatCleanupFns.pop();
-    if (!cleanup) continue;
-    cleanup();
-  }
-}
-
-function syncLegacyStrategyVisibility(): void {
-  const kind = strategyKindNormalized.value;
-  const isCompTrend = kind === "CompositeTrend";
-  const isRegimeHybrid = kind === "RegimeHybrid";
-  const isBreakoutMomentum = kind === "BreakoutMomentum";
-  const isCompCpu = kind === "CompositeCpu";
-  const isComp = isCompCpu || kind === "CompositeMo";
-  const useKaufmanExit = showKaufmanFields.value;
-
-  setElementDisplay("trendQualityWrap", isCompTrend || isRegimeHybrid);
-  setElementDisplay("regimeHybridParamsWrap", isRegimeHybrid);
-  setElementDisplay("breakoutMomentumWrap", isBreakoutMomentum);
-  setElementDisplay("compositeSignalModeWrap", isComp);
-  setElementDisplay("compositeParamsWrap", isCompCpu);
-
-  setElementDisabled(
-    "trendAdxPeriod",
-    !(isCompTrend && readChecked("trendUseAdx")),
-  );
-  setElementDisabled(
-    "trendAdxMin",
-    !(isCompTrend && readChecked("trendUseAdx")),
-  );
-  setElementDisabled(
-    "breakoutAdxPeriod",
-    !(isBreakoutMomentum && readChecked("breakoutUseAdx")),
-  );
-  setElementDisabled(
-    "breakoutAdxMin",
-    !(isBreakoutMomentum && readChecked("breakoutUseAdx")),
-  );
-  setElementDisabled("allowFlip", useKaufmanExit);
-  setElementDisabled("tradeOnNext", true);
-
-  const allowFlip = queryLegacyById<HTMLInputElement>("allowFlip");
-  if (allowFlip) {
-    allowFlip.title = useKaufmanExit
-      ? "Allow flip is ignored when Exit mode = Kaufman-stop."
-      : "Allow switching long↔short on opposite signals (when Long-only is off).";
-  }
-  const tradeOnNext = queryLegacyById<HTMLInputElement>("tradeOnNext");
-  if (tradeOnNext) {
-    tradeOnNext.checked = true;
-    tradeOnNext.title =
-      "Same-bar execution is disabled because it produces optimistic and inaccurate benchmark results.";
-  }
-}
-
-function seedLegacyStrategyInputsToStore(): void {
-  const storeMap = strategyStore as unknown as Record<string, unknown>;
-  for (const id of LEGACY_STRATEGY_TEXT_IDS) {
-    const el = queryLegacyById<
-      HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
-    >(id);
-    if (!el) continue;
-    const domValue = String(el.value || "").trim();
-    const storeValue = String(storeMap[id] ?? "").trim();
-    if (!storeValue && domValue) strategyStore.setInputField(id, domValue);
-  }
-  for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
-    const el = queryLegacyById<HTMLInputElement>(id);
-    if (!el) continue;
-    if (id === "tradeOnNext") {
-      el.checked = true;
-      strategyStore.setCheckboxField(id, true);
-      continue;
-    }
-    const storeValue = !!storeMap[id];
-    if (storeValue !== !!el.checked)
-      strategyStore.setCheckboxField(id, !!el.checked);
-  }
-}
-
-function syncLegacyStrategyInputsFromStore(): void {
-  const storeMap = strategyStore as unknown as Record<string, unknown>;
-  for (const id of LEGACY_STRATEGY_TEXT_IDS) {
-    const el = queryLegacyById<
-      HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
-    >(id);
-    if (!el) continue;
-    const nextValue = String(storeMap[id] ?? "");
-    if (String(el.value || "") === nextValue) continue;
-    el.value = nextValue;
-  }
-  for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
-    const el = queryLegacyById<HTMLInputElement>(id);
-    if (!el) continue;
-    if (id === "tradeOnNext") {
-      if (!el.checked) el.checked = true;
-      continue;
-    }
-    const nextChecked = !!storeMap[id];
-    if (!!el.checked === nextChecked) continue;
-    el.checked = nextChecked;
-  }
-}
-
-function bindLegacyStrategyInputs(): void {
-  clearCompatListeners();
-  const onTextChange = (id: string, target: EventTarget | null) => {
-    const el = target as
-      | HTMLInputElement
-      | HTMLSelectElement
-      | HTMLTextAreaElement
-      | null;
-    if (!el) return;
-    strategyStore.setInputField(id, String(el.value || ""));
-    syncLegacyStrategyVisibility();
-  };
-  const onCheckboxChange = (id: string, target: EventTarget | null) => {
-    const el = target as HTMLInputElement | null;
-    if (!el) return;
-    strategyStore.setCheckboxField(id, !!el.checked);
-    syncLegacyStrategyVisibility();
-  };
-
-  for (const id of LEGACY_STRATEGY_TEXT_IDS) {
-    const el = queryLegacyById<
-      HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
-    >(id);
-    if (!el) continue;
-    const handler = (event: Event) => onTextChange(id, event.target);
-    el.addEventListener("input", handler);
-    el.addEventListener("change", handler);
-    compatCleanupFns.push(() => {
-      el.removeEventListener("input", handler);
-      el.removeEventListener("change", handler);
-    });
-  }
-
-  for (const id of LEGACY_STRATEGY_CHECKBOX_IDS) {
-    const el = queryLegacyById<HTMLInputElement>(id);
-    if (!el) continue;
-    if (id === "tradeOnNext") continue;
-    const handler = (event: Event) => onCheckboxChange(id, event.target);
-    el.addEventListener("input", handler);
-    el.addEventListener("change", handler);
-    compatCleanupFns.push(() => {
-      el.removeEventListener("input", handler);
-      el.removeEventListener("change", handler);
-    });
-  }
-}
-
-function resolveMount(): void {
-  const panel = document.querySelector(
-    '[data-vue-panel="strategy"]',
-  ) as HTMLElement | null;
-  const mount = document.querySelector(
-    "#strategyVueShellMount",
-  ) as HTMLElement | null;
-  if (!panel || !mount) return;
-  panelRoot.value = panel;
-  panel.dataset.vueStrategy = "1";
-  mountReady.value = true;
-}
-
-function adoptLegacyStrategyBlocks(): void {
-  const panel =
-    panelRoot.value ??
-    (document.querySelector(
-      '[data-vue-panel="strategy"]',
-    ) as HTMLElement | null);
-  const host = document.querySelector(
-    "#strategyCompatHostVue",
-  ) as HTMLElement | null;
-  if (!panel || !host) return;
-  const nodes = Array.from(
-    panel.querySelectorAll(".strategyLegacyPassthrough"),
-  ) as HTMLElement[];
-  for (const node of nodes) {
-    if (node.parentElement === host) continue;
-    const parent = node.parentNode;
-    if (!parent) continue;
-    adoptedNodes.push({ node, parent, next: node.nextSibling });
-    host.appendChild(node);
-  }
-}
-
-function restoreLegacyStrategyBlocks(): void {
-  while (adoptedNodes.length > 0) {
-    const entry = adoptedNodes.pop();
-    if (!entry) continue;
-    if (entry.next && entry.next.parentNode === entry.parent) {
-      entry.parent.insertBefore(entry.node, entry.next);
-    } else {
-      entry.parent.appendChild(entry.node);
-    }
-  }
-}
-
-onMounted(async () => {
-  await nextTick();
-  resolveMount();
-  window.setTimeout(() => {
-    adoptLegacyStrategyBlocks();
-    seedLegacyStrategyInputsToStore();
-    syncLegacyStrategyInputsFromStore();
-    bindLegacyStrategyInputs();
-    syncLegacyStrategyVisibility();
-  }, 0);
-});
-
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow();
-  clearCompatListeners();
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueStrategy;
-    panelRoot.value = null;
-  }
-  restoreLegacyStrategyBlocks();
 });
 </script>
 
@@ -1014,14 +702,29 @@ onBeforeUnmount(() => {
       v-show="visible"
     >
       <header class="head">
-        <div class="title">Strategy Controls</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Authoring</div>
+          <h2 class="panelTitle">Strategy Controls</h2>
+          <div class="panelSubtitle">
+            Set execution costs, shared risk guardrails, and the active strategy module before widening the optimization search.
+          </div>
+        </div>
         <div class="meta mono">{{ stamp }}</div>
       </header>
+      <div class="panelSummaryChips" aria-label="Strategy summary">
+        <span
+          v-for="chip in strategySummaryChips"
+          :key="`strategy_summary_${chip}`"
+          class="panelSummaryChip mono"
+        >
+          {{ chip }}
+        </span>
+      </div>
 
       <section v-if="executionRisk" class="riskNotice">
         <div class="riskTitle">{{ executionRisk.title }}</div>
         <div class="riskBody">{{ executionRisk.body }}</div>
-        <div class="actions" style="margin-top: 0.75rem">
+        <div class="actions">
           <button
             type="button"
             class="primary"
@@ -1032,8 +735,16 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="pane">
-        <h3>Execution cost model</h3>
+      <section class="pane panelProminentPane">
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Setup</div>
+            <h3 class="panelPaneTitle">Execution cost model</h3>
+            <div class="panelSectionLead">
+              Keep cost inputs aligned with the broker, slippage, and validation assumptions you expect to carry through later execution work.
+            </div>
+          </div>
+        </div>
         <label for="vueCostPreset">Cost preset</label>
         <select
           id="vueCostPreset"
@@ -1140,7 +851,15 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>Risk and sizing</h3>
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Guardrails</div>
+            <h3 class="panelPaneTitle">Risk and sizing</h3>
+            <div class="panelSectionLead">
+              Set portfolio-level equity, stop management, and signal timing before moving into strategy-specific parameter families.
+            </div>
+          </div>
+        </div>
         <div>
           <label for="vueStartingEquity">Starting equity</label>
           <input
@@ -1239,7 +958,15 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>Constraints and exits</h3>
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Risk policy</div>
+            <h3 class="panelPaneTitle">Constraints and exits</h3>
+            <div class="panelSectionLead">
+              Use shortlist constraints to reject brittle runs early, then choose the exit behavior that should persist into validation and live review.
+            </div>
+          </div>
+        </div>
         <div class="rowTwo" v-if="showDmConstraints">
           <div>
             <label for="vueDmMinTrades">Min trades (optional)</label>
@@ -1580,7 +1307,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="showAsrControls">
-        <h3>ASR parameters</h3>
+        <h3 class="panelPaneTitle">ASR parameters</h3>
         <div class="rowThree">
           <div>
             <label for="vueAsrSqueezeBbMult">Squeeze BB mult</label>
@@ -1871,7 +1598,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="showVccControls">
-        <h3>VCC parameters</h3>
+        <h3 class="panelPaneTitle">VCC parameters</h3>
         <div class="rowTwo">
           <label class="checkboxRow" for="vueVccMapFastToSqueeze">
             <input
@@ -2098,7 +1825,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="showPitControls">
-        <h3>PIT parameters</h3>
+        <h3 class="panelPaneTitle">PIT parameters</h3>
         <p class="muted">
           PIT builds a pressure-impulse regime from EFI, BOP, VOSC, ACOSC, and
           CFO before feeding the VRAM-resident optimizer.
@@ -2216,7 +1943,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="showVfctControls">
-        <h3>VFCT parameters</h3>
+        <h3 class="panelPaneTitle">VFCT parameters</h3>
         <p class="muted">
           VFCT currently uses `vwma` trend lines plus OBV/MFI confirmation.
           Volume-backed OHLCV data is required.
@@ -2327,7 +2054,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="showRocbControls">
-        <h3>ROCB parameters</h3>
+        <h3 class="panelPaneTitle">ROCB parameters</h3>
         <p class="muted">
           ROCB builds an N-bar channel breakout and ATR risk overlay on the GPU,
           then feeds that regime into the existing optimizer.
@@ -2445,7 +2172,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="showVcetControls">
-        <h3>VCET parameters</h3>
+        <h3 class="panelPaneTitle">VCET parameters</h3>
         <p class="muted">
           VCET combines a mapped VIDYA trend anchor with a Chandelier Exit
           regime filter. It now supports unified GPU execution with CPU fallback
@@ -2655,7 +2382,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="showVemrControls">
-        <h3>VEMR parameters</h3>
+        <h3 class="panelPaneTitle">VEMR parameters</h3>
         <div class="rowTwo">
           <label class="checkboxRow" for="vueVemrMapFastToZ">
             <input
@@ -2937,12 +2664,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section class="pane">
-        <h3>Strategy-specific filters</h3>
-        <div id="strategyCompatHostVue"></div>
-      </section>
-
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="status mono" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -2956,18 +2678,8 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .pane {
@@ -2979,16 +2691,16 @@ onBeforeUnmount(() => {
 }
 
 .riskNotice {
-  border: 1px solid color-mix(in oklab, var(--warning) 45%, var(--border));
+  border: 1px solid color-mix(in oklab, var(--warning-ink) 34%, var(--border));
   border-radius: 12px;
-  background: color-mix(in oklab, var(--warning) 12%, var(--panel-footer));
+  background: color-mix(in oklab, var(--surface-warning) 86%, var(--panel-footer));
   padding: 0.8rem 0.9rem;
 }
 
 .riskTitle {
   font-size: 0.86rem;
   font-weight: 650;
-  color: var(--warning);
+  color: var(--warning-ink);
 }
 
 .riskBody {
@@ -2998,9 +2710,8 @@ onBeforeUnmount(() => {
   line-height: 1.45;
 }
 
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
+.pane :is(h3, h4) {
+  margin: 0.1rem 0 0;
 }
 
 .rowThree {
@@ -3019,6 +2730,18 @@ onBeforeUnmount(() => {
 
 .inlineMeta {
   align-self: end;
+}
+
+.actions {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.actions button {
+  padding: 0.42rem 0.6rem;
+  font-size: 0.76rem;
 }
 
 .checkboxRow {
@@ -3047,12 +2770,5 @@ onBeforeUnmount(() => {
   .rowTwo {
     grid-template-columns: 1fr;
   }
-}
-</style>
-
-<style>
-[data-vue-panel="strategy"][data-vue-strategy="1"]
-  > :not(#strategyVueShellMount) {
-  display: none !important;
 }
 </style>

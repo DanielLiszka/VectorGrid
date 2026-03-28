@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createPinia, getActivePinia, setActivePinia } from 'pinia'
+import { createPinia, setActivePinia } from 'pinia'
+import { bindRuntimePinia } from './runtimePinia'
 import { useAdvancedStore } from './advancedStore'
 import { useAnalysisStore } from './analysisStore'
 import { useDataStore } from './dataStore'
@@ -14,8 +15,12 @@ import { useWorkflowArtifactsStore } from './workflowArtifactsStore'
 import { useWorkflowStore } from './workflowStore'
 
 describe('domain stores', () => {
+  let pinia: ReturnType<typeof createPinia>
+
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
   })
 
   it('applies data snapshot from legacy bridge', () => {
@@ -182,8 +187,7 @@ describe('domain stores', () => {
   })
 
   it('applies workflow artifact snapshot from legacy runtime bridge', () => {
-    const pinia = getActivePinia()
-    const store = pinia ? useWorkflowArtifactsStore(pinia) : useWorkflowArtifactsStore()
+    const store = useWorkflowArtifactsStore(pinia)
     store.applyLegacyRuntimePayload({
       currentRun: {
         ts: '2026-02-25T12:00:00Z',

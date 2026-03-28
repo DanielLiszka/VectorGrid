@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { bindRuntimePinia } from './runtimePinia'
 import {
   crossRefresh,
   exportReportJson,
@@ -78,9 +79,12 @@ function installDocumentHarness(): DocumentHarness {
 
 describe('validation store actions', () => {
   let harness: DocumentHarness
+  let pinia: ReturnType<typeof createPinia>
 
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     harness = installDocumentHarness()
     runValidationMock.mockClear()
     runValidationMock.mockResolvedValue(undefined)

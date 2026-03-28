@@ -10,10 +10,11 @@ const OUT_DIR = path.resolve(ROOT, '..', 'scripts', 'baselines', 'ui_capture')
 const PORT = 4179
 
 const WORKSPACES = ['workflow', 'library', 'aggregate', 'pro', 'settings']
-const WORKFLOW_STEPS = ['data', 'optimize', 'validate', 'analyze']
-const LEGACY_WORKFLOW_TABS = ['data', 'optimize', 'validate', 'analyze', 'history', 'settings']
-const CONTROLS_TABS = ['data', 'opt', 'strategy', 'advanced']
-const RESULTS_TABS = ['overview', 'top', 'pareto', 'validate', 'drill', 'heatmap', 'history', 'meta', 'debug']
+const WORKFLOW_STEPS = ['data', 'optimize', 'validate', 'analyze', 'finalize']
+const AGGREGATE_TABS = ['meta', 'batch', 'saved', 'compare']
+const OPTIMIZE_CONTROLS_TABS = ['opt', 'strategy', 'advanced']
+const OPTIMIZE_RESULTS_TABS = ['overview', 'top', 'pareto', 'heatmap']
+const ANALYZE_RESULTS_TABS = ['overview', 'top', 'pareto', 'drill', 'heatmap']
 
 function mimeType(file) {
   if (file.endsWith('.html')) return 'text/html; charset=utf-8'
@@ -88,6 +89,17 @@ async function dispatchClickIfPresent(page, selector) {
   }, selector)
 }
 
+async function selectWorkspace(page, workspace) {
+  await dispatchClick(page, `#workspaceBar button[data-workspace="${workspace}"]`)
+  await page.waitForTimeout(150)
+}
+
+async function selectWorkflowStep(page, step) {
+  await selectWorkspace(page, 'workflow')
+  await dispatchClick(page, `#workflowStepBar button[data-workflow-step="${step}"]`)
+  await page.waitForTimeout(150)
+}
+
 async function main() {
   if (!fs.existsSync(path.resolve(DIST_DIR, 'index.html'))) {
     throw new Error('Missing web/dist/index.html. Run `npm --prefix web run build` first.')
@@ -144,23 +156,40 @@ async function main() {
   for (const workspace of WORKSPACES) {
     await clickAndCapture(page, `#workspaceBar button[data-workspace="${workspace}"]`, `workspace_${workspace}.png`)
   }
-  await dispatchClick(page, '#workspaceBar button[data-workspace="workflow"]')
-  await page.waitForTimeout(150)
-  await dispatchClickIfPresent(page, '#btnToggleWorkflowAdvanced')
-  await page.waitForTimeout(150)
+  await selectWorkspace(page, 'aggregate')
+  if (await page.locator('#metaAggregateSurface [data-aggregate-tab]').count()) {
+    for (const tab of AGGREGATE_TABS) {
+      await clickAndCapture(
+        page,
+        `#metaAggregateSurface button[data-aggregate-tab="${tab}"]`,
+        `aggregate_tab_${tab}.png`,
+      )
+    }
+  }
   for (const step of WORKFLOW_STEPS) {
-    await clickAndCapture(page, `#workflowStepBar button[data-workflow-step="${step}"]`, `workflow_step_${step}.png`)
-  }
-  for (const wf of LEGACY_WORKFLOW_TABS) {
-    await clickAndCapture(page, `#workflowTabBar button[data-workflow="${wf}"]`, `workflow_tab_${wf}.png`)
-  }
-  for (const tab of CONTROLS_TABS) {
-    await clickAndCapture(page, `#controlsTabBar button[data-tab="${tab}"]`, `controls_tab_${tab}.png`)
-  }
-  for (const tab of RESULTS_TABS) {
-    await clickAndCapture(page, `#resultsTabBar button[data-tab="${tab}"]`, `results_tab_${tab}.png`)
+    await selectWorkflowStep(page, step)
+    await page.screenshot({
+      path: path.resolve(OUT_DIR, `workflow_step_${step}.png`),
+      fullPage: true,
+    })
   }
 
+  await selectWorkflowStep(page, 'optimize')
+  for (const tab of OPTIMIZE_CONTROLS_TABS) {
+    await clickAndCapture(page, `#controlsTabBar button[data-tab="${tab}"]`, `workflow_optimize_controls_${tab}.png`)
+  }
+
+  await selectWorkflowStep(page, 'optimize')
+  for (const tab of OPTIMIZE_RESULTS_TABS) {
+    await clickAndCapture(page, `#resultsTabBar button[data-tab="${tab}"]`, `workflow_optimize_results_${tab}.png`)
+  }
+
+  await selectWorkflowStep(page, 'analyze')
+  for (const tab of ANALYZE_RESULTS_TABS) {
+    await clickAndCapture(page, `#resultsTabBar button[data-tab="${tab}"]`, `workflow_analyze_results_${tab}.png`)
+  }
+
+  await selectWorkspace(page, 'settings')
   const chartResponsiveness = await page.evaluate(() => {
     const emit = window.__VTA_TEST_EMIT
     if (typeof emit !== 'function') return null

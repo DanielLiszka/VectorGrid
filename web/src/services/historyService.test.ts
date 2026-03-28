@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { bindRuntimePinia } from "../stores/runtimePinia";
 import {
   applySavedRun,
   applySession,
@@ -125,6 +126,7 @@ describe("historyService", () => {
     vi.unstubAllGlobals();
     pinia = createPinia();
     setActivePinia(pinia);
+    bindRuntimePinia(pinia);
     vi.clearAllMocks();
     installStorageHarness();
     loadDataCsvMock.mockResolvedValue({

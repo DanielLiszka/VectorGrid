@@ -9,17 +9,21 @@ import {
 } from "vue";
 import { storeToRefs } from "pinia";
 import { useDebounceFn } from "@vueuse/core";
+import { useShellMount } from "../composables/useShellMount";
 import { useUiReadiness } from "../composables/useUiReadiness";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+import { formatUiBinaryBytes } from "../utils/uiFormat";
+import { formatUiTimeFromUnixMs } from "../utils/uiTime";
+import ConfirmationDialog from "./ConfirmationDialog.vue";
 
 const historyStore = useHistoryStore();
 const workflowStore = useWorkflowStore();
 const { historyStage } = useUiReadiness();
 const {
-  sessionOptions,
+  sessionRunsRaw,
   sessionSelectedValue,
-  savedOptions,
+  savedRunsVisible,
   savedSelectedValue,
   savedRunsSearch,
   savedRunsTagsDraft,
@@ -60,14 +64,34 @@ const {
 } = storeToRefs(historyStore);
 const { workspace, workflow } = storeToRefs(workflowStore);
 
-const mountReady = ref(false);
+interface SessionRunListEntry {
+  ts: string;
+  backend: string;
+  pairs: number;
+}
+
+interface SavedRunListEntry {
+  ts: string;
+  path: string;
+  bytes: number;
+  strategyKind: string;
+  hasValidation: boolean;
+  reportXlsxPath: string;
+  csvPath: string;
+  tags: string[];
+}
+
+const { mountReady } = useShellMount("#historyVueShellMount", {
+  paneSelector: '[data-vue-panel="history"]',
+  paneDatasetKey: "vueHistory",
+});
 const sessionValue = ref("");
 const savedValue = ref("");
 const searchDraft = ref("");
 const tagsDraft = ref("");
-const panelRoot = ref<HTMLElement | null>(null);
 const queuedSearchValue = ref<string | null>(null);
 const queuedTagsValue = ref<string | null>(null);
+const pendingAction = ref<"clearSession" | "deleteSavedRun" | null>(null);
 
 const commitSavedRunsSearch = useDebounceFn(
   (value: string) => {
@@ -93,11 +117,41 @@ const visible = computed(() => {
   return ws === "library" || wf === "history";
 });
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0);
-  if (!Number.isFinite(ms) || ms <= 0) return "—";
-  return new Date(ms).toLocaleTimeString([], { hour12: false });
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
+
+const visibleSessionRuns = computed<SessionRunListEntry[]>(() =>
+  (sessionRunsRaw.value as SessionRunListEntry[]).filter(
+    (entry) => String(entry.ts || "").trim().length > 0,
+  ),
+);
+
+const visibleSavedRuns = computed<SavedRunListEntry[]>(() =>
+  savedRunsVisible.value as SavedRunListEntry[],
+);
+const historySummaryChips = computed(() => {
+  const chips = [`${visibleSessionRuns.value.length} session runs`, `${savedRunCount.value} saved runs`];
+  if (String(savedRunDetailTitle.value || "").trim().length > 0) {
+    chips.push(`Selected ${String(savedRunDetailTitle.value || "").trim()}`);
+  }
+  return chips;
 });
+
+function basename(value: string): string {
+  const next = String(value || "").trim();
+  if (!next) return "";
+  const parts = next.split(/[\\/]+/g);
+  return String(parts[parts.length - 1] || "").trim();
+}
+
+function formatBytesCompact(bytes: number): string {
+  return formatUiBinaryBytes(bytes);
+}
+
+function sessionRunMeta(entry: SessionRunListEntry): string {
+  const backend = String(entry.backend || "").trim() || "unknown backend";
+  const pairs = Math.max(0, Math.floor(Number(entry.pairs || 0)));
+  return `${backend} · ${pairs} pairs`;
+}
 
 watch(
   () =>
@@ -155,8 +209,65 @@ function revealSavedRun(): void {
   historyStore.revealSavedRun(String(savedValue.value || "").trim());
 }
 
-function deleteSavedRun(): void {
-  historyStore.deleteSavedRun(String(savedValue.value || "").trim());
+const pendingDeleteTarget = computed(() =>
+  String(savedValue.value || "").trim(),
+);
+
+const confirmationTitle = computed(() => {
+  if (pendingAction.value === "clearSession") return "Clear session history";
+  if (pendingAction.value === "deleteSavedRun") return "Delete saved run";
+  return "";
+});
+
+const confirmationBody = computed(() => {
+  if (pendingAction.value === "clearSession") {
+    return "This removes the in-memory run list for the current session. Saved run artifacts stay on disk."
+  }
+  if (pendingAction.value === "deleteSavedRun") {
+    return pendingDeleteTarget.value
+      ? `Delete this saved run artifact from the library?\n\n${pendingDeleteTarget.value}\n\nThis cannot be undone from the run library.`
+      : "Select a saved run before deleting it from the library."
+  }
+  return ""
+})
+
+const confirmationConfirmLabel = computed(() => {
+  if (pendingAction.value === "clearSession") return "Confirm clear"
+  if (pendingAction.value === "deleteSavedRun") return "Delete artifact"
+  return "Confirm"
+})
+
+const canConfirmPendingAction = computed(() => {
+  if (pendingAction.value === "clearSession") return Boolean(canClearHistory.value)
+  if (pendingAction.value === "deleteSavedRun") {
+    return Boolean(canDeleteSavedRun.value && pendingDeleteTarget.value)
+  }
+  return false
+})
+
+function queueClearSessionConfirmation(): void {
+  pendingAction.value = "clearSession"
+}
+
+function queueDeleteSavedRunConfirmation(): void {
+  if (!pendingDeleteTarget.value) return
+  pendingAction.value = "deleteSavedRun"
+}
+
+function cancelPendingAction(): void {
+  pendingAction.value = null
+}
+
+function confirmPendingAction(): void {
+  const action = pendingAction.value
+  pendingAction.value = null
+  if (action === "clearSession") {
+    historyStore.clearSession()
+    return
+  }
+  if (action === "deleteSavedRun" && pendingDeleteTarget.value) {
+    historyStore.deleteSavedRun(pendingDeleteTarget.value)
+  }
 }
 
 function onSessionSelect(value: string): void {
@@ -181,22 +292,51 @@ function onSavedTags(value: string): void {
   commitSavedRunsTags(value);
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector(
-    '[data-vue-panel="history"]',
-  ) as HTMLElement | null;
-  const mount = document.querySelector(
-    "#historyVueShellMount",
-  ) as HTMLElement | null;
-  if (!panel || !mount) return;
-  panelRoot.value = panel;
-  panel.dataset.vueHistory = "1";
-  mountReady.value = true;
+function moveRunListFocus(
+  currentTarget: EventTarget | null,
+  direction: "prev" | "next" | "first" | "last",
+): void {
+  const button = currentTarget instanceof HTMLElement ? currentTarget : null;
+  const list = button?.closest("ul.runList");
+  if (!button || !list) return;
+  const buttons = Array.from(
+    list.querySelectorAll<HTMLButtonElement>("button.runListButton:not(:disabled)"),
+  );
+  if (!buttons.length) return;
+  const currentIndex = buttons.indexOf(button as HTMLButtonElement);
+  if (currentIndex < 0) return;
+  let nextIndex = currentIndex;
+  if (direction === "prev") nextIndex = Math.max(0, currentIndex - 1);
+  else if (direction === "next") nextIndex = Math.min(buttons.length - 1, currentIndex + 1);
+  else if (direction === "first") nextIndex = 0;
+  else nextIndex = buttons.length - 1;
+  buttons[nextIndex]?.focus();
+}
+
+function onRunListKeydown(event: KeyboardEvent): void {
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveRunListFocus(event.currentTarget, "prev");
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveRunListFocus(event.currentTarget, "next");
+    return;
+  }
+  if (event.key === "Home") {
+    event.preventDefault();
+    moveRunListFocus(event.currentTarget, "first");
+    return;
+  }
+  if (event.key === "End") {
+    event.preventDefault();
+    moveRunListFocus(event.currentTarget, "last");
+  }
 }
 
 onMounted(async () => {
   await nextTick();
-  resolveMount();
   historyStore.refreshSessionHistory();
 });
 
@@ -209,10 +349,7 @@ onBeforeUnmount(() => {
     historyStore.setSavedRunsTagsDraft(queuedTagsValue.value);
     queuedTagsValue.value = null;
   }
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueHistory;
-    panelRoot.value = null;
-  }
+  pendingAction.value = null;
 });
 </script>
 
@@ -223,9 +360,20 @@ onBeforeUnmount(() => {
       v-show="visible"
     >
       <header class="head">
-        <div class="title">Run History</div>
-        <div class="meta mono">{{ savedRunCount }} saved · {{ stamp }}</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Library</div>
+          <h2 class="panelTitle">Run History</h2>
+          <div class="panelSubtitle">
+            Session artifacts are transient. Save, reload, rerun, and inspect the runs worth keeping from the current workflow.
+          </div>
+        </div>
+        <div class="panelMeta mono panelNumeric">{{ savedRunCount }} saved · {{ stamp }}</div>
       </header>
+      <div class="panelSummaryChips" aria-label="Run history summary">
+        <span v-for="chip in historySummaryChips" :key="`history_summary_${chip}`" class="panelSummaryChip mono">
+          {{ chip }}
+        </span>
+      </div>
 
       <section v-if="historyStage === 'no_data'" class="emptyState">
         <div class="emptyTitle">Run Library is empty.</div>
@@ -233,7 +381,7 @@ onBeforeUnmount(() => {
           Save or rerun an optimization to build a library of artifacts you can
           inspect here.
         </div>
-        <div class="muted mono">{{ statusLine }}</div>
+        <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
       </section>
 
       <section
@@ -245,31 +393,53 @@ onBeforeUnmount(() => {
           Your run library has artifacts available. Pick one from Saved Runs to
           inspect metadata, compare outputs, or rerun it.
         </div>
-        <div class="muted mono">{{ savedRunsMeta }}</div>
+        <div class="panelMuted mono panelNumeric">{{ savedRunsMeta }}</div>
       </section>
 
       <div v-if="historyStage !== 'no_data'" class="grid">
         <section class="pane">
-          <h3>Session History</h3>
-          <label for="vueHistorySelect">Run history</label>
-          <select
-            id="vueHistorySelect"
-            :value="sessionValue"
-            @change="
-              onSessionSelect(
-                String(($event.target as HTMLSelectElement).value || ''),
-              )
-            "
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Current session</div>
+              <h3 class="panelPaneTitle">Session History</h3>
+              <div class="panelSectionLead">
+                These runs live only for the active session unless you export or save them elsewhere.
+              </div>
+            </div>
+          </div>
+          <div class="sectionMeta panelMuted mono panelNumeric">
+            {{ visibleSessionRuns.length }} runs captured in this session
+          </div>
+          <ul
+            v-if="visibleSessionRuns.length"
+            class="runList"
+            aria-label="Session history runs"
           >
-            <option
-              v-for="option in sessionOptions"
-              :key="`session_${option.value}_${option.label}`"
-              :value="option.value"
-              :disabled="option.disabled"
+            <li
+              v-for="entry in visibleSessionRuns"
+              :key="`session_run_${entry.ts}`"
+              class="runListItem"
             >
-              {{ option.label }}
-            </option>
-          </select>
+              <button
+                type="button"
+                class="runListButton"
+                :class="{ active: sessionValue === entry.ts }"
+                :aria-pressed="sessionValue === entry.ts"
+                @click="onSessionSelect(entry.ts)"
+                @keydown="onRunListKeydown"
+              >
+                <div class="runListPrimary">
+                  <span class="mono">{{ entry.ts }}</span>
+                </div>
+                <div class="runListSecondary panelMuted">
+                  {{ sessionRunMeta(entry) }}
+                </div>
+              </button>
+            </li>
+          </ul>
+          <div v-else class="listEmpty panelMuted">
+            No session runs have been captured yet.
+          </div>
 
           <div class="actions">
             <button
@@ -296,7 +466,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="!canClearHistory"
-              @click="historyStore.clearSession()"
+              @click="queueClearSessionConfirmation"
             >
               Clear
             </button>
@@ -304,7 +474,15 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="pane">
-          <h3>Saved Runs</h3>
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Saved artifacts</div>
+              <h3 class="panelPaneTitle">Saved Runs</h3>
+              <div class="panelSectionLead">
+                Search by strategy, dataset, or tag, then choose one artifact to load, rerun, or inspect in detail below.
+              </div>
+            </div>
+          </div>
           <div class="row">
             <div>
               <label for="vueSavedRunsSearch">Search</label>
@@ -312,7 +490,7 @@ onBeforeUnmount(() => {
                 id="vueSavedRunsSearch"
                 type="text"
                 :value="searchDraft"
-                placeholder="ts, strategy, tag, csv..."
+                placeholder="ts, strategy, tag, csv…"
                 @input="
                   onSavedSearch(
                     String(($event.target as HTMLInputElement).value || ''),
@@ -345,25 +523,60 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <label for="vueSavedRunsSelect">Saved runs</label>
-          <select
-            id="vueSavedRunsSelect"
-            :value="savedValue"
-            @change="
-              onSavedSelect(
-                String(($event.target as HTMLSelectElement).value || ''),
-              )
-            "
+          <div class="sectionMeta panelMuted metaLine mono panelNumeric" role="status" aria-live="polite">
+            {{ savedRunsMeta }}
+          </div>
+          <ul
+            v-if="visibleSavedRuns.length"
+            class="runList savedRunList"
+            aria-label="Saved run artifacts"
           >
-            <option
-              v-for="option in savedOptions"
-              :key="`saved_${option.value}_${option.label}`"
-              :value="option.value"
-              :disabled="option.disabled"
+            <li
+              v-for="entry in visibleSavedRuns"
+              :key="`saved_run_${entry.path}`"
+              class="runListItem"
             >
-              {{ option.label }}
-            </option>
-          </select>
+              <button
+                type="button"
+                class="runListButton"
+                :class="{ active: savedValue === entry.path }"
+                :aria-pressed="savedValue === entry.path"
+                @click="onSavedSelect(entry.path)"
+                @keydown="onRunListKeydown"
+              >
+                <div class="runListPrimary">
+                  <span class="mono">{{
+                    entry.ts || basename(entry.path) || "Saved run"
+                  }}</span>
+                  <span class="pill">{{ entry.strategyKind || "Unknown" }}</span>
+                </div>
+                <div class="runListSecondary panelMuted">
+                  {{ basename(entry.csvPath) || "Dataset unavailable" }}
+                  <span v-if="formatBytesCompact(entry.bytes)">
+                    · {{ formatBytesCompact(entry.bytes) }}
+                  </span>
+                </div>
+                <div class="pillRow">
+                  <span class="pill" :class="{ good: entry.hasValidation }">
+                    {{ entry.hasValidation ? "validation" : "no validation" }}
+                  </span>
+                  <span class="pill" :class="{ good: !!entry.reportXlsxPath }">
+                    {{ entry.reportXlsxPath ? "xlsx" : "artifact only" }}
+                  </span>
+                  <span
+                    v-for="tag in entry.tags.slice(0, 3)"
+                    :key="`saved_tag_${entry.path}_${tag}`"
+                    class="pill subtle"
+                  >
+                    {{ tag }}
+                  </span>
+                </div>
+              </button>
+            </li>
+          </ul>
+          <div v-else class="listEmpty panelMuted">
+            No saved runs match the current filters.
+          </div>
 
           <div class="actions">
             <button
@@ -411,7 +624,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="!canDeleteSavedRun"
-              @click="deleteSavedRun"
+              @click="queueDeleteSavedRunConfirmation"
             >
               Delete
             </button>
@@ -423,81 +636,105 @@ onBeforeUnmount(() => {
               Runs folder
             </button>
           </div>
-
-          <div class="muted metaLine mono">{{ savedRunsMeta }}</div>
         </section>
       </div>
 
-      <section v-if="historyStage === 'ready'" class="detailCard">
+      <section v-if="historyStage === 'ready'" class="detailCard panelProminentPane">
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Selected run</div>
+            <div class="panelSectionLead">
+              Use this snapshot as the decision surface for report review, compare work, and rerun actions.
+            </div>
+          </div>
+        </div>
         <div class="detailTitle">{{ savedRunDetailTitle }}</div>
-        <div class="detailMeta muted">{{ savedRunDetailMeta }}</div>
+        <div class="detailMeta panelMuted">{{ savedRunDetailMeta }}</div>
         <div class="detailGrid">
           <div>
-            <span class="k">Strategy</span
-            ><span class="v mono">{{ savedRunDetailStrategy }}</span>
+            <span class="panelMetricKey">Strategy</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailStrategy }}</span>
           </div>
           <div>
-            <span class="k">Dataset</span
-            ><span class="v mono">{{ savedRunDetailDataset }}</span>
+            <span class="panelMetricKey">Dataset</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailDataset }}</span>
           </div>
           <div>
-            <span class="k">Timeframe</span
-            ><span class="v mono">{{ savedRunDetailTimeframe }}</span>
+            <span class="panelMetricKey">Timeframe</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailTimeframe }}</span>
           </div>
           <div>
-            <span class="k">Validation</span
-            ><span class="v mono">{{ savedRunDetailValidation }}</span>
+            <span class="panelMetricKey">Validation</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailValidation }}</span>
           </div>
           <div>
-            <span class="k">Report</span
-            ><span class="v mono">{{ savedRunDetailReport }}</span>
+            <span class="panelMetricKey">Report</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailReport }}</span>
           </div>
           <div>
-            <span class="k">Size</span
-            ><span class="v mono">{{ savedRunDetailSize }}</span>
+            <span class="panelMetricKey">Size</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailSize }}</span>
           </div>
           <template v-if="savedRunDetailStrategy === 'MlSignal'">
             <div>
-              <span class="k">Bundle</span
-              ><span class="v mono">{{ savedRunDetailMlBundle }}</span>
+              <span class="panelMetricKey">Bundle</span
+              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlBundle }}</span>
             </div>
             <div>
-              <span class="k">Score Cache</span
-              ><span class="v mono">{{ savedRunDetailMlScoreCache }}</span>
+              <span class="panelMetricKey">Score Cache</span
+              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlScoreCache }}</span>
             </div>
             <div>
-              <span class="k">Feature Schema</span
-              ><span class="v mono">{{ savedRunDetailMlFeatureSchema }}</span>
+              <span class="panelMetricKey">Feature Schema</span
+              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlFeatureSchema }}</span>
             </div>
             <div>
-              <span class="k">Policy</span
-              ><span class="v mono">{{ savedRunDetailMlPolicy }}</span>
+              <span class="panelMetricKey">Policy</span
+              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlPolicy }}</span>
             </div>
             <div>
-              <span class="k">Sweep</span
-              ><span class="v mono">{{ savedRunDetailMlSweep }}</span>
+              <span class="panelMetricKey">Sweep</span
+              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlSweep }}</span>
             </div>
             <div>
-              <span class="k">Verdict</span
-              ><span class="v mono">{{ savedRunDetailMlVerdict }}</span>
+              <span class="panelMetricKey">Verdict</span
+              ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMlVerdict }}</span>
             </div>
             <div class="full">
-              <span class="k">Top Candidates</span>
-              <pre class="v mono inlineBlock">{{
+              <span class="panelMetricKey">Top Candidates</span>
+              <pre class="panelMetricValue mono panelNumeric inlineBlock">{{
                 savedRunDetailMlCandidates
               }}</pre>
             </div>
           </template>
           <div class="full">
-            <span class="k">Tags</span
-            ><span class="v mono">{{ savedRunDetailTags }}</span>
+            <span class="panelMetricKey">Tags</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailTags }}</span>
           </div>
         </div>
-        <div class="k">Request snapshot</div>
-        <pre class="mono">{{ savedRunDetailParams }}</pre>
+        <details class="panelDetails">
+          <summary>Request snapshot</summary>
+          <div class="panelDetailsBody">
+            <div class="panelMuted">
+              The full request payload stays available for troubleshooting or manual rerun inspection.
+            </div>
+            <pre class="mono">{{ savedRunDetailParams }}</pre>
+          </div>
+        </details>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+      <ConfirmationDialog
+        id-base="history_confirmation"
+        :open="pendingAction !== null"
+        :title="confirmationTitle"
+        :body="confirmationBody"
+        :confirm-label="confirmationConfirmLabel"
+        :confirm-disabled="!canConfirmPendingAction"
+        danger
+        @cancel="cancelPendingAction"
+        @confirm="confirmPendingAction"
+      />
     </section>
   </Teleport>
 </template>
@@ -511,18 +748,8 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .grid {
@@ -539,9 +766,9 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
+.sectionMeta {
+  margin-bottom: 0.55rem;
+  font-size: 0.78rem;
 }
 
 .row {
@@ -573,6 +800,93 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
 }
 
+.runList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface) 96%, var(--panel));
+}
+
+.savedRunList {
+  max-height: 320px;
+}
+
+.runListItem + .runListItem {
+  border-top: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+}
+
+.runListButton {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0.7rem 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+  text-align: left;
+}
+
+.runListButton:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--panel) 92%, var(--surface));
+}
+
+.runListButton:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-border);
+}
+
+.runListButton.active {
+  background: color-mix(in oklab, var(--accent-soft) 58%, var(--surface));
+}
+
+.runListPrimary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.runListSecondary {
+  font-size: 0.78rem;
+}
+
+.pillRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.16rem 0.45rem;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  background: color-mix(in oklab, var(--panel) 88%, var(--surface));
+}
+
+.pill.good {
+  border-color: color-mix(in oklab, var(--accent) 62%, var(--border));
+  background: color-mix(in oklab, var(--accent-soft) 52%, var(--surface));
+}
+
+.pill.subtle {
+  color: var(--muted);
+}
+
+.listEmpty {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: color-mix(in oklab, var(--surface) 95%, var(--panel));
+  font-size: 0.8rem;
+}
+
 .detailCard {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -598,29 +912,6 @@ onBeforeUnmount(() => {
 
 .detailGrid .full {
   grid-column: 1 / -1;
-}
-
-.k {
-  display: block;
-  font-size: 0.68rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.v {
-  display: block;
-  margin-top: 0.1rem;
-  font-size: 0.78rem;
-  line-height: 1.15rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.status {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .mono {

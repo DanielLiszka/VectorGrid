@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useHistoryStore } from '../stores/historyStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const history = useHistoryStore()
 const workflowState = useWorkflowStore()
@@ -27,18 +28,14 @@ const visible = computed(() => {
   return ws === 'library' || wf === 'history'
 })
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 </script>
 
 <template>
   <aside v-if="visible" class="historyDock">
     <header class="dockHeader">
-      <div class="title">History Context</div>
+      <h2 class="title" style="margin: 0;">History Context</h2>
       <div class="stamp">{{ stamp }}</div>
     </header>
     <div class="rows">
@@ -152,6 +149,12 @@ const stamp = computed(() => {
     right: 8px;
     width: auto;
     bottom: 8px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .historyDock {
+    display: none;
   }
 }
 </style>

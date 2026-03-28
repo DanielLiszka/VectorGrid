@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const dataStore = useDataStore()
 const workflowStore = useWorkflowStore()
@@ -60,8 +62,10 @@ const {
 } = storeToRefs(dataStore)
 const { controlsTab } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#dataVueShellMount', {
+  paneSelector: '[data-vue-panel="data"]',
+  paneDatasetKey: 'vueData',
+})
 const polygonSymbolInput = ref<HTMLInputElement | null>(null)
 const polygonApiKeyInput = ref<HTMLInputElement | null>(null)
 
@@ -78,10 +82,25 @@ const polygonSelectedPathDraft = ref('')
 
 const visible = computed(() => String(controlsTab.value || '').trim() === 'data')
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+const selectedPolygonDatasetSummary = computed(() => {
+  const selectedPath = String(
+    polygonSelectedPathDraft.value || polygonSelectedPath.value || '',
+  ).trim()
+  if (!selectedPath) return 'No cached Polygon dataset selected.'
+  const selected = polygonDatasets.value.find((entry) => entry.csvPath === selectedPath)
+  if (!selected) return `Selected cached Polygon dataset ${selectedPath}.`
+  const label = String(
+    selected.displaySymbol || selected.polygonTicker || selected.csvPath || 'dataset',
+  ).trim()
+  const parts = [label]
+  if (String(selected.timeframe || '').trim()) {
+    parts.push(String(selected.timeframe).trim())
+  }
+  if (Number.isFinite(selected.rowCount)) {
+    parts.push(`${selected.rowCount} rows`)
+  }
+  return `Selected cached Polygon dataset ${parts.join(' · ')}.`
 })
 
 const rowLabel = computed(() => {
@@ -200,27 +219,17 @@ function selectPolygonDataset(path: string): void {
   setInputValue('polygonSelectedPath', polygonSelectedPathDraft.value)
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="data"]') as HTMLElement | null
-  const mount = document.querySelector('#dataVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueData = '1'
-  mountReady.value = true
+function polygonDatasetMetaId(index: number): string {
+  return `polygon_dataset_meta_${index}`
 }
 
 onMounted(async () => {
   await nextTick()
-  resolveMount()
   dataStore.hydrateStartupState()
 })
 
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow()
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueData
-    panelRoot.value = null
-  }
 })
 </script>
 
@@ -228,21 +237,22 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#dataVueShellMount">
     <section class="dataPanelVueRoot dataVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="headCopy">
-          <div class="title">Data Source</div>
-          <div class="subtitle">Load a dataset, choose storage behavior, and confirm the working timeframe before you optimize.</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Dataset</div>
+          <h2 class="panelTitle">Data Source</h2>
+          <div class="panelSubtitle">Load a dataset, choose storage behavior, and confirm the working timeframe before you optimize.</div>
         </div>
-        <div class="meta mono">{{ rowLabel }} rows · {{ stamp }}</div>
+        <div class="panelMeta mono panelNumeric">{{ rowLabel }} rows · {{ stamp }}</div>
       </header>
-      <div class="summaryChips" aria-label="Dataset summary">
-        <span v-for="chip in dataSummaryChips" :key="`data_summary_${chip}`" class="summaryChip mono">{{ chip }}</span>
+      <div class="panelSummaryChips" aria-label="Dataset summary">
+        <span v-for="chip in dataSummaryChips" :key="`data_summary_${chip}`" class="panelSummaryChip mono">{{ chip }}</span>
       </div>
 
       <section class="pane paneProminent">
-        <div class="paneHeader">
+        <div class="panelSectionHeader">
           <div>
-            <div class="sectionEyebrow">Import</div>
-            <h3>CSV input</h3>
+            <div class="panelEyebrow">Import</div>
+            <h3 class="panelPaneTitle">CSV input</h3>
           </div>
         </div>
         <label for="vueCsvPath">CSV path</label>
@@ -279,10 +289,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane" v-if="sampleCsvVisible && sampleCsvOptions.length">
-        <div class="paneHeader">
+        <div class="panelSectionHeader">
           <div>
-            <div class="sectionEyebrow">Quick Start</div>
-            <h3>Sample datasets</h3>
+            <div class="panelEyebrow">Quick Start</div>
+            <h3 class="panelPaneTitle">Sample datasets</h3>
           </div>
         </div>
         <div class="actions">
@@ -299,10 +309,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane paneProminent" v-if="polygonOpen">
-        <div class="paneHeader">
+        <div class="panelSectionHeader">
           <div>
-            <div class="sectionEyebrow">Market Download</div>
-            <h3>Polygon</h3>
+            <div class="panelEyebrow">Market Download</div>
+            <h3 class="panelPaneTitle">Polygon</h3>
           </div>
           <div class="actions">
             <button type="button" :disabled="!canPolygonRefresh" @click="dataStore.refreshPolygon()">Refresh cache</button>
@@ -424,23 +434,28 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="pane subtlePane">
-          <div class="paneHeader">
+          <div class="panelSectionHeader">
             <div>
-              <div class="sectionEyebrow">Cache</div>
-              <h3>Cached datasets</h3>
+              <div class="panelEyebrow">Cache</div>
+              <h3 class="panelPaneTitle">Cached datasets</h3>
             </div>
           </div>
-          <div v-if="polygonDatasets.length" class="stackList">
+          <div id="polygonSelectionStatus" class="srOnly" role="status" aria-live="polite">
+            {{ selectedPolygonDatasetSummary }}
+          </div>
+          <div v-if="polygonDatasets.length" class="stackList" role="group" aria-label="Cached Polygon datasets">
             <button
-              v-for="dataset in polygonDatasets"
+              v-for="(dataset, index) in polygonDatasets"
               :key="`polygon_dataset_${dataset.csvPath}`"
               type="button"
               class="listCard"
               :data-selected="polygonSelectedPath === dataset.csvPath ? '1' : '0'"
+              :aria-pressed="polygonSelectedPath === dataset.csvPath"
+              :aria-describedby="`${polygonDatasetMetaId(index)} polygonSelectionStatus`"
               @click="selectPolygonDataset(dataset.csvPath)"
             >
               <span class="mono">{{ dataset.displaySymbol || dataset.polygonTicker || dataset.csvPath }}</span>
-              <span class="muted mono">{{ dataset.timeframe }} · {{ dataset.rowCount }} rows</span>
+              <span :id="polygonDatasetMetaId(index)" class="muted mono">{{ dataset.timeframe }} · {{ dataset.rowCount }} rows</span>
             </button>
           </div>
           <div v-else class="muted">No cached Polygon datasets yet. Save a key, choose a symbol/date range, then download.</div>
@@ -454,10 +469,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div class="paneHeader">
+        <div class="panelSectionHeader">
           <div>
-            <div class="sectionEyebrow">Storage</div>
-            <h3>Storage and cache</h3>
+            <div class="panelEyebrow">Storage</div>
+            <h3 class="panelPaneTitle">Storage and cache</h3>
           </div>
         </div>
         <label for="vueMarketDataDir">Market data folder</label>
@@ -493,10 +508,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div class="paneHeader">
+        <div class="panelSectionHeader">
           <div>
-            <div class="sectionEyebrow">Context</div>
-            <h3>Dataset context</h3>
+            <div class="panelEyebrow">Context</div>
+            <h3 class="panelPaneTitle">Dataset context</h3>
           </div>
         </div>
         <div class="stats">
@@ -508,13 +523,14 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div class="paneHeader">
+        <div class="panelSectionHeader">
           <div>
-            <div class="sectionEyebrow">Resolution</div>
-            <h3>Timeframe</h3>
+            <div class="panelEyebrow">Resolution</div>
+            <h3 class="panelPaneTitle">Timeframe</h3>
           </div>
         </div>
         <div class="inputWithActions">
+          <label for="vueDataTimeframe" class="srOnly">Target timeframe</label>
           <select
             id="vueDataTimeframe"
             :value="timeframeDraft"
@@ -549,10 +565,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <div class="paneHeader">
+        <div class="panelSectionHeader">
           <div>
-            <div class="sectionEyebrow">Schema</div>
-            <h3>Columns</h3>
+            <div class="panelEyebrow">Schema</div>
+            <h3 class="panelPaneTitle">Columns</h3>
           </div>
         </div>
         <div class="badges">
@@ -562,7 +578,7 @@ onBeforeUnmount(() => {
         <div class="muted mono">{{ dataFieldHint || '—' }}</div>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="status mono" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -580,42 +596,6 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
 }
 
-.headCopy {
-  display: grid;
-  gap: 0.18rem;
-}
-
-.title {
-  font-size: 1rem;
-  font-weight: 650;
-}
-
-.subtitle {
-  font-size: 0.82rem;
-  line-height: 1.35;
-  color: var(--muted);
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.summaryChips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.42rem;
-}
-
-.summaryChip {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--panel) 86%, var(--surface));
-  padding: 0.22rem 0.52rem;
-  font-size: 0.72rem;
-  color: var(--muted);
-}
-
 .pane {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -630,27 +610,6 @@ onBeforeUnmount(() => {
     color-mix(in oklab, var(--accent-soft) 56%, var(--panel-footer)),
     color-mix(in oklab, var(--panel-footer) 92%, var(--surface))
   );
-}
-
-.paneHeader {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 0.75rem;
-  margin-bottom: 0.65rem;
-}
-
-.sectionEyebrow {
-  font-size: 0.69rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.pane h3 {
-  margin: 0.12rem 0 0;
-  font-size: 0.92rem;
 }
 
 .inputWithActions {
@@ -743,6 +702,18 @@ onBeforeUnmount(() => {
   gap: 0.4rem;
 }
 
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .badge {
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -807,7 +778,7 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .paneHeader {
+  .panelSectionHeader {
     flex-direction: column;
   }
 }

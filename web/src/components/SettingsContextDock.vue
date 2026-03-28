@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const settings = useSettingsStore()
 const workflowState = useWorkflowStore()
@@ -21,11 +22,7 @@ const { workspace } = storeToRefs(workflowState)
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 const marketDataLabel = computed(() => marketDataDir.value || '(default)')
 
@@ -45,13 +42,17 @@ function updateSelect(id: string, nextValue: string): void {
 <template>
   <aside v-if="visible" class="settingsDock">
     <header class="dockHeader">
-      <div class="title">Settings Context</div>
+      <h2 class="title" style="margin: 0;">Settings Context</h2>
       <div class="stamp">{{ stamp }}</div>
     </header>
     <div class="rows">
       <div class="row">
         <span>Theme</span>
-        <select :value="theme" @change="updateSelect('settingsThemeSelect', String(($event.target as HTMLSelectElement).value || ''))">
+        <select
+          :value="theme"
+          aria-label="Theme"
+          @change="updateSelect('settingsThemeSelect', String(($event.target as HTMLSelectElement).value || ''))"
+        >
           <option value="light">light</option>
           <option value="dark">dark</option>
           <option value="system">system</option>
@@ -59,7 +60,11 @@ function updateSelect(id: string, nextValue: string): void {
       </div>
       <div class="row">
         <span>Effect</span>
-        <select :value="effect" @change="updateSelect('settingsEffectSelect', String(($event.target as HTMLSelectElement).value || ''))">
+        <select
+          :value="effect"
+          aria-label="Window effect"
+          @change="updateSelect('settingsEffectSelect', String(($event.target as HTMLSelectElement).value || ''))"
+        >
           <option value="none">none</option>
           <option value="mica">mica</option>
           <option value="acrylic">acrylic</option>
@@ -188,6 +193,12 @@ function updateSelect(id: string, nextValue: string): void {
     width: auto;
     top: auto;
     bottom: 8px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .settingsDock {
+    display: none;
   }
 }
 </style>

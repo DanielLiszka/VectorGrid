@@ -2,7 +2,7 @@
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import HistoryWorkspacePanel from "./HistoryWorkspacePanel.vue";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
@@ -20,6 +20,7 @@ describe("HistoryWorkspacePanel", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     document.body.innerHTML = "";
   });
 
@@ -66,5 +67,151 @@ describe("HistoryWorkspacePanel", () => {
     expect(bodyText).toContain(
       "best_sweep | robust=1.44 | psr=0.72 | dsr=0.68",
     );
+  });
+
+  it("uses inline confirmation before clearing session history or deleting a saved run", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+    history.canClearHistory = true;
+    history.canDeleteSavedRun = true;
+    history.savedSelectedValue = "C:/runs/demo.json";
+    history.savedOptions = [
+      { value: "C:/runs/demo.json", label: "demo.json", disabled: false },
+    ];
+    history.savedRunDetailTitle = "demo";
+
+    const clearSpy = vi
+      .spyOn(history, "clearSession")
+      .mockImplementation(() => {});
+    const deleteSpy = vi
+      .spyOn(history, "deleteSavedRun")
+      .mockImplementation(() => {});
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const buttons = Array.from(document.querySelectorAll("button"));
+    const clearButton = buttons.find(
+      (button) => button.textContent?.trim() === "Clear",
+    ) as HTMLButtonElement | undefined;
+    const deleteButton = buttons.find(
+      (button) => button.textContent?.trim() === "Delete",
+    ) as HTMLButtonElement | undefined;
+
+    expect(clearButton).toBeDefined();
+    expect(deleteButton).toBeDefined();
+
+    clearButton?.click();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.textContent || "").toContain("Clear session history");
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(clearSpy).not.toHaveBeenCalled();
+
+    const confirmClearButton = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Confirm clear",
+    ) as HTMLButtonElement | undefined;
+
+    expect(confirmClearButton).toBeDefined();
+    confirmClearButton?.click();
+    await nextTick();
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+
+    deleteButton?.click();
+    await nextTick();
+    await nextTick();
+
+    expect(document.body.textContent || "").toContain("Delete saved run");
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(document.body.textContent || "").toContain("C:/runs/demo.json");
+    expect(deleteSpy).not.toHaveBeenCalled();
+
+    const confirmDeleteButton = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete artifact",
+    ) as HTMLButtonElement | undefined;
+
+    expect(confirmDeleteButton).toBeDefined();
+    confirmDeleteButton?.click();
+    await nextTick();
+    expect(deleteSpy).toHaveBeenCalledWith("C:/runs/demo.json");
+  });
+
+  it("supports arrow-key navigation across session and saved run lists", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 2;
+    history.sessionRunsRaw = [
+      { ts: "2026-03-20T10:00:00Z", backend: "cpu", pairs: 1 },
+      { ts: "2026-03-20T11:00:00Z", backend: "gpu", pairs: 2 },
+    ];
+    history.savedRunsVisible = [
+      {
+        ts: "2026-03-21T10:00:00Z",
+        path: "C:/runs/a.json",
+        bytes: 1024,
+        strategyKind: "CompositeMo",
+        hasValidation: true,
+        reportXlsxPath: "C:/runs/a.xlsx",
+        csvPath: "C:/data/a.csv",
+        tags: ["a"],
+      },
+      {
+        ts: "2026-03-22T10:00:00Z",
+        path: "C:/runs/b.json",
+        bytes: 2048,
+        strategyKind: "CompositeMo",
+        hasValidation: false,
+        reportXlsxPath: "",
+        csvPath: "C:/data/b.csv",
+        tags: ["b"],
+      },
+    ];
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const sessionButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        'ul[aria-label="Session history runs"] button.runListButton',
+      ),
+    );
+    expect(sessionButtons).toHaveLength(2);
+
+    sessionButtons[0]?.focus();
+    sessionButtons[0]?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+    );
+    expect(document.activeElement).toBe(sessionButtons[1]);
+
+    const savedButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        'ul[aria-label="Saved run artifacts"] button.runListButton',
+      ),
+    );
+    expect(savedButtons).toHaveLength(2);
+
+    savedButtons[1]?.focus();
+    savedButtons[1]?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+    );
+    expect(document.activeElement).toBe(savedButtons[0]);
   });
 });

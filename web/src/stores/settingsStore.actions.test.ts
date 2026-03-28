@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { bindRuntimePinia } from './runtimePinia'
 import * as dataService from '../services/dataService'
 import * as settingsService from '../services/settingsService'
 import { useDataStore } from './dataStore'
@@ -85,9 +86,12 @@ const defaultMarketDataDirInfo = {
 
 describe('settings store actions', () => {
   let harness: DocumentHarness
+  let pinia: ReturnType<typeof createPinia>
 
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     vi.clearAllMocks()
     browseMarketDataDirMock.mockResolvedValue('')
     setMarketDataDirMock.mockResolvedValue(defaultMarketDataDirInfo)

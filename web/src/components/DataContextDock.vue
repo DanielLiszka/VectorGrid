@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDataStore } from '../stores/dataStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const commandActionStore = useCommandActionStore()
 const store = useDataStore()
@@ -10,12 +11,7 @@ const { dataId, datasetLabel, datasetRange, dataLen, statusLine, updatedAtUnixMs
 
 const isLoaded = computed(() => dataId.value !== '—' && dataId.value !== '')
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  const d = new Date(ms)
-  return d.toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 function browseCsvAction(): void {
   commandActionStore.browseCsv()
@@ -33,7 +29,7 @@ function runOptimizationAction(): void {
 <template>
   <aside class="dataDock">
     <header class="dockHeader">
-      <div class="title">Data Context</div>
+      <h2 class="title" style="margin: 0;">Data Context</h2>
       <div class="stamp">{{ stamp }}</div>
     </header>
     <div class="rows">

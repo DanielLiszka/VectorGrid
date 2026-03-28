@@ -111,7 +111,7 @@ describe('strategyOptimizationCapabilities', () => {
     expect(kernelCaps.supportsShortlistUnionMode).toBe(true)
     expect(kernelCaps.supportsAdvancedExactKernelControls).toBe(true)
     expect(kernelCaps.outputSummary).toContain('export')
-    expect(kernelCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/trade-metric controls apply')
+    expect(kernelCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/metric-contract controls apply')
     expect(hybridCaps.supportsExportAll).toBe(false)
     expect(hybridCaps.supportsHeatmap).toBe(true)
     expect(hybridCaps.supportsTopK).toBe(true)
@@ -120,7 +120,7 @@ describe('strategyOptimizationCapabilities', () => {
     expect(hybridCaps.supportsShortlistConfidenceMode).toBe(false)
     expect(hybridCaps.supportsShortlistUnionMode).toBe(false)
     expect(hybridCaps.supportsAdvancedExactKernelControls).toBe(false)
-    expect(hybridCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/trade-metric controls are disabled')
+    expect(hybridCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/metric-contract controls are disabled')
     expect(cpuCaps.supportsExportAll).toBe(false)
     expect(cpuCaps.supportsHeatmap).toBe(true)
     expect(cpuCaps.supportsTopK).toBe(true)
@@ -129,7 +129,7 @@ describe('strategyOptimizationCapabilities', () => {
     expect(cpuCaps.supportsShortlistConfidenceMode).toBe(false)
     expect(cpuCaps.supportsShortlistUnionMode).toBe(false)
     expect(cpuCaps.supportsAdvancedExactKernelControls).toBe(false)
-    expect(cpuCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/trade-metric controls are disabled')
+    expect(cpuCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/metric-contract controls are disabled')
   })
 
   it('describes include-all native candidate return on standalone strategy routes and CompositeCpu', () => {

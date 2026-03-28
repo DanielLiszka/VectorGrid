@@ -2,7 +2,7 @@ import { invokeCommand } from "../tauri/invoke";
 import { HISTORY_KEY, SETTINGS_KEY } from "../utils/core/storageKeys";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import { applyWorkflowArtifactsPayload } from "../stores/workflowArtifactsStore";
-import { getActivePinia } from "pinia";
+import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { useAdvancedStore } from "../stores/advancedStore";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useDataStore } from "../stores/dataStore";
@@ -60,7 +60,7 @@ function isMlSignalStrategyKind(value: unknown): boolean {
 }
 
 function updateAnalysisStatus(message: string): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return;
   const analysisStore = useAnalysisStore(pinia);
   analysisStore.statusLine = normalizeText(message) || "Ready.";
@@ -199,7 +199,7 @@ interface PresetStoreAdapter {
 }
 
 function applyPresetToVueStores(preset: Record<string, unknown>): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return;
   const stores: PresetStoreAdapter[] = [
     useDataStore(pinia),
@@ -470,7 +470,7 @@ function updateStoresFromRunRequest(
   csvPath: string,
   timeframe: string,
 ): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return;
 
   const optimizeStore = useOptimizeStore(pinia);
@@ -950,7 +950,7 @@ export async function rerunSavedRun(path: string): Promise<void> {
   }
   if (isMlSignalStrategyKind(req.strategy_kind ?? req.strategyKind)) {
     const { generateMlSignalScoreCache } = await import("./mlSignalService");
-    const pinia = getActivePinia();
+    const pinia = resolveRuntimePinia();
     if (pinia) {
       const optimizeStore = useOptimizeStore(pinia);
       if (normalizeText(request.input_path ?? request.inputPath)) {

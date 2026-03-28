@@ -149,4 +149,26 @@ describe("RunFooterPanel", () => {
 
     wrapper.unmount();
   });
+
+  it("does not render the workflow footer outside the workflow workspace", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    workflow.selectWorkspace("settings");
+
+    const wrapper = mount(RunFooterPanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    expect(document.body.textContent || "").not.toContain("Execution readiness");
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Run optimization",
+      ),
+    ).toBe(false);
+
+    wrapper.unmount();
+  });
 });

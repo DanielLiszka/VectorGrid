@@ -1,5 +1,6 @@
-import { defineStore, getActivePinia } from "pinia";
+import { defineStore } from "pinia";
 import { markRaw } from "vue";
+import { resolveRuntimePinia } from "./runtimePinia";
 
 export interface WorkflowRunArtifact {
   ts: string;
@@ -204,15 +205,15 @@ export const useWorkflowArtifactsStore = defineStore("workflowArtifacts", {
 
   actions: {
     applyLegacyRuntimePayload(payload: unknown): void {
-      applyWorkflowArtifactsPayload(payload, "legacy-runtime");
+      applyWorkflowArtifactsPayload(payload, "legacy-runtime", this);
     },
 
     applyVueRuntimePayload(payload: unknown): void {
-      applyWorkflowArtifactsPayload(payload, "vue");
+      applyWorkflowArtifactsPayload(payload, "vue", this);
     },
 
     clearArtifacts(): void {
-      applyNormalizedArtifacts(null, null, "vue");
+      applyNormalizedArtifacts(null, null, "vue", this);
     },
   },
 });
@@ -228,14 +229,19 @@ function applyNormalizedArtifacts(
   run: WorkflowRunArtifact | null,
   validation: WorkflowValidationArtifact | null,
   source: WorkflowArtifactsSource,
+  targetStore?: WorkflowArtifactsState,
 ): void {
   latestWorkflowRunSnapshot = run
     ? { req: run.req ?? null, res: run.res ?? null }
     : null;
 
-  const pinia = getActivePinia();
-  if (!pinia) return;
-  const store = useWorkflowArtifactsStore(pinia);
+  const store =
+    targetStore ??
+    (() => {
+      const pinia = resolveRuntimePinia();
+      return pinia ? useWorkflowArtifactsStore(pinia) : null;
+    })();
+  if (!store) return;
   store.currentRun = run;
   store.currentValidation = validation;
   store.source = source;
@@ -245,11 +251,12 @@ function applyNormalizedArtifacts(
 export function applyWorkflowArtifactsPayload(
   payload: unknown,
   source: WorkflowArtifactsSource,
+  targetStore?: WorkflowArtifactsState,
 ): boolean {
   if (!payload || typeof payload !== "object") return false;
   const row = payload as WorkflowArtifactsPayload;
   const run = normalizeRunArtifact(row.currentRun);
   const validation = normalizeValidationArtifact(row.currentValidation);
-  applyNormalizedArtifacts(run, validation, source);
+  applyNormalizedArtifacts(run, validation, source, targetStore);
   return true;
 }

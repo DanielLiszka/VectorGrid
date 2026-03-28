@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { bindRuntimePinia } from './runtimePinia'
 import * as analysisService from '../services/analysisService'
 import * as dataService from '../services/dataService'
 import * as optimizeService from '../services/optimizeService'
@@ -80,8 +81,12 @@ function ensureDocumentDataset(): Record<string, string> {
 }
 
 describe('command action store', () => {
+  let pinia: ReturnType<typeof createPinia>
+
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     vi.clearAllMocks()
     const dataset = ensureDocumentDataset()
     for (const key of Object.keys(dataset)) delete dataset[key]

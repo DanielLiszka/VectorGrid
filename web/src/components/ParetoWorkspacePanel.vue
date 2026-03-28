@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { refreshParetoFromWorkflowRun } from '../services/analysisService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface OptionItem {
   value: string
@@ -26,19 +28,14 @@ const {
 } = storeToRefs(analysisStore)
 const { resultsTab } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#paretoVueShellMount')
 
 const xDraft = ref('max_dd')
 const yDraft = ref('pnl')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'pareto')
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 function resolvedOptions(options: OptionItem[], fallbackValue: string, fallbackLabel: string): OptionItem[] {
   if (options.length > 0) return options
@@ -66,18 +63,8 @@ function setSelectValue(id: string, nextValue: string): void {
   analysisStore.setSelectField(id, nextValue)
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="pareto"]') as HTMLElement | null
-  const mount = document.querySelector('#paretoVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vuePareto = '1'
-  mountReady.value = true
-}
-
 onMounted(async () => {
   await nextTick()
-  resolveMount()
   await nextTick()
   refreshParetoFromWorkflowRun()
 })
@@ -88,20 +75,17 @@ watch(visible, async (nextVisible) => {
   refreshParetoFromWorkflowRun()
 })
 
-onBeforeUnmount(() => {
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vuePareto
-    panelRoot.value = null
-  }
-})
+function reviewTopResults(): void {
+  workflowStore.selectResultsTab('top')
+}
 </script>
 
 <template>
   <Teleport v-if="mountReady" to="#paretoVueShellMount">
     <section class="paretoPanelVueRoot paretoVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Pareto</div>
-        <div class="meta mono">{{ stamp }}</div>
+        <h2 class="panelTitle">Pareto</h2>
+        <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
       </header>
 
       <section v-if="paretoStage === 'ready'" class="pane">
@@ -142,11 +126,11 @@ onBeforeUnmount(() => {
             </select>
           </div>
         </div>
-        <div class="metaLine mono">{{ paretoMeta }}</div>
+        <div class="metaLine mono" role="status" aria-live="polite">{{ paretoMeta }}</div>
       </section>
 
       <section class="pane">
-        <h3>Pareto Chart</h3>
+        <h3 class="panelPaneTitle">Pareto Chart</h3>
         <div v-if="paretoStage !== 'ready'" class="emptyState">
           <div class="emptyTitle">
             {{ paretoStage === 'no_data' ? 'Load data before opening the Pareto view.' : 'Run an optimization to generate Pareto points.' }}
@@ -158,16 +142,33 @@ onBeforeUnmount(() => {
                 : 'This view compares tradeoffs between competing candidates once optimization results are available.'
             }}
           </div>
-          <div class="muted mono">{{ statusLine }}</div>
+          <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
         </div>
-        <div v-else id="paretoWrapVue" style="margin-top: 0.75rem; display: none;">
-          <div class="muted" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="paretoMetaVue">-</div>
-          <canvas id="paretoCanvasVue" class="chart" width="1024" height="240"></canvas>
-          <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">Click a point to drill down that parameter pair.</div>
+        <div class="chartAssist">
+          <div id="paretoKeyboardHint" class="panelMuted">
+            Use the Top results table as the keyboard-friendly way to move between candidates, or click frontier points if you want direct chart drilldown.
+          </div>
+          <div class="actions" style="margin-top: 0;">
+            <button type="button" @click="reviewTopResults">Review Top results</button>
+          </div>
+        </div>
+        <div class="panelAdvisory">
+          If the frontier stays blank after a run, confirm that optimization returned more than one ranked candidate and that the current X/Y metrics are still available for this result set.
+        </div>
+        <div v-if="paretoStage === 'ready'" id="paretoWrapVue" style="margin-top: 0.75rem; display: none;">
+          <div class="panelStatus" style="margin: 0.25rem 0 0.6rem; font-size: 0.85rem;" id="paretoMetaVue" role="status" aria-live="polite">-</div>
+          <div
+            class="chartSurface"
+            aria-label="Pareto frontier chart comparing the selected X and Y metrics. Use the Top results tab for a non-pointer way to move between candidates."
+            aria-describedby="paretoKeyboardHint"
+          >
+            <canvas id="paretoCanvasVue" class="chart" width="1024" height="240" role="img" aria-label="Pareto frontier chart"></canvas>
+          </div>
+          <div class="panelMuted" style="margin-top: 0.5rem;">Select a Top result or click a point to drill down that parameter pair.</div>
         </div>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -185,27 +186,12 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
 }
 
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
 .pane {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
   min-width: 0;
-}
-
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
 }
 
 .gridTwo {
@@ -220,14 +206,27 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 
-.status {
-  font-size: 0.78rem;
-  color: var(--muted);
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
 }
 
-.muted {
-  color: var(--muted);
-  font-size: 0.8rem;
+.actions button {
+  padding: 0.42rem 0.6rem;
+  font-size: 0.76rem;
+}
+
+.chartAssist {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.chartSurface:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
 }
 
 .mono {
@@ -241,10 +240,5 @@ onBeforeUnmount(() => {
 }
 </style>
 
-<style>
-[data-vue-panel='pareto'][data-vue-pareto='1'] > :not(#paretoVueShellMount) {
-  display: none !important;
-}
-</style>
 
 

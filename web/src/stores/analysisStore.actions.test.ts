@@ -4,6 +4,7 @@ import * as analysisService from '../services/analysisService'
 import * as dataService from '../services/dataService'
 import * as metaService from '../services/metaService'
 import * as optimizeService from '../services/optimizeService'
+import { bindRuntimePinia } from './runtimePinia'
 import { useAnalysisStore } from './analysisStore'
 import { useHistoryStore } from './historyStore'
 import { useWorkflowStore } from './workflowStore'
@@ -125,7 +126,9 @@ const cancelOptimizationMock = vi.mocked(optimizeService.cancelOptimization)
 
 describe('analysis store actions', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     vi.clearAllMocks()
   })
 

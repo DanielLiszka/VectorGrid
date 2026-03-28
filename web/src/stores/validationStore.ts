@@ -11,6 +11,7 @@ import {
   toggleCrossDataset as toggleCrossDatasetAction,
 } from '../services/validationService'
 import { useDataStore } from './dataStore'
+import { resolveRuntimePinia } from './runtimePinia'
 
 function rawArray<T>(value: unknown, fallback: T[]): T[] {
   return Array.isArray(value) ? markRaw(value as T[]) : fallback
@@ -695,7 +696,9 @@ export const useValidationStore = defineStore('validation', {
     crossSelectMatch(): void {
       if (!this.canCrossSelectMatch) return
 
-      const dataStore = useDataStore()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      const dataStore = useDataStore(pinia)
       const currentPath = normalizePath(dataStore.csvPath)
       const currentMarket = parseCurrentMarket(dataStore.datasetContext)
       const timeframe = parseCurrentTimeframe(

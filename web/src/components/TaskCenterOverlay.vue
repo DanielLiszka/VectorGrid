@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStorage } from '@vueuse/core'
 import { invokeCommand } from '../tauri/invoke'
 import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
+import { formatUiCompactDurationMs, formatUiPercentFromFraction } from '../utils/uiFormat'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import {
   activeTasksCount,
   activeTasksSnapshot,
@@ -24,12 +26,14 @@ const expanded = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
 const launcherPos = useStorage<{ x: number; y: number }>('VTA_TASK_CENTER_POS_V1', { x: 12, y: 12 })
 const launcherPosInitialized = useStorage<boolean>('VTA_TASK_CENTER_POS_INIT_V1', false)
 const overlayRootRef = ref<HTMLElement | null>(null)
+const toggleRef = ref<HTMLButtonElement | null>(null)
 const busyCancelIds = shallowRef<Set<string>>(new Set())
 const taskCenterPanelId = 'vta-task-center-panel'
 const { referenceRef, floatingRef, floatingStyles } = useAnchoredOverlay(expanded, {
   placement: 'bottom-end',
   offsetPx: 10,
   paddingPx: 10,
+  insideRefs: [overlayRootRef],
 })
 const dragState = shallowRef<{
   pointerId: number
@@ -40,6 +44,7 @@ const dragState = shallowRef<{
   dragging: boolean
 } | null>(null)
 const ignoreNextToggle = ref(false)
+const lastFocusedElement = shallowRef<HTMLElement | null>(null)
 
 function headItems<T>(items: T[], limit: number): T[] {
   return items.length <= limit ? items : items.slice(0, limit)
@@ -53,6 +58,7 @@ const toastItems = computed(() => headItems(toasts.value, 4))
 const runningCount = computed(() => activeTasksCount())
 const overall = computed(() => overallProgress.value)
 const quietMode = computed(() => !expanded.value && runningCount.value <= 0 && !overall.value && toastItems.value.length === 0)
+const panelDescriptionId = 'vta-task-center-description'
 const rootStyle = computed(() => {
   const pos = normalizeLauncherPos(launcherPos.value) ?? { x: 12, y: 12 }
   return {
@@ -79,7 +85,61 @@ function toggleExpanded(): void {
     ignoreNextToggle.value = false
     return
   }
+  if (!expanded.value) {
+    lastFocusedElement.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  }
   expanded.value = !expanded.value
+}
+
+function closePanel(): void {
+  if (!expanded.value) return
+  expanded.value = false
+}
+
+function panelFocusTargets(root: HTMLElement): HTMLElement[] {
+  const selectors =
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  return Array.from(root.querySelectorAll<HTMLElement>(selectors)).filter(
+    (el) => !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true',
+  )
+}
+
+function onPanelKeydown(event: KeyboardEvent): void {
+  if (!expanded.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closePanel()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const root = floatingRef.value
+  if (!root) return
+  const targets = panelFocusTargets(root)
+  if (!targets.length) {
+    event.preventDefault()
+    root.focus()
+    return
+  }
+  const first = targets[0]
+  const last = targets[targets.length - 1]
+  const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  if (event.shiftKey) {
+    if (active === first || active === root) {
+      event.preventDefault()
+      last?.focus()
+    }
+    return
+  }
+  if (active === last) {
+    event.preventDefault()
+    first?.focus()
+  }
+}
+
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (!expanded.value || event.key !== 'Escape') return
+  event.preventDefault()
+  closePanel()
 }
 
 function normalizeLauncherPos(value: unknown): { x: number; y: number } | null {
@@ -182,7 +242,28 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onViewportResize)
+  document.removeEventListener('keydown', onDocumentKeydown)
 })
+
+watch(
+  expanded,
+  async (isOpen, wasOpen) => {
+    if (isOpen) {
+      document.addEventListener('keydown', onDocumentKeydown)
+      await nextTick()
+      const panel = floatingRef.value
+      if (!panel) return
+      const firstFocusable = panelFocusTargets(panel)[0]
+      ;(firstFocusable ?? panel).focus()
+      return
+    }
+    if (!wasOpen) return
+    document.removeEventListener('keydown', onDocumentKeydown)
+    await nextTick()
+    ;(toggleRef.value ?? lastFocusedElement.value)?.focus()
+  },
+  { flush: 'post' },
+)
 
 function statusLabel(task: TrackedTask): string {
   if (task.status === 'running') return 'Running'
@@ -212,16 +293,12 @@ function taskDetail(task: TrackedTask): string {
 }
 
 function absoluteTime(unixMs: number): string {
-  const d = new Date(unixMs)
-  return d.toLocaleTimeString([], { hour12: false })
+  return formatUiTimeFromUnixMs(unixMs)
 }
 
 function durationText(task: TrackedTask): string {
   const ended = task.endedAt ?? Date.now()
-  const ms = Math.max(0, ended - task.startedAt)
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  return `${(ms / 60_000).toFixed(1)}m`
+  return formatUiCompactDurationMs(Math.max(0, ended - task.startedAt))
 }
 
 function canCancel(task: TrackedTask): boolean {
@@ -268,11 +345,13 @@ function toastClass(toast: TaskToastItem): string {
   <div ref="overlayRootRef" class="taskOverlayRoot" :style="rootStyle">
     <div ref="referenceRef" class="overlayAnchor">
       <button
+        ref="toggleRef"
         class="overlayToggle"
         :class="{ dragging: toggleDragging, quiet: quietMode }"
         type="button"
         :aria-expanded="expanded ? 'true' : 'false'"
         :aria-controls="taskCenterPanelId"
+        aria-haspopup="dialog"
         @click="toggleExpanded"
         @pointerdown="onTogglePointerDown"
         @pointermove="onTogglePointerMove"
@@ -282,7 +361,7 @@ function toastClass(toast: TaskToastItem): string {
         <span class="toggleLabel">{{ quietMode ? 'Tasks' : 'Task Center' }}</span>
         <span v-if="!quietMode || runningCount > 0" class="toggleBadge">{{ runningCount }}</span>
         <span v-if="!quietMode || centerStatusLabel !== 'Idle'" class="toggleState">{{ centerStatusLabel }}</span>
-        <span v-if="overall" class="togglePct">{{ overall.pct.toFixed(0) }}%</span>
+        <span v-if="overall" class="togglePct">{{ formatUiPercentFromFraction(overall.pct) }}</span>
       </button>
     </div>
 
@@ -293,11 +372,33 @@ function toastClass(toast: TaskToastItem): string {
       </article>
     </section>
 
-    <section v-if="expanded" :id="taskCenterPanelId" ref="floatingRef" class="taskPanel" :style="floatingStyles">
+    <section
+      v-if="expanded"
+      :id="taskCenterPanelId"
+      ref="floatingRef"
+      class="taskPanel"
+      :style="floatingStyles"
+      role="dialog"
+      aria-modal="false"
+      aria-label="Task center"
+      :aria-describedby="panelDescriptionId"
+      tabindex="-1"
+      @keydown.capture="onPanelKeydown"
+    >
+      <div class="taskPanelHeader">
+        <div class="taskPanelHeaderCopy">
+          <div class="sectionTitle">Task center</div>
+          <div :id="panelDescriptionId" class="muted">
+            Review active commands, recent events, and the command timeline. Press Escape to close this panel.
+          </div>
+        </div>
+        <button type="button" class="panelCloseBtn" @click="closePanel">Close</button>
+      </div>
+
       <div v-if="overall" class="overallWrap">
         <div class="overallTitle">{{ overall.label }}</div>
         <div class="bar">
-          <div class="fill" :style="{ width: `${overall.pct.toFixed(1)}%` }"></div>
+          <div class="fill" :style="{ width: formatUiPercentFromFraction(overall.pct, 1) }"></div>
         </div>
       </div>
 
@@ -323,7 +424,7 @@ function toastClass(toast: TaskToastItem): string {
                 :disabled="isCancelBusy(task.id)"
                 @click="cancelTask(task)"
               >
-                {{ isCancelBusy(task.id) ? 'Cancelling...' : 'Cancel' }}
+                {{ isCancelBusy(task.id) ? 'Cancelling…' : 'Cancel' }}
               </button>
             </div>
           </article>
@@ -521,6 +622,18 @@ function toastClass(toast: TaskToastItem): string {
   overflow: auto;
 }
 
+.taskPanelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.taskPanelHeaderCopy {
+  display: grid;
+  gap: 4px;
+}
+
 .overallWrap {
   display: grid;
   gap: 6px;
@@ -541,6 +654,12 @@ function toastClass(toast: TaskToastItem): string {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #7dd3fc;
+}
+
+.panelCloseBtn {
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  border-radius: 999px;
 }
 
 .muted {

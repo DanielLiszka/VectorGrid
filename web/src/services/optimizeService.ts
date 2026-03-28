@@ -1,4 +1,4 @@
-import { getActivePinia } from "pinia";
+import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { invokeCommand } from "../tauri/invoke";
 import { requestCancelCurrentRun } from "./runControlService";
 import { runValidation as runValidationAction } from "./validationService";
@@ -635,17 +635,31 @@ function parseNonNegativeInt(value: unknown, fallback: number): number {
   return Math.max(0, Math.floor(parsed));
 }
 
+const OPTIMIZE_PANEL_SELECTOR = '[data-vue-panel="opt"]';
+const ADVANCED_PANEL_SELECTOR = '[data-vue-panel="advanced"]';
+const VALIDATION_PANEL_SELECTOR = '[data-vue-panel="validate"]';
+
 function dispatchInputLikeEvents(target: EventTarget | null): void {
   if (!target) return;
   target.dispatchEvent(new Event("input", { bubbles: true }));
   target.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function queryDomById<T extends Element>(id: string): T | null {
+function queryDomById<T extends Element>(
+  id: string,
+  scopeSelector?: string,
+): T | null {
   if (typeof document === "undefined") return null;
+  const selector = `[id="${id}"]`;
+  if (scopeSelector) {
+    if (typeof document.querySelector !== "function") return null;
+    const scopeRoot = document.querySelector(scopeSelector) as HTMLElement | null;
+    if (!scopeRoot) return null;
+    return scopeRoot.querySelector(selector) as T | null;
+  }
   const byQuery =
     typeof document.querySelector === "function"
-      ? document.querySelector(`[id="${id}"]`)
+      ? document.querySelector(selector)
       : null;
   if (byQuery) return byQuery as T;
   const getById = (
@@ -657,10 +671,14 @@ function queryDomById<T extends Element>(id: string): T | null {
   return (getById.call(document, id) as T | null) ?? null;
 }
 
-function writeDomInputValue(id: string, rawValue: string): void {
+function writeDomInputValue(
+  id: string,
+  rawValue: string,
+  scopeSelector?: string,
+): void {
   const el = queryDomById<
     HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
-  >(id);
+  >(id, scopeSelector);
   if (!el) return;
   const value = String(rawValue || "");
   if (el.value === value) return;
@@ -668,8 +686,12 @@ function writeDomInputValue(id: string, rawValue: string): void {
   dispatchInputLikeEvents(el);
 }
 
-function writeDomCheckboxValue(id: string, checked: boolean): void {
-  const el = queryDomById<HTMLInputElement>(id);
+function writeDomCheckboxValue(
+  id: string,
+  checked: boolean,
+  scopeSelector?: string,
+): void {
+  const el = queryDomById<HTMLInputElement>(id, scopeSelector);
   if (!el) return;
   const next = !!checked;
   if (el.checked === next) return;
@@ -677,8 +699,12 @@ function writeDomCheckboxValue(id: string, checked: boolean): void {
   dispatchInputLikeEvents(el);
 }
 
-function writeDomTextContent(id: string, value: string): void {
-  const el = queryDomById<HTMLElement>(id);
+function writeDomTextContent(
+  id: string,
+  value: string,
+  scopeSelector?: string,
+): void {
+  const el = queryDomById<HTMLElement>(id, scopeSelector);
   if (!el) return;
   el.textContent = value;
 }
@@ -820,8 +846,8 @@ function updateParityStatus(meta: string, statusLine: string): void {
     gpuParityMeta: meta,
     statusLine,
   });
-  writeDomTextContent("gpuParityMeta", meta);
-  writeDomTextContent("status", statusLine);
+  writeDomTextContent("gpuParityMeta", meta, OPTIMIZE_PANEL_SELECTOR);
+  writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
 }
 
 function applyGpuSummaryToOptimizeStore(summary: GpuStatusSummary): void {
@@ -829,7 +855,7 @@ function applyGpuSummaryToOptimizeStore(summary: GpuStatusSummary): void {
     gpuStatus: summary.text,
     gpuDeviceMeta: summary.deviceMeta,
   });
-  writeDomTextContent("gpuStatus", summary.text);
+  writeDomTextContent("gpuStatus", summary.text, OPTIMIZE_PANEL_SELECTOR);
 }
 
 function normalizeDynamicStrategyPreviewBackend(
@@ -966,28 +992,96 @@ export async function applyPreset(): Promise<void> {
   });
   patchStoreState("optimize", { statusLine });
 
-  writeDomInputValue("topK", String(preset.topK));
-  writeDomInputValue("includeAll", preset.includeAll ? "true" : "false");
-  writeDomInputValue("heatmapBins", String(preset.heatmapBins));
-  writeDomCheckboxValue("valAutoRun", preset.valAutoRun);
-  writeDomCheckboxValue("valAutoExportXlsx", preset.valAutoExportXlsx);
-  writeDomCheckboxValue("valAutoRevealReport", preset.valAutoRevealReport);
-  writeDomInputValue("valAutoExportTopN", String(preset.valAutoExportTopN));
-  writeDomInputValue("valCandidates", String(preset.valCandidates));
-  writeDomCheckboxValue("valWfEnable", preset.valWfEnable);
-  writeDomInputValue("valWfWindow", String(preset.valWfWindow));
-  writeDomInputValue("valWfStep", String(preset.valWfStep));
-  writeDomCheckboxValue("valPerturbEnable", preset.valPerturbEnable);
-  writeDomInputValue("valPerturbIters", String(preset.valPerturbIters));
-  writeDomInputValue("valPerturbMin", String(preset.valPerturbMin));
-  writeDomInputValue("valPerturbMax", String(preset.valPerturbMax));
-  writeDomCheckboxValue("valMcEnable", preset.valMcEnable);
-  writeDomInputValue("valMcSims", String(preset.valMcSims));
-  writeDomCheckboxValue("valCscvEnable", preset.valCscvEnable);
-  writeDomInputValue("valCscvSlices", String(preset.valCscvSlices));
-  writeDomCheckboxValue("valCrossEnable", crossEnabled);
-  writeDomInputValue("valCrossMax", String(preset.valCrossMax));
-  writeDomTextContent("status", statusLine);
+  writeDomInputValue("topK", String(preset.topK), ADVANCED_PANEL_SELECTOR);
+  writeDomInputValue(
+    "includeAll",
+    preset.includeAll ? "true" : "false",
+    ADVANCED_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "heatmapBins",
+    String(preset.heatmapBins),
+    ADVANCED_PANEL_SELECTOR,
+  );
+  writeDomCheckboxValue("valAutoRun", preset.valAutoRun, VALIDATION_PANEL_SELECTOR);
+  writeDomCheckboxValue(
+    "valAutoExportXlsx",
+    preset.valAutoExportXlsx,
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomCheckboxValue(
+    "valAutoRevealReport",
+    preset.valAutoRevealReport,
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valAutoExportTopN",
+    String(preset.valAutoExportTopN),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valCandidates",
+    String(preset.valCandidates),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomCheckboxValue("valWfEnable", preset.valWfEnable, VALIDATION_PANEL_SELECTOR);
+  writeDomInputValue(
+    "valWfWindow",
+    String(preset.valWfWindow),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valWfStep",
+    String(preset.valWfStep),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomCheckboxValue(
+    "valPerturbEnable",
+    preset.valPerturbEnable,
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valPerturbIters",
+    String(preset.valPerturbIters),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valPerturbMin",
+    String(preset.valPerturbMin),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valPerturbMax",
+    String(preset.valPerturbMax),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomCheckboxValue("valMcEnable", preset.valMcEnable, VALIDATION_PANEL_SELECTOR);
+  writeDomInputValue(
+    "valMcSims",
+    String(preset.valMcSims),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomCheckboxValue(
+    "valCscvEnable",
+    preset.valCscvEnable,
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valCscvSlices",
+    String(preset.valCscvSlices),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomCheckboxValue(
+    "valCrossEnable",
+    crossEnabled,
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomInputValue(
+    "valCrossMax",
+    String(preset.valCrossMax),
+    VALIDATION_PANEL_SELECTOR,
+  );
+  writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
 }
 
 export async function presetKernel(): Promise<void> {
@@ -1021,11 +1115,11 @@ export async function presetKernel(): Promise<void> {
   });
   patchStoreState("advanced", { maSource: "close" });
 
-  writeDomInputValue("backend", "GpuKernel");
-  writeDomInputValue("maSource", "close");
-  writeDomInputValue("fastMaType", fastMaType);
-  writeDomInputValue("slowMaType", slowMaType);
-  writeDomTextContent("status", statusLine);
+  writeDomInputValue("backend", "GpuKernel", OPTIMIZE_PANEL_SELECTOR);
+  writeDomInputValue("maSource", "close", ADVANCED_PANEL_SELECTOR);
+  writeDomInputValue("fastMaType", fastMaType, OPTIMIZE_PANEL_SELECTOR);
+  writeDomInputValue("slowMaType", slowMaType, OPTIMIZE_PANEL_SELECTOR);
+  writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
 
   try {
     const summary = await refreshGpuStatus();
@@ -1063,8 +1157,8 @@ export async function runGpuParityCheck(): Promise<void> {
   }
 
   updateParityStatus(
-    "Parity: checking GPU availability...",
-    "Checking GPU status for parity...",
+    "Parity: checking GPU availability…",
+    "Checking GPU status for parity…",
   );
 
   let statusSummary: GpuStatusSummary;
@@ -1193,8 +1287,8 @@ export async function runGpuParityCheck(): Promise<void> {
   }
 
   updateParityStatus(
-    "Parity: running CPU ↔ GPU tiny-grid checks...",
-    "Running CPU ↔ GPU parity check (tiny grid)...",
+    "Parity: running CPU ↔ GPU tiny-grid checks…",
+    "Running CPU ↔ GPU parity check (tiny grid)…",
   );
 
   try {
@@ -1408,7 +1502,7 @@ function resolveOptimizationCommand(
 function readPiniaStoreState(
   storeId: PiniaStoreId,
 ): Record<string, unknown> | null {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return null;
   const root = pinia.state.value as Record<string, unknown>;
   const store = root[storeId];
@@ -2275,7 +2369,7 @@ function selectWorkflowResultsTab(
   tab: "top" | "overview",
   persist: boolean,
 ): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return;
   const workflowStore = useWorkflowStore(pinia);
   workflowStore.selectResultsTab(tab, { persist });
@@ -2426,7 +2520,7 @@ export async function runOptimization(
     const message =
       "Load data first, then configure strategy/optimization settings.";
     patchStoreState("optimize", { statusLine: message });
-    writeDomTextContent("status", message);
+    writeDomTextContent("status", message, OPTIMIZE_PANEL_SELECTOR);
     return;
   }
 
@@ -2438,11 +2532,15 @@ export async function runOptimization(
 
   markOptimizationRunning(true);
   patchStoreState("optimize", {
-    progressMeta: "Running optimization...",
-    statusLine: "Running optimization...",
+    progressMeta: "Running optimization…",
+    statusLine: "Running optimization…",
   });
-  writeDomTextContent("progressMeta", "Running optimization...");
-  writeDomTextContent("status", "Running optimization...");
+  writeDomTextContent(
+    "progressMeta",
+    "Running optimization…",
+    OPTIMIZE_PANEL_SELECTOR,
+  );
+  writeDomTextContent("status", "Running optimization…", OPTIMIZE_PANEL_SELECTOR);
 
   try {
     const startedAt =
@@ -2464,9 +2562,9 @@ export async function runOptimization(
       progressMeta,
       statusLine,
     });
-    writeDomTextContent("progressMeta", progressMeta);
-    writeDomTextContent("status", statusLine);
-    writeDomTextContent("output", safePrettyJson(res));
+    writeDomTextContent("progressMeta", progressMeta, OPTIMIZE_PANEL_SELECTOR);
+    writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
+    writeDomTextContent("output", safePrettyJson(res), OPTIMIZE_PANEL_SELECTOR);
 
     const persisted = await persistRunArtifact(req, res, runTs);
     applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);
@@ -2483,7 +2581,7 @@ export async function runOptimization(
           ? "Auto-validation cancelled."
           : `Auto-validation failed: ${String(error || "")}`;
         patchStoreState("optimize", { statusLine: message });
-        writeDomTextContent("status", message);
+        writeDomTextContent("status", message, OPTIMIZE_PANEL_SELECTOR);
       }
     }
 
@@ -2498,7 +2596,7 @@ export async function runOptimization(
       ? "Cancelled."
       : String(error || "");
     patchStoreState("optimize", { statusLine });
-    writeDomTextContent("status", statusLine);
+    writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
     throw error;
   } finally {
     markOptimizationRunning(false);

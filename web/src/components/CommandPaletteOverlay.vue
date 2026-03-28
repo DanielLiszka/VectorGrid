@@ -32,6 +32,7 @@ const { open, query, selectedIndex } = storeToRefs(commandPaletteStore)
 const { canBrowseCsv, canPolygonOpen } = storeToRefs(dataStore)
 const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
 const { workspace, workflowStep } = storeToRefs(workflowStore)
+const commandListId = 'commandPaletteListbox'
 
 function setWorkflowStepIfNeeded(step: string): void {
   if (String(workspace.value || '').trim() === 'workflow' && String(workflowStep.value || '').trim() === step) return
@@ -287,6 +288,15 @@ const filteredCommands = computed<PaletteCommand[]>(() => {
   return scored.map((entry) => entry.command)
 })
 
+function commandOptionId(commandId: string): string {
+  return `command_option_${String(commandId || '').trim()}`
+}
+
+const selectedCommandId = computed(() => {
+  const command = filteredCommands.value[selectedIndex.value] ?? null
+  return command ? commandOptionId(command.id) : undefined
+})
+
 watch(filteredCommands, (commandsNow) => {
   commandPaletteStore.clampSelection(commandsNow.length)
 })
@@ -325,35 +335,8 @@ function runSelected(): void {
   runCommand(command)
 }
 
-function focusableElements(root: HTMLElement): HTMLElement[] {
-  const selectors =
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-  return Array.from(root.querySelectorAll<HTMLElement>(selectors)).filter((el) => !el.hasAttribute('disabled'))
-}
-
 function onKeydown(event: KeyboardEvent): void {
   if (!open.value) return
-  if (event.key === 'Tab') {
-    const targetRootNode = event.target instanceof HTMLElement ? event.target.closest('.cmdPaletteDialog') : null
-    const currentRootNode = event.currentTarget instanceof HTMLElement ? event.currentTarget.closest('.cmdPaletteDialog') : null
-    const targetRoot = targetRootNode instanceof HTMLElement ? targetRootNode : null
-    const currentRoot = currentRootNode instanceof HTMLElement ? currentRootNode : null
-    const root = targetRoot ?? currentRoot ?? null
-    if (!root) return
-    const focusables = focusableElements(root)
-    if (!focusables.length) {
-      event.preventDefault()
-      return
-    }
-
-    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const currentIndex = active ? focusables.indexOf(active) : -1
-    const step = event.shiftKey ? -1 : 1
-    const nextIndex = currentIndex < 0 ? 0 : (currentIndex + step + focusables.length) % focusables.length
-    event.preventDefault()
-    focusables[nextIndex]?.focus()
-    return
-  }
   if (event.key === 'Escape') {
     event.preventDefault()
     closePalette()
@@ -392,18 +375,28 @@ function onKeydown(event: KeyboardEvent): void {
           ref="inputRef"
           type="text"
           class="query"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-haspopup="listbox"
+          :aria-expanded="open ? 'true' : 'false'"
+          :aria-controls="commandListId"
+          :aria-activedescendant="selectedCommandId"
           :value="query"
-          placeholder="Type a command..."
+          placeholder="Type a command…"
           @input="commandPaletteStore.setQuery(String(($event.target as HTMLInputElement).value || ''))"
         />
-        <div class="list">
-          <button
+        <div :id="commandListId" class="list" role="listbox" aria-label="Available commands">
+          <div
             v-for="(command, index) in filteredCommands"
             :key="command.id"
-            type="button"
+            :id="commandOptionId(command.id)"
             class="row"
             :class="{ selected: selectedIndex === index, disabled: !command.enabled }"
+            role="option"
+            :aria-selected="selectedIndex === index"
+            :aria-disabled="!command.enabled"
             @mouseenter="commandPaletteStore.selectedIndex = index"
+            @mousedown.prevent
             @click="runCommand(command)"
           >
             <div class="meta">
@@ -413,7 +406,7 @@ function onKeydown(event: KeyboardEvent): void {
             <div class="keys">
               <kbd v-for="key in command.keys" :key="`${command.id}_${key}`">{{ key }}</kbd>
             </div>
-          </button>
+          </div>
           <div v-if="!filteredCommands.length" class="empty">No matching commands.</div>
         </div>
       </DialogContent>
@@ -483,6 +476,7 @@ function onKeydown(event: KeyboardEvent): void {
   border-radius: 10px;
   background: var(--surface2);
   color: inherit;
+  cursor: pointer;
   text-align: left;
   display: flex;
   justify-content: space-between;
@@ -497,6 +491,7 @@ function onKeydown(event: KeyboardEvent): void {
 
 .row.disabled {
   opacity: 0.58;
+  cursor: default;
 }
 
 .meta {

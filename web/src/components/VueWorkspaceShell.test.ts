@@ -7,6 +7,11 @@ import VueWorkspaceShell from './VueWorkspaceShell.vue'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
+async function flushUi(): Promise<void> {
+  await nextTick()
+  await nextTick()
+}
+
 describe('VueWorkspaceShell', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -27,6 +32,8 @@ describe('VueWorkspaceShell', () => {
     await nextTick()
 
     expect(document.querySelector('#workflowTabBar')).toBeNull()
+    expect(document.querySelector('#workspaceBar')?.getAttribute('role')).toBe('tablist')
+    expect(document.querySelector('#workflowStepBar')?.getAttribute('role')).toBe('tablist')
 
     const controlsLabels = Array.from(document.querySelectorAll('#controlsTabBar .tabBtn')).map((el) => el.textContent?.trim())
     const resultsLabels = Array.from(document.querySelectorAll('#resultsTabBar .tabBtn')).map((el) => el.textContent?.trim())
@@ -74,6 +81,146 @@ describe('VueWorkspaceShell', () => {
     expect(document.querySelector('#controlsTabBar')).toBeNull()
     expect(document.querySelector('#resultsTabBar')).toBeNull()
     expect(document.querySelector('[data-vue-panel=\"meta\"]')).not.toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('moves workspace navigation from the currently focused button', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const libraryButton = document.querySelector('#workspaceBar [data-workspace="library"]') as HTMLButtonElement | null
+    const aggregateButton = document.querySelector('#workspaceBar [data-workspace="aggregate"]') as HTMLButtonElement | null
+    const settingsButton = document.querySelector('#workspaceBar [data-workspace="settings"]') as HTMLButtonElement | null
+    const workflowButton = document.querySelector('#workspaceBar [data-workspace="workflow"]') as HTMLButtonElement | null
+    const shellMainPanel = document.querySelector('#shellMainPanel') as HTMLElement | null
+
+    expect(libraryButton).not.toBeNull()
+    expect(aggregateButton).not.toBeNull()
+    expect(settingsButton).not.toBeNull()
+    expect(workflowButton).not.toBeNull()
+    expect(shellMainPanel?.getAttribute('role')).toBe('tabpanel')
+    expect(workflowButton?.getAttribute('role')).toBe('tab')
+    expect(workflowButton?.getAttribute('aria-controls')).toBe('shellMainPanel')
+    expect(workflowButton?.getAttribute('aria-selected')).toBe('true')
+    expect(workflowButton?.getAttribute('tabindex')).toBe('0')
+    expect(libraryButton?.getAttribute('tabindex')).toBe('-1')
+
+    libraryButton?.focus()
+    libraryButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await flushUi()
+    expect(aggregateButton?.getAttribute('aria-selected')).toBe('true')
+    expect(aggregateButton?.getAttribute('tabindex')).toBe('0')
+    expect(libraryButton?.getAttribute('tabindex')).toBe('-1')
+    expect(document.activeElement).toBe(aggregateButton)
+
+    settingsButton?.focus()
+    settingsButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    await flushUi()
+    expect(workflowButton?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(workflowButton)
+    expect(shellMainPanel?.getAttribute('aria-labelledby')).toBe('workflow_step_tab_data')
+    expect(document.querySelector('#shellSelectionStatus')?.textContent).toContain('Workspace Workflow.')
+
+    workflowButton?.focus()
+    workflowButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await flushUi()
+    expect(settingsButton?.getAttribute('aria-selected')).toBe('true')
+    expect(shellMainPanel?.getAttribute('aria-labelledby')).toBe('workspace_tab_settings')
+    expect(document.querySelector('#shellSelectionStatus')?.textContent).toContain('Workspace Settings.')
+    expect(document.activeElement).toBe(settingsButton)
+
+    wrapper.unmount()
+  })
+
+  it('moves workflow-step navigation from the currently focused button', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflowStep('data', { persist: false })
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const validateButton = document.querySelector('#workflowStepBar [data-workflow-step="validate"]') as HTMLButtonElement | null
+    const analyzeButton = document.querySelector('#workflowStepBar [data-workflow-step="analyze"]') as HTMLButtonElement | null
+    const finalizeButton = document.querySelector('#workflowStepBar [data-workflow-step="finalize"]') as HTMLButtonElement | null
+    const dataButton = document.querySelector('#workflowStepBar [data-workflow-step="data"]') as HTMLButtonElement | null
+
+    expect(validateButton).not.toBeNull()
+    expect(analyzeButton).not.toBeNull()
+    expect(finalizeButton).not.toBeNull()
+    expect(dataButton).not.toBeNull()
+    expect(dataButton?.getAttribute('role')).toBe('tab')
+    expect(dataButton?.getAttribute('aria-controls')).toBe('shellMainPanel')
+    expect(dataButton?.getAttribute('aria-selected')).toBe('true')
+    expect(dataButton?.getAttribute('tabindex')).toBe('0')
+
+    validateButton?.focus()
+    validateButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await flushUi()
+    expect(analyzeButton?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(analyzeButton)
+    expect(document.querySelector('#shellMainPanel')?.getAttribute('aria-labelledby')).toBe('workflow_step_tab_analyze')
+
+    finalizeButton?.focus()
+    finalizeButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    await flushUi()
+    expect(dataButton?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(dataButton)
+
+    dataButton?.focus()
+    dataButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await flushUi()
+    expect(finalizeButton?.getAttribute('aria-selected')).toBe('true')
+    expect(document.querySelector('#shellSelectionStatus')?.textContent).toContain('Workflow step 5 Finalizer.')
+    expect(document.activeElement).toBe(finalizeButton)
+
+    wrapper.unmount()
+  })
+
+  it('keeps controls and results keyboard navigation aligned with the focused tab', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflowStep('optimize', { persist: false })
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const strategyButton = document.querySelector('#controlsTabBar [data-tab="strategy"]') as HTMLButtonElement | null
+    const advancedButton = document.querySelector('#controlsTabBar [data-tab="advanced"]') as HTMLButtonElement | null
+    const topButton = document.querySelector('#resultsTabBar [data-tab="top"]') as HTMLButtonElement | null
+    const heatmapButton = document.querySelector('#resultsTabBar [data-tab="heatmap"]') as HTMLButtonElement | null
+
+    expect(strategyButton).not.toBeNull()
+    expect(advancedButton).not.toBeNull()
+    expect(topButton).not.toBeNull()
+    expect(heatmapButton).not.toBeNull()
+
+    strategyButton?.focus()
+    strategyButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await flushUi()
+    expect(advancedButton?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(advancedButton)
+
+    topButton?.focus()
+    topButton?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await flushUi()
+    expect(heatmapButton?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement).toBe(heatmapButton)
 
     wrapper.unmount()
   })

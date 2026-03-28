@@ -1,4 +1,5 @@
 import { useAdvancedStore } from '../stores/advancedStore'
+import { resolveRuntimePinia } from '../stores/runtimePinia'
 
 export const RECOMMENDED_TOP_K = '50'
 export const RECOMMENDED_HEATMAP_BINS = '64'
@@ -14,7 +15,9 @@ function modeSupportsRecommendedGridHeatmap(value: unknown): boolean {
 }
 
 export function applyRecommendedOptimizationDefaults(): boolean {
-  const advancedStore = useAdvancedStore()
+  const pinia = resolveRuntimePinia()
+  if (!pinia) return false
+  const advancedStore = useAdvancedStore(pinia)
   let changed = false
   const appliedDefaults: string[] = []
 

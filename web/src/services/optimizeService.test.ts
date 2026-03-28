@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { bindRuntimePinia } from "../stores/runtimePinia";
 import {
   applyPreset,
   cancelOptimization,
@@ -154,6 +155,7 @@ describe("optimizeService", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
+    bindRuntimePinia(pinia);
     vi.clearAllMocks();
     installDefaultInvokeCommandMock();
     if (typeof window !== "undefined") {
@@ -550,7 +552,7 @@ describe("optimizeService", () => {
   });
 
   it("runs optimization command path and validation service dispatch", async () => {
-    const analysis = useAnalysisStore();
+    const analysis = useAnalysisStore(pinia);
     await runOptimization({
       request: {
         strategy_kind: "DoubleMa",
@@ -652,7 +654,7 @@ describe("optimizeService", () => {
   });
 
   it("surfaces backend route metadata for CompositeTrend, RegimeHybrid, and BreakoutMomentum", async () => {
-    const optimizeStore = useOptimizeStore();
+    const optimizeStore = useOptimizeStore(pinia);
     const cases = [
       {
         strategy_kind: "CompositeTrend",

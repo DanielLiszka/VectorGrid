@@ -6,6 +6,7 @@ import {
   WORKFLOW_TAB_KEY,
   WORKSPACE_TAB_KEY,
 } from '../utils/core/storageKeys'
+import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { readStorageString } from '../utils/storage'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -53,7 +54,9 @@ export function applyWorkflowBootstrapFromStorage(): void {
   const state = readWorkflowBootstrapState()
   if (!state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab) return
 
-  const store = useWorkflowStore()
+  const pinia = resolveRuntimePinia()
+  if (!pinia) return
+  const store = useWorkflowStore(pinia)
 
   if (state.workspace) {
     if (state.workspace === 'workflow') {

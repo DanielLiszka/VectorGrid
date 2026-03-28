@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useDataStore } from '../stores/dataStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const settingsStore = useSettingsStore()
 const dataStore = useDataStore()
@@ -33,8 +35,10 @@ const {
 const { updatedAtUnixMs: dataUpdatedAtUnixMs } = storeToRefs(dataStore)
 const { workspace } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const gridRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#settingsVueShellMount', {
+  paneSelector: '#settingsShellGrid',
+  paneDatasetKey: 'vueSettings',
+})
 let runtimeObserver: MutationObserver | null = null
 
 const themeDraft = ref('system')
@@ -42,12 +46,15 @@ const effectDraft = ref('none')
 const marketDataDirDraft = ref('')
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
+const settingsSummaryChips = computed(() => [
+  `Theme ${String(themeDraft.value || 'system').trim() || 'system'}`,
+  `Effect ${String(effectDraft.value || 'none').trim() || 'none'}`,
+  workflowAdvanced.value ? 'Advanced controls on' : 'Advanced controls off',
+  controlsCollapsed.value ? 'Controls collapsed first' : 'Controls expanded first',
+  marketDataDirDraft.value.trim().length > 0 ? 'Custom data folder' : 'Default data folder',
+])
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 watch(
   () => [
@@ -89,18 +96,7 @@ function setInputValue(id: string, nextValue: string): void {
 
 const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
-function resolveMount(): void {
-  const settingsGrid = document.querySelector('#settingsShellGrid') as HTMLElement | null
-  const mount = document.querySelector('#settingsVueShellMount') as HTMLElement | null
-  if (!settingsGrid || !mount) return
-  gridRoot.value = settingsGrid
-  settingsGrid.dataset.vueSettings = '1'
-  mountReady.value = true
-}
-
 onMounted(async () => {
-  await nextTick()
-  resolveMount()
   settingsStore.syncFromDataStore()
   if (typeof document !== 'undefined') {
     runtimeObserver = new MutationObserver(() => settingsStore.syncFromDataStore())
@@ -117,10 +113,6 @@ onBeforeUnmount(() => {
     runtimeObserver.disconnect()
     runtimeObserver = null
   }
-  if (gridRoot.value) {
-    delete gridRoot.value.dataset.vueSettings
-    gridRoot.value = null
-  }
 })
 </script>
 
@@ -128,13 +120,32 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#settingsVueShellMount">
     <section class="settingsPanelVueRoot settingsVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Settings</div>
-        <div class="meta mono">{{ stamp }}</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Workspace</div>
+          <h2 class="panelTitle">Settings</h2>
+          <div class="panelSubtitle">
+            Review appearance, storage paths, and local utility shortcuts without leaving the desktop workflow.
+          </div>
+        </div>
+        <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
       </header>
+      <div class="panelSummaryChips" aria-label="Settings summary">
+        <span v-for="chip in settingsSummaryChips" :key="`settings_summary_${chip}`" class="panelSummaryChip mono">
+          {{ chip }}
+        </span>
+      </div>
 
       <div class="grid">
-        <section class="pane">
-          <h3>Appearance</h3>
+        <section class="pane panelProminentPane">
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Appearance</div>
+              <h3 class="panelPaneTitle">Appearance</h3>
+              <div class="panelSectionLead">
+                Keep the shell readable first. Theme and window effects should support dense workflows rather than compete with them.
+              </div>
+            </div>
+          </div>
           <div class="rowTwo">
             <div>
               <label for="vueSettingsTheme">Theme</label>
@@ -183,7 +194,15 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="pane">
-          <h3>Data and storage</h3>
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Storage</div>
+              <h3 class="panelPaneTitle">Data and storage</h3>
+              <div class="panelSectionLead">
+                Point the app at the right market-data cache and decide whether existing local data should move with it.
+              </div>
+            </div>
+          </div>
           <label for="vueSettingsMarketDataDir">Market data folder</label>
           <div class="inputWithActions">
             <input
@@ -212,11 +231,19 @@ onBeforeUnmount(() => {
             <button type="button" :disabled="!canOpenMarketDataDir" @click="settingsStore.openMarketDataDir()">Open folder</button>
             <button type="button" :disabled="!canOpenWorkflowData" @click="settingsStore.openWorkflowData()">Open workflow data panel</button>
           </div>
-          <div class="muted mono">{{ marketDataDirHint }}</div>
+          <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ marketDataDirHint }}</div>
         </section>
 
         <section class="pane">
-          <h3>Utilities</h3>
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Utilities</div>
+              <h3 class="panelPaneTitle">Utilities</h3>
+              <div class="panelSectionLead">
+                Jump to folders and adjacent workspaces when you need to inspect artifacts outside the main workflow view.
+              </div>
+            </div>
+          </div>
           <div class="actions">
             <button type="button" :disabled="!canOpenRunsDir" @click="settingsStore.openRunsDir()">Open runs folder</button>
             <button type="button" :disabled="!canOpenReportsDir" @click="settingsStore.openReportsDir()">Open reports folder</button>
@@ -229,7 +256,15 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="pane">
-          <h3>Keyboard shortcuts</h3>
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Navigation</div>
+              <h3 class="panelPaneTitle">Keyboard shortcuts</h3>
+              <div class="panelSectionLead">
+                These shortcuts cover the highest-frequency commands so the main authoring flow stays keyboard-friendly.
+              </div>
+            </div>
+          </div>
           <div class="shortcutGrid">
             <div class="mono">Ctrl+K</div>
             <div>Command palette</div>
@@ -245,7 +280,7 @@ onBeforeUnmount(() => {
         </section>
       </div>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -259,18 +294,8 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .grid {
@@ -284,11 +309,6 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
-}
-
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
 }
 
 .rowTwo {
@@ -333,17 +353,6 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 0.35rem 0.8rem;
-}
-
-.status {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.muted {
-  color: var(--muted);
-  font-size: 0.8rem;
-  margin-top: 0.45rem;
 }
 
 .mono {

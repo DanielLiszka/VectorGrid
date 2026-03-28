@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface OptionItem {
   value: string
@@ -35,6 +37,15 @@ interface BatchDatasetItem {
   checked: boolean
   disabled: boolean
 }
+
+const aggregateTabItems = [
+  { key: 'meta', label: 'Meta Selection' },
+  { key: 'batch', label: 'Batch Generation' },
+  { key: 'saved', label: 'Saved Meta' },
+  { key: 'compare', label: 'Compare' },
+] as const
+
+type AggregateTabKey = (typeof aggregateTabItems)[number]['key']
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
@@ -153,8 +164,10 @@ const {
 } = storeToRefs(analysisStore)
 const { aggregateTab, resultsTab } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#metaVueShellMount', {
+  paneSelector: '[data-vue-panel="meta"]',
+  paneDatasetKey: 'vueMeta',
+})
 
 const strategyDraft = ref('CompositeMo')
 const timeframeDraft = ref('')
@@ -218,10 +231,26 @@ const {
   scrollToTop,
 } = useVirtualTableRows(renderedRows)
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+
+const activeAggregateTabLabel = computed(
+  () => aggregateTabItems.find((item) => item.key === activeAggregateTab.value)?.label || 'Meta Selection',
+)
+
+const metaStageLabel = computed(() => {
+  if (metaStage.value === 'no_data') return 'Awaiting saved runs'
+  if (metaStage.value === 'data_loaded_no_run') return 'Ready for meta run'
+  if (compareTabActive.value && metaCompareStage.value === 'results_available_no_selection') return 'Awaiting compare baseline'
+  return 'Results available'
+})
+
+const metaSummaryChips = computed(() => {
+  return [
+    metaStageLabel.value,
+    activeAggregateTabLabel.value,
+    String(aggregateSummarySavedRuns.value || '').trim() ? `Runs ${aggregateSummarySavedRuns.value}` : '',
+    String(aggregateSummarySavedMeta.value || '').trim() ? `Meta ${aggregateSummarySavedMeta.value}` : '',
+  ].filter((chip) => String(chip || '').trim().length > 0)
 })
 
 const strategyOptions = computed<OptionItem[]>(() => {
@@ -440,41 +469,72 @@ function runAction(action: () => void): void {
   action()
 }
 
-function clickAggregateTab(tab: string): void {
-  const aggregateTab = String(tab || '').trim()
-  if (!aggregateTab) return
+function aggregateTabId(key: string): string {
+  return `meta_aggregate_tab_${key}`
+}
+
+function aggregatePanelId(key: AggregateTabKey): string {
+  if (key === 'meta') {
+    return metaStage.value === 'data_loaded_no_run'
+      ? 'meta_aggregate_panel_meta_empty'
+      : 'meta_aggregate_panel_meta_main'
+  }
+  if (key === 'compare') {
+    return metaCompareStage.value === 'results_available_no_selection'
+      ? 'meta_aggregate_panel_compare_empty'
+      : 'meta_aggregate_panel_compare_main'
+  }
+  return `meta_aggregate_panel_${key}`
+}
+
+function moveAggregateTabFocus(event: KeyboardEvent): void {
+  if (aggregateTabItems.length <= 1) return
+  const currentIndex = aggregateTabItems.findIndex((item) => item.key === activeAggregateTab.value)
+  if (currentIndex < 0) return
+
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % aggregateTabItems.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + aggregateTabItems.length) % aggregateTabItems.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = aggregateTabItems.length - 1
+  else return
+
+  event.preventDefault()
+  const nextKey = aggregateTabItems[nextIndex]?.key
+  if (!nextKey) return
+  clickAggregateTab(nextKey)
+  void nextTick(() => {
+    document.querySelector<HTMLElement>(`#${aggregateTabId(nextKey)}`)?.focus()
+  })
+}
+
+function clickAggregateTab(tab: AggregateTabKey): void {
+  const aggregateTab = String(tab || '').trim() as AggregateTabKey
+  if (!aggregateTab || activeAggregateTab.value === aggregateTab) return
   workflowStore.selectAggregateTab(aggregateTab)
 }
 
-function toggleBatchDataset(index: number): void {
-  const entry = renderedBatchDatasets.value[index]
-  if (!entry || entry.disabled) return
-  const path = String(entry.path || '').trim()
+function toggleBatchDatasetByPath(pathValue: string, nextChecked: boolean): void {
+  const path = String(pathValue || '').trim()
   if (!path) return
-  analysisStore.toggleBatchDataset(path, !entry.checked)
+  analysisStore.toggleBatchDataset(path, nextChecked)
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="meta"]') as HTMLElement | null
-  const mount = document.querySelector('#metaVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueMeta = '1'
-  mountReady.value = true
+function batchDatasetInputId(index: number): string {
+  return `meta_batch_dataset_${index}`
+}
+
+function batchDatasetDescriptionId(index: number): string {
+  return `meta_batch_dataset_meta_${index}`
 }
 
 onMounted(async () => {
   await nextTick()
-  resolveMount()
   scrollToTop()
 })
 
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow()
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueMeta
-    panelRoot.value = null
-  }
 })
 </script>
 
@@ -482,64 +542,92 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#metaVueShellMount">
     <section class="metaPanelVueRoot metaVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Meta Analysis</div>
-        <div class="meta mono">{{ activeAggregateTab }} · {{ stamp }}</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Aggregate</div>
+          <h2 class="panelTitle">Meta Analysis</h2>
+          <div class="panelSubtitle">
+            Group saved runs, generate meta artifacts, review saved aggregate outputs, and compare baselines before promotion.
+          </div>
+        </div>
+        <div class="panelMeta mono panelNumeric">{{ activeAggregateTabLabel }} · {{ stamp }}</div>
       </header>
+
+      <div class="panelSummaryChips" aria-label="Meta analysis summary">
+        <div v-for="chip in metaSummaryChips" :key="chip" class="panelSummaryChip">{{ chip }}</div>
+      </div>
 
       <section v-if="metaStage === 'no_data'" class="emptyState">
         <div class="emptyTitle">Meta Analysis needs saved runs first.</div>
         <div class="emptyBody">Build a run library by saving optimizations, then use this workspace to generate meta artifacts, compare groups, and rank robust candidates.</div>
-        <div class="muted mono">{{ statusLine }}</div>
+        <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
       </section>
 
-      <section v-else-if="metaStage === 'data_loaded_no_run' && activeAggregateTab === 'meta'" class="emptyState">
+      <section
+        v-else-if="metaStage === 'data_loaded_no_run' && activeAggregateTab === 'meta'"
+        id="meta_aggregate_panel_meta_empty"
+        class="emptyState"
+        role="tabpanel"
+        :aria-labelledby="aggregateTabId('meta')"
+      >
         <div class="emptyTitle">Saved runs are available, but no meta artifact is active yet.</div>
         <div class="emptyBody">Configure the selection criteria below, then run meta analysis to generate grouped recommendations and reports.</div>
-        <div class="muted mono">{{ aggregateSummarySavedRuns }} saved runs available</div>
+        <div class="panelMuted mono panelNumeric">{{ aggregateSummarySavedRuns }} saved runs available</div>
       </section>
 
-      <section v-else-if="metaCompareStage === 'results_available_no_selection' && compareTabActive" class="emptyState">
+      <section
+        v-else-if="metaCompareStage === 'results_available_no_selection' && compareTabActive"
+        id="meta_aggregate_panel_compare_empty"
+        class="emptyState"
+        role="tabpanel"
+        :aria-labelledby="aggregateTabId('compare')"
+      >
         <div class="emptyTitle">Select a baseline meta artifact to compare.</div>
         <div class="emptyBody">Comparison results appear here once you choose a saved meta artifact from the compare selector.</div>
-        <div class="muted mono">{{ statusLine }}</div>
+        <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
       </section>
 
-      <section v-if="showMetaTooling" class="pane">
-        <div class="subtabs">
-          <button type="button" :class="{ active: activeAggregateTab === 'meta' }" @click="clickAggregateTab('meta')">Meta Selection</button>
-          <button type="button" :class="{ active: activeAggregateTab === 'batch' }" @click="clickAggregateTab('batch')">Batch Generation</button>
-          <button type="button" :class="{ active: activeAggregateTab === 'saved' }" @click="clickAggregateTab('saved')">Saved Meta</button>
-          <button type="button" :class="{ active: activeAggregateTab === 'compare' }" @click="clickAggregateTab('compare')">Compare</button>
-        </div>
-        <div v-if="metaTabActive" class="summaryGrid">
-          <article>
-            <div class="k">Saved runs</div>
-            <div class="v mono">{{ aggregateSummarySavedRuns }}</div>
-          </article>
-          <article>
-            <div class="k">Saved meta</div>
-            <div class="v mono">{{ aggregateSummarySavedMeta }}</div>
-          </article>
-          <article>
-            <div class="k">Latest groups</div>
-            <div class="v mono">{{ aggregateSummaryLatestGroups }}</div>
-          </article>
-          <article>
-            <div class="k">Latest artifacts</div>
-            <div class="v mono">{{ aggregateSummaryLatestArtifacts }}</div>
-          </article>
-          <article>
-            <div class="k">Latest holdout</div>
-            <div class="v mono">{{ aggregateSummaryLatestHoldout }}</div>
-          </article>
-          <article>
-            <div class="k">Latest runtime</div>
-            <div class="v mono">{{ aggregateSummaryLatestRuntime }}</div>
-          </article>
+      <section v-if="showMetaTooling" id="metaAggregateSurface" class="pane">
+        <div
+          class="subtabs"
+          aria-label="Meta analysis sections"
+          role="tablist"
+          aria-orientation="horizontal"
+          @keydown="moveAggregateTabFocus"
+        >
+          <button
+            v-for="item in aggregateTabItems"
+            :id="aggregateTabId(item.key)"
+            :key="`meta_aggregate_tab_${item.key}`"
+            type="button"
+            :class="{ active: activeAggregateTab === item.key }"
+            role="tab"
+            :aria-selected="activeAggregateTab === item.key"
+            :data-aggregate-tab="item.key"
+            :aria-controls="aggregatePanelId(item.key)"
+            :tabindex="activeAggregateTab === item.key ? 0 : -1"
+            @click="clickAggregateTab(item.key)"
+          >
+            {{ item.label }}
+          </button>
         </div>
       </section>
 
-      <section v-if="showMetaTooling && activeAggregateTab === 'batch'" class="pane">
+      <section
+        v-if="showMetaTooling && activeAggregateTab === 'batch'"
+        :id="aggregatePanelId('batch')"
+        class="pane panelProminentPane"
+        role="tabpanel"
+        :aria-labelledby="aggregateTabId('batch')"
+      >
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Batch</div>
+            <h3 class="panelPaneTitle">Dataset generation queue</h3>
+            <div class="panelSectionLead">
+              Choose the dataset set, holdout settings, and retry behavior for the next batch-generation sweep.
+            </div>
+          </div>
+        </div>
         <div class="gridFour">
           <div>
             <label for="vueBatchDatasetSearch">Search</label>
@@ -616,28 +704,59 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="metaLine mono">{{ batchMeta }}</div>
-        <div class="metaLine mono">Selected {{ batchSelectedCount }}/{{ batchTotalCount }}</div>
+        <div class="metaLine mono" role="status" aria-live="polite">
+          Selected {{ batchSelectedCount }}/{{ batchTotalCount }}
+        </div>
 
-        <div class="batchList">
-          <div
+        <div class="batchList" role="group" aria-label="Batch generation datasets">
+          <label
             v-for="(item, index) in renderedBatchDatasets"
             :key="`batch_item_${item.path || item.label}_${index}`"
             class="batchItem"
-            @click="toggleBatchDataset(index)"
+            :class="{ disabled: item.disabled }"
+            :for="batchDatasetInputId(index)"
           >
             <div class="left">
               <div class="mono">{{ item.label }}</div>
-              <div class="muted">{{ item.meta }}</div>
+              <div :id="batchDatasetDescriptionId(index)" class="panelMuted">{{ item.meta }}</div>
             </div>
-            <input type="checkbox" :checked="item.checked" :disabled="item.disabled" @click.prevent="toggleBatchDataset(index)" />
-          </div>
+            <input
+              :id="batchDatasetInputId(index)"
+              type="checkbox"
+              :checked="item.checked"
+              :disabled="item.disabled"
+              :aria-describedby="batchDatasetDescriptionId(index)"
+              @change="toggleBatchDatasetByPath(item.path, ($event.target as HTMLInputElement).checked)"
+            />
+          </label>
         </div>
 
-        <pre class="mono preview">{{ batchOutputPreview }}</pre>
+        <details class="panelDetails">
+          <summary>Batch output preview</summary>
+          <div class="panelDetailsBody">
+            <div class="panelMuted">Keep the raw batch summary close at hand for troubleshooting without letting it dominate the dataset-selection flow.</div>
+            <pre class="mono preview">{{ batchOutputPreview }}</pre>
+          </div>
+        </details>
       </section>
 
-      <section v-if="activeAggregateTab === 'saved'" class="pane">
-        <h3>Saved Meta</h3>
+      <div
+        v-if="showMetaTooling && activeAggregateTab === 'saved'"
+        :id="aggregatePanelId('saved')"
+        class="aggregatePanelStack"
+        role="tabpanel"
+        :aria-labelledby="aggregateTabId('saved')"
+      >
+      <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Saved</div>
+            <h3 class="panelPaneTitle">Saved Meta</h3>
+            <div class="panelSectionLead">
+              Search, tag, load, and reveal previously generated meta-analysis artifacts.
+            </div>
+          </div>
+        </div>
         <div class="gridThree">
           <div>
             <label for="vueMetaSavedSearch">Search</label>
@@ -690,8 +809,16 @@ onBeforeUnmount(() => {
         <div class="metaLine mono">{{ metaSavedMeta }}</div>
       </section>
 
-      <section v-if="activeAggregateTab === 'saved'" class="pane">
-        <h3>Saved Stage 5</h3>
+      <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Saved</div>
+            <h3 class="panelPaneTitle">Saved Stage 5</h3>
+            <div class="panelSectionLead">
+              Manage saved Stage 5 confidence outputs alongside the base meta artifacts.
+            </div>
+          </div>
+        </div>
         <div class="gridThree">
           <div>
             <label for="vueStage4SavedSearch">Search</label>
@@ -743,8 +870,16 @@ onBeforeUnmount(() => {
         <div class="metaLine mono">{{ stage4SavedMeta }}</div>
       </section>
 
-      <section v-if="activeAggregateTab === 'saved'" class="pane">
-        <h3>Saved Policy Evaluation</h3>
+      <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Saved</div>
+            <h3 class="panelPaneTitle">Saved Policy Evaluation</h3>
+            <div class="panelSectionLead">
+              Review and reopen saved policy-evaluation outputs without leaving the aggregate workspace.
+            </div>
+          </div>
+        </div>
         <div class="gridThree">
           <div>
             <label for="vuePolicyEvalSavedSearch">Search</label>
@@ -795,9 +930,63 @@ onBeforeUnmount(() => {
         </div>
         <div class="metaLine mono">{{ policyEvalSavedMeta }}</div>
       </section>
+      </div>
 
-      <section v-if="showMetaTooling && metaTabActive" class="pane">
-        <h3>ML Confidence + Stage 5</h3>
+      <div
+        v-if="showMetaTooling && metaTabActive"
+        id="meta_aggregate_panel_meta_main"
+        class="aggregatePanelStack"
+        role="tabpanel"
+        :aria-labelledby="aggregateTabId('meta')"
+      >
+      <section class="pane panelProminentPane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Snapshot</div>
+            <h3 class="panelPaneTitle">Aggregate inventory</h3>
+            <div class="panelSectionLead">
+              Confirm how many saved runs and meta artifacts are in play before starting a new aggregate selection pass.
+            </div>
+          </div>
+        </div>
+        <div class="summaryGrid">
+          <article>
+            <div class="panelMetricKey">Saved runs</div>
+            <div class="panelMetricValue mono panelNumeric">{{ aggregateSummarySavedRuns }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Saved meta</div>
+            <div class="panelMetricValue mono panelNumeric">{{ aggregateSummarySavedMeta }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Latest groups</div>
+            <div class="panelMetricValue mono panelNumeric">{{ aggregateSummaryLatestGroups }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Latest artifacts</div>
+            <div class="panelMetricValue mono panelNumeric">{{ aggregateSummaryLatestArtifacts }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Latest holdout</div>
+            <div class="panelMetricValue mono panelNumeric">{{ aggregateSummaryLatestHoldout }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Latest runtime</div>
+            <div class="panelMetricValue mono panelNumeric">{{ aggregateSummaryLatestRuntime }}</div>
+          </article>
+        </div>
+      </section>
+
+      <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">ML</div>
+            <h3 class="panelPaneTitle">ML Confidence + Stage 5</h3>
+            <div class="panelSectionLead">
+              Refresh the confidence model, tune Stage 5 weighting, and decide when aggregate ranking should trust ML outputs.
+            </div>
+          </div>
+        </div>
         <div class="checks">
           <label>
             <input
@@ -966,12 +1155,31 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="metaLine mono">{{ metaStage4Status }}</div>
-        <pre class="mono preview">{{ metaStage4OutputPreview }}</pre>
+        <details class="panelDetails">
+          <summary>Stage 4 output preview</summary>
+          <div class="panelDetailsBody">
+            <pre class="mono preview">{{ metaStage4OutputPreview }}</pre>
+          </div>
+        </details>
         <div class="metaLine mono">{{ metaPolicyEvalStatus }}</div>
-        <pre class="mono preview">{{ metaPolicyEvalOutputPreview }}</pre>
+        <details class="panelDetails">
+          <summary>Policy evaluation preview</summary>
+          <div class="panelDetailsBody">
+            <pre class="mono preview">{{ metaPolicyEvalOutputPreview }}</pre>
+          </div>
+        </details>
       </section>
 
-      <section v-if="showMetaTooling && metaTabActive" class="pane">
+      <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Selection</div>
+            <h3 class="panelPaneTitle">Meta run configuration</h3>
+            <div class="panelSectionLead">
+              Set the strategy scope, run filters, and top-k size for the next meta-analysis execution.
+            </div>
+          </div>
+        </div>
         <div class="gridFive">
           <div>
             <label for="vueMetaStrategy">Strategy</label>
@@ -1044,8 +1252,16 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="showMetaTooling && metaTabActive" class="pane">
-        <h3>Holdout + Grouping</h3>
+      <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Grouping</div>
+            <h3 class="panelPaneTitle">Holdout + Grouping</h3>
+            <div class="panelSectionLead">
+              Control holdout evaluation, grouping strictness, and clustering so the aggregate selection logic stays comparable.
+            </div>
+          </div>
+        </div>
         <div class="gridThree">
           <div>
             <label for="vueMetaHoldoutTag">Holdout tag</label>
@@ -1075,7 +1291,7 @@ onBeforeUnmount(() => {
             </select>
           </div>
           <div>
-            <label for="vueMetaHoldoutReps">Holdout reps / cluster</label>
+            <label for="vueMetaHoldoutReps">Holdout reps per cluster</label>
             <select
               id="vueMetaHoldoutReps"
               :value="holdoutRepsDraft"
@@ -1143,7 +1359,7 @@ onBeforeUnmount(() => {
             </select>
           </div>
           <div>
-            <label for="vueMetaHoldoutExploreN">Explore N (optional)</label>
+            <label for="vueMetaHoldoutExploreN">Explore additional finalists (optional)</label>
             <input
               id="vueMetaHoldoutExploreN"
               type="number"
@@ -1175,7 +1391,7 @@ onBeforeUnmount(() => {
             </select>
           </div>
           <div>
-            <label for="vueMetaClusterIntBucket">Int bucket</label>
+            <label for="vueMetaClusterIntBucket">Integer bucket size</label>
             <input
               id="vueMetaClusterIntBucket"
               type="number"
@@ -1187,7 +1403,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
-            <label for="vueMetaClusterFloatBucket">Float bucket</label>
+            <label for="vueMetaClusterFloatBucket">Float bucket size</label>
             <input
               id="vueMetaClusterFloatBucket"
               type="number"
@@ -1202,16 +1418,34 @@ onBeforeUnmount(() => {
         <div class="metaLine">{{ metaHoldoutNote }}</div>
       </section>
 
-      <section v-if="metaTabActive" class="pane">
-        <div class="metaLine mono">{{ metaMeta }}</div>
-        <div ref="tableScrollElementRef" class="tableWrap">
+      <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Results</div>
+            <h3 class="panelPaneTitle">Meta selection table</h3>
+            <div class="panelSectionLead">
+              Review grouped aggregate recommendations, holdout outcomes, and selection notes for the current meta run.
+            </div>
+          </div>
+        </div>
+        <div class="metaLine mono" role="status" aria-live="polite">{{ metaMeta }}</div>
+        <div
+          ref="tableScrollElementRef"
+          class="tableWrap"
+          tabindex="0"
+          aria-label="Meta analysis results table"
+        >
           <table class="metaTableVue">
+            <caption class="srOnly">
+              Meta analysis selection results grouped by the configured strategy, holdout, and clustering rules.
+            </caption>
             <thead>
               <tr>
                 <th
                   v-for="(column, columnIndex) in renderedColumns"
                   :key="`meta_col_${columnIndex}_${column.label}`"
                   :class="{ left: column.alignLeft }"
+                  scope="col"
                 >
                   {{ column.label }}
                 </th>
@@ -1238,10 +1472,31 @@ onBeforeUnmount(() => {
             </tbody>
           </table>
         </div>
-        <pre class="mono preview">{{ metaOutputPreview }}</pre>
+        <details class="panelDetails">
+          <summary>Meta output preview</summary>
+          <div class="panelDetailsBody">
+            <pre class="mono preview">{{ metaOutputPreview }}</pre>
+          </div>
+        </details>
       </section>
+      </div>
 
-      <section v-if="showMetaTooling && compareTabActive" class="pane">
+      <section
+        v-if="showMetaTooling && compareTabActive"
+        id="meta_aggregate_panel_compare_main"
+        class="pane"
+        role="tabpanel"
+        :aria-labelledby="aggregateTabId('compare')"
+      >
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Comparison</div>
+            <h3 class="panelPaneTitle">Compare meta baseline</h3>
+            <div class="panelSectionLead">
+              Choose a saved meta artifact and inspect the difference summary before accepting a new aggregate baseline.
+            </div>
+          </div>
+        </div>
         <label for="vueMetaCompareSelect">Compare meta baseline</label>
         <select
           id="vueMetaCompareSelect"
@@ -1257,10 +1512,15 @@ onBeforeUnmount(() => {
             {{ option.label }}
           </option>
         </select>
-        <pre class="mono preview">{{ metaCompareSummary }}</pre>
+        <details class="panelDetails">
+          <summary>Compare summary</summary>
+          <div class="panelDetailsBody">
+            <pre class="mono preview">{{ metaCompareSummary }}</pre>
+          </div>
+        </details>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -1274,18 +1534,8 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .pane {
@@ -1294,11 +1544,6 @@ onBeforeUnmount(() => {
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
   min-width: 0;
-}
-
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
 }
 
 .subtabs {
@@ -1310,14 +1555,24 @@ onBeforeUnmount(() => {
 .subtabs button {
   padding: 0.4rem 0.58rem;
   font-size: 0.75rem;
+  cursor: pointer;
 }
 
 .subtabs button.active {
   border-color: color-mix(in oklab, var(--accent) 65%, var(--border));
 }
 
+.subtabs button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.aggregatePanelStack {
+  display: grid;
+  gap: 0.85rem;
+}
+
 .summaryGrid {
-  margin-top: 0.6rem;
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.55rem;
@@ -1328,18 +1583,6 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   padding: 0.5rem 0.55rem;
   background: color-mix(in oklab, var(--panel) 88%, var(--panel-footer));
-}
-
-.summaryGrid .k {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-}
-
-.summaryGrid .v {
-  margin-top: 0.2rem;
-  font-size: 0.82rem;
 }
 
 .gridFive {
@@ -1399,6 +1642,18 @@ onBeforeUnmount(() => {
   min-width: 1080px;
 }
 
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .metaTableVue th,
 .metaTableVue td {
   border-bottom: 1px solid var(--border);
@@ -1438,11 +1693,23 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 0.7rem;
+  cursor: pointer;
 }
 
 .batchItem:hover {
   border-color: var(--border);
   background: color-mix(in oklab, var(--panel) 92%, var(--panel-footer));
+}
+
+.batchItem:focus-within {
+  border-color: color-mix(in oklab, var(--accent) 62%, var(--border));
+  box-shadow: var(--focus-ring);
+  background: color-mix(in oklab, var(--panel) 90%, var(--panel-footer));
+}
+
+.batchItem.disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
 }
 
 .rowAuto {
@@ -1455,16 +1722,6 @@ onBeforeUnmount(() => {
   margin-top: 0.45rem;
   max-height: 220px;
   overflow: auto;
-}
-
-.status {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.muted {
-  color: var(--muted);
-  font-size: 0.8rem;
 }
 
 .mono {

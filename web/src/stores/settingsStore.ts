@@ -12,6 +12,7 @@ import {
   type WindowEffect,
 } from '../services/settingsService'
 import { useDataStore } from './dataStore'
+import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowStore } from './workflowStore'
 
 const THEME_KEYS = new Set(['light', 'dark', 'system'])
@@ -217,7 +218,9 @@ export const useSettingsStore = defineStore('settings', {
     },
 
     syncFromDataStore(): void {
-      const dataStore = useDataStore()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      const dataStore = useDataStore(pinia)
       const canMutate = runtimeCanMutateSettings()
 
       this.marketDataDir = String(dataStore.marketDataDir || '').trim()
@@ -239,23 +242,33 @@ export const useSettingsStore = defineStore('settings', {
     },
 
     browseMarketDataDir(): void {
-      useDataStore().browseMarketDataDir()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).browseMarketDataDir()
     },
 
     setMarketDataDir(dir: string, moveExisting: boolean): void {
-      useDataStore().setMarketDataDir(String(dir || '').trim(), !!moveExisting)
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).setMarketDataDir(String(dir || '').trim(), !!moveExisting)
     },
 
     resetMarketDataDir(): void {
-      useDataStore().resetMarketDataDir()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).resetMarketDataDir()
     },
 
     openMarketDataDir(): void {
-      useDataStore().openMarketDataDir()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).openMarketDataDir()
     },
 
     openWorkflowData(): void {
-      useWorkflowStore().selectWorkspace('workflow', 'data')
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useWorkflowStore(pinia).selectWorkspace('workflow', 'data')
     },
 
     openRunsDir(): void {
@@ -269,15 +282,21 @@ export const useSettingsStore = defineStore('settings', {
     },
 
     openPolygonModal(): void {
-      useDataStore().openPolygon()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).openPolygon()
     },
 
     gotoLibrary(): void {
-      useWorkflowStore().selectWorkspace('library')
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useWorkflowStore(pinia).selectWorkspace('library')
     },
 
     gotoAggregate(): void {
-      useWorkflowStore().selectWorkspace('aggregate')
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useWorkflowStore(pinia).selectWorkspace('aggregate')
     },
   },
 })

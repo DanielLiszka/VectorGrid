@@ -1,23 +1,27 @@
-import { defineStore } from 'pinia'
+import { defineStore, type Pinia } from 'pinia'
 import { markRaw } from 'vue'
 import * as analysisService from '../services/analysisService'
 import * as metaService from '../services/metaService'
 import { useDataStore } from './dataStore'
 import { useHistoryStore } from './historyStore'
 import { useOptimizeStore } from './optimizeStore'
+import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowStore } from './workflowStore'
 
 function rawArray<T>(value: unknown, fallback: T[]): T[] {
   return Array.isArray(value) ? markRaw(value as T[]) : fallback
 }
 
-function runOverviewEmptyAction(actionName: string): void {
+function runOverviewEmptyAction(actionName: string, pinia?: Pinia): void {
   const action = String(actionName || '').trim()
   if (!action) return
 
-  const workflowStore = useWorkflowStore()
-  const dataStore = useDataStore()
-  const optimizeStore = useOptimizeStore()
+  const activePinia = resolveRuntimePinia(pinia ?? null)
+  if (!activePinia) return
+
+  const workflowStore = useWorkflowStore(activePinia)
+  const dataStore = useDataStore(activePinia)
+  const optimizeStore = useOptimizeStore(activePinia)
 
   if (action === 'browse_csv') {
     workflowStore.selectWorkspace('workflow', 'data')
@@ -795,7 +799,9 @@ export const useAnalysisStore = defineStore('analysis', {
       const key = String(field || '').trim()
       const next = String(value || '')
       if (key === 'compareSelect') {
-        useHistoryStore().setSelectField(key, next)
+        const pinia = resolveRuntimePinia()
+        if (!pinia) return
+        useHistoryStore(pinia).setSelectField(key, next)
         this.compareSummary = next.trim() ? `Baseline selected: ${next.trim()}` : '-'
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
@@ -851,11 +857,11 @@ export const useAnalysisStore = defineStore('analysis', {
     },
 
     overviewEmptyPrimary(): void {
-      runOverviewEmptyAction(this.overviewPrimaryAction)
+      runOverviewEmptyAction(this.overviewPrimaryAction, resolveRuntimePinia() ?? undefined)
     },
 
     overviewEmptySecondary(): void {
-      runOverviewEmptyAction(this.overviewSecondaryAction)
+      runOverviewEmptyAction(this.overviewSecondaryAction, resolveRuntimePinia() ?? undefined)
     },
 
     rerenderDrill(): void {

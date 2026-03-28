@@ -5,6 +5,7 @@ import {
   recordPolygonLiveStatusEvent,
   useTaskStore,
 } from './taskStore'
+import { bindRuntimePinia } from './runtimePinia'
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
@@ -43,6 +44,7 @@ describe('task-store event throttling', () => {
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     ;(globalThis as Record<string, unknown>).window = { localStorage: new MemoryStorage() }

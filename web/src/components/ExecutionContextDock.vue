@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useExecutionStore } from '../stores/executionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const execution = useExecutionStore()
 const workflowState = useWorkflowStore()
@@ -37,11 +38,7 @@ const { workspace } = storeToRefs(workflowState)
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 function setSelectValue(id: string, nextValue: string): void {
   execution.setSelectField(id, nextValue)
@@ -59,24 +56,32 @@ function setCheckboxValue(id: string, checked: boolean): void {
 <template>
   <aside v-if="visible" class="execDock">
     <header class="dockHeader">
-      <div class="title">Execution Context</div>
+      <h2 class="title" style="margin: 0;">Execution Context</h2>
       <div class="stamp">{{ stamp }}</div>
     </header>
     <div class="rows">
       <div class="row">
         <span>Mode</span>
-        <select :value="mode" @change="setSelectValue('execMode', String(($event.target as HTMLSelectElement).value || 'paper'))">
+        <select
+          :value="mode"
+          aria-label="Execution mode"
+          @change="setSelectValue('execMode', String(($event.target as HTMLSelectElement).value || 'paper'))"
+        >
           <option value="paper">paper</option>
           <option value="live">live</option>
         </select>
       </div>
-      <div class="row"><span>Symbol</span><input :value="symbol" type="text" @change="setInputValue('execSymbol', String(($event.target as HTMLInputElement).value || ''))" /></div>
-      <div class="row"><span>Qty</span><input :value="qty" type="text" @change="setInputValue('execQty', String(($event.target as HTMLInputElement).value || ''))" /></div>
-      <div class="row"><span>API key</span><input :value="apiKey" type="text" @change="setInputValue('execApiKey', String(($event.target as HTMLInputElement).value || ''))" /></div>
-      <div class="row"><span>API secret</span><input :value="apiSecret" type="password" @change="setInputValue('execApiSecret', String(($event.target as HTMLInputElement).value || ''))" /></div>
+      <div class="row"><span>Symbol</span><input :value="symbol" aria-label="Execution symbol" type="text" @change="setInputValue('execSymbol', String(($event.target as HTMLInputElement).value || ''))" /></div>
+      <div class="row"><span>Qty</span><input :value="qty" aria-label="Execution quantity" type="text" @change="setInputValue('execQty', String(($event.target as HTMLInputElement).value || ''))" /></div>
+      <div class="row"><span>API key</span><input :value="apiKey" aria-label="Execution API key" type="text" @change="setInputValue('execApiKey', String(($event.target as HTMLInputElement).value || ''))" /></div>
+      <div class="row"><span>API secret</span><input :value="apiSecret" aria-label="Execution API secret" type="password" @change="setInputValue('execApiSecret', String(($event.target as HTMLInputElement).value || ''))" /></div>
       <div class="row">
         <span>Source</span>
-        <select :value="paramSource" @change="setSelectValue('execParamSource', String(($event.target as HTMLSelectElement).value || 'selected'))">
+        <select
+          :value="paramSource"
+          aria-label="Execution parameter source"
+          @change="setSelectValue('execParamSource', String(($event.target as HTMLSelectElement).value || 'selected'))"
+        >
           <option value="selected">selected</option>
           <option value="best">best</option>
           <option value="manual">manual</option>
@@ -218,6 +223,12 @@ function setCheckboxValue(id: string, checked: boolean): void {
     top: auto;
     bottom: 8px;
     max-height: 62vh;
+  }
+}
+
+@media (max-width: 1180px) {
+  .execDock {
+    display: none;
   }
 }
 </style>

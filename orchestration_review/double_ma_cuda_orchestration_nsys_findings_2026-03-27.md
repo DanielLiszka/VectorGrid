@@ -1,8 +1,8 @@
 # Double MA CUDA Orchestration Nsight Systems Findings
 
 Date: 2026-03-27
-Profiler: Nsight Systems 2023.3.3.42
-Status: preliminary
+Profiler: Nsight Systems 2023.3.3.42 initially, with elevated 2026.2.1 follow-up
+Status: updated after elevated 2026.2.1 whole-process NVTX reevaluation
 
 ## Run Shape
 
@@ -224,6 +224,71 @@ Interpretation:
 - The host-visible blocking point moved from the D2H API bucket in the earlier pass to `cuStreamSynchronize` in this run, but the meaning is the same: that API site is where the host first waits for the already-queued long-running kernel sequence.
 - NVTX visibility is still a tooling compatibility problem, not a blocker to classification.
 
+## Elevated 2026.2.1 Whole-Process NVTX Lean Revisit
+
+Warm xlarge direct-runner reevaluation under elevated whole-process `2026.2.1`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_nsys.ps1 -NsysExePath "C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\target-windows-x64\nsys.exe" -Target runner -RunnerStrategy double_ma -RunnerWorkload xlarge -RunnerWarmupIterations 2 -RunnerIterations 1 -RunnerHeatmapBins 64 -NvtxMode on -CaptureMode none -DynamicStrategyMode off -CudaGraphsMode off -OutputPrefix target/nsight/xlarge_lean_nvtx_20260327_revisit
+```
+
+Primary artifacts:
+
+- `target/nsight/xlarge_lean_nvtx_20260327_revisit.nsys-rep`
+- `target/nsight/xlarge_lean_nvtx_20260327_revisit_stats.csv`
+
+Key CLI summaries:
+
+- `cuda_api_sum`
+  - `cuStreamSynchronize`: about 758.8 ms, about 95.8% of CUDA API time
+  - `cuLaunchKernel`: about 0.498 ms total across 50 launches
+- `cuda_gpu_kern_sum`
+  - `double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_nocomm`: about 731.4 ms, about 96.5% of GPU kernel time
+- `cuda_gpu_mem_time_sum`
+  - actual H2D memop time: about 67.8 us total
+  - actual D2H memop time: about 23.2 us total
+  - actual D2D memop time: about 8.8 us total
+- `nvtx_gpu_proj_sum`
+  - `double_ma_opt_total`: range about 257.9 ms, projected GPU about 257.4 ms
+  - `kernel::backtest_core`: range about 257.0 ms, projected GPU about 256.8 ms
+  - `kernel::sync_and_decode`: range about 498.1 ms, projected GPU only about 0.0002 ms
+
+Interpretation:
+
+- The engine boundary now projects almost entirely to GPU work on this warm runner shape.
+- The host-only gap inside `double_ma_opt_total` is sub-millisecond, which is stronger evidence than the earlier coarse non-NVTX pass.
+- `kernel::sync_and_decode` is overwhelmingly a host wait / host-side non-GPU bucket at the chosen boundary, not hidden GPU execution and not Rust launch submission.
+- The `kernel::launch_submit` NVTX range should not be read as launch overhead just because it projects to long GPU work; that range encloses enqueue, and Nsight projects the descendant GPU work into it.
+
+## Elevated 2026.2.1 Whole-Process NVTX Graph Revisit
+
+Warm xlarge graph off/on reevaluation under elevated whole-process `2026.2.1`, with `heatmap_bins=0` and identical warmup/measurement shape:
+
+- graphs off
+  - report: `target/nsight/xlarge_graph_off_nvtx_revisit.nsys-rep`
+  - stats: `target/nsight/xlarge_graph_off_nvtx_revisit_stats.csv`
+  - `double_ma_opt_total`: about 252.9 ms range time vs about 252.4 ms projected GPU
+  - `kernel::backtest_core`: about 252.1 ms range time vs about 251.9 ms projected GPU
+  - `kernel::sync_and_decode`: about 487.7 ms range time vs about 0.00007 ms projected GPU
+  - `cuLaunchKernel`: about 0.517 ms total
+- graphs on
+  - report: `target/nsight/xlarge_graph_on_nvtx_revisit.nsys-rep`
+  - stats: `target/nsight/xlarge_graph_on_nvtx_revisit_stats.csv`
+  - `double_ma_opt_total`: about 248.8 ms range time vs about 248.2 ms projected GPU
+  - `kernel::backtest_core`: about 247.9 ms range time vs about 247.3 ms projected GPU
+  - `kernel::sync_and_decode`: about 478.7 ms range time vs about 0.00007 ms projected GPU
+  - graph APIs are visible but tiny:
+    - `cuGraphInstantiate_v2`: about 0.283 ms
+    - `cuGraphLaunch`: about 0.118 ms
+    - `cuStreamBeginCapture_v2`: about 0.265 ms
+
+Interpretation:
+
+- Projected GPU time is effectively unchanged with graphs off vs on on the current steady-state xlarge no-heatmap shape.
+- Host-only gap remains sub-millisecond in both runs.
+- The earlier graph conclusion still stands, but it is now backed by NVTX projection instead of only wall time and internal timing.
+- Graph replay remains low priority for this route.
+
 ## Nsight Compute Follow-up
 
 Direct Nsight Compute report:
@@ -278,6 +343,63 @@ Interpretation:
 - On this real-dataset app path, the outer app-shell timing is effectively the same as engine timing; there is no warm steady-state evidence that the Tauri shell itself is the primary issue.
 - `launch_submit_us` is still tiny relative to total runtime.
 - This one run does not prove a dedicated worker thread is useless for every cold-start or p95 scenario, but it does not justify that design from current warm-path evidence alone.
+
+## App-Path Whole-Process NVTX Revisit
+
+The earlier isolated `target/app_path_revisit/...` rebuild failure was real, but it turned out not to be a product-path regression in the app shell.
+
+Root cause:
+
+- the stale `target/app_path_revisit/release/ta_app_path_faceoff.exe` build had fallen back to `double_crossover.prebuilt.ptx`
+- that fallback PTX did not contain `compute_log_and_simple_returns_f32`
+- the runtime then failed later with `named symbol not found`, which made the app-path revisit look like a live workload regression when it was actually a stale CUDA artifact problem
+- `crates/app_core/build.rs` now validates required PTX symbols on both fresh `nvcc` output and prebuilt fallback copies so this class of mismatch fails at build time instead of later at runtime
+
+Repaired fresh build:
+
+- isolated target dir: `target/app_path_revisit_fresh`
+- build shape: `VECTORBT_REQUIRE_NVCC=1` with the current `build.rs` NVCC path
+- real-data control validation succeeded first on the same SMA/SPY route via the app-core CLI helper
+- the fresh profiler-visible app-shell artifacts are now:
+  - `target/faceoff/app_path_faceoff_spy_revisit_fresh.json`
+  - `target/faceoff/app_path_faceoff_spy_revisit_fresh_nvtxdyn_profiled.json`
+  - `target/nsight/app_path_faceoff_spy_revisit_fresh_nvtxdyn.nsys-rep`
+  - `target/nsight/app_path_faceoff_spy_revisit_fresh_nvtxdyn_stats.csv`
+
+Important boundary note:
+
+- this `ta_app_path_faceoff` harness exercises `AppState` lookup plus the same blocking engine call used by the app shell
+- it does not traverse the literal `run_double_ma_optimization` `spawn_blocking` wrapper, so it does not emit the `tauri_double_ma_request` range
+- it is still the current profiler-visible app-shell measurement surface on this branch
+
+Key CLI summaries from `target/nsight/app_path_faceoff_spy_revisit_fresh_nvtxdyn_stats.csv`:
+
+- `cuda_api_sum`
+  - `cuMemcpyHtoD_v2`: about 8855.2 ms total across 36 calls
+  - `cuStreamSynchronize`: about 6820.2 ms total across 20 calls
+  - `cuLaunchKernel`: about 1.494 ms total across 98 launches
+- `cuda_gpu_kern_sum`
+  - `double_cross_backtest_tm_flex_f32_lockstep_time`: about 8553.7 ms total across 7 instances
+  - `double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_nocomm`: about 3765.6 ms
+  - `sma_batch_from_prefix_f64_tm`: about 1821.0 ms
+- `cuda_gpu_mem_time_sum`
+  - actual H2D memop time: about 1.168 ms total
+  - actual D2H memop time: about 15.1 us total
+- `nvtx_gpu_proj_sum`
+  - `double_ma_opt_total`: about 15919.4 ms range time vs about 15711.2 ms projected GPU
+  - `engine::gpu_kernel_dispatch`: about 15712.1 ms range time vs about 15704.0 ms projected GPU
+  - `kernel::backtest_core`: about 15675.0 ms range time vs about 15392.8 ms projected GPU
+  - `kernel::h2d_upload`: about 8853.6 ms range time vs about 0.011 ms projected GPU
+  - `kernel::sync_and_decode`: about 9875.2 ms range time vs about 0.424 ms projected GPU
+  - `kernel::launch_submit`: about 0.506 ms range time, while descendant GPU work projects through the range as expected
+
+Interpretation:
+
+- The repaired app-shell revisit again shows that the outer app-shell boundary and the engine boundary move together closely on the real CSV-backed SMA route.
+- `launch_submit_us` remains tiny; the app-shell revisit does not reopen Rust launch submission as a first-order target.
+- The huge app-path `h2d_upload_ms` / `cuMemcpyHtoD_v2` bucket is not physical copy bandwidth cost. Actual GPU H2D time is only about 1.168 ms total, so that bucket is mostly host waiting at the upload API site while queued GPU work drains.
+- The dominant cost is still the long-running GPU kernel sequence plus host blocking at synchronization/copy API sites, not warm app-shell orchestration.
+- The only stricter follow-on that remains possible here would be a literal `run_double_ma_optimization` command-wrapper study if a future cold-path or p95 investigation specifically needs the `spawn_blocking` envelope.
 
 ## Follow-on Optimization: Packed Top-K D2H Scratch
 
@@ -597,9 +719,24 @@ Observed result:
   - after that change, the elevated whole-process capture `target\nsight\nvtx_2026_elevated_whole_fallback.nsys-rep` now produces real NVTX tables:
     - `nvtx_sum` contains ranges such as `:double_ma_opt_total`, `:engine::gpu_kernel_dispatch`, `:kernel::executor_impl`, and `:kernel::backtest_core`
     - `nvtx_gpu_proj_sum` now projects those ranges onto the CUDA work as expected
+- the Nsight helper itself needed a separate repo-side repair before it could use the elevated `2026.2.1` path reliably:
+  - direct PowerShell native invocation was still fragile with the space-containing target exe path and output prefix under `C:\Rust Projects\...`
+  - `scripts\profile_gpu_backtest_nsys.ps1` now converts the target exe path and output prefix to native-safe short paths before invoking `nsys`
+  - the helper now launches `nsys` via `Start-Process` with one composed native argument string instead of relying on PowerShell's direct native argument expansion for path-bearing arguments
+  - after that repair, whole-process helper capture succeeds under elevated `2026.2.1` and writes `target\nsight\helper_2026_whole_process_smoke5.nsys-rep`
+  - `nsys stats --report nvtx_sum --report nvtx_gpu_proj_sum` on that helper-produced report shows the same profiler-visible NVTX ranges as the manual whole-process run
 - rebuilding the runner with `nvtx-profiling` under elevated `2026.2.1` is still not the preferred path
   - the raw-dylib build initially failed to start cleanly because `C:\Program Files\NVIDIA Corporation\NvToolsExt\bin\x64` was not on `PATH`
   - that path is no longer needed for profiler-visible NVTX in the normal release build because the runtime-loaded fallback now works
+- the remaining bounded-capture failure then turned out to be a trigger-matching issue, not a missing-report quirk in the profiler itself
+  - NVIDIA documents that Nsight Systems considers only registered NVTX strings for trigger matching by default
+  - the current Rust NVTX path uses push/pop ranges with plain strings, not registered NVTX strings
+  - a direct elevated bounded run succeeds immediately when `NSYS_NVTX_PROFILER_REGISTER_ONLY=0` is set:
+    - `target\nsight\capture_range_registered0_smoke.nsys-rep`
+  - the repo helper now sets that env var automatically when `-CaptureMode nvtx` is requested
+  - after that helper-side fix, bounded helper capture succeeds directly and writes:
+    - `target\nsight\helper_capture_range_fixed.nsys-rep`
+  - `nsys stats --report nvtx_sum --report nvtx_gpu_proj_sum` on that report confirms that bounded capture now produces the same useful NVTX summaries as the whole-process path
 
 Interpretation:
 
@@ -610,15 +747,15 @@ Interpretation:
   - the helper script now accepts an explicit `-NsysExePath`
   - the helper now precreates the local `Temp\\nvidia\\nsight_systems` directory before launching `nsys`
   - `crates\app_core\src\nvtx.rs` now tolerates older NVTX runtimes that only export the global push/pop API
-- the practical next remedies on this machine are outside the repo:
+- the practical local guidance is now clearer:
   - keep using an elevated shell for newer `nsys` on this machine
+  - the repo helper now supports both whole-process and bounded NVTX capture on this machine
+  - raw manual `nsys profile --capture-range=nvtx` calls still need `NSYS_NVTX_PROFILER_REGISTER_ONLY=0` unless the code moves to registered NVTX strings
   - clear `%TEMP%\\nvidia` state if the unelevated startup path needs to be revisited
-- the remaining profiler-visible NVTX gap is narrower now:
-  - the whole-process path works
-  - but the helper's `--capture-range=nvtx` flow still reaches `StartRange` / `RangeImportation` without writing the expected bounded report file
 
 ## Next Steps
 
 1. Treat Rust-side launch orchestration cost on this route as measured and bounded; it is in the tens of microseconds, not a first-order optimization target.
 2. If performance work continues, stay on GPU kernel/runtime investigation and use the current exact 10-row specialization as the new baseline for further Nsight Compute-guided work.
-3. Keep the remaining NVTX task focused on bounded capture output generation under `--capture-range=nvtx`; whole-process NVTX visibility is now working under elevated `2026.2.1`.
+3. Only add registered-string / real-domain NVTX support if raw manual `nsys profile --capture-range=nvtx` usage without the helper becomes important.
+4. Only add a stricter literal `run_double_ma_optimization` command-wrapper study if a future cold-path or p95 investigation specifically needs the `spawn_blocking` envelope.

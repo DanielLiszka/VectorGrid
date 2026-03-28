@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useValidationStore } from '../stores/validationStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import { useCommandActionStore } from '../stores/commandActionStore'
 
 const commandActionStore = useCommandActionStore()
@@ -19,12 +20,7 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(store)
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  const d = new Date(ms)
-  return d.toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 const gatesLabel = computed(() => {
   const parts: string[] = []
@@ -46,7 +42,7 @@ function runValidationAction(): void {
 <template>
   <aside class="valDock">
     <header class="dockHeader">
-      <div class="title">Validation Context</div>
+      <h2 class="title" style="margin: 0;">Validation Context</h2>
       <div class="stamp">{{ stamp }}</div>
     </header>
     <div class="rows">

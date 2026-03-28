@@ -68,20 +68,32 @@ Completed on 2026-03-27:
     - rerunning from an elevated PowerShell fixes the `2026.2.1` startup blocker:
       - a minimal `--trace=none` smoke test now completes and writes `target\\nsight\\nsys_2026_smoke_elevated.nsys-rep`
       - a whole-process Double MA runner capture now completes and writes `target\\nsight\\nvtx_2026_elevated_whole.nsys-rep`
+    - the helper itself now survives PowerShell/native-path edge cases on this machine:
+      - it converts the target exe path and output prefix to native-safe short paths before invoking `nsys`
+      - it launches `nsys` through `Start-Process` with one composed native argument string instead of relying on direct PowerShell native argument expansion for space-containing paths
+      - this avoids the previous false-negative path where `nsys` treated `C:\Rust` as the output path prefix and failed before producing the intended report
     - the remaining whole-process NVTX visibility issue is now fixed on this branch under elevated `2026.2.1`:
       - the installed standalone `nvToolsExt64_1.dll` only exports `nvtxRangePushEx` / `nvtxRangePop`, not the domain APIs
       - `crates\\app_core\\src\\nvtx.rs` now falls back to default-domain push/pop ranges when the domain exports are absent instead of disabling NVTX entirely
       - the elevated whole-process capture `target\\nsight\\nvtx_2026_elevated_whole_fallback.nsys-rep` now produces `nvtx_sum` and `nvtx_gpu_proj_sum`
       - top-level capture ranges such as `double_ma_opt_total` are preserved, while nested fallback ranges are prefixed like `engine::...` / `kernel::...`
+    - the bounded NVTX trigger issue is now understood and fixed for the repo helper workflow:
+      - Nsight Systems only considers registered NVTX strings for trigger matching by default
+      - the current Rust NVTX path uses push/pop ranges with plain strings, so direct bounded probes were returning `No reports were generated`
+      - `scripts\\profile_gpu_backtest_nsys.ps1` now sets `NSYS_NVTX_PROFILER_REGISTER_ONLY=0` automatically when `-CaptureMode nvtx` is used
+      - after that fix, bounded helper capture succeeds directly and writes `target\\nsight\\helper_capture_range_fixed.nsys-rep`
     - rebuilding the runner with `nvtx-profiling` is still not the recommended path on this machine:
       - that raw-dylib build additionally requires `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` on `PATH` just to start cleanly
       - the runtime-loaded fallback path is now sufficient for profiler-visible NVTX in the normal release build
   - Interpretation:
     - the newer-profiler startup blocker is a local privilege/tooling issue and is now confirmed to be solvable by an elevated shell on this machine
     - the remaining NVTX visibility problem was a Rust NVTX runtime interop issue on this branch, and the whole-process path is now fixed under elevated `2026.2.1`
-    - the remaining NVTX gap is narrower: the helper's `--capture-range=nvtx` flow still reaches `StartRange` / `RangeImportation`, but does not currently write the expected bounded report file
+    - the remaining direct-manual NVTX gap is narrower: raw manual `nsys profile --capture-range=nvtx` still needs either `NSYS_NVTX_PROFILER_REGISTER_ONLY=0` or registered-string NVTX markers, but the repo helper now applies the needed env var automatically
 - NVTX ranges now exist in app-core behind `VECTORBT_ENABLE_NVTX=1`, and the wrapper uses runtime-loaded NVTX symbols instead of static toolkit linkage.
-- The Tauri command path now also emits a `tauri_double_ma_request` NVTX range, so the app boundary is instrumented even though the local Nsight Systems install still does not expose NVTX records from this Rust path.
+- The Tauri command path now also emits a `tauri_double_ma_request` NVTX range, so the app boundary is instrumented.
+  - elevated whole-process runner captures under `2026.2.1` now expose NVTX correctly on the current branch
+  - a repaired fresh app-shell faceoff capture now exists at `target\\nsight\\app_path_faceoff_spy_revisit_fresh_nvtxdyn.nsys-rep`
+  - that faceoff harness exercises `AppState` lookup plus the same blocking engine call, but it does not traverse the literal `spawn_blocking` `tauri_double_ma_request` wrapper
 - The default single-pass product-row policy for the exact `GpuKernel` route now uses the 10-metric reduced contract instead of widening to the full 17-metric contract.
   - This keeps the route single-pass for the normal Sharpe/Volatility product family while avoiding the extra width that was not required to skip finalist replay.
   - Current validation:
@@ -110,6 +122,13 @@ Completed on 2026-03-27:
 - The remaining measurement checklist is now materially complete for the current route:
   - warm graph A/B on `xlarge` with `heatmap_bins=0` showed no meaningful steady-state win; warm medians stayed about 327 ms with graphs off and on
   - a fresh lean warm Nsight Systems pass on the `xlarge` runner with `heatmap_bins=64` again showed kernel dominance and tiny physical memops
+  - that previously blocked lean pass has now been re-run under elevated `2026.2.1` whole-process NVTX:
+    - `double_ma_opt_total` and `kernel::backtest_core` both project almost entirely to GPU work, with sub-millisecond host-only gaps
+    - `kernel::sync_and_decode` remains overwhelmingly host wait / non-GPU time, which confirms that the large host-side blocking bucket is not hidden Rust launch work
+  - the graph off/on A/B has now also been revisited under elevated `2026.2.1` whole-process NVTX:
+    - projected GPU time is essentially unchanged with graphs off vs on
+    - host-only gap remains sub-millisecond in both cases
+    - graph replay therefore remains low priority for this route
   - a pipeline-profile run on the same product-like shape showed about 98 percent of executor time inside `tile_score`, almost all of it in the backtest kernel itself
   - a direct Nsight Compute pass on the dominant backtest kernel showed:
     - about 70 registers per thread
@@ -117,7 +136,18 @@ Completed on 2026-03-27:
     - compute throughput about 61.9 percent vs memory throughput about 17.2 percent
     - a dominant L1TEX scoreboard stall reason, estimated at about 47 percent of average issue latency
   - an app-path faceoff run on a real CSV-backed `GpuKernel` request showed harness wall time effectively matching engine wall time, so there is no new warm-path evidence that a dedicated worker thread would beat the current app shell on steady-state cost alone
+  - the app-shell NVTX revisit has now been completed on a fresh profiler-visible binary:
+    - the earlier `target\\app_path_revisit\\release\\ta_app_path_faceoff.exe` failure was traced to a stale fallback `double_crossover.prebuilt.ptx` artifact that did not contain `compute_log_and_simple_returns_f32`
+    - a fresh isolated rebuild in `target\\app_path_revisit_fresh` with `VECTORBT_REQUIRE_NVCC=1` now succeeds and produces:
+      - `target\\nsight\\app_path_faceoff_spy_revisit_fresh_nvtxdyn.nsys-rep`
+      - `target\\nsight\\app_path_faceoff_spy_revisit_fresh_nvtxdyn_stats.csv`
+      - `target\\faceoff\\app_path_faceoff_spy_revisit_fresh_nvtxdyn_profiled.json`
+    - the repaired app-shell capture again shows harness wall, engine runtime, and exact `GpuKernel` route wall moving together closely
+    - `launch_submit_us` remains tiny on the repaired app-shell route
+    - the large app-path `h2d_upload_ms` / HtoD API bucket is mostly host wait at the upload call site, not physical GPU transfer time
 - The Nsight Compute helper script now resolves the local `2026.1.0` install path in addition to older layouts.
+- `crates/app_core/build.rs` now validates required PTX symbols after both fresh `nvcc` generation and prebuilt-fallback copies.
+  - This forces stale `double_crossover.prebuilt.ptx` mismatches to fail at build time instead of surfacing later as misleading runtime `named symbol not found` errors.
 - `scripts/run_gpu_perf_gate.ps1` now waits for benchmark/profiler processes to drain before and after each benchmark/profile segment instead of assuming `cargo bench` has fully settled when it returns.
   - This was added because the local Criterion path can leave a spawned benchmark executable alive after the parent command exits, which contaminates follow-on measurements if it is not drained first.
   - Current validation:
@@ -191,11 +221,8 @@ Completed on 2026-03-27:
 
 Still not implemented:
 
-- a profiler-visible NVTX capture-range workflow on the local machine, because:
-  - Nsight Systems `2023.3.3` still captures CUDA but emits no NVTX tables from this Rust path
-  - Nsight Systems `2026.2.1` now captures successfully from an elevated shell and does emit NVTX tables in whole-process mode on this branch
-  - the helper's `--capture-range=nvtx` flow still reaches the trigger state but does not currently write the expected bounded report file
-  - the optional `nvtx-profiling` raw-dylib path additionally depends on `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` being present on `PATH` for a clean process startup on this machine, so it is not the default verification path
+- a registered-string / real-domain NVTX path in the Rust wrapper, if we ever want raw manual `nsys profile --capture-range=nvtx` invocations to work without the helper's `NSYS_NVTX_PROFILER_REGISTER_ONLY=0` compatibility env var
+- the optional `nvtx-profiling` raw-dylib path additionally depends on `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` being present on `PATH` for a clean process startup on this machine, so it is not the default verification path
 
 ## Scope
 
@@ -484,11 +511,23 @@ This section is the minimum operator checklist for turning the review into actio
 
 ### Nsight Systems checklist
 
-- [x] Do a lean pass first.
+- [x] Re-run the lean pass with profiler-visible whole-process NVTX now that elevated `2026.2.1` is working.
 - [x] Use warm steady-state capture, not a cold first-use iteration.
 - [x] Inspect CUDA API time, queue time, sync calls, memcpy structure, and launch gaps.
 - [ ] Only if host overhead is visible, run a host-backtrace pass.
-- [x] Save the `.nsys-rep` path and an exported stats summary.
+- [x] Save the reevaluation `.nsys-rep` path plus exported CUDA and NVTX stats summaries.
+- [x] Revisit one warm app-shell capture now that whole-process NVTX projection is available on a current working app-path binary.
+  - Runner-side reevaluation artifacts now exist at:
+    - `target\\nsight\\xlarge_lean_nvtx_20260327_revisit.nsys-rep`
+    - `target\\nsight\\xlarge_graph_off_nvtx_revisit.nsys-rep`
+    - `target\\nsight\\xlarge_graph_on_nvtx_revisit.nsys-rep`
+  - Repaired app-shell artifacts now exist at:
+    - `target\\nsight\\app_path_faceoff_spy_revisit_fresh_nvtxdyn.nsys-rep`
+    - `target\\nsight\\app_path_faceoff_spy_revisit_fresh_nvtxdyn_stats.csv`
+    - `target\\faceoff\\app_path_faceoff_spy_revisit_fresh_nvtxdyn_profiled.json`
+  - Root cause of the earlier false start:
+    - `target\\app_path_revisit\\release\\ta_app_path_faceoff.exe` had picked up a stale prebuilt PTX fallback missing `compute_log_and_simple_returns_f32`
+    - `build.rs` now validates required PTX symbols so that mismatch fails at build time
 
 ### Graph A/B checklist
 
@@ -496,8 +535,8 @@ This section is the minimum operator checklist for turning the review into actio
 - [x] Disable heatmap.
 - [x] Keep `include_all=false`.
 - [x] Keep score mode off unless the graph path explicitly supports it.
-- [x] Run graphs off and graphs on with the same warmup/measurement procedure.
-- [x] Compare warm wall time and CUDA API time, not just kernel runtime.
+- [x] Re-run one warm graphs-off / graphs-on A/B with profiler-visible whole-process NVTX and the same warmup/measurement procedure.
+- [x] Compare warm wall time, CUDA API time, projected GPU time, and host-only gap, not just kernel runtime.
 
 ### Improvement checklist
 
@@ -533,11 +572,17 @@ That means further performance work should currently focus on the following path
 - [x] Reject launch-shape tuning as a default change unless it helps both heatmap and no-heatmap steady-state shapes.
 - [x] A/B the current dispatch against `VECTORBT_KERNEL_M7_SPECIALIZE=0` and `VECTORBT_KERNEL_LOCKSTEP_TIME=0` before changing the selector; the default `lockstep_m7` route remained the best of the low-risk options tested.
 - [x] If app-path cold-start or p95 latency matters, measure whether `spawn_blocking` plus thread-local `CudaKernelRuntime` reuse is unstable on the Tauri route.
+- [x] Re-run one real app-shell capture with profiler-visible whole-process NVTX before reopening dedicated-worker design work.
+  - The repaired faceoff capture now provides the needed warm-path app-shell check:
+    - `target\\nsight\\app_path_faceoff_spy_revisit_fresh_nvtxdyn.nsys-rep`
+    - `target\\nsight\\app_path_faceoff_spy_revisit_fresh_nvtxdyn_stats.csv`
+  - The faceoff harness still bypasses the literal `tauri_double_ma_request` `spawn_blocking` wrapper, but the measured app-shell boundary and engine boundary still track closely.
+  - There is still no warm-path evidence to reopen dedicated-worker work from the current app-shell route.
 - [x] If thread hopping causes repeated runtime construction, design a dedicated GPU worker thread per device before changing product-path code.
 - [x] Compare any dedicated-worker design against the same cold and warm baseline before adopting it.
 - [x] Move into CUDA-kernel body changes aimed at reducing register pressure and L1TEX scoreboard stalls in the dominant backtest kernel.
 - [x] Prefer narrow exact-product specializations that preserve the same single-pass work, such as zero-commission wrapper variants, before considering any functionality-reducing shortcuts.
-- [ ] Keep NVTX visibility work as a tooling task, but do not block kernel/runtime optimization on it.
+- [x] Keep NVTX visibility work as a tooling task, but do not block kernel/runtime optimization on it.
 
 ## Exact NVTX Insertion Checklist
 
@@ -634,11 +679,12 @@ Current limitations:
 ### D. Target command after NVTX visibility is resolved: lean Nsight Systems
 
 ```powershell
+$env:NSYS_NVTX_PROFILER_REGISTER_ONLY = "0"
 nsys profile `
   --trace=cuda,nvtx,osrt `
   --capture-range=nvtx `
-  --nvtx-capture "double_ma_opt_total@engine" `
-  --nvtx-domain-include engine,kernel `
+  --nvtx-capture "double_ma_opt_total" `
+  --nvtx-domain-include default,engine,kernel `
   --sample=none `
   --cpuctxsw=none `
   --cuda-graph-trace=graph `
@@ -658,11 +704,12 @@ nsys profile `
 ### E. Target command after NVTX visibility is resolved: host-backtrace Nsight Systems
 
 ```powershell
+$env:NSYS_NVTX_PROFILER_REGISTER_ONLY = "0"
 nsys profile `
   --trace=cuda,nvtx,osrt `
   --capture-range=nvtx `
-  --nvtx-capture "double_ma_opt_total@engine" `
-  --nvtx-domain-include engine,kernel `
+  --nvtx-capture "double_ma_opt_total" `
+  --nvtx-domain-include default,engine,kernel `
   --sample=process-tree `
   --backtrace=fp `
   --cudabacktrace=kernel:5000,memory:5000,sync:5000 `

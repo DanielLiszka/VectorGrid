@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { previewValidationExecutionSummaryFromStores } from '../services/validationService'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface ValidationColumn {
   label: string
@@ -110,8 +112,10 @@ const {
 const { resultsTab } = storeToRefs(workflowStore)
 const expectedExecutionSummary = computed(() => previewValidationExecutionSummaryFromStores())
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#validationVueShellMount', {
+  paneSelector: '[data-vue-panel="validate"]',
+  paneDatasetKey: 'vueValidation',
+})
 
 const candidatesDraft = ref('32')
 const seedDraft = ref('1')
@@ -163,10 +167,27 @@ const {
   scrollToTop,
 } = useVirtualTableRows(renderedRows)
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+
+const validationStageLabel = computed(() => {
+  if (validationStage.value === 'no_data') return 'Awaiting dataset'
+  if (validationStage.value === 'data_loaded_no_run') return 'Awaiting shortlist'
+  return showValidationResults.value ? 'Results ready' : 'Ready to run'
+})
+
+const validationSummaryChips = computed(() => {
+  const routeSummary = String(
+    (showValidationResults.value ? validationRouteSummary.value : expectedExecutionSummary.value.routeSummary) || '',
+  ).trim()
+  const crossSummary = Number(crossTotalCount.value || 0) > 0
+    ? `Cross ${crossSelectedCount.value}/${crossTotalCount.value}`
+    : String((showValidationResults.value ? validationCrossSummary.value : expectedExecutionSummary.value.crossSummary) || '').trim()
+  return [
+    validationStageLabel.value,
+    `${tableRowCount.value} rows`,
+    routeSummary ? `Route ${routeSummary}` : '',
+    crossSummary || '',
+  ].filter((chip) => String(chip || '').trim().length > 0)
 })
 
 watch(
@@ -346,35 +367,27 @@ function crossSelectMatchAction(): void {
   validationStore.crossSelectMatch()
 }
 
-function toggleCrossDataset(index: number): void {
-  const entry = renderedCrossDatasets.value[index]
-  if (!entry || entry.disabled) return
-  const path = String(entry.path || '').trim()
+function toggleCrossDatasetByPath(pathValue: string, nextChecked: boolean): void {
+  const path = String(pathValue || '').trim()
   if (!path) return
-  validationStore.toggleCrossDataset(path, !entry.checked)
+  validationStore.toggleCrossDataset(path, nextChecked)
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="validate"]') as HTMLElement | null
-  const mount = document.querySelector('#validationVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueValidation = '1'
-  mountReady.value = true
+function crossDatasetInputId(index: number): string {
+  return `validation_cross_dataset_${index}`
+}
+
+function crossDatasetDescriptionId(index: number): string {
+  return `validation_cross_dataset_meta_${index}`
 }
 
 onMounted(async () => {
   await nextTick()
-  resolveMount()
   scrollToTop()
 })
 
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow()
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueValidation
-    panelRoot.value = null
-  }
 })
 </script>
 
@@ -382,9 +395,19 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#validationVueShellMount">
     <section class="validationPanelVueRoot validationVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Validation</div>
-        <div class="meta mono">{{ tableRowCount }} rows · {{ stamp }}</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Robustness</div>
+          <h2 class="panelTitle">Validation</h2>
+          <div class="panelSubtitle">
+            Pressure-test shortlisted candidates with walk-forward, bootstrap, CSCV, and cross-dataset checks before export.
+          </div>
+        </div>
+        <div class="panelMeta mono panelNumeric">{{ tableRowCount }} rows · {{ stamp }}</div>
       </header>
+
+      <div class="panelSummaryChips" aria-label="Validation summary">
+        <div v-for="chip in validationSummaryChips" :key="chip" class="panelSummaryChip">{{ chip }}</div>
+      </div>
 
       <section v-if="validationStage !== 'ready'" class="emptyState">
         <div class="emptyTitle">
@@ -405,11 +428,20 @@ onBeforeUnmount(() => {
                 : 'Optimization results are available. Run validation to populate robustness tables, reports, and exports.'
           }}
         </div>
-        <div class="muted mono">{{ statusLine }}</div>
+        <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
       </section>
 
-      <section class="pane">
-        <div class="muted">{{ validationHint }}</div>
+      <section class="pane panelProminentPane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Run Setup</div>
+            <h3 class="panelPaneTitle">Validation run</h3>
+            <div class="panelSectionLead">
+              Choose shortlist size, guardrails, and export behavior for the next robustness pass.
+            </div>
+          </div>
+        </div>
+        <div class="panelAdvisory">{{ validationHint }}</div>
         <div class="gridFive">
           <div>
             <label for="vueValCandidates">Candidates</label>
@@ -462,7 +494,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
-            <label for="vueValCscvSlices">CSCV slices</label>
+            <label for="vueValCscvSlices">CSCV time slices</label>
             <input
               id="vueValCscvSlices"
               type="number"
@@ -477,7 +509,7 @@ onBeforeUnmount(() => {
 
         <div class="gridThree">
           <div>
-            <label for="vueValMinCscvRank">Min CSCV rank frac</label>
+            <label for="vueValMinCscvRank">Min CSCV rank fraction</label>
             <input
               id="vueValMinCscvRank"
               type="number"
@@ -490,7 +522,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
-            <label for="vueValMinCscvMetric">Min CSCV OOS metric</label>
+            <label for="vueValMinCscvMetric">Min CSCV out-of-sample metric</label>
             <input
               id="vueValMinCscvMetric"
               type="number"
@@ -553,7 +585,15 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-if="showValidationResults" class="pane">
-        <h3>Options</h3>
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Policies</div>
+            <h3 class="panelPaneTitle">Checks and automation</h3>
+            <div class="panelSectionLead">
+              Decide which robustness modules should run automatically and how much follow-up evidence to save.
+            </div>
+          </div>
+        </div>
         <div class="checks">
           <label>
             <input
@@ -596,7 +636,7 @@ onBeforeUnmount(() => {
           </div>
           <div>
             <label>&nbsp;</label>
-            <div class="muted">Saved to app data under <span class="mono">reports/</span>.</div>
+            <div class="panelMuted">Saved to app data under <span class="mono">reports/</span>.</div>
           </div>
         </div>
 
@@ -731,7 +771,7 @@ onBeforeUnmount(() => {
 
         <div class="gridThree">
           <div>
-            <label for="vueValReoptWfWindow">Re-opt WF window (bars)</label>
+            <label for="vueValReoptWfWindow">Re-opt walk-forward window (bars)</label>
             <input
               id="vueValReoptWfWindow"
               type="number"
@@ -743,7 +783,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
-            <label for="vueValReoptWfStep">Re-opt WF step (bars)</label>
+            <label for="vueValReoptWfStep">Re-opt walk-forward step (bars)</label>
             <input
               id="vueValReoptWfStep"
               type="number"
@@ -755,7 +795,7 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
-            <label for="vueValReoptWfTopN">Re-opt finalist top N</label>
+            <label for="vueValReoptWfTopN">Re-opt finalist shortlist</label>
             <input
               id="vueValReoptWfTopN"
               type="number"
@@ -887,25 +927,44 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="metaLine mono">{{ crossMeta }}</div>
-        <div class="metaLine mono">Selected {{ crossSelectedCount }}/{{ crossTotalCount }}</div>
+        <div class="metaLine mono" role="status" aria-live="polite">
+          Selected {{ crossSelectedCount }}/{{ crossTotalCount }}
+        </div>
 
-        <div class="crossList">
-          <div
+        <div class="crossList" role="group" aria-label="Cross-ticker validation datasets">
+          <label
             v-for="(item, index) in renderedCrossDatasets"
             :key="`cross_item_${item.path || item.label}_${index}`"
             class="crossItem"
-            @click="toggleCrossDataset(index)"
+            :class="{ disabled: item.disabled }"
+            :for="crossDatasetInputId(index)"
           >
             <div class="left">
               <div class="mono">{{ item.label }}</div>
-              <div class="muted">{{ item.meta }}</div>
+              <div :id="crossDatasetDescriptionId(index)" class="panelMuted">{{ item.meta }}</div>
             </div>
-            <input type="checkbox" :checked="item.checked" :disabled="item.disabled" @click.prevent="toggleCrossDataset(index)" />
-          </div>
+            <input
+              :id="crossDatasetInputId(index)"
+              type="checkbox"
+              :checked="item.checked"
+              :disabled="item.disabled"
+              :aria-describedby="crossDatasetDescriptionId(index)"
+              @change="toggleCrossDatasetByPath(item.path, ($event.target as HTMLInputElement).checked)"
+            />
+          </label>
         </div>
       </section>
 
       <section v-if="showValidationResults" class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Results</div>
+            <h3 class="panelPaneTitle">Validation summary table</h3>
+            <div class="panelSectionLead">
+              Review route, category, cross-check, and warning outcomes for the current shortlist before export.
+            </div>
+          </div>
+        </div>
         <div class="gridFour compactMetaGrid">
           <div>
             <label>Route</label>
@@ -948,18 +1007,27 @@ onBeforeUnmount(() => {
             <div class="metaLine mono">{{ validationWarningSummary }}</div>
           </div>
         </div>
-        <div class="metaLine mono">{{ validationMeta }}</div>
+        <div class="metaLine mono" role="status" aria-live="polite">{{ validationMeta }}</div>
         <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
         <div class="metaLine mono">{{ validationShortlistMeta }}</div>
         <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
-        <div ref="tableScrollElementRef" class="tableWrap">
+        <div
+          ref="tableScrollElementRef"
+          class="tableWrap"
+          tabindex="0"
+          aria-label="Validation results table"
+        >
           <table class="validationTableVue">
+            <caption class="srOnly">
+              Validation metrics for the current shortlist, including route, category, and cross-ticker results.
+            </caption>
             <thead>
               <tr>
                 <th
                   v-for="(column, columnIndex) in renderedColumns"
                   :key="`val_col_${columnIndex}_${column.label}`"
                   :class="{ left: column.alignLeft }"
+                  scope="col"
                 >
                   {{ column.label }}
                 </th>
@@ -989,11 +1057,24 @@ onBeforeUnmount(() => {
       </section>
 
       <section v-if="showValidationResults" class="pane">
-        <h3>Raw JSON</h3>
-        <pre class="mono preview">{{ validationOutputPreview }}</pre>
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Debug</div>
+            <h3 class="panelPaneTitle">Validation output</h3>
+            <div class="panelSectionLead">
+              Keep the structured payload available for troubleshooting without letting it crowd the operational view.
+            </div>
+          </div>
+        </div>
+        <details class="panelDetails">
+          <summary>Validation JSON preview</summary>
+          <div class="panelDetailsBody">
+            <pre class="mono preview">{{ validationOutputPreview }}</pre>
+          </div>
+        </details>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -1007,18 +1088,8 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .pane {
@@ -1027,11 +1098,6 @@ onBeforeUnmount(() => {
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
   min-width: 0;
-}
-
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
 }
 
 .gridFive {
@@ -1103,6 +1169,18 @@ onBeforeUnmount(() => {
   min-width: 980px;
 }
 
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .validationTableVue th,
 .validationTableVue td {
   border-bottom: 1px solid var(--border);
@@ -1148,6 +1226,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 0.7rem;
+  cursor: pointer;
 }
 
 .crossItem:hover {
@@ -1155,14 +1234,9 @@ onBeforeUnmount(() => {
   background: color-mix(in oklab, var(--panel) 92%, var(--panel-footer));
 }
 
-.status {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.muted {
-  color: var(--muted);
-  font-size: 0.8rem;
+.crossItem.disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .mono {

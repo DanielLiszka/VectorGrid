@@ -9,6 +9,7 @@ import {
   watch,
 } from "vue";
 import { storeToRefs } from "pinia";
+import { useShellMount } from "../composables/useShellMount";
 import { useOptimizeStore, type OptimizeOption } from "../stores/optimizeStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
@@ -31,6 +32,7 @@ import {
 } from "../services/gpuSpeedupsService";
 import { tauriRuntimeAvailable } from "../tauri/invoke";
 import { describeStrategyOptimizationCapabilities } from "../utils/strategyOptimizationCapabilities";
+import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import MlSignalWorkspacePanel from "./MlSignalWorkspacePanel.vue";
 import {
   builderEligibleDynamicIndicators,
@@ -114,8 +116,10 @@ const {
 } = storeToRefs(optimizeStore);
 const { controlsTab } = storeToRefs(workflowStore);
 
-const mountReady = ref(false);
-const panelRoot = ref<HTMLElement | null>(null);
+const { mountReady } = useShellMount("#optVueShellMount", {
+  paneSelector: '[data-vue-panel="opt"]',
+  paneDatasetKey: "vueOpt",
+});
 let panelDisposed = false;
 
 const strategyDraft = ref("");
@@ -288,11 +292,7 @@ const dynamicPreviewDisabledReason = computed(() => {
   return "";
 });
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0);
-  if (!Number.isFinite(ms) || ms <= 0) return "—";
-  return new Date(ms).toLocaleTimeString([], { hour12: false });
-});
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
 
 function resolvedOptions(
   options: OptimizeOption[],
@@ -1488,19 +1488,6 @@ async function loadDynamicCatalogMeta(): Promise<void> {
   }
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector(
-    '[data-vue-panel="opt"]',
-  ) as HTMLElement | null;
-  const mount = document.querySelector(
-    "#optVueShellMount",
-  ) as HTMLElement | null;
-  if (!panel || !mount) return;
-  panelRoot.value = panel;
-  panel.dataset.vueOpt = "1";
-  mountReady.value = true;
-}
-
 watch(
   [maParamCatalogLoaded, selectedFastMaType, fastMaParamSchema],
   () => {
@@ -1589,7 +1576,6 @@ watch(
 
 onMounted(async () => {
   await nextTick();
-  resolveMount();
   await Promise.all([
     loadMaParamCatalog(),
     loadMaSpeedups(),
@@ -1602,10 +1588,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow();
   panelDisposed = true;
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueOpt;
-    panelRoot.value = null;
-  }
 });
 </script>
 
@@ -1614,7 +1596,7 @@ onBeforeUnmount(() => {
     <section class="optPanelVueRoot optVueShellMountHost" v-show="visible">
       <header class="head">
         <div class="headCopy">
-          <div class="title">Optimize</div>
+          <h2 class="title" style="margin: 0;">Optimize</h2>
           <div class="subtitle">
             Choose the strategy shape, execution route, and sweep ranges for the
             next run.
@@ -2596,7 +2578,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div class="muted mono">{{ progressMeta || "—" }}</div>
-          <div class="muted mono">{{ statusLine }}</div>
+          <div class="muted mono" role="status" aria-live="polite">{{ statusLine }}</div>
         </section>
 
         <section class="pane">

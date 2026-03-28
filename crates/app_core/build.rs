@@ -2,6 +2,20 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const REQUIRED_DOUBLE_CROSSOVER_SYMBOLS: &[&str] = &[
+    "compute_log_and_simple_returns_f32",
+    "transpose_row_to_tm",
+    "double_cross_backtest_tm_flex_f32",
+    "double_cross_backtest_tm_flex_f32_windowed",
+    "fill_f32",
+    "fill_i32",
+    "heatmap_update_scores_tm_f32",
+    "select_topk_from_pairs_tm_f32",
+    "select_topk_from_candidates_tm_f32",
+    "gather_topk_pairs_tm_f32",
+    "pack_metric_rows_f32",
+];
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/kernels/double_crossover.cu");
@@ -37,6 +51,7 @@ fn build_double_crossover_artifacts() {
         }
         std::fs::copy(prebuilt, &ptx_out)
             .unwrap_or_else(|e| panic!("failed to copy prebuilt PTX to OUT_DIR: {e}"));
+        validate_ptx_contains_symbols(&ptx_out, REQUIRED_DOUBLE_CROSSOVER_SYMBOLS);
         eprintln!(
             "[ta_app_core] Using prebuilt PTX: {} -> {}",
             prebuilt.display(),
@@ -53,6 +68,7 @@ fn build_double_crossover_artifacts() {
         if prebuilt.exists() {
             std::fs::copy(prebuilt, &ptx_out)
                 .unwrap_or_else(|e| panic!("failed to copy prebuilt PTX to OUT_DIR: {e}"));
+            validate_ptx_contains_symbols(&ptx_out, REQUIRED_DOUBLE_CROSSOVER_SYMBOLS);
             eprintln!(
                 "[ta_app_core] NVCC not found; using prebuilt PTX: {} -> {}",
                 prebuilt.display(),
@@ -90,6 +106,7 @@ fn build_double_crossover_artifacts() {
         if !require_nvcc && prebuilt.exists() {
             std::fs::copy(prebuilt, &ptx_out)
                 .unwrap_or_else(|e| panic!("failed to copy prebuilt PTX to OUT_DIR: {e}"));
+            validate_ptx_contains_symbols(&ptx_out, REQUIRED_DOUBLE_CROSSOVER_SYMBOLS);
             eprintln!(
                 "[ta_app_core] NVCC failed; using prebuilt PTX: {} -> {}",
                 prebuilt.display(),
@@ -112,7 +129,30 @@ fn build_double_crossover_artifacts() {
         panic!("nvcc failed");
     }
 
+    validate_ptx_contains_symbols(&ptx_out, REQUIRED_DOUBLE_CROSSOVER_SYMBOLS);
     build_sm89_cubin_best_effort(&nvcc, kernel, &cubin_out);
+}
+
+fn validate_ptx_contains_symbols(path: &Path, required_symbols: &[&str]) {
+    let ptx = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        panic!(
+            "failed to read generated PTX '{}' for symbol validation: {e}",
+            path.display()
+        )
+    });
+    let missing: Vec<&str> = required_symbols
+        .iter()
+        .copied()
+        .filter(|symbol| !ptx.contains(symbol))
+        .collect();
+    if !missing.is_empty() {
+        panic!(
+            "PTX artifact '{}' is missing required kernel symbols: {}. \
+This usually means a stale prebuilt PTX fallback was used against newer Rust-side kernel lookups.",
+            path.display(),
+            missing.join(", ")
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -159,6 +199,10 @@ fn configure_nvcc_command(cmd: &mut Command) {
     if cfg!(target_os = "windows") {
         cmd.arg("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH");
         cmd.arg("-allow-unsupported-compiler");
+        // CUDA 13.2's CCCL headers reject MSVC's traditional preprocessor.
+        // Forward the conforming preprocessor flag to cl.exe so fresh PTX/cubin
+        // builds keep working instead of silently falling back to stale prebuilt PTX.
+        cmd.arg("-Xcompiler").arg("/Zc:preprocessor");
         if which::which("cl.exe").is_err() {
             if let Ok(vs_path) = find_vs_installation() {
                 cmd.arg("-ccbin").arg(vs_path);

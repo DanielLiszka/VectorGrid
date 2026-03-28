@@ -6,6 +6,7 @@ import {
 } from './analysisService'
 import { buildOptimizationRequestFromVueStores } from './optimizeService'
 import { EXEC_KEYS_STORAGE_KEY } from '../utils/core/storageKeys'
+import { formatUtcDateTimeFromUnixMs } from '../utils/uiFormat'
 import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
 
 interface ExecutionStoredKeysPayload {
@@ -215,11 +216,7 @@ function trimTrailingZeros(num: number, maxDecimals = 6): string {
 }
 
 function toUtcDateTime(rawMs: unknown): string {
-  const n = Number(rawMs)
-  if (!Number.isFinite(n) || n <= 0) return '-'
-  const d = new Date(n)
-  const pad = (x: number): string => String(Math.max(0, Math.floor(x))).padStart(2, '0')
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
+  return formatUtcDateTimeFromUnixMs(rawMs)
 }
 
 function orderTimeMs(order: ExecutionSnapshotOrderResponse): number {

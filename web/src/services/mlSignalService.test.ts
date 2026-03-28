@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { invokeCommand } from "../tauri/invoke";
+import { bindRuntimePinia } from "../stores/runtimePinia";
 import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useStrategyStore } from "../stores/strategyStore";
@@ -25,6 +26,7 @@ describe("mlSignalService", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
+    bindRuntimePinia(pinia);
     vi.clearAllMocks();
   });
 

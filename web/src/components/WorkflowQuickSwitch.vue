@@ -33,7 +33,12 @@ const stepItems = [
   { key: 'finalize', label: '5' },
 ] as const
 
+type SwitchItem = { key: string }
+
 const subtitle = computed(() => workflowSubtitle.value || '—')
+const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
+const currentWorkflow = computed(() => String(workflow.value || '').trim() || 'data')
+const currentWorkflowStep = computed(() => String(workflowStep.value || '').trim() || 'data')
 
 function close(): void {
   open.value = false
@@ -53,6 +58,58 @@ function clickWorkflowStep(key: string): void {
   if (String(workspace.value || '').trim() === 'workflow' && String(workflowStep.value || '').trim() === key) return
   store.selectWorkflowStep(key)
 }
+
+function switchItemId(group: string, key: string): string {
+  return `workflow_switch_${group}_${key}`
+}
+
+function focusSelector(selector: string): void {
+  const element = document.querySelector<HTMLElement>(selector)
+  element?.focus()
+}
+
+function resolveFocusedKey(event: KeyboardEvent): string | null {
+  const target = event.target instanceof Element ? (event.target.closest('[data-switch-key]') as HTMLElement | null) : null
+  return String(target?.dataset.switchKey || '').trim() || null
+}
+
+function moveGroupFocus(
+  event: KeyboardEvent,
+  items: readonly SwitchItem[],
+  currentKey: string,
+  selectValue: (key: string) => void,
+  selectorForKey: (key: string) => string,
+): void {
+  if (items.length <= 1) return
+  const originKey = resolveFocusedKey(event) ?? currentKey
+  const currentIndex = items.findIndex((item) => item.key === originKey)
+  if (currentIndex < 0) return
+
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % items.length
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = items.length - 1
+  else return
+
+  event.preventDefault()
+  const nextKey = items[nextIndex]?.key
+  if (!nextKey) return
+  selectValue(nextKey)
+  focusSelector(selectorForKey(nextKey))
+}
+
+function onWorkspaceKeydown(event: KeyboardEvent): void {
+  moveGroupFocus(event, wsItems, currentWorkspace.value, clickWorkspace, (key) => `[data-switch-group="workspace"] [data-switch-key="${key}"]`)
+}
+
+function onWorkflowKeydown(event: KeyboardEvent): void {
+  moveGroupFocus(event, wfItems, currentWorkflow.value, clickWorkflow, (key) => `[data-switch-group="workflow"] [data-switch-key="${key}"]`)
+}
+
+function onStepKeydown(event: KeyboardEvent): void {
+  moveGroupFocus(event, stepItems, currentWorkflowStep.value, clickWorkflowStep, (key) => `[data-switch-group="step"] [data-switch-key="${key}"]`)
+}
 </script>
 
 <template>
@@ -64,45 +121,68 @@ function clickWorkflowStep(key: string): void {
       <PopoverPortal>
         <PopoverContent class="workflowSwitch" side="bottom" align="start" :side-offset="10" :collision-padding="10">
           <header class="head">
-            <div class="title">Workflow Nav</div>
+            <h2 class="title">Workflow Nav</h2>
             <div class="headRight">
               <div class="mono state">ws={{ workspace }} · wf={{ workflow }} · step={{ workflowStep }}</div>
               <button type="button" class="closeBtn" @click="close">Close</button>
             </div>
           </header>
           <div class="subtitle mono">{{ subtitle }}</div>
-          <div class="group">
-            <button
-              v-for="item in wsItems"
-              :key="`ws_${item.key}`"
-              type="button"
-              :class="{ active: workspace === item.key }"
-              @click="clickWorkspace(item.key)"
-            >
-              {{ item.label }}
-            </button>
-          </div>
-          <div class="group">
-            <button
-              v-for="item in wfItems"
-              :key="`wf_${item.key}`"
-              type="button"
-              :class="{ active: workflow === item.key }"
-              @click="clickWorkflow(item.key)"
-            >
-              {{ item.label }}
-            </button>
-            <button
-              v-for="item in stepItems"
-              :key="`step_${item.key}`"
-              type="button"
-              class="step"
-              :class="{ active: workflowStep === item.key }"
-              @click="clickWorkflowStep(item.key)"
-            >
-              {{ item.label }}
-            </button>
-          </div>
+          <nav class="groupBlock" aria-label="Workspace quick switch">
+            <div class="groupLabel">Workspace</div>
+            <div class="group" data-switch-group="workspace" @keydown="onWorkspaceKeydown">
+              <button
+                v-for="item in wsItems"
+                :key="`ws_${item.key}`"
+                :id="switchItemId('workspace', item.key)"
+                type="button"
+                :class="{ active: currentWorkspace === item.key }"
+                :aria-current="currentWorkspace === item.key ? 'page' : undefined"
+                :tabindex="currentWorkspace === item.key ? 0 : -1"
+                :data-switch-key="item.key"
+                @click="clickWorkspace(item.key)"
+              >
+                {{ item.label }}
+              </button>
+            </div>
+          </nav>
+          <nav class="groupBlock" aria-label="Workflow quick switch">
+            <div class="groupLabel">Workflow</div>
+            <div class="group" data-switch-group="workflow" @keydown="onWorkflowKeydown">
+              <button
+                v-for="item in wfItems"
+                :key="`wf_${item.key}`"
+                :id="switchItemId('workflow', item.key)"
+                type="button"
+                :class="{ active: currentWorkflow === item.key }"
+                :aria-current="currentWorkflow === item.key ? 'page' : undefined"
+                :tabindex="currentWorkflow === item.key ? 0 : -1"
+                :data-switch-key="item.key"
+                @click="clickWorkflow(item.key)"
+              >
+                {{ item.label }}
+              </button>
+            </div>
+          </nav>
+          <nav class="groupBlock" aria-label="Workflow step quick switch">
+            <div class="groupLabel">Step</div>
+            <div class="group" data-switch-group="step" @keydown="onStepKeydown">
+              <button
+                v-for="item in stepItems"
+                :key="`step_${item.key}`"
+                :id="switchItemId('step', item.key)"
+                type="button"
+                class="step"
+                :class="{ active: currentWorkflowStep === item.key }"
+                :aria-current="currentWorkflowStep === item.key ? 'step' : undefined"
+                :tabindex="currentWorkflowStep === item.key ? 0 : -1"
+                :data-switch-key="item.key"
+                @click="clickWorkflowStep(item.key)"
+              >
+                {{ item.label }}
+              </button>
+            </div>
+          </nav>
         </PopoverContent>
       </PopoverPortal>
     </PopoverRoot>
@@ -178,6 +258,7 @@ function clickWorkflowStep(key: string): void {
 }
 
 .title {
+  margin: 0;
   font-size: 0.76rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -206,6 +287,19 @@ function clickWorkflowStep(key: string): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.groupBlock {
+  display: grid;
+  gap: 4px;
+}
+
+.groupLabel {
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #c4b5fd;
 }
 
 .group {

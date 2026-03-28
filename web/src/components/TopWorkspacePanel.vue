@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface TopColumn {
   key: string
@@ -45,8 +47,7 @@ const {
 } = storeToRefs(analysisStore)
 const { resultsTab } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#topVueShellMount')
 
 const minPnlDraft = ref('')
 const minSharpeDraft = ref('')
@@ -93,10 +94,44 @@ const {
   scrollToTop,
 } = useVirtualTableRows(renderedRows)
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+
+const topStageLabel = computed(() => {
+  if (topStage.value === 'no_data') return 'Awaiting dataset'
+  if (topStage.value === 'data_loaded_no_run') return 'Awaiting optimization'
+  if (topDisabledForRun.value) return 'Winner only'
+  return hasTopResults.value ? 'Ranked shortlist ready' : 'No matching rows'
+})
+
+const topSummaryChips = computed(() => {
+  return [
+    topStageLabel.value,
+    `${topRows.value} rows`,
+    filtersActive.value ? 'Filters active' : 'All rows',
+    topDisabledForRun.value ? 'Top-k disabled' : '',
+  ].filter((chip) => String(chip || '').trim().length > 0)
+})
+const selectedTopSummary = computed(() => {
+  const selectedIndex = renderedRows.value.findIndex((row) => row.selected)
+  if (selectedIndex < 0) {
+    return hasTopResults.value
+      ? 'No ranked candidate selected.'
+      : 'No ranked candidates are available.'
+  }
+  const selectedRow = renderedRows.value[selectedIndex]
+  if (!selectedRow) {
+    return hasTopResults.value
+      ? 'No ranked candidate selected.'
+      : 'No ranked candidates are available.'
+  }
+  const leadCells = selectedRow.cells
+    .map((cell) => String(cell.text || '').trim())
+    .filter((value) => value.length > 0)
+    .slice(0, 3)
+  const leadSummary = leadCells.join(' · ')
+  return leadSummary
+    ? `Selected candidate ${selectedIndex + 1} of ${renderedRows.value.length}: ${leadSummary}.`
+    : `Selected candidate ${selectedIndex + 1} of ${renderedRows.value.length}.`
 })
 
 watch(
@@ -134,32 +169,67 @@ function clickTopHeader(key: string): void {
   analysisStore.sortTopTable(sortKey)
 }
 
+function sortStateToAria(sort: TopColumn['sort']): 'ascending' | 'descending' | 'none' {
+  if (sort === 'asc') return 'ascending'
+  if (sort === 'desc') return 'descending'
+  return 'none'
+}
+
 function clickTopRow(index: number): void {
   if (!Number.isInteger(index) || index < 0) return
   analysisStore.selectTopRow(index)
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="top"]') as HTMLElement | null
-  const mount = document.querySelector('#topVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueTop = '1'
-  mountReady.value = true
+function focusAdjacentTopRow(currentTarget: EventTarget | null, direction: 'prev' | 'next' | 'first' | 'last'): void {
+  const row = currentTarget instanceof HTMLElement ? currentTarget : null
+  const tbody = row?.parentElement
+  if (!row || !tbody) return
+  const rows = Array.from(tbody.querySelectorAll<HTMLElement>('tr[data-top-row="1"]'))
+  if (!rows.length) return
+  const currentIndex = rows.indexOf(row)
+  if (currentIndex < 0) return
+  let nextIndex = currentIndex
+  if (direction === 'prev') nextIndex = Math.max(0, currentIndex - 1)
+  else if (direction === 'next') nextIndex = Math.min(rows.length - 1, currentIndex + 1)
+  else if (direction === 'first') nextIndex = 0
+  else nextIndex = rows.length - 1
+  rows[nextIndex]?.focus()
+}
+
+function onTopRowKeydown(index: number, event: KeyboardEvent): void {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    clickTopRow(index)
+    return
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    focusAdjacentTopRow(event.currentTarget, 'prev')
+    return
+  }
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    focusAdjacentTopRow(event.currentTarget, 'next')
+    return
+  }
+  if (event.key === 'Home') {
+    event.preventDefault()
+    focusAdjacentTopRow(event.currentTarget, 'first')
+    return
+  }
+  if (event.key === 'End') {
+    event.preventDefault()
+    focusAdjacentTopRow(event.currentTarget, 'last')
+  }
 }
 
 onMounted(async () => {
   await nextTick()
-  resolveMount()
   scrollToTop()
 })
 
 onBeforeUnmount(() => {
   flushQueuedFilterInputsNow()
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueTop
-    panelRoot.value = null
-  }
 })
 </script>
 
@@ -167,11 +237,31 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#topVueShellMount">
     <section class="topPanelVueRoot topVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Top Results</div>
-        <div class="meta mono">{{ topRows }} rows · {{ stamp }}</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Ranking</div>
+          <h2 class="panelTitle">Top Results</h2>
+          <div class="panelSubtitle">
+            Filter the ranked shortlist, inspect the best candidates, and send a selected row into the deeper analysis views.
+          </div>
+        </div>
+        <div class="panelMeta mono panelNumeric">{{ topRows }} rows · {{ stamp }}</div>
       </header>
 
-      <section v-if="topStage === 'ready'" class="pane">
+      <div class="panelSummaryChips" aria-label="Top results summary">
+        <div v-for="chip in topSummaryChips" :key="chip" class="panelSummaryChip">{{ chip }}</div>
+      </div>
+      <div id="topSelectionStatus" class="srOnly" role="status" aria-live="polite">{{ selectedTopSummary }}</div>
+
+      <section v-if="topStage === 'ready'" class="pane panelProminentPane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Filters</div>
+            <h3 class="panelPaneTitle">Shortlist gates</h3>
+            <div class="panelSectionLead">
+              Tighten the ranked list by PnL, Sharpe, drawdown, trades, and exposure before choosing a candidate.
+            </div>
+          </div>
+        </div>
         <div class="gridFive">
           <div>
             <label for="vueFilterMinPnl">Min PnL</label>
@@ -228,38 +318,64 @@ onBeforeUnmount(() => {
         <div class="actions">
           <button type="button" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
         </div>
-        <div class="metaLine mono">{{ topFilterMeta }}</div>
-        <div class="metaLine bad mono">{{ topSelectionGuardrail }}</div>
+        <div class="panelAdvisory mono">{{ topFilterMeta }}</div>
+        <div v-if="topSelectionGuardrail" class="panelAdvisory mono bad">{{ topSelectionGuardrail }}</div>
       </section>
 
       <section class="pane">
+        <div class="panelSectionHeader">
+          <div class="panelHeadCopy">
+            <div class="panelEyebrow">Table</div>
+            <h3 class="panelPaneTitle">Ranked candidates</h3>
+            <div class="panelSectionLead">
+              Sort the shortlist by the current metric, then choose a row to update the rest of the analysis workspace.
+            </div>
+          </div>
+        </div>
         <div v-if="topStage !== 'ready' || !hasTopResults" class="emptyState topEmptyState">
           <div class="emptyTitle">{{ emptyTitle }}</div>
           <div class="emptyBody">{{ emptyBody }}</div>
           <div v-if="topStage === 'ready' && (filtersActive || canClearTopFilters)" class="emptyActions">
             <button type="button" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
           </div>
-          <div class="muted mono">{{ topFilterMeta || statusLine }}</div>
-          <div v-if="topStage === 'ready' && topSelectionGuardrail" class="muted mono">{{ topSelectionGuardrail }}</div>
+          <div class="panelMuted mono panelNumeric">{{ topFilterMeta || statusLine }}</div>
+          <div v-if="topStage === 'ready' && topSelectionGuardrail" class="panelMuted mono panelNumeric">{{ topSelectionGuardrail }}</div>
         </div>
 
-        <div v-else ref="tableScrollElementRef" class="tableWrap">
-          <table class="topTableVue">
-            <thead>
-              <tr>
+        <div
+          v-else
+          ref="tableScrollElementRef"
+          class="tableWrap"
+          tabindex="0"
+          aria-label="Top optimization results table"
+          aria-describedby="topSelectionStatus"
+        >
+          <table class="topTableVue" role="grid" aria-describedby="topSelectionStatus">
+            <caption class="srOnly">Top optimization results ranked by the selected table sort order.</caption>
+            <thead role="rowgroup">
+              <tr role="row">
                 <th
                   v-for="column in renderedColumns"
                   :key="`top_col_${column.key}`"
                   :class="{ left: column.alignLeft }"
-                  @click="clickTopHeader(column.key)"
+                  :aria-sort="sortStateToAria(column.sort)"
+                  scope="col"
+                  role="columnheader"
                 >
-                  <span>{{ column.label }}</span>
-                  <span v-if="column.sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
-                  <span v-else-if="column.sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
+                  <button
+                    type="button"
+                    class="headerButton"
+                    :class="{ left: column.alignLeft }"
+                    @click="clickTopHeader(column.key)"
+                  >
+                    <span>{{ column.label }}</span>
+                    <span v-if="column.sort === 'asc'" class="sortGlyph" aria-hidden="true">↑</span>
+                    <span v-else-if="column.sort === 'desc'" class="sortGlyph" aria-hidden="true">↓</span>
+                  </button>
                 </th>
               </tr>
             </thead>
-            <tbody>
+            <tbody role="rowgroup">
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
                 <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
@@ -267,13 +383,19 @@ onBeforeUnmount(() => {
                 v-for="virtualRow in virtualRows"
                 :key="`top_row_${virtualRow.index}`"
                 :class="{ selected: virtualRow.row.selected }"
+                data-top-row="1"
+                role="row"
+                :aria-selected="virtualRow.row.selected"
+                tabindex="0"
                 @click="clickTopRow(virtualRow.index)"
+                @keydown="onTopRowKeydown(virtualRow.index, $event)"
               >
                 <template v-for="cell in virtualRow.row.cells" :key="`top_row_${virtualRow.index}_cell_${cell.text}_${cell.className}`">
                   <td
                     :class="cell.className"
                     :title="cell.title || undefined"
                     :colspan="virtualRow.row.cells.length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
+                    role="gridcell"
                   >
                     {{ cell.text }}
                   </td>
@@ -287,7 +409,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -301,18 +423,8 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .pane {
@@ -341,26 +453,6 @@ onBeforeUnmount(() => {
   font-size: 0.76rem;
 }
 
-.metaLine {
-  margin-top: 0.45rem;
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.metaLine.bad {
-  color: var(--danger);
-}
-
-.status {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.muted {
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
 .tableWrap {
   overflow: auto;
 }
@@ -378,6 +470,18 @@ onBeforeUnmount(() => {
   min-width: 760px;
 }
 
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .topTableVue th,
 .topTableVue td {
   border-bottom: 1px solid var(--border);
@@ -387,7 +491,6 @@ onBeforeUnmount(() => {
 }
 
 .topTableVue th {
-  cursor: pointer;
   user-select: none;
 }
 
@@ -398,6 +501,11 @@ onBeforeUnmount(() => {
 
 .topTableVue tbody tr {
   cursor: pointer;
+}
+
+.topTableVue tbody tr:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: -2px;
 }
 
 .topTableVue tbody tr.selected {
@@ -419,6 +527,27 @@ onBeforeUnmount(() => {
   opacity: 0.8;
 }
 
+.headerButton {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.25rem;
+  font: inherit;
+}
+
+.headerButton.left {
+  justify-content: flex-start;
+}
+
+.headerButton:hover:not(:disabled) {
+  background: transparent;
+}
+
 .mono {
   font-family: var(--mono);
 }
@@ -436,11 +565,6 @@ onBeforeUnmount(() => {
 }
 </style>
 
-<style>
-[data-vue-panel='top'][data-vue-top='1'] > :not(#topVueShellMount) {
-  display: none !important;
-}
-</style>
 
 
 

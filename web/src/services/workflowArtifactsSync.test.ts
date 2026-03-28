@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 
@@ -15,6 +16,7 @@ describe('workflowArtifactsSync', () => {
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     vi.clearAllMocks()
   })
 

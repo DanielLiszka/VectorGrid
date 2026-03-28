@@ -1,4 +1,4 @@
-import { getActivePinia } from "pinia";
+import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { markRaw } from "vue";
 import { useLightweightChart } from "../composables/useLightweightChart";
 import { useDataStore } from "../stores/dataStore";
@@ -931,7 +931,7 @@ function markHistoryVue(store: HistoryStoreState): void {
 }
 
 function readAnalysisStore(): AnalysisStoreState | null {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return null;
   const root = pinia.state.value as Record<string, unknown>;
   const state = root.analysis;
@@ -940,7 +940,7 @@ function readAnalysisStore(): AnalysisStoreState | null {
 }
 
 function readHistoryStore(): HistoryStoreState | null {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return null;
   const root = pinia.state.value as Record<string, unknown>;
   const state = root.history;
@@ -949,7 +949,7 @@ function readHistoryStore(): HistoryStoreState | null {
 }
 
 function readWorkflowRun(): WorkflowRunState | null {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (pinia) {
     const root = pinia.state.value as Record<string, unknown>;
     const wf = asRecord(root.workflowArtifacts);
@@ -962,7 +962,7 @@ function readWorkflowRun(): WorkflowRunState | null {
 }
 
 function hasValidationResult(): boolean {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return false;
   const root = pinia.state.value as Record<string, unknown>;
   const wf = asRecord(root.workflowArtifacts);
@@ -2428,10 +2428,9 @@ function renderParetoCanvas(
       if (!best || dist < best.dist) best = { row: point.row, dist };
     }
     if (!best || best.dist > 18) return;
-    const pinia = getActivePinia();
+    const pinia = resolveRuntimePinia();
     if (pinia) {
-      const workflowStore = useWorkflowStore(pinia);
-      workflowStore.selectResultsTab("drill", { persist: false });
+      useWorkflowStore(pinia).selectResultsTab("drill", { persist: false });
     }
     void runVueDrillPipeline(0, best.row);
   };
@@ -2896,10 +2895,9 @@ function renderHeatmapCanvas(
     const metrics: Record<string, unknown> = {
       [objectiveScoreKey(objective, scoreMode)]: value,
     };
-    const pinia = getActivePinia();
+    const pinia = resolveRuntimePinia();
     if (pinia) {
-      const workflowStore = useWorkflowStore(pinia);
-      workflowStore.selectResultsTab("drill", { persist: false });
+      useWorkflowStore(pinia).selectResultsTab("drill", { persist: false });
     }
     void runVueDrillPipeline(0, { rank: 1, params, metrics });
   };
@@ -4654,7 +4652,7 @@ export async function rerenderDrill(): Promise<void> {
 }
 
 export async function drillClearTradeSelection(): Promise<void> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (pinia && useDataStore(pinia).polygonOpen) {
     return;
   }

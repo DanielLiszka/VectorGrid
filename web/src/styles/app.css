@@ -3,6 +3,19 @@
   --radius-card: 14px;
   --radius-control: 10px;
   --controls-w: 420px;
+  --text-xs: 0.76rem;
+  --text-sm: 0.82rem;
+  --text-md: 0.86rem;
+  --text-lg: 1.04rem;
+  --text-xl: 1.12rem;
+  --leading-tight: 1.18;
+  --leading-compact: 1.34;
+  --leading-body: 1.48;
+  --space-1: 0.35rem;
+  --space-2: 0.55rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
 }
 
 *,
@@ -19,16 +32,29 @@ html[data-theme="light"] {
   --panel-footer: rgba(255, 255, 255, 0.975);
   --surface: #ffffff;
   --surface2: #f5f7fb;
+  --surface-raised: #eef4fa;
+  --surface-accent: rgba(2, 132, 199, 0.1);
+  --surface-warning: rgba(180, 83, 9, 0.12);
+  --surface-danger: rgba(225, 29, 72, 0.12);
+  --surface-success: rgba(22, 163, 74, 0.12);
   --muted: #475569;
+  --muted-strong: #334155;
+  --muted-soft: #64748b;
   --text: #0f172a;
   --accent: #0284c7;
   --accent-hover: #0369a1;
   --accent-soft: rgba(2, 132, 199, 0.12);
   --accent-soft-2: rgba(2, 132, 199, 0.18);
   --border: #d8e1ec;
+  --border-strong: #b9c8da;
   --danger: #e11d48;
+  --danger-ink: #9f1239;
   --danger-hover: #be123c;
+  --warning: #b45309;
+  --warning-ink: #92400e;
+  --warning-soft: rgba(180, 83, 9, 0.12);
   --ok: #16a34a;
+  --ok-ink: #166534;
   --ok-hover: #15803d;
   --ok-soft: rgba(22, 163, 74, 0.12);
   --danger-soft: rgba(225, 29, 72, 0.12);
@@ -56,16 +82,29 @@ html[data-theme="dark"] {
   --panel-footer: rgba(24, 33, 49, 0.965);
   --surface: #0f172a;
   --surface2: #18243b;
+  --surface-raised: #21314a;
+  --surface-accent: rgba(14, 165, 233, 0.18);
+  --surface-warning: rgba(251, 191, 36, 0.16);
+  --surface-danger: rgba(251, 113, 133, 0.14);
+  --surface-success: rgba(52, 211, 153, 0.16);
   --muted: #94a3b8;
+  --muted-strong: #cbd5e1;
+  --muted-soft: #a8b6c8;
   --text: #e5e7eb;
   --accent: #0ea5e9;
   --accent-hover: #38bdf8;
   --accent-soft: rgba(14, 165, 233, 0.16);
   --accent-soft-2: rgba(14, 165, 233, 0.22);
   --border: #394b63;
+  --border-strong: #4f6788;
   --danger: #fb7185;
+  --danger-ink: #fecdd3;
   --danger-hover: #fda4af;
+  --warning: #fbbf24;
+  --warning-ink: #fde68a;
+  --warning-soft: rgba(251, 191, 36, 0.14);
   --ok: #34d399;
+  --ok-ink: #bbf7d0;
   --ok-hover: #6ee7b7;
   --ok-soft: rgba(52, 211, 153, 0.12);
   --danger-soft: rgba(251, 113, 133, 0.12);
@@ -119,9 +158,205 @@ header {
 
 h1 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: var(--text-xl);
   font-weight: 650;
   letter-spacing: 0.2px;
+  line-height: var(--leading-tight);
+  text-wrap: balance;
+}
+
+.panelHeadCopy {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space-1) * 0.65);
+  min-width: 0;
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: var(--leading-tight);
+  text-wrap: balance;
+}
+
+.panelMeta {
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  color: var(--muted);
+}
+
+.panelSubtitle {
+  max-width: 76ch;
+  font-size: var(--text-md);
+  line-height: var(--leading-body);
+  color: var(--muted-strong);
+  text-wrap: pretty;
+}
+
+.panelSummaryChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.panelSummaryChip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--panel) 88%, var(--surface));
+  padding: 0.24rem 0.56rem;
+  font-size: var(--text-xs);
+  line-height: 1.25;
+  color: var(--muted-strong);
+}
+
+.panelProminentPane {
+  background: linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--accent-soft) 58%, var(--panel-footer)),
+    color-mix(in oklab, var(--panel-footer) 92%, var(--surface))
+  );
+}
+
+.panelPaneTitle {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: var(--leading-tight);
+  text-wrap: balance;
+}
+
+.panelSectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.panelEyebrow {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+}
+
+.panelSectionLead {
+  margin-top: calc(var(--space-1) * 0.7);
+  max-width: 72ch;
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  color: var(--muted-strong);
+  text-wrap: pretty;
+}
+
+.panelAdvisory {
+  border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface) 96%, var(--panel));
+  padding: 0.58rem 0.62rem;
+  font-size: var(--text-sm);
+  line-height: var(--leading-compact);
+  color: var(--muted-strong);
+}
+
+.panelDetails {
+  margin-top: 0.7rem;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface) 96%, var(--panel));
+  overflow: hidden;
+}
+
+.panelDetails summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.58rem 0.68rem;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.panelDetails summary::-webkit-details-marker {
+  display: none;
+}
+
+.panelDetails summary:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-border);
+  background: color-mix(in oklab, var(--accent-soft) 42%, var(--surface));
+}
+
+.panelDetails[open] summary {
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+}
+
+.panelDetailsBody {
+  padding: 0.7rem;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.panelStatus,
+.panelMuted {
+  color: var(--muted);
+  line-height: var(--leading-compact);
+}
+
+.panelStatus {
+  font-size: var(--text-sm);
+}
+
+.panelMuted {
+  font-size: var(--text-sm);
+}
+
+.panelMetricKey {
+  display: block;
+  font-size: 0.7rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.panelMetricValue {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: var(--text-sm);
+  line-height: 1.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.surfaceWarning,
+.surfaceDanger,
+.surfaceSuccess {
+  border-radius: 12px;
+}
+
+.surfaceWarning {
+  background: var(--surface-warning);
+  color: var(--warning-ink);
+}
+
+.surfaceDanger {
+  background: var(--surface-danger);
+  color: var(--danger-ink);
+}
+
+.surfaceSuccess {
+  background: var(--surface-success);
+  color: var(--ok-ink);
+}
+
+.panelNumeric {
+  font-variant-numeric: tabular-nums;
 }
 
 .headerRow {
@@ -141,6 +376,13 @@ h1 {
   width: auto;
   min-width: 132px;
   padding: 0.45rem 0.6rem;
+}
+
+.tableWrap:focus-visible,
+.table-wrap:focus-visible {
+  outline: none;
+  border-color: color-mix(in oklab, var(--accent) 62%, var(--border));
+  box-shadow: var(--focus-ring);
 }
 
 .workspaceRow {
@@ -599,13 +841,19 @@ html[data-workflow="history"] main {
 
 label {
   display: block;
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
   color: var(--muted);
   margin: 0 0 0.3rem;
 }
 
 input[type="text"],
 input[type="number"],
+input[type="password"],
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"],
+input[type="search"],
+textarea,
 select {
   width: 100%;
   padding: 0.55rem 0.6rem;
@@ -616,13 +864,30 @@ select {
   outline: none;
 }
 
+input::placeholder,
+textarea::placeholder {
+  color: color-mix(in oklab, var(--muted) 78%, transparent);
+}
+
 input[type="text"]:focus-visible,
 input[type="number"]:focus-visible,
+input[type="password"]:focus-visible,
+input[type="date"]:focus-visible,
+input[type="time"]:focus-visible,
+input[type="datetime-local"]:focus-visible,
+input[type="search"]:focus-visible,
+textarea:focus-visible,
 select:focus-visible,
 button:focus-visible,
 .tabBtn:focus-visible {
   outline: none;
   border-color: var(--focus-border);
+  box-shadow: var(--focus-ring);
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: none;
   box-shadow: var(--focus-ring);
 }
 
@@ -643,6 +908,13 @@ input[type="number"] {
   align-items: center;
   color: var(--text);
   margin: 0;
+}
+
+.checks label:focus-within,
+.checkboxRow:focus-within,
+.inlineCheck:focus-within {
+  border-radius: 10px;
+  box-shadow: var(--focus-ring);
 }
 
 .inlineCheck {
@@ -712,6 +984,8 @@ button {
   padding: 0.55rem 0.75rem;
   border-radius: var(--radius-control);
   cursor: pointer;
+  font-size: var(--text-sm);
+  line-height: 1.2;
   transition: background 120ms ease, border-color 120ms ease, transform 60ms ease;
 }
 

@@ -210,7 +210,7 @@ function canonicalKey(value: unknown): string {
 }
 
 function normalizePathKey(value: unknown): string {
-  return normalizeText(value).replaceAll('/', '\\').toLowerCase()
+  return normalizeText(value).replace(/\//g, '\\').toLowerCase()
 }
 
 function parseProbabilityGate(value: unknown): number | null {

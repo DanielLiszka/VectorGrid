@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import { buildOptimizationRequestFromVueStores, runOptimization } from './optimizeService'
 import { runValidation } from './validationService'
 import {
@@ -84,6 +85,7 @@ const invokeCommandMock = vi.mocked(invokeCommand)
 const runOptimizationMock = vi.mocked(runOptimization)
 const runValidationMock = vi.mocked(runValidation)
 const buildOptimizationRequestMock = vi.mocked(buildOptimizationRequestFromVueStores)
+let pinia: ReturnType<typeof createPinia>
 
 function mockInvokeDefaults(): void {
   invokeCommandMock.mockImplementation(async (command: string) => {
@@ -238,19 +240,21 @@ describe('meta service', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.unstubAllGlobals()
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     mockInvokeDefaults()
   })
 
   it('runs meta with auto-built request via direct tauri invoke', async () => {
-    const analysisStore = useAnalysisStore()
+    const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
       metaTimeframe: '1m',
       metaTopK: '25',
       metaMinSamples: '30',
     })
-    const validationStore = useValidationStore()
+    const validationStore = useValidationStore(pinia)
     validationStore.applyLegacySnapshot({
       seed: '1',
       wfWindow: '20000',
@@ -269,7 +273,7 @@ describe('meta service', () => {
   })
 
   it('runs stage4 with auto-built request via direct invoke', async () => {
-    const analysisStore = useAnalysisStore()
+    const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
       metaTimeframe: '1m',
@@ -288,7 +292,7 @@ describe('meta service', () => {
   })
 
   it('runs ML policy evaluation with auto-built request via direct invoke', async () => {
-    const analysisStore = useAnalysisStore()
+    const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
       metaTimeframe: '1m',
@@ -309,14 +313,14 @@ describe('meta service', () => {
   })
 
   it('preserves Asr strategy kind for meta selection request', async () => {
-    const analysisStore = useAnalysisStore()
+    const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'Asr',
       metaTimeframe: '1m',
       metaTopK: '10',
       metaMinSamples: '20',
     })
-    const validationStore = useValidationStore()
+    const validationStore = useValidationStore(pinia)
     validationStore.applyLegacySnapshot({
       seed: '1',
       wfWindow: '20000',
@@ -333,7 +337,7 @@ describe('meta service', () => {
   })
 
   it('runs ml refresh/train/apply on direct command path', async () => {
-    const analysisStore = useAnalysisStore()
+    const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
       metaTimeframe: '1m',
@@ -359,7 +363,7 @@ describe('meta service', () => {
   })
 
   it('runs ML autopilot after meta when enabled and ML ranking is active', async () => {
-    const analysisStore = useAnalysisStore()
+    const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
       metaTimeframe: '1m',
@@ -379,10 +383,10 @@ describe('meta service', () => {
   })
 
   it('runs batch via vue-owned orchestration path and saves summary', async () => {
-    const optimizeStore = useOptimizeStore()
+    const optimizeStore = useOptimizeStore(pinia)
     optimizeStore.strategyKind = 'CompositeMo'
     optimizeStore.updatedAtUnixMs = Date.now()
-    const validationStore = useValidationStore()
+    const validationStore = useValidationStore(pinia)
     validationStore.autoRun = true
     validationStore.autoExportXlsx = true
     validationStore.autoRevealReport = true
@@ -410,7 +414,7 @@ describe('meta service', () => {
     expect(runValidationMock).toHaveBeenCalledWith({ useFiltered: false, switchTab: false })
     expect(invokeCommandMock).toHaveBeenCalledWith('save_batch_summary', { summary: expect.any(Object) })
 
-    const analysisStore = useAnalysisStore()
+    const analysisStore = useAnalysisStore(pinia)
     expect(analysisStore.canBatchRevealSummary).toBe(true)
     expect(analysisStore.batchOutputPreview).toContain('vectorgrid_batch_summary')
     expect(validationStore.autoRun).toBe(true)
@@ -419,24 +423,24 @@ describe('meta service', () => {
   })
 
   it('refreshes, selects, clears, toggles, and reveals batch datasets in vue path', async () => {
-    const optimizeStore = useOptimizeStore()
+    const optimizeStore = useOptimizeStore(pinia)
     optimizeStore.strategyKind = 'CompositeMo'
     optimizeStore.updatedAtUnixMs = Date.now()
 
     await batchRefresh()
-    let analysisStore = useAnalysisStore()
+    let analysisStore = useAnalysisStore(pinia)
     expect(analysisStore.batchTotalCount).toBeGreaterThan(0)
 
     await batchSelectAll()
-    analysisStore = useAnalysisStore()
+    analysisStore = useAnalysisStore(pinia)
     expect(analysisStore.batchSelectedCount).toBe(analysisStore.batchTotalCount)
 
     await batchSelectNone()
-    analysisStore = useAnalysisStore()
+    analysisStore = useAnalysisStore(pinia)
     expect(analysisStore.batchSelectedCount).toBe(0)
 
     await toggleBatchDataset('C:/a.csv', true)
-    analysisStore = useAnalysisStore()
+    analysisStore = useAnalysisStore(pinia)
     expect(analysisStore.batchSelectedCount).toBe(1)
 
     await runBatch({

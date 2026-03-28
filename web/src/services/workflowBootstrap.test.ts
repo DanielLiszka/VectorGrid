@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { applyWorkflowBootstrapFromStorage, readWorkflowBootstrapState } from './workflowBootstrap'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { CONTROLS_TAB_KEY, RESULTS_TAB_KEY } from '../utils/core/storageKeys'
 
 type StorageMap = Record<string, string>
+let pinia: ReturnType<typeof createPinia>
 
 function installStorage(values: StorageMap): void {
   const state: StorageMap = { ...values }
@@ -21,7 +23,9 @@ function installStorage(values: StorageMap): void {
 
 describe('workflow bootstrap service', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     installStorage({})
   })
 
@@ -93,7 +97,7 @@ describe('workflow bootstrap service', () => {
     })
 
     applyWorkflowBootstrapFromStorage()
-    const store = useWorkflowStore()
+    const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('library')
     expect(store.workflow).toBe('history')
     expect(store.controlsTab).toBe('data')
@@ -107,7 +111,7 @@ describe('workflow bootstrap service', () => {
     })
 
     applyWorkflowBootstrapFromStorage()
-    const store = useWorkflowStore()
+    const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('aggregate')
     expect(store.workflow).toBe('settings')
     expect(store.controlsTab).toBe('advanced')
@@ -121,7 +125,7 @@ describe('workflow bootstrap service', () => {
     })
 
     applyWorkflowBootstrapFromStorage()
-    const store = useWorkflowStore()
+    const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('aggregate')
     expect(store.aggregateTab).toBe('compare')
   })
@@ -135,7 +139,7 @@ describe('workflow bootstrap service', () => {
     })
 
     applyWorkflowBootstrapFromStorage()
-    const store = useWorkflowStore()
+    const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('workflow')
     expect(store.workflow).toBe('optimize')
     expect(store.workflowStep).toBe('optimize')
@@ -152,7 +156,7 @@ describe('workflow bootstrap service', () => {
     })
 
     applyWorkflowBootstrapFromStorage()
-    const store = useWorkflowStore()
+    const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('workflow')
     expect(store.workflowStep).toBe('finalize')
     expect(store.workflow).toBe('finalize')

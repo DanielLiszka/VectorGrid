@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { bindRuntimePinia } from "./runtimePinia";
 import {
   applyPreset,
   cancelOptimization,
@@ -77,6 +78,7 @@ describe("optimize store actions", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
+    bindRuntimePinia(pinia);
     harness = installDocumentHarness();
     applyPresetMock.mockClear();
     applyPresetMock.mockResolvedValue(undefined);

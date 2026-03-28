@@ -38,7 +38,7 @@ describe('CommandPaletteOverlay', () => {
     wrapper.unmount()
   })
 
-  it('traps Tab focus within the dialog and preserves tab order cycling', async () => {
+  it('exposes combobox and listbox semantics for the active command selection', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const paletteStore = useCommandPaletteStore(pinia)
@@ -53,35 +53,31 @@ describe('CommandPaletteOverlay', () => {
 
     const dialog = document.querySelector<HTMLElement>('.cmdPaletteDialog')
     const input = document.querySelector<HTMLInputElement>('.cmdPaletteDialog .query')
-    const commandRows = Array.from(document.querySelectorAll<HTMLButtonElement>('.cmdPaletteDialog .row'))
+    const listbox = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="listbox"]')
+    const commandRows = Array.from(document.querySelectorAll<HTMLElement>('.cmdPaletteDialog [role="option"]'))
 
     expect(dialog).not.toBeNull()
     expect(input).not.toBeNull()
+    expect(input?.getAttribute('role')).toBe('combobox')
+    expect(input?.getAttribute('aria-controls')).toBe('commandPaletteListbox')
+    expect(listbox?.id).toBe('commandPaletteListbox')
     expect(commandRows.length).toBeGreaterThan(0)
     const firstRow = commandRows[0]
-    const lastRow = commandRows[commandRows.length - 1]
+    const secondRow = commandRows[1]
 
-    input?.focus()
-    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
-    await nextTick()
-    expect(document.activeElement).toBe(firstRow)
-    expect(dialog?.contains(document.activeElement)).toBe(true)
+    expect(input?.getAttribute('aria-activedescendant')).toBe(firstRow?.id)
+    expect(firstRow?.getAttribute('aria-selected')).toBe('true')
 
-    input?.focus()
-    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }))
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
     await nextTick()
-    expect(document.activeElement).toBe(lastRow)
-    expect(dialog?.contains(document.activeElement)).toBe(true)
+    expect(input?.getAttribute('aria-activedescendant')).toBe(secondRow?.id)
+    expect(secondRow?.getAttribute('aria-selected')).toBe('true')
+    expect(firstRow?.getAttribute('aria-selected')).toBe('false')
 
-    lastRow?.focus()
-    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }))
+    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
     await nextTick()
-    expect(dialog?.contains(document.activeElement)).toBe(true)
-
-    firstRow?.focus()
-    dialog?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }))
-    await nextTick()
-    expect(dialog?.contains(document.activeElement)).toBe(true)
+    expect(input?.getAttribute('aria-activedescendant')).toBe(firstRow?.id)
+    expect(firstRow?.getAttribute('aria-selected')).toBe('true')
 
     wrapper.unmount()
   })

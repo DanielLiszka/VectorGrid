@@ -1,12 +1,22 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TopWorkspacePanel from './TopWorkspacePanel.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+
+vi.mock('../composables/useVirtualTableRows', () => ({
+  useVirtualTableRows: (rows: { value: unknown[] }) => ({
+    scrollElementRef: ref(null),
+    virtualRows: computed(() => rows.value.map((row, index) => ({ index, row }))),
+    topSpacerPx: computed(() => 0),
+    bottomSpacerPx: computed(() => 0),
+    scrollToTop: vi.fn(),
+  }),
+}))
 
 function installTopPanelMountShell(): void {
   document.body.innerHTML = `
@@ -98,5 +108,98 @@ describe('TopWorkspacePanel', () => {
     wrapper.unmount()
     expect(setInputSpy).toHaveBeenCalledTimes(1)
     expect(setInputSpy).toHaveBeenLastCalledWith('filterMinSharpe', '2.5')
+  })
+
+  it('supports arrow-key row navigation across ranked results', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 3
+    analysisStore.topColumns = [
+      { key: 'name', label: 'Name', sort: '', alignLeft: true },
+    ]
+    analysisStore.topTableRows = [
+      {
+        selected: true,
+        cells: [{ text: 'row 1', className: 'left', title: 'row 1' }],
+      },
+      {
+        selected: false,
+        cells: [{ text: 'row 2', className: 'left', title: 'row 2' }],
+      },
+      {
+        selected: false,
+        cells: [{ text: 'row 3', className: 'left', title: 'row 3' }],
+      },
+    ]
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('tr[data-top-row="1"]'))
+    expect(rows).toHaveLength(3)
+
+    rows[0]?.focus()
+    rows[0]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(document.activeElement).toBe(rows[1])
+
+    rows[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    expect(document.activeElement).toBe(rows[2])
+
+    rows[2]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    expect(document.activeElement).toBe(rows[0])
+  })
+
+  it('announces the selected ranked candidate through a live status region', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 2
+    analysisStore.topColumns = [
+      { key: 'name', label: 'Name', sort: '', alignLeft: true },
+      { key: 'score', label: 'Score', sort: '', alignLeft: false },
+    ]
+    analysisStore.topTableRows = [
+      {
+        selected: false,
+        cells: [
+          { text: 'row 1', className: 'left', title: 'row 1' },
+          { text: '1.2', className: '', title: '1.2' },
+        ],
+      },
+      {
+        selected: true,
+        cells: [
+          { text: 'row 2', className: 'left', title: 'row 2' },
+          { text: '3.4', className: '', title: '3.4' },
+        ],
+      },
+    ]
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const selectionStatus = document.querySelector<HTMLElement>('#topSelectionStatus')
+    expect(selectionStatus?.textContent).toContain('Selected candidate 2 of 2')
+    expect(selectionStatus?.textContent).toContain('row 2')
+    expect(selectionStatus?.textContent).toContain('3.4')
   })
 })

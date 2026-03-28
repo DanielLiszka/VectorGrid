@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
@@ -12,82 +14,81 @@ const {
 } = storeToRefs(analysisStore)
 const { resultsTab } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
+const { mountReady } = useShellMount('#drillVueShellMount')
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'drill')
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 function nudgeDrillRerender(): void {
   analysisStore.rerenderDrill()
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="drill"]') as HTMLElement | null
-  const mount = document.querySelector('#drillVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueDrill = '1'
-  mountReady.value = true
+function reviewTopResults(): void {
+  workflowStore.selectResultsTab('top')
 }
 
 onMounted(async () => {
   await nextTick()
-  resolveMount()
   window.setTimeout(() => {
     nudgeDrillRerender()
   }, 0)
 })
 
-onBeforeUnmount(() => {
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueDrill
-    panelRoot.value = null
-  }
-})
 </script>
 
 <template>
   <Teleport v-if="mountReady" to="#drillVueShellMount">
     <section class="drillPanelVueRoot drillVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Drilldown</div>
-        <div class="meta mono">{{ stamp }}</div>
+        <h2 class="panelTitle">Drilldown</h2>
+        <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
       </header>
 
       <section class="pane">
-        <div id="drillEmptyHintVue" class="muted" style="font-size: 0.8rem;">Click a row in the Top tab to compute drilldown curves.</div>
+        <div id="drillEmptyHintVue" class="panelStatus" role="status" aria-live="polite">
+          Select a row in the Top tab to compute drilldown curves.
+        </div>
+        <div class="chartAssist">
+          <div id="drillKeyboardHint" class="panelMuted">Use the Top results table to select another candidate, or click chart markers if you prefer direct chart interaction.</div>
+          <div class="actions">
+            <button type="button" @click="reviewTopResults">Review Top results</button>
+          </div>
+        </div>
+        <div class="panelAdvisory">
+          If the charts stay empty, confirm that a Top result is selected and that the latest optimization run finished writing analysis results.
+        </div>
         <div id="drillWrapVue" style="margin-top: 0.75rem; display: none;">
-          <div class="muted" style="margin-bottom: 0.5rem; font-size: 0.8rem;" id="drillMetaVue">-</div>
-          <div class="muted" style="margin-bottom: 0.5rem; font-size: 0.8rem;" id="drillStatusVue">Click a Top row to view curves.</div>
+          <div class="panelStatus" style="margin-bottom: 0.5rem;" id="drillMetaVue" role="status" aria-live="polite">-</div>
+          <div class="panelStatus" style="margin-bottom: 0.5rem;" id="drillStatusVue" role="status" aria-live="polite">Click a Top row to view curves.</div>
           <div>
-            <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;">Price + trades (TradingView Lightweight Charts)</div>
-            <div class="tvChartFrame">
+            <div class="panelMuted" style="margin-bottom: 0.35rem;">Price + trades (TradingView Lightweight Charts)</div>
+            <div
+              class="tvChartFrame chartSurface"
+              aria-label="Backtest price and trade chart for the selected candidate. Use the Top results tab to select a different candidate without clicking inside the chart."
+              aria-describedby="drillKeyboardHint"
+            >
               <div id="drillTvChartVue" class="tvChartHost" role="img" aria-label="Backtest price chart"></div>
             </div>
-            <div class="muted" style="margin-top: 0.35rem; font-size: 0.8rem;" id="drillTvChartMetaVue">Hover for OHLC/MA values; click a marker to focus a trade.</div>
+            <div class="panelStatus" style="margin-top: 0.35rem;" id="drillTvChartMetaVue" role="status" aria-live="polite">Hover for OHLC/MA values; select a Top result or click a marker to focus a trade.</div>
           </div>
           <div>
-            <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;">Equity (min/max per bin)</div>
-            <canvas id="equityCanvasVue" class="chart" width="1024" height="160"></canvas>
+            <div class="panelMuted" style="margin-bottom: 0.35rem;">Equity (min/max per bin)</div>
+            <canvas id="equityCanvasVue" class="chart" width="1024" height="160" role="img" aria-label="Equity envelope chart for the selected candidate"></canvas>
           </div>
           <div style="margin-top: 0.75rem;">
-            <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;">Drawdown (min/max per bin)</div>
-            <canvas id="drawdownCanvasVue" class="chart" width="1024" height="160"></canvas>
+            <div class="panelMuted" style="margin-bottom: 0.35rem;">Drawdown (min/max per bin)</div>
+            <canvas id="drawdownCanvasVue" class="chart" width="1024" height="160" role="img" aria-label="Drawdown envelope chart for the selected candidate"></canvas>
           </div>
 
           <div id="stabilityWrapVue" style="margin-top: 1.1rem; display: none;">
-            <h2>Stability</h2>
-            <div class="muted" style="margin-bottom: 0.35rem; font-size: 0.8rem;" id="stabilityStatusVue">-</div>
-            <div class="muted" style="margin-bottom: 0.6rem; font-size: 0.8rem;" id="stabilityMetaVue">-</div>
-            <div class="muted" style="margin-bottom: 0.6rem; font-size: 0.8rem;" id="rejectMetaVue">-</div>
-            <div class="table-wrap" id="stabilityTableWrapVue" style="display: none; margin-top: 0.45rem;">
+            <h3 class="panelPaneTitle">Stability</h3>
+            <div class="panelStatus" style="margin-bottom: 0.35rem;" id="stabilityStatusVue" role="status" aria-live="polite">-</div>
+            <div class="panelStatus" style="margin-bottom: 0.6rem;" id="stabilityMetaVue" role="status" aria-live="polite">-</div>
+            <div class="panelStatus" style="margin-bottom: 0.6rem;" id="rejectMetaVue" role="status" aria-live="polite">-</div>
+            <div class="table-wrap" id="stabilityTableWrapVue" style="display: none; margin-top: 0.45rem;" tabindex="0" aria-label="Stability neighborhood table">
               <table>
+                <caption class="srOnly">Stability neighborhood metrics around the selected fast and slow parameter pair.</caption>
                 <thead>
                   <tr>
                     <th class="left">Fast</th>
@@ -102,14 +103,15 @@ onBeforeUnmount(() => {
                 <tbody id="stabilityTableBodyVue"></tbody>
               </table>
             </div>
-            <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">Evaluates a small neighborhood around the selected MA lengths to detect sharp peaks.</div>
+            <div class="panelMuted" style="margin-top: 0.5rem;">Evaluates a small neighborhood around the selected MA lengths to detect sharp peaks.</div>
           </div>
 
           <div id="tradeStatsWrapVue" style="margin-top: 1.1rem; display: none;">
-            <h2>Trades</h2>
-            <div class="mono" id="tradeStatsVue">-</div>
-            <div class="table-wrap" style="margin-top: 0.6rem;">
+            <h3 class="panelPaneTitle">Trades</h3>
+            <div class="mono" id="tradeStatsVue" role="status" aria-live="polite">-</div>
+            <div class="table-wrap" style="margin-top: 0.6rem;" tabindex="0" aria-label="Trade list table">
               <table>
+                <caption class="srOnly">Trade-level results for the selected candidate, including entry, exit, duration, profit and loss, and current state.</caption>
                 <thead>
                   <tr>
                     <th class="left">#</th>
@@ -126,12 +128,12 @@ onBeforeUnmount(() => {
                 <tbody id="tradeTableBodyVue"></tbody>
               </table>
             </div>
-            <div class="muted" style="margin-top: 0.5rem; font-size: 0.8rem;">Showing up to 200 trades (click a marker to focus).</div>
+            <div class="panelMuted" style="margin-top: 0.5rem;">Showing up to 200 trades. Select a Top result or click a marker to focus a specific trade.</div>
           </div>
         </div>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -149,16 +151,6 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
 }
 
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
 .pane {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -167,19 +159,40 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
+.actions {
+  margin-top: 0.65rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
 }
 
-.status {
-  font-size: 0.78rem;
-  color: var(--muted);
+.actions button {
+  padding: 0.42rem 0.6rem;
+  font-size: 0.76rem;
 }
 
-.muted {
-  color: var(--muted);
-  font-size: 0.8rem;
+.chartAssist {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.chartSurface:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .mono {

@@ -1,10 +1,11 @@
+import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { invokeCommand } from '../tauri/invoke'
-import { getActivePinia } from 'pinia'
 import { buildValidationCapabilitySummary, buildValidationRequest } from './validationRequestBuilder'
 import { applyWorkflowArtifactsPayload, readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { computeConfigFingerprint } from '../utils/core/artifactIdentity'
 import { buildDatasetMetaForArtifact } from '../utils/core/datasetMeta'
+import { formatUiCount, formatUtcDateFromUnixMs } from '../utils/uiFormat'
 
 interface PolygonCrossDatasetResponse {
   csv_path?: unknown
@@ -219,13 +220,15 @@ const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
 }
 
 function readPiniaStoreState(storeId: string): Record<string, unknown> | null {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return null
   const root = pinia.state.value as Record<string, unknown>
   const store = root[storeId]
   if (!store || typeof store !== 'object') return null
   return store as Record<string, unknown>
 }
+
+const VALIDATION_PANEL_SELECTOR = '[data-vue-panel="validate"]'
 
 function readValidationStoreState(): Record<string, unknown> | null {
   return readPiniaStoreState('validation')
@@ -337,17 +340,11 @@ function normalizeMarketLabel(market: string, adjusted: boolean): string {
 }
 
 function normalizeRowsHint(value: unknown): string {
-  const rows = Number(value || 0)
-  if (!Number.isFinite(rows) || rows <= 0) return '—'
-  return rows.toLocaleString()
+  return formatUiCount(value)
 }
 
 function formatYmdUtc(value: unknown): string {
-  const ms = Number(value)
-  if (!Number.isFinite(ms)) return '—'
-  const date = new Date(ms)
-  if (!Number.isFinite(date.getTime())) return '—'
-  return date.toISOString().slice(0, 10)
+  return formatUtcDateFromUnixMs(value)
 }
 
 function readStoreTextInputValue(id: string): string {
@@ -672,9 +669,16 @@ function toOutputPreview(value: unknown): string {
   return text.length > 200 ? `${text.slice(0, 200).trimEnd()}…` : text
 }
 
-function queryDomById<T extends Element>(id: string): T | null {
+function queryDomById<T extends Element>(id: string, scopeSelector?: string): T | null {
   if (typeof document === 'undefined') return null
-  const byQuery = typeof document.querySelector === 'function' ? document.querySelector(`[id="${id}"]`) : null
+  const selector = `[id="${id}"]`
+  if (scopeSelector) {
+    if (typeof document.querySelector !== 'function') return null
+    const scopeRoot = document.querySelector(scopeSelector) as HTMLElement | null
+    if (!scopeRoot) return null
+    return scopeRoot.querySelector(selector) as T | null
+  }
+  const byQuery = typeof document.querySelector === 'function' ? document.querySelector(selector) : null
   if (byQuery) return byQuery as T
   const getById = (
     document as unknown as {
@@ -685,14 +689,14 @@ function queryDomById<T extends Element>(id: string): T | null {
   return (getById.call(document, id) as T | null) ?? null
 }
 
-function writeDomTextContent(id: string, value: string): void {
-  const el = queryDomById<HTMLElement>(id)
+function writeDomTextContent(id: string, value: string, scopeSelector?: string): void {
+  const el = queryDomById<HTMLElement>(id, scopeSelector)
   if (!el) return
   el.textContent = value
 }
 
 function selectWorkflowResultsTab(tab: 'validate', persist: boolean): void {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return
   const workflowStore = useWorkflowStore(pinia)
   workflowStore.selectResultsTab(tab, { persist })
@@ -1618,7 +1622,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationSkippedSummary: '-',
       validationWarningSummary: '-',
     })
-    writeDomTextContent('status', message)
+    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
     throw new Error(message)
   }
   const runSnapshot = readRunSnapshotFromStore()
@@ -1638,7 +1642,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationSkippedSummary: '-',
       validationWarningSummary: '-',
     })
-    writeDomTextContent('status', message)
+    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
     throw new Error(message)
   }
   if (!workflowRun) {
@@ -1654,7 +1658,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationSkippedSummary: '-',
       validationWarningSummary: '-',
     })
-    writeDomTextContent('status', message)
+    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
     throw new Error(message)
   }
   assertValidationRunMatchesCurrentDataset(workflowRun, runReq)
@@ -1707,8 +1711,8 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
 
   patchValidationStoreState({
       validateDisabled: true,
-      statusLine: 'Running validation...',
-      validationHint: 'Running validation...',
+      statusLine: 'Running validation…',
+      validationHint: 'Running validation…',
       validationRouteSummary: '-',
       validationRouteDetailSummary: '-',
       validationCategorySummary: '-',
@@ -1721,7 +1725,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationWarningSummary: '-',
       validationReoptMeta: '-'
   })
-  writeDomTextContent('status', 'Running validation...')
+  writeDomTextContent('status', 'Running validation…', VALIDATION_PANEL_SELECTOR)
 
   try {
     const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -1770,8 +1774,8 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationShortlistMeta,
       statusLine
     })
-    writeDomTextContent('validationMeta', validationMeta)
-    writeDomTextContent('status', statusLine)
+    writeDomTextContent('validationMeta', validationMeta, VALIDATION_PANEL_SELECTOR)
+    writeDomTextContent('status', statusLine, VALIDATION_PANEL_SELECTOR)
 
     if (switchTab) selectWorkflowResultsTab('validate', true)
     if (autoExport) {
@@ -1781,7 +1785,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
         const reason = String(error || '').trim() || 'unknown error'
         const exportStatus = `Validation complete, but auto-export XLSX failed: ${reason}`
         patchValidationStoreState({ statusLine: exportStatus })
-        writeDomTextContent('status', exportStatus)
+        writeDomTextContent('status', exportStatus, VALIDATION_PANEL_SELECTOR)
       }
     }
   } catch (error) {
@@ -1801,7 +1805,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       validationWarningSummary: '-',
       validationReoptMeta: '-'
     })
-    writeDomTextContent('status', message)
+    writeDomTextContent('status', message, VALIDATION_PANEL_SELECTOR)
     throw error
   } finally {
     patchValidationStoreState({ validateDisabled: false })

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useSettingsStore } from '../stores/settingsStore'
 import { applySettingsBootstrapFromStorage, readSettingsBootstrapState } from './settingsBootstrap'
 
@@ -9,6 +10,7 @@ vi.mock('../tauri/invoke', () => ({
 }))
 
 const invokeCommandMock = vi.mocked(invokeCommand)
+let pinia: ReturnType<typeof createPinia>
 
 type StorageMap = Record<string, string>
 
@@ -28,7 +30,9 @@ describe('settings bootstrap service', () => {
   let dataset: Record<string, string>
 
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     invokeCommandMock.mockClear()
     invokeCommandMock.mockResolvedValue(undefined)
     installStorage({})
@@ -77,7 +81,7 @@ describe('settings bootstrap service', () => {
 
     applySettingsBootstrapFromStorage()
 
-    const store = useSettingsStore()
+    const store = useSettingsStore(pinia)
     expect(store.theme).toBe('light')
     expect(store.effect).toBe('acrylic')
     expect(store.workflowAdvanced).toBe(true)

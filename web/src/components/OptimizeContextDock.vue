@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const commandActionStore = useCommandActionStore()
 const store = useOptimizeStore()
@@ -25,12 +26,7 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(store)
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  const d = new Date(ms)
-  return d.toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 const rangeLabel = computed(() => `F ${fastStart.value || '?'}..${fastEnd.value || '?'} | S ${slowStart.value || '?'}..${slowEnd.value || '?'}`)
 const maLabel = computed(() => `${(fastMaType.value || '?').toUpperCase()} / ${(slowMaType.value || '?').toUpperCase()}`)
@@ -47,7 +43,7 @@ function runValidationAction(): void {
 <template>
   <aside class="optDock">
     <header class="dockHeader">
-      <div class="title">Optimize Context</div>
+      <h2 class="title" style="margin: 0;">Optimize Context</h2>
       <div class="stamp">{{ stamp }}</div>
     </header>
     <div class="rows">

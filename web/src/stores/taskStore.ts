@@ -1,12 +1,12 @@
 import {
   createPinia,
   defineStore,
-  getActivePinia,
   setActivePinia,
   type Pinia,
 } from "pinia";
 import { useDebounceFn } from "@vueuse/core";
 import { isTauriCommand, type TauriCommand } from "../tauri/commands";
+import { bindRuntimePinia, resolveRuntimePinia } from "./runtimePinia";
 import {
   TASK_TIMELINE_STORAGE_KEY,
   readStorageJson,
@@ -208,10 +208,11 @@ export const useTaskStore = defineStore("task", {
 });
 
 function ensurePiniaActive(): Pinia {
-  const active = getActivePinia();
+  const active = resolveRuntimePinia();
   if (active) return active;
   const created = createPinia();
   setActivePinia(created);
+  bindRuntimePinia(created);
   return created;
 }
 

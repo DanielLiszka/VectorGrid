@@ -23,6 +23,8 @@ import {
   setMarketDataDir as setMarketDataDirAction,
   validatePolygonDataset as validatePolygonDatasetAction,
 } from '../services/dataService'
+import { formatUtcDateFromUnixMs } from '../utils/uiFormat'
+import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowArtifactsStore } from './workflowArtifactsStore'
 import { useWorkflowStore } from './workflowStore'
 
@@ -101,9 +103,7 @@ function normalizeUnixToDateText(value: number): string {
   const ts = Number(value)
   if (!Number.isFinite(ts) || ts <= 0) return '—'
   const ms = ts >= 1_000_000_000_000 ? ts : ts * 1000
-  const date = new Date(ms)
-  if (!Number.isFinite(date.getTime())) return '—'
-  return date.toISOString().slice(0, 10)
+  return formatUtcDateFromUnixMs(ms)
 }
 
 function datasetRangeText(meta: DataLoadResult['meta'] | null, timeframe: string): string {
@@ -618,7 +618,10 @@ export const useDataStore = defineStore('data', {
     },
 
     openPolygon(): void {
-      useWorkflowStore().selectWorkspace('workflow', 'data')
+      const pinia = resolveRuntimePinia()
+      if (pinia) {
+        useWorkflowStore(pinia).selectWorkspace('workflow', 'data')
+      }
       this.polygonOpen = true
       markVueUpdate(this)
       void openPolygonAction().catch(() => undefined)

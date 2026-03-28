@@ -4,6 +4,7 @@ import {
   WINDOW_EFFECT_KEY,
   WORKFLOW_ADVANCED_KEY,
 } from '../utils/core/storageKeys'
+import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { useSettingsStore } from '../stores/settingsStore'
 
 const THEME_KEYS = new Set(['light', 'dark', 'system'])
@@ -55,7 +56,9 @@ export function readSettingsBootstrapState(): SettingsBootstrapState {
 export function applySettingsBootstrapFromStorage(): void {
   const state = readSettingsBootstrapState()
   if (!state.theme && !state.effect && state.workflowAdvanced == null && state.controlsCollapsed == null) return
-  const store = useSettingsStore()
+  const pinia = resolveRuntimePinia()
+  if (!pinia) return
+  const store = useSettingsStore(pinia)
 
   if (state.theme) {
     store.setSelectField('settingsThemeSelect', state.theme)

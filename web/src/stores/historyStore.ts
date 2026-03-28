@@ -17,8 +17,10 @@ import {
   revealSavedRun as revealSavedRunAction,
   saveSavedRunTags as saveSavedRunTagsAction,
   type HistorySavedRunDetail,
+  type HistorySavedRunSummary,
   type HistorySessionSummary,
 } from "../services/historyService";
+import { formatUiBinaryBytes } from "../utils/uiFormat";
 
 export interface HistoryOption {
   value: string;
@@ -26,16 +28,7 @@ export interface HistoryOption {
   disabled: boolean;
 }
 
-interface HistorySavedRunEntry {
-  ts: string;
-  path: string;
-  bytes: number;
-  strategyKind: string;
-  hasValidation: boolean;
-  reportXlsxPath: string;
-  csvPath: string;
-  tags: string[];
-}
+type HistorySavedRunEntry = HistorySavedRunSummary;
 
 function normalizeText(value: unknown): string {
   return String(value || "").trim();
@@ -81,15 +74,7 @@ function fileBasename(path: string): string {
 }
 
 function formatBytesCompact(bytes: number): string {
-  const value = Number(bytes || 0);
-  if (!Number.isFinite(value) || value <= 0) return "";
-  const gib = value / 1024 ** 3;
-  if (gib >= 1) return `${gib.toFixed(1)} GiB`;
-  const mib = value / 1024 ** 2;
-  if (mib >= 1) return `${mib.toFixed(0)} MiB`;
-  const kib = value / 1024;
-  if (kib >= 1) return `${kib.toFixed(0)} KiB`;
-  return `${Math.floor(value)} B`;
+  return formatUiBinaryBytes(bytes);
 }
 
 function runtimeRunning(): boolean {
@@ -129,11 +114,13 @@ function filterSavedRunsEntries(
 
 interface HistoryState {
   sessionRunCount: number;
+  sessionRunsRaw: HistorySessionSummary[];
   sessionOptions: HistoryOption[];
   sessionSelectedValue: string;
   sessionSelectedLabel: string;
   savedRunCount: number;
   savedRunsRaw: HistorySavedRunEntry[];
+  savedRunsVisible: HistorySavedRunEntry[];
   savedRunDetailCache: Record<string, HistorySavedRunDetail>;
   savedRunDetailLoadingPath: string;
   savedRunDetailSeq: number;
@@ -193,6 +180,24 @@ function sanitizeOptionArray(value: unknown): HistoryOption[] {
       value: valueText,
       label: labelText || valueText || "—",
       disabled,
+    });
+  }
+  return rawArray(out);
+}
+
+function sanitizeSessionRunsArray(value: unknown): HistorySessionSummary[] {
+  if (!Array.isArray(value)) return [];
+  const out: HistorySessionSummary[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const typed = item as Partial<HistorySessionSummary>;
+    const ts = normalizeText(typed.ts);
+    if (!ts) continue;
+    const pairs = Number(typed.pairs);
+    out.push({
+      ts,
+      backend: normalizeText(typed.backend),
+      pairs: Number.isFinite(pairs) && pairs > 0 ? Math.floor(pairs) : 0,
     });
   }
   return rawArray(out);
@@ -290,11 +295,13 @@ function applyVueSelectFieldUpdate(
 export const useHistoryStore = defineStore("history", {
   state: (): HistoryState => ({
     sessionRunCount: 0,
+    sessionRunsRaw: [],
     sessionOptions: [],
     sessionSelectedValue: "",
     sessionSelectedLabel: "No runs yet",
     savedRunCount: 0,
     savedRunsRaw: [],
+    savedRunsVisible: [],
     savedRunDetailCache: {},
     savedRunDetailLoadingPath: "",
     savedRunDetailSeq: 0,
@@ -366,6 +373,7 @@ export const useHistoryStore = defineStore("history", {
         selectedTs &&
         runs.some((entry) => normalizeText(entry.ts) === selectedTs);
       this.sessionRunCount = runs.length;
+      this.sessionRunsRaw = rawArray(runs);
       this.sessionOptions = rawArray(options);
       this.sessionSelectedValue = hasSelection ? selectedTs : "";
       this.sessionSelectedLabel = hasSelection
@@ -385,6 +393,9 @@ export const useHistoryStore = defineStore("history", {
           Number(snapshot.sessionRunCount ?? this.sessionRunCount ?? 0),
         ),
       );
+      this.sessionRunsRaw = sanitizeSessionRunsArray(
+        snapshot.sessionRunsRaw ?? this.sessionRunsRaw,
+      );
       this.sessionOptions = sanitizeOptionArray(
         snapshot.sessionOptions ?? this.sessionOptions,
       );
@@ -403,6 +414,9 @@ export const useHistoryStore = defineStore("history", {
       );
       this.savedRunsRaw = sanitizeSavedRunsArray(
         snapshot.savedRunsRaw ?? this.savedRunsRaw,
+      );
+      this.savedRunsVisible = sanitizeSavedRunsArray(
+        snapshot.savedRunsVisible ?? this.savedRunsVisible,
       );
       this.savedOptions = sanitizeOptionArray(
         snapshot.savedOptions ?? this.savedOptions,
@@ -620,6 +634,7 @@ export const useHistoryStore = defineStore("history", {
         filtered.find((entry) => entry.path === selectedPath) || null;
 
       this.savedOptions = rawArray(options);
+      this.savedRunsVisible = rawArray(filtered);
       this.savedRunCount = this.savedRunsRaw.length;
       this.savedSelectedValue = selectedPath;
       this.savedSelectedLabel = selectedEntry

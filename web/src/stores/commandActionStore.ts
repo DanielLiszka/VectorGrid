@@ -1,8 +1,9 @@
-import { defineStore, getActivePinia } from 'pinia'
+import { defineStore } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
 import { useAnalysisStore } from './analysisStore'
 import { useDataStore } from './dataStore'
 import { useOptimizeStore } from './optimizeStore'
+import { resolveRuntimePinia } from './runtimePinia'
 import { useSettingsStore } from './settingsStore'
 import { useValidationStore } from './validationStore'
 import { useWorkflowArtifactsStore } from './workflowArtifactsStore'
@@ -22,7 +23,7 @@ function runtimeRunning(): boolean {
 }
 
 function workflowArtifactsReportPath(): string {
-  const pinia = getActivePinia()
+  const pinia = resolveRuntimePinia()
   if (!pinia) return ''
   const artifactsStore = useWorkflowArtifactsStore(pinia)
   return normalizedPath(artifactsStore.currentRun?.reportXlsxPath)
@@ -78,39 +79,57 @@ export const useCommandActionStore = defineStore('commandActions', {
     },
 
     runOptimization(): void {
-      useOptimizeStore().runOptimization()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useOptimizeStore(pinia).runOptimization()
     },
 
     cancelOptimization(): void {
-      useOptimizeStore().cancelOptimization()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useOptimizeStore(pinia).cancelOptimization()
     },
 
     validateOptimization(): void {
-      useOptimizeStore().runValidation()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useOptimizeStore(pinia).runValidation()
     },
 
     browseCsv(): void {
-      useDataStore().browseCsv()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).browseCsv()
     },
 
     loadData(): void {
-      useDataStore().loadCsv()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).loadCsv()
     },
 
     openPolygon(): void {
-      useDataStore().openPolygon()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useDataStore(pinia).openPolygon()
     },
 
     exportTopCsv(): void {
-      useAnalysisStore().exportTopCsv()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useAnalysisStore(pinia).exportTopCsv()
     },
 
     exportValidationShortlistCsv(): void {
-      useValidationStore().exportShortlistCsv()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useValidationStore(pinia).exportShortlistCsv()
     },
 
     exportTopJson(): void {
-      useAnalysisStore().exportTopJson()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useAnalysisStore(pinia).exportTopJson()
     },
 
     openLatestReport(): void {
@@ -126,20 +145,28 @@ export const useCommandActionStore = defineStore('commandActions', {
     },
 
     toggleControls(): void {
-      const settingsStore = useSettingsStore()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      const settingsStore = useSettingsStore(pinia)
       settingsStore.setCheckboxField('settingsControlsCollapsed', !settingsStore.controlsCollapsed)
     },
 
     clearDrillTradeSelection(): void {
-      useAnalysisStore().drillClearTradeSelection()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useAnalysisStore(pinia).drillClearTradeSelection()
     },
 
     drillPrevTrade(): void {
-      useAnalysisStore().drillPrevTrade()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useAnalysisStore(pinia).drillPrevTrade()
     },
 
     drillNextTrade(): void {
-      useAnalysisStore().drillNextTrade()
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      useAnalysisStore(pinia).drillNextTrade()
     },
   },
 })

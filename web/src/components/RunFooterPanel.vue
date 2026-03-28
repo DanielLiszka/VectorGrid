@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { useStorage } from "@vueuse/core";
+import { useShellMount } from "../composables/useShellMount";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useCommandActionStore } from "../stores/commandActionStore";
 import { useTaskStore } from "../stores/taskStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+import { formatUiPercentFromFraction } from "../utils/uiFormat";
+import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 
 const analysisStore = useAnalysisStore();
 const commandActionStore = useCommandActionStore();
@@ -34,17 +37,15 @@ const {
   overallProgress,
   toasts,
 } = storeToRefs(taskStore);
-const { resultsTab } = storeToRefs(workflowStore);
+const { resultsTab, workspace } = storeToRefs(workflowStore);
 
-const mountReady = ref(false);
-const panelRoot = ref<HTMLElement | null>(null);
+const { mountReady } = useShellMount("#runFooterVueShellMount");
 const footerExpanded = useStorage<boolean>("VTA_RUN_FOOTER_EXPANDED_V1", false);
+const footerVisible = computed(
+  () => String(workspace.value || "").trim() === "workflow",
+);
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0);
-  if (!Number.isFinite(ms) || ms <= 0) return "—";
-  return new Date(ms).toLocaleTimeString([], { hour12: false });
-});
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
 const hasRunActivity = computed(() => {
   if (canCancel.value) return true;
   return String(progressMeta.value || "").trim().length > 0;
@@ -94,7 +95,7 @@ const taskSummary = computed(() => {
 const overallProgressLabel = computed(() => {
   const overall = overallProgress.value;
   if (!overall) return "—";
-  return `${overall.pct.toFixed(0)}% · ${overall.label}`;
+  return `${formatUiPercentFromFraction(overall.pct)} · ${overall.label}`;
 });
 const taskStatusLabel = computed(() => {
   const status = String(centerStatus.value || "idle").trim();
@@ -124,32 +125,10 @@ function toggleFooterDetails(): void {
   footerExpanded.value = !footerExpanded.value;
 }
 
-function resolveMount(): void {
-  const panel = document.querySelector("#runFooterShell") as HTMLElement | null;
-  const mount = document.querySelector(
-    "#runFooterVueShellMount",
-  ) as HTMLElement | null;
-  if (!panel || !mount) return;
-  panelRoot.value = panel;
-  panel.dataset.vueRunFooter = "1";
-  mountReady.value = true;
-}
-
-onMounted(async () => {
-  await nextTick();
-  resolveMount();
-});
-
-onBeforeUnmount(() => {
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueRunFooter;
-    panelRoot.value = null;
-  }
-});
 </script>
 
 <template>
-  <Teleport v-if="mountReady" to="#runFooterVueShellMount">
+  <Teleport v-if="mountReady && footerVisible" to="#runFooterVueShellMount">
     <section
       class="runFooterVueRoot"
       :class="{ compact: !showDetails, idleCompact }"
@@ -157,9 +136,9 @@ onBeforeUnmount(() => {
       <div class="primaryRow">
         <header class="head">
           <div class="eyebrow">Run Control</div>
-          <div class="title">Execution readiness</div>
+          <h2 class="title" style="margin: 0;">Execution readiness</h2>
           <div class="meta mono">Updated {{ stamp }}</div>
-          <div class="summaryPill mono">{{ footerSummary }}</div>
+          <div class="summaryPill mono" role="status" aria-live="polite">{{ footerSummary }}</div>
         </header>
 
         <div class="actions">
@@ -192,7 +171,7 @@ onBeforeUnmount(() => {
             {{ progressMeta }}
           </div>
           <div class="metaLine mono">{{ runPlanMeta }}</div>
-          <div class="status mono">{{ statusLine }}</div>
+          <div class="status mono" role="status" aria-live="polite">{{ statusLine }}</div>
         </section>
 
         <section class="summaryCard">
@@ -419,7 +398,4 @@ onBeforeUnmount(() => {
 </style>
 
 <style>
-#runFooterShell[data-vue-run-footer="1"] > :not(#runFooterVueShellMount) {
-  display: none !important;
-}
 </style>

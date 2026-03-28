@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useShellMount } from '../composables/useShellMount'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { applyRecommendedOptimizationDefaults } from '../services/recommendedOptimizationDefaults'
 import { useAdvancedStore, type AdvancedOption } from '../stores/advancedStore'
@@ -8,6 +9,7 @@ import { useOptimizeStore } from '../stores/optimizeStore'
 import { useStrategyStore } from '../stores/strategyStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { describeStrategyOptimizationCapabilities } from '../utils/strategyOptimizationCapabilities'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const advancedStore = useAdvancedStore()
 const optimizeStore = useOptimizeStore()
@@ -45,11 +47,10 @@ const {
 } = storeToRefs(advancedStore)
 const { controlsTab } = storeToRefs(workflowStore)
 
-const mountReady = ref(false)
-const panelRoot = ref<HTMLElement | null>(null)
-const adoptedNodes: { node: HTMLElement; parent: Node; next: ChildNode | null }[] = []
-const compatCleanupFns: Array<() => void> = []
-const compatObservers: MutationObserver[] = []
+const { mountReady } = useShellMount('#advancedVueShellMount', {
+  paneSelector: '[data-vue-panel="advanced"]',
+  paneDatasetKey: 'vueAdvanced',
+})
 
 const maSourceDraft = ref('close')
 const objectiveDraft = ref('Sharpe')
@@ -329,11 +330,7 @@ const hurdleTauStateNote = computed(() =>
     : 'Optional hurdle threshold. Blank or 0 preserves the current metric semantics.',
 )
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 function resolvedOptions(options: AdvancedOption[], fallbackValue: string, fallbackLabel: string): AdvancedOption[] {
   if (options.length > 0) return options
@@ -344,6 +341,10 @@ function resolvedOptions(options: AdvancedOption[], fallbackValue: string, fallb
 
 const maSourceOptionItems = computed(() => resolvedOptions(maSourceOptions.value, maSource.value, maSource.value || 'close'))
 const objectiveOptionItems = computed(() => resolvedOptions(objectiveOptions.value, objective.value, objective.value || 'Sharpe'))
+function optionLabel(options: AdvancedOption[], nextValue: string, fallback: string): string {
+  const match = options.find((option) => String(option.value || '').trim() === String(nextValue || '').trim())
+  return String(match?.label || fallback || nextValue || '').trim() || fallback
+}
 const scoreModeOptionItems = computed(() => [
   { value: '', label: 'Objective only (default)', disabled: false },
   { value: 'balanced_risk_adjusted_10', label: 'Balanced Risk-Adjusted 10', disabled: false },
@@ -383,6 +384,20 @@ const shortlistSliceBenchmarkOptionItems = computed(() => [
 ])
 const modeOptionItems = computed(() => [{ value: 'Grid', label: 'Grid', disabled: false }])
 const includeAllOptionItems = computed(() => resolvedOptions(includeAllOptions.value, includeAll.value, includeAll.value || 'false'))
+const advancedSummaryChips = computed(() => {
+  const modeLabel = showModeControl.value
+    ? optionLabel(modeOptionItems.value, modeDraft.value, 'Grid')
+    : String(strategyCapabilities.value.modeSummary || 'Route-managed')
+  const chips = [
+    `Route ${String(strategyCapabilities.value.kind || 'unknown').trim() || 'unknown'}`,
+    `Objective ${optionLabel(objectiveOptionItems.value, objectiveDraft.value, 'Sharpe')}`,
+    `Mode ${modeLabel}`,
+    showTopKControl.value ? `Top K ${String(topKDraft.value || '0').trim() || '0'}` : 'Top K locked',
+    showHeatmapControl.value ? `Heatmap ${String(heatmapBinsDraft.value || '0').trim() || '0'}` : 'Heatmap locked',
+    exportPathDraft.value.trim().length > 0 ? 'Export-all CSV on' : 'Export-all CSV off',
+  ]
+  return chips
+})
 
 watch(
   () => [
@@ -473,329 +488,12 @@ function setSelectValue(id: string, nextValue: string): void {
   advancedStore.setSelectField(id, nextValue)
 }
 
-function clearCompatListeners(): void {
-  while (compatCleanupFns.length > 0) {
-    const cleanup = compatCleanupFns.pop()
-    if (!cleanup) continue
-    cleanup()
-  }
-}
-
-function clearCompatObservers(): void {
-  while (compatObservers.length > 0) {
-    const observer = compatObservers.pop()
-    if (!observer) continue
-    observer.disconnect()
-  }
-}
-
-function queryLegacyById<T extends Element>(id: string): T | null {
-  const selector = `[id="${id}"]`
-  const panel = panelRoot.value ?? (document.querySelector('[data-vue-panel="advanced"]') as HTMLElement | null)
-  if (panel) {
-    const scoped = panel.querySelector(selector) as T | null
-    if (scoped) return scoped
-  }
-  const byQuery = typeof document.querySelector === 'function'
-    ? document.querySelector(selector)
-    : null
-  if (byQuery) return byQuery as T
-  const getById = (document as unknown as { getElementById?: (nextId: string) => Element | null }).getElementById
-  if (typeof getById !== 'function') return null
-  return (getById.call(document, id) as T | null) ?? null
-}
-
-function legacyAdvancedControls(): Array<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement> {
-  const panel = panelRoot.value ?? (document.querySelector('[data-vue-panel="advanced"]') as HTMLElement | null)
-  if (!panel) return []
-  return Array.from(panel.querySelectorAll('input[id], select[id], textarea[id]'))
-    .filter((el) => !String((el as HTMLElement).id || '').startsWith('vue'))
-    .map((el) => el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement)
-}
-
-function optionsById(id: string): AdvancedOption[] {
-  const el = queryLegacyById<HTMLSelectElement>(id)
-  if (!el) return []
-  return Array.from(el.options)
-    .map((option) => {
-      const value = String(option.value || '').trim()
-      const label = String(option.textContent || option.value || '').trim()
-      return {
-        value: value || label,
-        label: label || value,
-        disabled: !!option.disabled,
-      }
-    })
-    .filter((entry) => entry.value.length > 0 || entry.label.length > 0)
-}
-
-function optionsEqual(left: AdvancedOption[], right: AdvancedOption[]): boolean {
-  if (left.length !== right.length) return false
-  for (let i = 0; i < left.length; i += 1) {
-    const l = left[i]
-    const r = right[i]
-    if (!l || !r) return false
-    if (l.value !== r.value || l.label !== r.label || l.disabled !== r.disabled) return false
-  }
-  return true
-}
-
-function syncLegacyAdvancedSelectOptions(): void {
-  const maOptions = optionsById('maSource')
-  const objectiveOptionsNext = optionsById('objective')
-  const modeOptionsNext = optionsById('mode')
-  const includeAllOptionsNext = optionsById('includeAll')
-  advancedStore.$patch((state) => {
-    let changed = false
-    if (maOptions.length > 0 && !optionsEqual(state.maSourceOptions, maOptions)) {
-      state.maSourceOptions = maOptions
-      changed = true
-    }
-    if (objectiveOptionsNext.length > 0 && !optionsEqual(state.objectiveOptions, objectiveOptionsNext)) {
-      state.objectiveOptions = objectiveOptionsNext
-      changed = true
-    }
-    if (modeOptionsNext.length > 0 && !optionsEqual(state.modeOptions, modeOptionsNext)) {
-      state.modeOptions = modeOptionsNext
-      changed = true
-    }
-    if (includeAllOptionsNext.length > 0 && !optionsEqual(state.includeAllOptions, includeAllOptionsNext)) {
-      state.includeAllOptions = includeAllOptionsNext
-      changed = true
-    }
-    if (changed) state.updatedAtUnixMs = Date.now()
-  })
-}
-
-function syncLegacyAdvancedUiMeta(): void {
-  const vdpsWrap = queryLegacyById<HTMLElement>('vdpsConfigWrap')
-  const compositeWrap = queryLegacyById<HTMLElement>('compositeMoWrap')
-  const telemetryNode = queryLegacyById<HTMLElement>('vdpsTelemetryHint')
-  const statusNode = queryLegacyById<HTMLElement>('status')
-  const exportInput = queryLegacyById<HTMLInputElement>('exportAllCsvPath')
-  const canReset = String(document.documentElement.dataset.advCanResetMoSearchSpace || '').trim() === '1'
-  const vdpsVisibleNext = !!vdpsWrap && window.getComputedStyle(vdpsWrap).display !== 'none'
-  const compositeVisibleNext = !!compositeWrap && window.getComputedStyle(compositeWrap).display !== 'none'
-  const telemetryText = String(telemetryNode?.textContent || '').trim() || 'VDPS telemetry appears after a run.'
-  const statusText = String(statusNode?.textContent || '').trim() || 'Ready.'
-  const canBrowseNext = exportInput ? !exportInput.disabled : true
-
-  advancedStore.$patch((state) => {
-    let changed = false
-    if (state.vdpsVisible !== vdpsVisibleNext) {
-      state.vdpsVisible = vdpsVisibleNext
-      changed = true
-    }
-    if (state.compositeMoVisible !== compositeVisibleNext) {
-      state.compositeMoVisible = compositeVisibleNext
-      changed = true
-    }
-    if (state.vdpsTelemetryHint !== telemetryText) {
-      state.vdpsTelemetryHint = telemetryText
-      changed = true
-    }
-    if (state.statusLine !== statusText) {
-      state.statusLine = statusText
-      changed = true
-    }
-    if (state.canBrowseExportAll !== canBrowseNext) {
-      state.canBrowseExportAll = canBrowseNext
-      changed = true
-    }
-    if (state.canResetMoSearchSpace !== canReset) {
-      state.canResetMoSearchSpace = canReset
-      changed = true
-    }
-    if (changed) state.updatedAtUnixMs = Date.now()
-  })
-}
-
-function seedLegacyAdvancedInputsToStore(): void {
-  const storeMap = advancedStore as unknown as Record<string, unknown>
-  for (const control of legacyAdvancedControls()) {
-    const id = String(control.id || '').trim()
-    if (!id || !(id in storeMap)) continue
-    const current = storeMap[id]
-    if (typeof current === 'boolean' && control instanceof HTMLInputElement && control.type === 'checkbox') {
-      advancedStore.setCheckboxField(id, !!control.checked)
-      continue
-    }
-    if (typeof current !== 'string') continue
-    const nextValue = String(control.value || '')
-    if (String(current) === nextValue) continue
-    if (control instanceof HTMLSelectElement) {
-      advancedStore.setSelectField(id, nextValue)
-    } else {
-      advancedStore.setInputField(id, nextValue)
-    }
-  }
-}
-
-function syncLegacyAdvancedInputsFromStore(): void {
-  const storeMap = advancedStore as unknown as Record<string, unknown>
-  for (const control of legacyAdvancedControls()) {
-    const id = String(control.id || '').trim()
-    if (!id || !(id in storeMap)) continue
-    const nextValue = storeMap[id]
-    if (typeof nextValue === 'boolean' && control instanceof HTMLInputElement && control.type === 'checkbox') {
-      if (control.checked !== nextValue) control.checked = nextValue
-      continue
-    }
-    if (typeof nextValue !== 'string') continue
-    if (String(control.value || '') === nextValue) continue
-    control.value = nextValue
-  }
-}
-
-function bindLegacyAdvancedInputs(): void {
-  clearCompatListeners()
-  for (const control of legacyAdvancedControls()) {
-    const id = String(control.id || '').trim()
-    if (!id) continue
-    const onChange = (event: Event) => {
-      const target = event.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null
-      if (!target) return
-      if (target instanceof HTMLInputElement && target.type === 'checkbox') {
-        advancedStore.setCheckboxField(id, !!target.checked)
-      } else if (target instanceof HTMLSelectElement) {
-        advancedStore.setSelectField(id, String(target.value || ''))
-      } else {
-        advancedStore.setInputField(id, String(target.value || ''))
-      }
-      syncLegacyAdvancedUiMeta()
-      syncLegacyAdvancedSelectOptions()
-    }
-    control.addEventListener('input', onChange)
-    control.addEventListener('change', onChange)
-    compatCleanupFns.push(() => {
-      control.removeEventListener('input', onChange)
-      control.removeEventListener('change', onChange)
-    })
-  }
-}
-
-function bindLegacyAdvancedObservers(): void {
-  clearCompatObservers()
-
-  const textObserver = new MutationObserver(() => {
-    syncLegacyAdvancedUiMeta()
-  })
-  for (const id of ['vdpsTelemetryHint', 'status'] as const) {
-    const node = queryLegacyById<HTMLElement>(id)
-    if (!node) continue
-    textObserver.observe(node, { childList: true, characterData: true, subtree: true })
-  }
-  compatObservers.push(textObserver)
-
-  const rootObserver = new MutationObserver(() => {
-    syncLegacyAdvancedUiMeta()
-  })
-  rootObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['data-controls-tab', 'data-running', 'data-adv-can-reset-mo-search-space'],
-  })
-  compatObservers.push(rootObserver)
-
-  const visibilityObserver = new MutationObserver(() => {
-    syncLegacyAdvancedUiMeta()
-  })
-  for (const id of ['vdpsConfigWrap', 'compositeMoWrap'] as const) {
-    const node = queryLegacyById<HTMLElement>(id)
-    if (!node) continue
-    visibilityObserver.observe(node, {
-      attributes: true,
-      attributeFilter: ['style', 'class'],
-    })
-  }
-  compatObservers.push(visibilityObserver)
-
-  const optionObserver = new MutationObserver(() => {
-    syncLegacyAdvancedSelectOptions()
-  })
-  for (const id of ['maSource', 'objective', 'mode', 'includeAll'] as const) {
-    const node = queryLegacyById<HTMLElement>(id)
-    if (!node) continue
-    optionObserver.observe(node, {
-      attributes: true,
-      childList: true,
-      subtree: true,
-      attributeFilter: ['disabled', 'selected', 'value', 'class'],
-    })
-  }
-  compatObservers.push(optionObserver)
-
-  const exportObserver = new MutationObserver(() => {
-    syncLegacyAdvancedUiMeta()
-  })
-  const exportInput = queryLegacyById<HTMLElement>('exportAllCsvPath')
-  if (exportInput) {
-    exportObserver.observe(exportInput, {
-      attributes: true,
-      attributeFilter: ['disabled', 'class'],
-    })
-  }
-  compatObservers.push(exportObserver)
-}
-
-function resolveMount(): void {
-  const panel = document.querySelector('[data-vue-panel="advanced"]') as HTMLElement | null
-  const mount = document.querySelector('#advancedVueShellMount') as HTMLElement | null
-  if (!panel || !mount) return
-  panelRoot.value = panel
-  panel.dataset.vueAdvanced = '1'
-  mountReady.value = true
-}
-
-function adoptLegacyAdvancedBlocks(): void {
-  const panel = panelRoot.value ?? (document.querySelector('[data-vue-panel="advanced"]') as HTMLElement | null)
-  const host = document.querySelector('#advancedCompatHostVue') as HTMLElement | null
-  if (!panel || !host) return
-  const nodes = Array.from(panel.querySelectorAll('.advancedLegacyPassthrough')) as HTMLElement[]
-  for (const node of nodes) {
-    if (node.parentElement === host) continue
-    const parent = node.parentNode
-    if (!parent) continue
-    adoptedNodes.push({ node, parent, next: node.nextSibling })
-    host.appendChild(node)
-  }
-}
-
-function restoreLegacyAdvancedBlocks(): void {
-  while (adoptedNodes.length > 0) {
-    const entry = adoptedNodes.pop()
-    if (!entry) continue
-    if (entry.next && entry.next.parentNode === entry.parent) {
-      entry.parent.insertBefore(entry.node, entry.next)
-    } else {
-      entry.parent.appendChild(entry.node)
-    }
-  }
-}
-
-onMounted(async () => {
-  await nextTick()
-  resolveMount()
-  window.setTimeout(() => {
-    adoptLegacyAdvancedBlocks()
-    seedLegacyAdvancedInputsToStore()
-    applyRecommendedOptimizationDefaults()
-    syncLegacyAdvancedInputsFromStore()
-    bindLegacyAdvancedInputs()
-    syncLegacyAdvancedSelectOptions()
-    syncLegacyAdvancedUiMeta()
-    bindLegacyAdvancedObservers()
-  }, 0)
+onMounted(() => {
+  applyRecommendedOptimizationDefaults()
 })
 
 onBeforeUnmount(() => {
   flushQueuedInputValuesNow()
-  clearCompatObservers()
-  clearCompatListeners()
-  if (panelRoot.value) {
-    delete panelRoot.value.dataset.vueAdvanced
-    panelRoot.value = null
-  }
-  restoreLegacyAdvancedBlocks()
 })
 </script>
 
@@ -803,12 +501,31 @@ onBeforeUnmount(() => {
   <Teleport v-if="mountReady" to="#advancedVueShellMount">
     <section class="advancedPanelVueRoot advancedVueShellMountHost" v-show="visible">
       <header class="head">
-        <div class="title">Advanced Controls</div>
+        <div class="panelHeadCopy">
+          <div class="panelEyebrow">Diagnostics</div>
+          <h2 class="panelTitle">Advanced Controls</h2>
+          <div class="panelSubtitle">
+            Shape ranking, shortlist diagnostics, and output surfaces without changing the underlying strategy module.
+          </div>
+        </div>
         <div class="meta mono">{{ stamp }}</div>
       </header>
+      <div class="panelSummaryChips" aria-label="Advanced summary">
+        <span v-for="chip in advancedSummaryChips" :key="`advanced_summary_${chip}`" class="panelSummaryChip mono">
+          {{ chip }}
+        </span>
+      </div>
 
-      <section class="pane">
-        <h3>Optimization setup</h3>
+      <section class="pane panelProminentPane">
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Ranking</div>
+            <h3 class="panelPaneTitle">Optimization setup</h3>
+            <div class="panelSectionLead">
+              Set the objective, route mode, and exact-kernel diagnostics that should influence shortlist ordering.
+            </div>
+          </div>
+        </div>
         <div class="gridThree">
           <div>
             <label for="vueMaSource">MA price source</label>
@@ -870,7 +587,7 @@ onBeforeUnmount(() => {
             </template>
           </div>
         </div>
-        <div v-if="showScoreModeControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showScoreModeControl" class="gridThree stackBlock">
           <div>
             <label for="vueScoreMode">Score mode</label>
             <select
@@ -899,12 +616,17 @@ onBeforeUnmount(() => {
               @change="commitInputValue('hurdleTau', hurdleTauDraft)"
             />
           </div>
-          <div class="muted" style="grid-column: span 2;">
-            Composite score modes are additive opt-ins over the existing metric row. Leaving Score mode at the default preserves objective-only ranking.
-            {{ ` ${hurdleTauStateNote}` }}
-          </div>
+          <details class="panelDetails panelInlineDetails spanTwo">
+            <summary>Score mode guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">
+                Composite score modes are additive opt-ins over the existing metric row. Leaving Score mode at the default preserves objective-only ranking.
+                {{ ` ${hurdleTauStateNote}` }}
+              </div>
+            </div>
+          </details>
         </div>
-        <div v-if="showMetricContractControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showMetricContractControl" class="gridThree stackBlock">
           <div>
             <label for="vueMetricContract">Metric contract</label>
             <select
@@ -926,11 +648,14 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <div class="muted" style="grid-column: span 2;">
-            {{ metricContractStateNote }}
-          </div>
+          <details class="panelDetails panelInlineDetails spanTwo">
+            <summary>Metric contract guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">{{ metricContractStateNote }}</div>
+            </div>
+          </details>
         </div>
-        <div v-if="showExtraShortlistObjectivesControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showExtraShortlistObjectivesControl" class="gridThree stackBlock">
           <div>
             <label for="vueExtraShortlistObjectives">Extra shortlist objectives</label>
             <input
@@ -942,11 +667,14 @@ onBeforeUnmount(() => {
               @change="commitInputValue('extraShortlistObjectives', extraShortlistObjectivesDraft)"
             />
           </div>
-          <div class="muted" style="grid-column: span 2;">
-            {{ extraShortlistObjectivesStateNote }}
-          </div>
+          <details class="panelDetails panelInlineDetails spanTwo">
+            <summary>Extra shortlist guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">{{ extraShortlistObjectivesStateNote }}</div>
+            </div>
+          </details>
         </div>
-        <div v-if="showShortlistConfidenceModeControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showShortlistConfidenceModeControl" class="gridThree stackBlock">
           <div>
             <label for="vueShortlistConfidenceMode">Shortlist confidence mode</label>
             <select
@@ -964,11 +692,14 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <div class="muted" style="grid-column: span 2;">
-            {{ shortlistConfidenceModeStateNote }}
-          </div>
+          <details class="panelDetails panelInlineDetails spanTwo">
+            <summary>Confidence rerank guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">{{ shortlistConfidenceModeStateNote }}</div>
+            </div>
+          </details>
         </div>
-        <div v-if="showShortlistUnionModeControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showShortlistUnionModeControl" class="gridThree stackBlock">
           <div>
             <label for="vueShortlistUnionMode">Shortlist union mode</label>
             <select
@@ -986,11 +717,14 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <div class="muted" style="grid-column: span 2;">
-            {{ shortlistUnionModeStateNote }}
-          </div>
+          <details class="panelDetails panelInlineDetails spanTwo">
+            <summary>Union rerank guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">{{ shortlistUnionModeStateNote }}</div>
+            </div>
+          </details>
         </div>
-        <div v-if="showShortlistSliceModeControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showShortlistSliceModeControl" class="gridThree stackBlock">
           <div>
             <label for="vueShortlistSliceMode">Shortlist slice mode</label>
             <select
@@ -1008,11 +742,14 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <div class="muted" style="grid-column: span 2;">
-            {{ shortlistSliceModeStateNote }}
-          </div>
+          <details class="panelDetails panelInlineDetails spanTwo">
+            <summary>Slice diagnostics guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">{{ shortlistSliceModeStateNote }}</div>
+            </div>
+          </details>
         </div>
-        <div v-if="showShortlistSliceBenchmarkControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showShortlistSliceBenchmarkControl" class="gridThree stackBlock">
           <div>
             <label for="vueShortlistSliceBenchmark">Shortlist slice benchmark</label>
             <select
@@ -1030,11 +767,14 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <div class="muted" style="grid-column: span 2;">
-            {{ shortlistSliceBenchmarkStateNote }}
-          </div>
+          <details class="panelDetails panelInlineDetails spanTwo">
+            <summary>Slice benchmark guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">{{ shortlistSliceBenchmarkStateNote }}</div>
+            </div>
+          </details>
         </div>
-        <div v-if="showShortlistNeighborhoodControls" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showShortlistNeighborhoodControls" class="gridThree stackBlock">
           <div>
             <label for="vueShortlistNeighborhoodRadius">Neighborhood radius</label>
             <input
@@ -1057,14 +797,25 @@ onBeforeUnmount(() => {
               @change="commitInputValue('shortlistNeighborhoodStep', shortlistNeighborhoodStepDraft)"
             />
           </div>
-          <div class="muted">
-            {{ shortlistNeighborhoodStateNote }}
-          </div>
+          <details class="panelDetails panelInlineDetails">
+            <summary>Neighborhood guidance</summary>
+            <div class="panelDetailsBody">
+              <div class="panelMuted">{{ shortlistNeighborhoodStateNote }}</div>
+            </div>
+          </details>
         </div>
       </section>
 
       <section class="pane">
-        <h3>Output shaping</h3>
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Output</div>
+            <h3 class="panelPaneTitle">Output shaping</h3>
+            <div class="panelSectionLead">
+              Control how much of the shortlist comes back, whether a heatmap is emitted, and when a full export should be written.
+            </div>
+          </div>
+        </div>
         <div class="gridThree">
           <div v-if="showHeatmapControl">
             <label for="vueHeatmapBins">Heatmap bins (0 = off)</label>
@@ -1129,20 +880,27 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="pane">
-        <h3>Strategy samplers</h3>
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Sampler state</div>
+            <h3 class="panelPaneTitle">Strategy samplers</h3>
+            <div class="panelSectionLead">
+              Review sampler visibility and reset any strategy-specific search-space overrides that should not carry into the next run.
+            </div>
+          </div>
+        </div>
         <div class="metaLine mono">VDPS panel: {{ vdpsVisible ? 'visible' : 'hidden' }}</div>
         <div class="metaLine mono">Composite-MO panel: {{ compositeMoVisible ? 'visible' : 'hidden' }}</div>
         <div class="muted">{{ vdpsTelemetryHint }}</div>
-        <div class="pathRow" style="margin-top: 0.55rem;">
+        <div class="pathRow samplerActionRow">
           <div></div>
           <button type="button" :disabled="!canResetMoSearchSpace" @click="advancedStore.resetMoSearchSpace()">
             Reset MO search-space JSON
           </button>
         </div>
-        <div id="advancedCompatHostVue"></div>
       </section>
 
-      <div class="status mono">{{ statusLine }}</div>
+      <div class="status mono" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
   </Teleport>
 </template>
@@ -1156,18 +914,8 @@ onBeforeUnmount(() => {
 .head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.75rem;
-}
-
-.title {
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.meta {
-  font-size: 0.78rem;
-  color: var(--muted);
 }
 
 .pane {
@@ -1178,15 +926,22 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.pane h3 {
-  margin: 0 0 0.55rem;
-  font-size: 0.86rem;
+.pane :is(h3, h4) {
+  margin: 0.1rem 0 0;
 }
 
 .gridThree {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.65rem;
+}
+
+.stackBlock {
+  margin-top: 0.75rem;
+}
+
+.panelInlineDetails {
+  margin-top: 0.15rem;
 }
 
 .pathRow {
@@ -1196,11 +951,19 @@ onBeforeUnmount(() => {
   gap: 0.45rem;
 }
 
+.samplerActionRow {
+  margin-top: 0.55rem;
+}
+
 .checkboxRow {
   margin-top: 0.4rem;
   display: flex;
   align-items: center;
   gap: 0.55rem;
+}
+
+.spanTwo {
+  grid-column: span 2;
 }
 
 .metaLine {
@@ -1228,13 +991,12 @@ onBeforeUnmount(() => {
   .pathRow {
     grid-template-columns: 1fr;
   }
+
+  .spanTwo {
+    grid-column: auto;
+  }
 }
 </style>
 
-<style>
-[data-vue-panel='advanced'][data-vue-advanced='1'] > :not(#advancedVueShellMount) {
-  display: none !important;
-}
-</style>
 
 

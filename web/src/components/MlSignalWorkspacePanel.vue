@@ -874,7 +874,7 @@ onMounted(() => {
       </div>
       <div class="muted mono">{{ mlSignalValidationMeta }}</div>
       <div class="muted mono">{{ progressMeta || "—" }}</div>
-      <div class="muted mono">{{ statusLine }}</div>
+      <div class="muted mono" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
 
     <section class="pane">

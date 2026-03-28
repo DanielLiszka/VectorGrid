@@ -1,4 +1,4 @@
-import { getActivePinia } from "pinia";
+import { resolveRuntimePinia } from "../stores/runtimePinia";
 import { invokeCommand } from "../tauri/invoke";
 import {
   applyWorkflowArtifactsPayload,
@@ -184,7 +184,7 @@ function extractMlPolicySweepSummary(
 }
 
 function readPiniaState(storeId: string): Record<string, unknown> | null {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return null;
   const root = pinia.state.value as Record<string, unknown>;
   const row = root[storeId];
@@ -193,7 +193,7 @@ function readPiniaState(storeId: string): Record<string, unknown> | null {
 }
 
 function markOptimizeUpdated(): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return;
   const optimize = useOptimizeStore(pinia);
   optimize.source = "vue";
@@ -201,7 +201,7 @@ function markOptimizeUpdated(): void {
 }
 
 function patchOptimizeState(patch: Record<string, unknown>): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return;
   const optimize = useOptimizeStore(pinia);
   Object.assign(optimize, patch);
@@ -286,7 +286,7 @@ function buildRunDatasetContextState(): {
 }
 
 function currentRoundTripCostBps(): number {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return 0;
   const strategy = useStrategyStore(pinia);
   const fee = Math.max(0, parseNumber(strategy.feeBps, 0));
@@ -296,7 +296,7 @@ function currentRoundTripCostBps(): number {
 }
 
 function buildMlStrategyConfig(): Record<string, unknown> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return {};
   const strategy = useStrategyStore(pinia);
   return {
@@ -451,7 +451,7 @@ async function persistValidationArtifact(
   validationReq: Record<string, unknown>,
   validationRes: unknown,
 ): Promise<{ path: string; ts: string; csvPath: string }> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   const artifacts = pinia ? useWorkflowArtifactsStore(pinia) : null;
   const currentRun = artifacts?.currentRun as WorkflowRunArtifact | null;
   const data = requireDataContext();
@@ -498,7 +498,7 @@ function applyVueValidationArtifacts(
   validationRes: unknown,
   persisted: { path: string; ts: string; csvPath: string },
 ): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   const artifacts = pinia ? useWorkflowArtifactsStore(pinia) : null;
   applyWorkflowArtifactsPayload(
     {
@@ -535,7 +535,7 @@ function currentRunSnapshot(): {
   req: Record<string, unknown>;
   res: unknown;
 } | null {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return null;
   const artifacts = useWorkflowArtifactsStore(pinia);
   const run = artifacts.currentRun;
@@ -544,7 +544,7 @@ function currentRunSnapshot(): {
 }
 
 export async function exportMlSignalDataset(): Promise<unknown> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) throw new Error("Pinia is not active.");
   const optimize = useOptimizeStore(pinia);
   const data = requireDataContext();
@@ -600,7 +600,7 @@ export async function exportMlSignalDataset(): Promise<unknown> {
     ticker_holdout: tickerHoldout,
   };
 
-  setMlBusy("Exporting ML feature dataset...");
+  setMlBusy("Exporting ML feature dataset…");
   try {
     const res = await invokeCommand("export_ml_signal_dataset", { req });
     const rowCount = parseNumber(
@@ -639,7 +639,7 @@ export async function exportMlSignalDataset(): Promise<unknown> {
 }
 
 export async function generateMlSignalScoreCache(): Promise<unknown> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) throw new Error("Pinia is not active.");
   const optimize = useOptimizeStore(pinia);
   const data = requireDataContext();
@@ -657,7 +657,7 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
   };
   const runTs = new Date().toISOString();
 
-  setMlBusy("Generating ML score cache...");
+  setMlBusy("Generating ML score cache…");
   try {
     const res = await invokeCommand("generate_ml_signal_score_cache", { req });
     const matchedRows = parseNumber(
@@ -684,7 +684,7 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
 }
 
 export async function runMlSignalValidation(): Promise<unknown> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) throw new Error("Pinia is not active.");
   const optimize = useOptimizeStore(pinia);
   const scoreCachePath = normalizeText(optimize.mlSignalScoreCachePath);
@@ -723,7 +723,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
     validation_context: buildValidationContext(),
   };
 
-  setMlBusy("Running ML score-cache validation...");
+  setMlBusy("Running ML score-cache validation…");
   try {
     const validationRes = await invokeCommand("run_ml_signal_validation", {
       req: validationReq,
@@ -773,7 +773,7 @@ export async function runMlSignalValidation(): Promise<unknown> {
 }
 
 export async function runMlSignalPolicySweep(): Promise<unknown> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) throw new Error("Pinia is not active.");
   const optimize = useOptimizeStore(pinia);
   const scoreCachePath = normalizeText(optimize.mlSignalScoreCachePath);
@@ -821,7 +821,7 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
     top_k: Math.max(1, Math.floor(parseNumber(optimize.mlSignalSweepTopK, 10))),
   };
 
-  setMlBusy("Running ML policy sweep...");
+  setMlBusy("Running ML policy sweep…");
   try {
     const sweepRes = await invokeCommand("run_ml_signal_policy_sweep", {
       req: sweepReq,
@@ -913,7 +913,7 @@ export async function listMlSignalModelBundles(): Promise<
 }
 
 export async function refreshMlSignalModelStatus(): Promise<unknown> {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) throw new Error("Pinia is not active.");
   const optimize = useOptimizeStore(pinia);
   const bundleId = normalizeText(optimize.mlSignalModelBundleId);
@@ -955,7 +955,7 @@ export async function revealMlSignalArtifactPath(
 }
 
 export function setMlSignalPathField(field: string, value: string): void {
-  const pinia = getActivePinia();
+  const pinia = resolveRuntimePinia();
   if (!pinia) return;
   const optimize = useOptimizeStore(pinia);
   optimize.setInputField(field, value);

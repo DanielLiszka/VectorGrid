@@ -6,6 +6,7 @@ import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const analysis = useAnalysisStore()
 const commandActionStore = useCommandActionStore()
@@ -46,11 +47,7 @@ watch(
   { immediate: true },
 )
 
-const stamp = computed(() => {
-  const ms = Number(updatedAtUnixMs.value || 0)
-  if (!Number.isFinite(ms) || ms <= 0) return '—'
-  return new Date(ms).toLocaleTimeString([], { hour12: false })
-})
+const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
 const quietMode = computed(() => !dockOpen.value)
@@ -100,7 +97,7 @@ function toggleDock(): void {
       :style="floatingStyles"
     >
       <header class="dockHeader">
-        <div class="title">Analysis Context</div>
+        <h2 class="title" style="margin: 0;">Analysis Context</h2>
         <div class="stamp">{{ stamp }}</div>
       </header>
       <div class="rows">
@@ -276,6 +273,12 @@ function toggleDock(): void {
 
   .analysisDock {
     width: min(96vw, 440px);
+  }
+}
+
+@media (max-width: 1180px) {
+  .analysisDockRoot {
+    display: none;
   }
 }
 </style>

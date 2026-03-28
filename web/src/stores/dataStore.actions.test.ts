@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { bindRuntimePinia } from './runtimePinia'
 import {
   applyTimeframe,
   browseCsv,
@@ -248,8 +249,12 @@ async function flushAsync(): Promise<void> {
 }
 
 describe('data store actions', () => {
+  let pinia: ReturnType<typeof createPinia>
+
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     applyTimeframeMock.mockClear()
     clearDataMock.mockClear()
     loadCsvMock.mockClear()

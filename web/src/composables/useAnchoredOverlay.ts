@@ -7,6 +7,7 @@ interface UseAnchoredOverlayOptions {
   offsetPx?: number
   paddingPx?: number
   strategy?: Strategy
+  insideRefs?: Array<Ref<HTMLElement | null>>
 }
 
 export interface AnchoredOverlayHandle {
@@ -28,6 +29,7 @@ export function useAnchoredOverlay(
     offsetPx = 8,
     paddingPx = 8,
     strategy = 'fixed',
+    insideRefs = [],
   } = options
 
   const floatingResult = useFloating(referenceRef, floatingRef, {
@@ -48,7 +50,9 @@ export function useAnchoredOverlay(
   function targetInsideOverlay(target: EventTarget | null): boolean {
     const node = target as Node | null
     if (!node) return false
-    return !!referenceRef.value?.contains(node) || !!floatingRef.value?.contains(node)
+    if (referenceRef.value?.contains(node)) return true
+    if (floatingRef.value?.contains(node)) return true
+    return insideRefs.some((extraRef) => !!extraRef.value?.contains(node))
   }
 
   useEventListener(document, 'pointerdown', (event) => {
@@ -82,4 +86,3 @@ export function useAnchoredOverlay(
     update,
   }
 }
-

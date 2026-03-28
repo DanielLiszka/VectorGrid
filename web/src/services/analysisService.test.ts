@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { invokeCommand } from "../tauri/invoke";
+import { bindRuntimePinia } from "../stores/runtimePinia";
 import {
   clearBaseline,
   clearTopFilters,
@@ -41,6 +42,7 @@ vi.mock("../tauri/invoke", () => ({
 }));
 
 const invokeCommandMock = vi.mocked(invokeCommand);
+let pinia: ReturnType<typeof createPinia>;
 
 function seedWorkflowRun(payload: {
   ts?: string;
@@ -49,8 +51,6 @@ function seedWorkflowRun(payload: {
   res?: unknown;
   validationRes?: unknown;
 }): void {
-  const pinia = createPinia();
-  setActivePinia(pinia);
   const root = pinia.state.value as Record<string, unknown>;
   root.workflowArtifacts = {
     currentRun: {
@@ -67,7 +67,9 @@ function seedWorkflowRun(payload: {
 
 describe("analysis service", () => {
   beforeEach(() => {
-    setActivePinia(createPinia());
+    pinia = createPinia();
+    setActivePinia(pinia);
+    bindRuntimePinia(pinia);
     vi.restoreAllMocks();
     vi.clearAllMocks();
     if (typeof document !== "undefined") document.body.innerHTML = "";
@@ -154,7 +156,7 @@ describe("analysis service", () => {
         ],
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     await sortTopTable(" sharpe ");
 
@@ -170,7 +172,7 @@ describe("analysis service", () => {
   });
 
   it("selects top row in Vue store state when row model is unavailable", async () => {
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
     store.topTableRows = [
       { selected: false, cells: [{ text: "A", className: "", title: "" }] },
       { selected: false, cells: [{ text: "B", className: "", title: "" }] },
@@ -221,7 +223,7 @@ describe("analysis service", () => {
         ],
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
     refreshTopTableFromWorkflowRun();
     invokeCommandMock.mockImplementation(async (command: unknown) => {
       if (command === "compute_double_ma_drilldown") {
@@ -293,7 +295,7 @@ describe("analysis service", () => {
   });
 
   it("clears top filters in Vue store state", async () => {
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
     store.filterMinPnl = "1.0";
     store.filterMinSharpe = "0.5";
     store.filterMaxDd = "20";
@@ -338,7 +340,7 @@ describe("analysis service", () => {
         ],
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
     store.filterMinSharpe = "1.5";
     const ok = refreshTopTableFromWorkflowRun();
     expect(ok).toBe(true);
@@ -369,7 +371,7 @@ describe("analysis service", () => {
         top: [],
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshTopTableFromWorkflowRun();
 
@@ -405,7 +407,7 @@ describe("analysis service", () => {
         },
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -424,7 +426,7 @@ describe("analysis service", () => {
         output_path: "C:/data/ml_score_cache.json",
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -467,7 +469,7 @@ describe("analysis service", () => {
         ],
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshParetoFromWorkflowRun();
 
@@ -537,7 +539,7 @@ describe("analysis service", () => {
         },
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -637,7 +639,7 @@ describe("analysis service", () => {
           },
         },
       });
-      const store = useAnalysisStore();
+      const store = useAnalysisStore(pinia);
 
       const ok = refreshAnalysisFromWorkflowRun();
 
@@ -686,7 +688,7 @@ describe("analysis service", () => {
         },
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -729,7 +731,7 @@ describe("analysis service", () => {
         },
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -771,7 +773,7 @@ describe("analysis service", () => {
         },
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -820,7 +822,7 @@ describe("analysis service", () => {
         },
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -867,7 +869,7 @@ describe("analysis service", () => {
         },
       },
     });
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
 
     const ok = refreshAnalysisFromWorkflowRun();
 
@@ -892,8 +894,8 @@ describe("analysis service", () => {
       req: { objective: "Sharpe" },
       res: { top: [] },
     });
-    const analysisStore = useAnalysisStore();
-    const historyStore = useHistoryStore();
+    const analysisStore = useAnalysisStore(pinia);
+    const historyStore = useHistoryStore(pinia);
 
     await setBaseline();
     expect(historyStore.compareSelectedValue).toBe("disk:C:/runs/run_a.json");
@@ -912,7 +914,7 @@ describe("analysis service", () => {
   });
 
   it("is a no-op when Vue rows/columns are unavailable", async () => {
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
     store.topColumns = [];
     store.topTableRows = [];
 
@@ -924,7 +926,7 @@ describe("analysis service", () => {
   });
 
   it("rerenders drill by selecting current or first Vue top row", async () => {
-    const store = useAnalysisStore();
+    const store = useAnalysisStore(pinia);
     store.topTableRows = [
       { selected: false, cells: [{ text: "A", className: "", title: "" }] },
       { selected: true, cells: [{ text: "B", className: "", title: "" }] },

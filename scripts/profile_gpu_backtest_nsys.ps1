@@ -33,6 +33,49 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (-not ("NsysShortPath" -as [type])) {
+  Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class NsysShortPath {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern uint GetShortPathName(string lpszLongPath, StringBuilder lpszShortPath, uint cchBuffer);
+}
+"@
+}
+
+function Get-NativeSafePath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+    [switch]$AllowMissingLeaf
+  )
+
+  $resolved = $Path
+  $leaf = $null
+  if ($AllowMissingLeaf -and -not (Test-Path $resolved)) {
+    $leaf = Split-Path -Leaf $resolved
+    $resolved = Split-Path -Parent $resolved
+  }
+
+  $buffer = New-Object System.Text.StringBuilder 512
+  $len = [NsysShortPath]::GetShortPathName($resolved, $buffer, $buffer.Capacity)
+  if ($len -gt 0) {
+    $short = $buffer.ToString()
+    if ($leaf) {
+      return Join-Path $short $leaf
+    }
+    return $short
+  }
+
+  if ($leaf) {
+    return Join-Path $resolved $leaf
+  }
+  return $resolved
+}
+
 if (-not [string]::IsNullOrWhiteSpace($NsysExePath)) {
   $nsysExe = $NsysExePath
 } else {
@@ -101,11 +144,14 @@ if ($Target -eq "runner") {
   }
 }
 
+$targetExePathForNsys = Get-NativeSafePath -Path $targetExe.FullName
+
 $outputPrefixPath = if ([System.IO.Path]::IsPathRooted($OutputPrefix)) {
   $OutputPrefix
 } else {
   Join-Path (Get-Location) $OutputPrefix
 }
+$outputPrefixPathForNsys = Get-NativeSafePath -Path $outputPrefixPath -AllowMissingLeaf
 $outDir = Split-Path -Parent $outputPrefixPath
 if ($outDir) {
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -116,6 +162,7 @@ $prevGraphs = [System.Environment]::GetEnvironmentVariable("VECTORBT_KERNEL_USE_
 $prevDynamic = [System.Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "Process")
 $prevBenchOnly = [System.Environment]::GetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", "Process")
 $prevNvtx = [System.Environment]::GetEnvironmentVariable("VECTORBT_ENABLE_NVTX", "Process")
+$prevNsysNvtxRegisterOnly = [System.Environment]::GetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", "Process")
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", "1", "Process")
 switch ($CudaGraphsMode) {
@@ -138,12 +185,50 @@ if ($NvtxMode -eq "on") {
 } else {
   [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $null, "Process")
 }
+if ($NvtxMode -eq "on" -and $CaptureMode -eq "nvtx") {
+  # Nsight Systems only considers registered NVTX strings for capture triggering by
+  # default. Our current Rust NVTX path uses push/pop ranges with plain strings,
+  # so opt into matching non-registered strings when bounded capture is requested.
+  [System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", "0", "Process")
+} else {
+  [System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", $prevNsysNvtxRegisterOnly, "Process")
+}
 
 if ($Target -eq "runner" -and $CudaGraphsMode -eq "on" -and $RunnerHeatmapBins -gt 0) {
   Write-Warning "RunnerHeatmapBins=$RunnerHeatmapBins may keep the exact kernel path graph-ineligible; set -RunnerHeatmapBins 0 for a graph A/B."
 }
 
 Write-Host "Profiling with Nsight Systems (dynamic_strategy=$DynamicStrategyMode, cuda_graphs=$CudaGraphsMode)..."
+
+function Invoke-NsysProfileCommand {
+  param(
+    [string]$ExePath,
+    [string[]]$CommandArgs,
+    [string]$WorkingDirectory
+  )
+
+  $argumentLine = ($CommandArgs | ForEach-Object {
+    if ($_ -match '\s') {
+      '"' + ($_ -replace '"', '\"') + '"'
+    } else {
+      $_
+    }
+  }) -join ' '
+
+  $startParams = @{
+    FilePath    = $ExePath
+    ArgumentList = $argumentLine
+    NoNewWindow = $true
+    Wait        = $true
+    PassThru    = $true
+  }
+  if ($WorkingDirectory) {
+    $startParams.WorkingDirectory = $WorkingDirectory
+  }
+  $process = Start-Process @startParams
+  return $process.ExitCode
+}
+
 $nsysArgs = @(
   "profile",
   "--sample=none",
@@ -152,7 +237,7 @@ $nsysArgs = @(
   "--stop-on-exit=true",
   "--stats=false",
   "--force-overwrite=true",
-  "--output=$outputPrefixPath"
+  "--output=$outputPrefixPathForNsys"
 )
 if ($NvtxMode -eq "on") {
   $nsysArgs += @(
@@ -171,7 +256,7 @@ if ($NvtxMode -eq "on") {
 }
 if ($Target -eq "runner") {
   $nsysArgs += @(
-    $targetExe.FullName,
+    $targetExePathForNsys,
     "--strategy", $RunnerStrategy,
     "--adx-mode", $RunnerAdxMode,
     "--workload", $RunnerWorkload,
@@ -185,7 +270,7 @@ if ($Target -eq "runner") {
   )
 } else {
   $nsysArgs += @(
-    $targetExe.FullName,
+    $targetExePathForNsys,
     $BenchFilter,
     "--sample-size", "$BenchSampleSize",
     "--measurement-time", "$BenchMeasurementTimeSec",
@@ -193,29 +278,15 @@ if ($Target -eq "runner") {
   )
 }
 
-$nsysWorkDir = if ($outDir -and (Test-Path (Join-Path $outDir "nvlog.config"))) {
-  $outDir
-} else {
-  $null
-}
-if ($null -ne $nsysWorkDir) {
-  Push-Location $nsysWorkDir
-  try {
-    & $nsysExe @nsysArgs
-    $exitCode = $LASTEXITCODE
-  } finally {
-    Pop-Location
-  }
-} else {
-  & $nsysExe @nsysArgs
-  $exitCode = $LASTEXITCODE
-}
+$nsysWorkDir = $null
+$exitCode = Invoke-NsysProfileCommand -ExePath $nsysExe -CommandArgs $nsysArgs -WorkingDirectory $nsysWorkDir
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", $prevFastPath, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", $prevGraphs, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", $prevDynamic, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $prevBenchOnly, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $prevNvtx, "Process")
+[System.Environment]::SetEnvironmentVariable("NSYS_NVTX_PROFILER_REGISTER_ONLY", $prevNsysNvtxRegisterOnly, "Process")
 
 $reportPath = "$outputPrefixPath.nsys-rep"
 $nvLogPaths = @()
@@ -243,6 +314,68 @@ if (!(Test-Path $reportPath)) {
   }
   if (Test-Path $altReport) {
     $reportPath = $altReport
+  } elseif (!(Test-Path $reportPath) -and $CaptureMode -eq "nvtx") {
+    Write-Warning "Nsight Systems completed without producing a bounded NVTX report. Rerunning as whole-process capture because local --capture-range=nvtx is still returning an empty result on this machine."
+    $fallbackOutputPrefixPath = "${outputPrefixPath}_whole_fallback"
+    $fallbackOutputPrefix = if ([System.IO.Path]::IsPathRooted($OutputPrefix)) {
+      "${OutputPrefix}_whole_fallback"
+    } else {
+      "$OutputPrefix`_whole_fallback"
+    }
+    $rerunArgs = @(
+      "-ExecutionPolicy", "Bypass",
+      "-File", $PSCommandPath,
+      "-Target", $Target,
+      "-NvtxMode", $NvtxMode,
+      "-CaptureMode", "none",
+      "-NvtxCapture", $NvtxCapture,
+      "-NvtxDomains", $NvtxDomains,
+      "-OutputPrefix", $fallbackOutputPrefix,
+      "-DynamicStrategyMode", $DynamicStrategyMode,
+      "-CudaGraphsMode", $CudaGraphsMode,
+      "-NsysExePath", $nsysExe
+    )
+    if ($Target -eq "runner") {
+      $rerunArgs += @(
+        "-RunnerStrategy", $RunnerStrategy,
+        "-RunnerAdxMode", $RunnerAdxMode,
+        "-RunnerWorkload", $RunnerWorkload,
+        "-RunnerIterations", "$RunnerIterations",
+        "-RunnerWarmupIterations", "$RunnerWarmupIterations",
+        "-RunnerHeatmapBins", "$RunnerHeatmapBins",
+        "-RunnerDeviceId", "$RunnerDeviceId"
+      )
+    } else {
+      $rerunArgs += @(
+        "-BenchName", $BenchName,
+        "-BenchFilter", $BenchFilter,
+        "-BenchSampleSize", "$BenchSampleSize",
+        "-BenchMeasurementTimeSec", "$BenchMeasurementTimeSec",
+        "-BenchWarmupTimeSec", "$BenchWarmupTimeSec"
+      )
+      if (-not [string]::IsNullOrWhiteSpace($BenchStrategyOnly)) {
+        $rerunArgs += @("-BenchStrategyOnly", $BenchStrategyOnly)
+      }
+    }
+
+    & powershell @rerunArgs
+    $exitCode = $LASTEXITCODE
+
+    $reportPath = "$fallbackOutputPrefixPath.nsys-rep"
+    $altReport = "$fallbackOutputPrefixPath.qdrep"
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Date) -lt $deadline) {
+      if ((Test-Path $reportPath) -or (Test-Path $altReport)) {
+        break
+      }
+      Start-Sleep -Milliseconds 500
+    }
+
+    if (Test-Path $altReport) {
+      $reportPath = $altReport
+    } elseif (!(Test-Path $reportPath)) {
+      throw "Nsight Systems bounded capture failed and the whole-process fallback also did not generate a report at '$reportPath' or '$altReport'."
+    }
   } elseif (!(Test-Path $reportPath)) {
     throw "Nsight Systems report not generated at '$reportPath' or '$altReport'."
   }

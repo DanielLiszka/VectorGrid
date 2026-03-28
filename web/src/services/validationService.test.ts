@@ -12,6 +12,7 @@ import {
   toggleCrossDataset,
 } from './validationService'
 import { invokeCommand } from '../tauri/invoke'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 
 vi.mock('../tauri/invoke', () => ({
@@ -116,6 +117,7 @@ describe('validationService', () => {
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     useWorkflowArtifactsStore(pinia).clearArtifacts()
     vi.clearAllMocks()
     installDefaultInvokeCommandMock()

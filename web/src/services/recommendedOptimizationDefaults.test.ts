@@ -1,19 +1,24 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAdvancedStore } from '../stores/advancedStore'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import {
   applyRecommendedOptimizationDefaults,
   RECOMMENDED_HEATMAP_BINS,
   RECOMMENDED_TOP_K,
 } from './recommendedOptimizationDefaults'
 
+let pinia: ReturnType<typeof createPinia>
+
 describe('recommendedOptimizationDefaults', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
+    pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
   })
 
   it('applies recommended defaults when top k and grid heatmap bins are disabled', () => {
-    const store = useAdvancedStore()
+    const store = useAdvancedStore(pinia)
     store.topK = '0'
     store.heatmapBins = '0'
     store.mode = 'Grid'
@@ -27,7 +32,7 @@ describe('recommendedOptimizationDefaults', () => {
   })
 
   it('normalizes legacy non-grid modes back to the grid heatmap defaults', () => {
-    const store = useAdvancedStore()
+    const store = useAdvancedStore(pinia)
     store.topK = '0'
     store.heatmapBins = '0'
     store.mode = 'CoarseToFine'
@@ -42,7 +47,7 @@ describe('recommendedOptimizationDefaults', () => {
   })
 
   it('does not add recommended heatmap bins for Auto mode', () => {
-    const store = useAdvancedStore()
+    const store = useAdvancedStore(pinia)
     store.topK = '0'
     store.heatmapBins = '0'
     store.mode = 'Auto'
@@ -55,7 +60,7 @@ describe('recommendedOptimizationDefaults', () => {
   })
 
   it('leaves explicit nonzero values unchanged', () => {
-    const store = useAdvancedStore()
+    const store = useAdvancedStore(pinia)
     store.topK = '25'
     store.heatmapBins = '128'
     store.mode = 'Grid'
