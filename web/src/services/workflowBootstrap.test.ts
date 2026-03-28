@@ -46,6 +46,7 @@ describe('workflow bootstrap service', () => {
       controlsTab: 'strategy',
       resultsTab: 'history',
       aggregateTab: 'saved',
+      splitFraction: '',
     })
   })
 
@@ -64,6 +65,7 @@ describe('workflow bootstrap service', () => {
       controlsTab: 'advanced',
       resultsTab: 'validate',
       aggregateTab: '',
+      splitFraction: '',
     })
   })
 
@@ -84,6 +86,7 @@ describe('workflow bootstrap service', () => {
       controlsTab: '',
       resultsTab: '',
       aggregateTab: '',
+      splitFraction: '',
     })
   })
 
@@ -177,6 +180,29 @@ describe('workflow bootstrap service', () => {
       controlsTab: 'strategy',
       resultsTab: 'history',
       aggregateTab: '',
+      splitFraction: '',
     })
+  })
+
+  it('restores persisted shell split fraction when present', () => {
+    installStorage({
+      vta_workspace_tab_v1: 'workflow',
+      vta_workflow_step_v1: 'analyze',
+      vta_workspace_split_v1: '0.52',
+    })
+
+    expect(readWorkflowBootstrapState()).toEqual({
+      workspace: 'workflow',
+      workflow: '',
+      workflowStep: 'analyze',
+      controlsTab: '',
+      resultsTab: '',
+      aggregateTab: '',
+      splitFraction: '0.52',
+    })
+
+    applyWorkflowBootstrapFromStorage()
+    const store = useWorkflowStore(pinia)
+    expect(store.splitFraction).toBe(0.52)
   })
 })

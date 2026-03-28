@@ -56,7 +56,20 @@ function runOverviewEmptyAction(actionName: string, pinia?: Pinia): void {
 interface AnalysisState {
   activeResultsTab: string
   topColumns: { key: string; label: string; sort: '' | 'asc' | 'desc'; alignLeft: boolean }[]
-  topTableRows: { selected: boolean; cells: { text: string; className: string; title: string }[] }[]
+  topTableRows: { rowId?: string; selected: boolean; cells: { text: string; className: string; title: string }[] }[]
+  selectedTopTitle: string
+  selectedTopSummary: string
+  selectedTopDecisionNote: string
+  selectedTopProvenanceChips: string[]
+  pinnedTopCandidates: {
+    id: string
+    rank: number
+    title: string
+    summary: string
+    detail: string
+    badges: string[]
+    staleReason: string
+  }[]
   bestKicker: string
   bestTitle: string
   bestMeta: string
@@ -85,6 +98,7 @@ interface AnalysisState {
   filterMinTrades: string
   filterMinExposure: string
   canClearTopFilters: boolean
+  topStaleCues: string[]
   paretoX: string
   paretoY: string
   paretoXOptions: { value: string; label: string; disabled: boolean }[]
@@ -433,6 +447,11 @@ export const useAnalysisStore = defineStore('analysis', {
     activeResultsTab: 'overview',
     topColumns: [],
     topTableRows: [],
+    selectedTopTitle: 'No ranked candidate selected.',
+    selectedTopSummary: 'No ranked candidates are available.',
+    selectedTopDecisionNote: 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.',
+    selectedTopProvenanceChips: [],
+    pinnedTopCandidates: [],
     bestKicker: '—',
     bestTitle: '—',
     bestMeta: '—',
@@ -461,6 +480,7 @@ export const useAnalysisStore = defineStore('analysis', {
     filterMinTrades: '',
     filterMinExposure: '',
     canClearTopFilters: true,
+    topStaleCues: [],
     paretoX: 'max_dd',
     paretoY: 'pnl',
     paretoXOptions: [],
@@ -608,6 +628,11 @@ export const useAnalysisStore = defineStore('analysis', {
       this.activeResultsTab = String(snapshot.activeResultsTab ?? this.activeResultsTab ?? 'overview').trim() || 'overview'
       this.topColumns = rawArray(snapshot.topColumns, this.topColumns)
       this.topTableRows = rawArray(snapshot.topTableRows, this.topTableRows)
+      this.selectedTopTitle = String(snapshot.selectedTopTitle ?? this.selectedTopTitle ?? 'No ranked candidate selected.').trim() || 'No ranked candidate selected.'
+      this.selectedTopSummary = String(snapshot.selectedTopSummary ?? this.selectedTopSummary ?? 'No ranked candidates are available.').trim() || 'No ranked candidates are available.'
+      this.selectedTopDecisionNote = String(snapshot.selectedTopDecisionNote ?? this.selectedTopDecisionNote ?? 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.').trim() || 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.'
+      this.selectedTopProvenanceChips = rawArray(snapshot.selectedTopProvenanceChips, this.selectedTopProvenanceChips)
+      this.pinnedTopCandidates = rawArray(snapshot.pinnedTopCandidates, this.pinnedTopCandidates)
       this.bestKicker = String(snapshot.bestKicker ?? this.bestKicker ?? '—').trim() || '—'
       this.bestTitle = String(snapshot.bestTitle ?? this.bestTitle ?? '—').trim() || '—'
       this.bestMeta = String(snapshot.bestMeta ?? this.bestMeta ?? '—').trim() || '—'
@@ -636,6 +661,7 @@ export const useAnalysisStore = defineStore('analysis', {
       this.filterMinTrades = String(snapshot.filterMinTrades ?? this.filterMinTrades ?? '').trim()
       this.filterMinExposure = String(snapshot.filterMinExposure ?? this.filterMinExposure ?? '').trim()
       this.canClearTopFilters = Boolean(snapshot.canClearTopFilters ?? this.canClearTopFilters)
+      this.topStaleCues = rawArray(snapshot.topStaleCues, this.topStaleCues)
       this.paretoX = String(snapshot.paretoX ?? this.paretoX ?? 'max_dd').trim() || 'max_dd'
       this.paretoY = String(snapshot.paretoY ?? this.paretoY ?? 'pnl').trim() || 'pnl'
       this.paretoXOptions = rawArray(snapshot.paretoXOptions, this.paretoXOptions)
@@ -830,6 +856,26 @@ export const useAnalysisStore = defineStore('analysis', {
 
     selectTopRow(index: number): void {
       void analysisService.selectTopRow(Math.max(0, Math.floor(Number(index || 0))))
+    },
+
+    pinTopRow(index: number): void {
+      void analysisService.pinTopRow(Math.max(0, Math.floor(Number(index || 0))))
+    },
+
+    pinSelectedTopRow(): void {
+      void analysisService.pinSelectedTopRow()
+    },
+
+    unpinTopCandidate(id: string): void {
+      void analysisService.unpinTopCandidate(String(id || '').trim())
+    },
+
+    replacePinnedTopCandidate(id: string): void {
+      void analysisService.replacePinnedTopCandidate(String(id || '').trim())
+    },
+
+    clearPinnedTopCandidates(): void {
+      void analysisService.clearPinnedTopCandidates()
     },
 
     copyBest(): void {

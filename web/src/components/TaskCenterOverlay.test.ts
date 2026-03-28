@@ -5,6 +5,7 @@ import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 import TaskCenterOverlay from './TaskCenterOverlay.vue'
 import { useTaskStore } from '../stores/taskStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 
 describe('TaskCenterOverlay', () => {
   beforeEach(() => {
@@ -134,6 +135,87 @@ describe('TaskCenterOverlay', () => {
     )
     expect(toastCard?.getAttribute('aria-label')).toContain('Validation failed.')
     expect(timelineRow?.getAttribute('aria-label')).toContain('Double Ma Validation')
+
+    wrapper.unmount()
+  })
+
+  it('groups task posture and routes related actions to the correct review surface', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    const taskStore = useTaskStore(pinia)
+    taskStore.$patch({
+      activeById: {
+        task_running: {
+          id: 'task_running',
+          command: 'run_double_ma_optimization',
+          label: 'Optimization',
+          status: 'running',
+          startedAt: 1_700_000_000_000,
+          phase: 'Evaluate',
+          message: 'Evaluate (42.0%)',
+        },
+        task_queued: {
+          id: 'task_queued',
+          command: 'run_double_ma_validation',
+          label: 'Validation',
+          status: 'queued',
+          startedAt: 1_700_000_000_100,
+          message: 'Queued.',
+        },
+      },
+      activeOrder: ['task_running', 'task_queued'],
+      history: [
+        {
+          id: 'task_failed',
+          command: 'run_double_ma_validation',
+          label: 'Validation',
+          status: 'failed',
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_001_000,
+          error: 'Validation failed.',
+        },
+        {
+          id: 'task_success',
+          command: 'run_double_ma_optimization',
+          label: 'Optimization',
+          status: 'success',
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_001_500,
+          message: 'Completed.',
+        },
+      ],
+    })
+
+    const wrapper = mount(TaskCenterOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    await wrapper.get('.overlayToggle').trigger('click')
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Active posture')
+    expect(text).toContain('Running')
+    expect(text).toContain('Queued')
+    expect(text).toContain('Recent outcomes')
+    expect(text).toContain('Attention')
+    expect(text).toContain('Completed')
+
+    const action = Array.from(document.querySelectorAll<HTMLButtonElement>('.relatedBtn')).find((button) =>
+      String(button.textContent || '').includes('Open validation'),
+    )
+    expect(action).toBeTruthy()
+    action?.click()
+    await nextTick()
+
+    expect(workflowStore.workflowStep).toBe('validate')
+    expect(document.querySelector('.taskPanel')).toBeNull()
 
     wrapper.unmount()
   })

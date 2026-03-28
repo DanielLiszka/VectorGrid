@@ -11,6 +11,10 @@ use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(all(test, feature = "cuda"))]
+use std::cell::Cell;
+#[cfg(feature = "cuda")]
+use std::cell::RefCell;
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
@@ -270,6 +274,64 @@ fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
 }
 
+#[cfg(feature = "cuda")]
+thread_local! {
+    static KQSR_ROUTE_DIAGNOSTICS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static FORCE_KQSR_CUDA_CPU_FALLBACK: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(feature = "cuda")]
+fn record_kqsr_route_diagnostic(message: String) {
+    KQSR_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.iter().any(|entry| entry == &message) {
+            return;
+        }
+        diagnostics.push(message);
+    });
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn clear_kqsr_route_diagnostics() {
+    KQSR_ROUTE_DIAGNOSTICS.with(|cell| cell.borrow_mut().clear());
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn take_kqsr_route_diagnostics() -> Option<Vec<String>> {
+    KQSR_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut *diagnostics))
+        }
+    })
+}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn clear_kqsr_route_diagnostics() {}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn take_kqsr_route_diagnostics() -> Option<Vec<String>> {
+    None
+}
+
+#[cfg(all(test, feature = "cuda"))]
+pub(crate) fn set_force_kqsr_cuda_cpu_fallback_for_test(enabled: bool) {
+    FORCE_KQSR_CUDA_CPU_FALLBACK.with(|cell| cell.set(enabled));
+}
+
+#[cfg(all(test, feature = "cuda"))]
+fn force_kqsr_cuda_cpu_fallback_for_test() -> bool {
+    FORCE_KQSR_CUDA_CPU_FALLBACK.with(|cell| cell.get())
+}
+
+#[cfg(all(feature = "cuda", not(test)))]
+fn force_kqsr_cuda_cpu_fallback_for_test() -> bool {
+    false
+}
+
 fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<String, String> {
     let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
         format!("KQSR indicator '{indicator_id}' is not registered for dynamic dispatch")
@@ -331,16 +393,27 @@ fn compute_indicator_f64(
             && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
         if prefer_gpu {
             if let Some(prepared) = prepared_cuda_inputs {
-                let out = compute_dynamic_indicator_cuda_with_inputs(
-                    prepared,
-                    indicator_id,
-                    Some(output_id),
-                    params,
-                    Kernel::Auto,
-                    vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-                );
-                if let Ok(values) = out {
-                    return cuda_series_to_f64(values);
+                let out = if force_kqsr_cuda_cpu_fallback_for_test() {
+                    Err(crate::dynamic_indicator_adapter::DynamicIndicatorAdapterError::ComputeFailure {
+                        indicator_id: indicator_id.to_string(),
+                        details: "forced test fallback".to_string(),
+                    })
+                } else {
+                    compute_dynamic_indicator_cuda_with_inputs(
+                        prepared,
+                        indicator_id,
+                        Some(output_id),
+                        params,
+                        Kernel::Auto,
+                        vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+                    )
+                };
+                match out {
+                    Ok(values) => return cuda_series_to_f64(values),
+                    Err(err) => record_kqsr_route_diagnostic(format!(
+                        "KQSR indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: {}",
+                        err
+                    )),
                 }
             }
         }
@@ -376,16 +449,27 @@ fn compute_indicator_f32(
         && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
     if prefer_gpu {
         if let Some(prepared) = prepared_cuda_inputs {
-            let out = compute_dynamic_indicator_cuda_with_inputs(
-                prepared,
-                indicator_id,
-                Some(output_id),
-                params,
-                Kernel::Auto,
-                vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-            );
-            if let Ok(values) = out {
-                return cuda_series_to_host_f32(values);
+            let out = if force_kqsr_cuda_cpu_fallback_for_test() {
+                Err(crate::dynamic_indicator_adapter::DynamicIndicatorAdapterError::ComputeFailure {
+                    indicator_id: indicator_id.to_string(),
+                    details: "forced test fallback".to_string(),
+                })
+            } else {
+                compute_dynamic_indicator_cuda_with_inputs(
+                    prepared,
+                    indicator_id,
+                    Some(output_id),
+                    params,
+                    Kernel::Auto,
+                    vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+                )
+            };
+            match out {
+                Ok(values) => return cuda_series_to_host_f32(values),
+                Err(err) => record_kqsr_route_diagnostic(format!(
+                    "KQSR indicator {indicator_id}/{output_id} CUDA helper fell back to CPU: {}",
+                    err
+                )),
             }
         }
     }
@@ -1163,6 +1247,55 @@ mod tests {
         assert!(signals.first_valid < candles.close.len());
         assert!(signals.qqe_fast.iter().any(|v| v.is_finite()));
         assert!(signals.qqe_slow.iter().any(|v| v.is_finite()));
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn compute_kqsr_signals_records_route_diagnostics_on_cuda_cpu_fallback() {
+        if !cuda_available() {
+            return;
+        }
+
+        struct ResetKqsrCpuFallback;
+
+        impl Drop for ResetKqsrCpuFallback {
+            fn drop(&mut self) {
+                set_force_kqsr_cuda_cpu_fallback_for_test(false);
+                clear_kqsr_route_diagnostics();
+            }
+        }
+
+        clear_kqsr_route_diagnostics();
+        set_force_kqsr_cuda_cpu_fallback_for_test(true);
+        let _reset = ResetKqsrCpuFallback;
+
+        let candles = make_trending_candles(512);
+        let prepared = PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
+            .expect("cuda inputs");
+        let cfg = KqsrStrategyParams::default();
+        let periods = resolve_kqsr_periods(&cfg, 12, 34);
+
+        let signals = compute_kqsr_signals(
+            &candles,
+            "close",
+            &Backend::GpuOnly { device_id: 0 },
+            periods,
+            &cfg,
+            Some(&prepared),
+        )
+        .expect("kqsr fallback signals");
+
+        assert_eq!(signals.qqe_fast.len(), candles.close.len());
+        let diagnostics = take_kqsr_route_diagnostics().unwrap_or_default();
+        assert!(
+            diagnostics.iter().any(|entry| {
+                entry.contains("KQSR indicator")
+                    && entry.contains("CUDA helper fell back to CPU")
+                    && entry.contains("forced test fallback")
+            }),
+            "expected KQSR helper fallback diagnostic, got {:?}",
+            diagnostics
+        );
     }
 
     #[cfg(feature = "cuda")]

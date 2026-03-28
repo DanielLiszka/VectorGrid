@@ -6,6 +6,7 @@ import {
   WORKFLOW_STATE_KEY,
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
+  WORKSPACE_SPLIT_KEY,
   WORKSPACE_TAB_KEY,
 } from '../utils/core/storageKeys'
 import {
@@ -32,6 +33,7 @@ interface WorkflowState {
   controlsTab: string
   resultsTab: string
   aggregateTab: string
+  splitFraction: number
   workflowSubtitle: string
   source: 'vue' | 'unknown'
   updatedAtUnixMs: number
@@ -54,6 +56,7 @@ const DEFAULT_STEP = 'data'
 const DEFAULT_CONTROLS_TAB = 'data'
 const DEFAULT_RESULTS_TAB = 'overview'
 const DEFAULT_AGGREGATE_TAB = 'meta'
+const DEFAULT_SPLIT_FRACTION = 0.34
 
 function normalizeWorkspace(value: unknown): string {
   return normalizeWorkspaceTab(value) || ''
@@ -85,6 +88,12 @@ function workflowStep(workflow: string): string {
 
 function storageSet(key: string, value: string): void {
   writeStorageString(key, value)
+}
+
+function normalizeSplitFraction(value: unknown): number {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return DEFAULT_SPLIT_FRACTION
+  return Math.min(0.9, Math.max(0.1, next))
 }
 
 function setRootAttr(name: string, value: string): void {
@@ -275,6 +284,7 @@ function syncRuntimeFromState(state: WorkflowState): void {
   setRootAttr('controlsTab', state.controlsTab)
   setRootAttr('resultsTab', state.resultsTab)
   setRootAttr('aggregateTab', state.aggregateTab)
+  setRootAttr('splitFraction', String(normalizeSplitFraction(state.splitFraction)))
   setRootAttr('workflowSubtitle', state.workflowSubtitle)
 }
 
@@ -285,6 +295,7 @@ function persistRuntimeState(state: WorkflowState): void {
   storageSet(CONTROLS_TAB_KEY, state.controlsTab)
   storageSet(RESULTS_TAB_KEY, state.resultsTab)
   storageSet(AGGREGATE_TAB_KEY, state.aggregateTab)
+  storageSet(WORKSPACE_SPLIT_KEY, String(normalizeSplitFraction(state.splitFraction)))
 }
 
 export const useWorkflowStore = defineStore('workflow', {
@@ -295,6 +306,7 @@ export const useWorkflowStore = defineStore('workflow', {
     controlsTab: DEFAULT_CONTROLS_TAB,
     resultsTab: DEFAULT_RESULTS_TAB,
     aggregateTab: DEFAULT_AGGREGATE_TAB,
+    splitFraction: DEFAULT_SPLIT_FRACTION,
     workflowSubtitle: '—',
     source: 'unknown',
     updatedAtUnixMs: 0,
@@ -354,6 +366,7 @@ export const useWorkflowStore = defineStore('workflow', {
       this.controlsTab = controls
       this.resultsTab = results
       this.aggregateTab = normalizeAggregate(snapshot.aggregateTab) || this.aggregateTab || DEFAULT_AGGREGATE_TAB
+      this.splitFraction = normalizeSplitFraction(snapshot.splitFraction ?? this.splitFraction)
 
       const subtitle = String(snapshot.workflowSubtitle ?? '').trim()
       this.workflowSubtitle = subtitle || deriveSubtitle(this)
@@ -526,6 +539,13 @@ export const useWorkflowStore = defineStore('workflow', {
       this.resultsTab = 'meta'
       this.aggregateTab = nextTab
       this.commitState('vue', true, options)
+    },
+
+    setSplitFraction(value: number, options?: WorkflowCommitOptions): void {
+      const next = normalizeSplitFraction(value)
+      if (Math.abs(this.splitFraction - next) < 0.0005) return
+      this.splitFraction = next
+      this.commitState('vue', false, options)
     },
 
     primeAggregateTab(tab: string, options?: WorkflowCommitOptions): void {

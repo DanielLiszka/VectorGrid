@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { useStorage } from '@vueuse/core'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDataStore } from '../stores/dataStore'
@@ -14,10 +13,9 @@ const settingsStore = useSettingsStore()
 
 const workspaceGridRef = ref<HTMLElement | null>(null)
 const viewportWidth = ref(1440)
-const splitFraction = useStorage<number>('VTA_WORKSPACE_SPLIT_V1', 0.34)
 const dividerDrag = ref<{ pointerId: number; startClientX: number; startFraction: number } | null>(null)
 
-const { controlsTab, resultsTab, workspace, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
+const { controlsTab, resultsTab, splitFraction, workspace, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
 const { dataId, dataLen, datasetLabel, datasetRange } = storeToRefs(dataStore)
 const { backend, progressMeta, runReadinessHint, strategyKind } = storeToRefs(optimizeStore)
 const { controlsCollapsed } = storeToRefs(settingsStore)
@@ -343,7 +341,7 @@ function clampSplitFraction(raw: number): number {
 
 function syncViewportMetrics(): void {
   viewportWidth.value = window.innerWidth
-  splitFraction.value = clampSplitFraction(splitFraction.value)
+  workflowStore.setSplitFraction(clampSplitFraction(splitFraction.value), { persist: false })
 }
 
 function onWindowResize(): void {
@@ -365,7 +363,7 @@ function onDividerPointerMove(event: PointerEvent): void {
   const drag = dividerDrag.value
   if (!drag || drag.pointerId !== event.pointerId) return
   const deltaX = event.clientX - drag.startClientX
-  splitFraction.value = clampSplitFraction(drag.startFraction + deltaX / currentGridWidth())
+  workflowStore.setSplitFraction(clampSplitFraction(drag.startFraction + deltaX / currentGridWidth()))
   event.preventDefault()
 }
 
@@ -390,15 +388,15 @@ function onDividerKeydown(event: KeyboardEvent): void {
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return
   event.preventDefault()
   if (event.key === 'Home') {
-    splitFraction.value = clampSplitFraction(0)
+    workflowStore.setSplitFraction(clampSplitFraction(0))
     return
   }
   if (event.key === 'End') {
-    splitFraction.value = clampSplitFraction(1)
+    workflowStore.setSplitFraction(clampSplitFraction(1))
     return
   }
   const delta = event.key === 'ArrowLeft' ? -0.02 : 0.02
-  splitFraction.value = clampSplitFraction(splitFraction.value + delta)
+  workflowStore.setSplitFraction(clampSplitFraction(splitFraction.value + delta))
 }
 
 onMounted(async () => {

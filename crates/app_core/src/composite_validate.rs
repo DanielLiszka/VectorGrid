@@ -1,7 +1,8 @@
 use crate::asr::{
-    build_asr_desired_positions, compute_asr_fast_signals, compute_asr_kaufman_stops,
-    compute_asr_slow_signals, compute_asr_start_t, eval_asr_curves_from_desired,
-    eval_asr_metrics_from_desired, eval_asr_metrics_window_from_desired, resolve_asr_periods,
+    build_asr_desired_positions, clear_asr_route_diagnostics, compute_asr_fast_signals,
+    compute_asr_kaufman_stops, compute_asr_slow_signals, compute_asr_start_t,
+    eval_asr_curves_from_desired, eval_asr_metrics_from_desired,
+    eval_asr_metrics_window_from_desired, resolve_asr_periods, take_asr_route_diagnostics,
     validate_asr_params, AsrFastSignals, AsrKaufmanStops, AsrSlowSignals, AsrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -53,7 +54,8 @@ use crate::double_ma_validate::{
 };
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::kqsr::{
-    build_kqsr_desired_positions, compute_kqsr_signals, compute_kqsr_start_t, resolve_kqsr_periods,
+    build_kqsr_desired_positions, clear_kqsr_route_diagnostics, compute_kqsr_signals,
+    compute_kqsr_start_t, resolve_kqsr_periods, take_kqsr_route_diagnostics,
     validate_kqsr_params, KqsrSignals, KqsrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -63,7 +65,8 @@ use crate::kqsr_gpu_kernel::{
     eval_kqsr_metrics_gpu_kernel_device_rows, KqsrGpuComboBatch, KqsrGpuDeviceSignalMatrices,
 };
 use crate::kvdf::{
-    build_kvdf_desired_positions, compute_kvdf_signals, compute_kvdf_start_t, resolve_kvdf_periods,
+    build_kvdf_desired_positions, clear_kvdf_route_diagnostics, compute_kvdf_signals,
+    compute_kvdf_start_t, resolve_kvdf_periods, take_kvdf_route_diagnostics,
     validate_kvdf_params, KvdfSignals, KvdfStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -310,12 +313,18 @@ fn clear_validation_strategy_route_diagnostics(candidates: &[CompositeParams]) {
     let Some(first) = candidates.first() else {
         return;
     };
-    if first.vcc.is_some() {
+    if first.asr.is_some() {
+        clear_asr_route_diagnostics();
+    } else if first.vcc.is_some() {
         clear_vcc_route_diagnostics();
     } else if first.vemr.is_some() {
         clear_vemr_route_diagnostics();
     } else if first.vcet.is_some() {
         clear_vcet_route_diagnostics();
+    } else if first.kqsr.is_some() {
+        clear_kqsr_route_diagnostics();
+    } else if first.kvdf.is_some() {
+        clear_kvdf_route_diagnostics();
     }
 }
 
@@ -323,12 +332,18 @@ fn take_validation_strategy_route_diagnostics(
     candidates: &[CompositeParams],
 ) -> Option<Vec<String>> {
     let first = candidates.first()?;
-    if first.vcc.is_some() {
+    if first.asr.is_some() {
+        take_asr_route_diagnostics()
+    } else if first.vcc.is_some() {
         take_vcc_route_diagnostics()
     } else if first.vemr.is_some() {
         take_vemr_route_diagnostics()
     } else if first.vcet.is_some() {
         take_vcet_route_diagnostics()
+    } else if first.kqsr.is_some() {
+        take_kqsr_route_diagnostics()
+    } else if first.kvdf.is_some() {
+        take_kvdf_route_diagnostics()
     } else {
         None
     }
@@ -17994,6 +18009,14 @@ mod tests {
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.backend_fallback_reason.is_none());
+        let route_diagnostics = gpu_res.route_diagnostics.clone().unwrap_or_default();
+        assert!(
+            route_diagnostics.iter().any(|entry| {
+                entry.contains("ASR EMA z-score CUDA path used host-composed EMA/SMA sweep staging before device upload")
+            }),
+            "expected ASR EMA validation route diagnostic, got {:?}",
+            route_diagnostics
+        );
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
 
         for (cpu, gpu) in cpu_res.candidates.iter().zip(gpu_res.candidates.iter()) {
@@ -22349,6 +22372,70 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn kqsr_validation_gpu_kernel_reports_route_diagnostics() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        struct ResetKqsrCpuFallback;
+
+        impl Drop for ResetKqsrCpuFallback {
+            fn drop(&mut self) {
+                crate::kqsr::set_force_kqsr_cuda_cpu_fallback_for_test(false);
+                crate::kqsr::clear_kqsr_route_diagnostics();
+            }
+        }
+
+        crate::kqsr::clear_kqsr_route_diagnostics();
+        crate::kqsr::set_force_kqsr_cuda_cpu_fallback_for_test(true);
+        let _reset = ResetKqsrCpuFallback;
+
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "kqsr-gpu-route-diagnostics".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![kqsr_test_candidate(10, 30)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1051,
+            max_candidates: 4,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("kqsr gpu validation with route diagnostics");
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+        let route_diagnostics = res.route_diagnostics.unwrap_or_default();
+        assert!(
+            route_diagnostics.iter().any(|entry| {
+                entry.contains("KQSR indicator")
+                    && entry.contains("CUDA helper fell back to CPU")
+                    && entry.contains("forced test fallback")
+            }),
+            "expected KQSR validation route diagnostic, got {:?}",
+            route_diagnostics
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn kqsr_validation_gpu_kernel_walk_forward_matches_cpu_metrics() {
         let candles = make_noisy_trending_candles(4096);
         let cancel = AtomicBool::new(false);
@@ -23666,6 +23753,70 @@ mod tests {
             .candidates
             .iter()
             .all(|cand| cand.in_sample.sharpe.is_finite()));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kvdf_validation_gpu_kernel_reports_route_diagnostics() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        struct ResetKvdfCpuFallback;
+
+        impl Drop for ResetKvdfCpuFallback {
+            fn drop(&mut self) {
+                crate::kvdf::set_force_kvdf_cuda_cpu_fallback_for_test(false);
+                crate::kvdf::clear_kvdf_route_diagnostics();
+            }
+        }
+
+        crate::kvdf::clear_kvdf_route_diagnostics();
+        crate::kvdf::set_force_kvdf_cuda_cpu_fallback_for_test(true);
+        let _reset = ResetKvdfCpuFallback;
+
+        let candles = make_noisy_trending_candles(4096);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeValidationRequest {
+            data_id: "kvdf-gpu-route-diagnostics".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![kvdf_test_candidate(10, 30)],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 1053,
+            max_candidates: 4,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("kvdf gpu validation with route diagnostics");
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(res.backend_fallback_reason.is_none());
+        let route_diagnostics = res.route_diagnostics.unwrap_or_default();
+        assert!(
+            route_diagnostics.iter().any(|entry| {
+                entry.contains("KVDF indicator")
+                    && entry.contains("CUDA helper fell back to CPU")
+                    && entry.contains("forced test fallback")
+            }),
+            "expected KVDF validation route diagnostic, got {:?}",
+            route_diagnostics
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

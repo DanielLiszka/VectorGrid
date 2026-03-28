@@ -1,5 +1,6 @@
 import {
   CONTROLS_COLLAPSED_KEY,
+  DENSITY_MODE_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
   WINDOW_EFFECT_KEY,
@@ -11,6 +12,7 @@ import { useSettingsStore } from '../stores/settingsStore'
 const THEME_KEYS = new Set(['light', 'dark', 'system'])
 const EFFECT_KEYS = new Set(['none', 'mica', 'acrylic', 'vibrancy'])
 const HELP_MODE_KEYS = new Set(['full', 'concise', 'off'])
+const DENSITY_MODE_KEYS = new Set(['comfortable', 'standard', 'dense'])
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off'])
 
@@ -18,6 +20,7 @@ export interface SettingsBootstrapState {
   theme: string
   effect: string
   helpMode: string
+  densityMode: string
   workflowAdvanced: boolean | null
   controlsCollapsed: boolean | null
 }
@@ -52,6 +55,7 @@ export function readSettingsBootstrapState(): SettingsBootstrapState {
     theme: normalizeFromSet(readStorageValue(THEME_PREF_KEY), THEME_KEYS),
     effect: normalizeFromSet(readStorageValue(WINDOW_EFFECT_KEY), EFFECT_KEYS),
     helpMode: normalizeFromSet(readStorageValue(HELP_MODE_KEY), HELP_MODE_KEYS),
+    densityMode: normalizeFromSet(readStorageValue(DENSITY_MODE_KEY), DENSITY_MODE_KEYS),
     workflowAdvanced: readBooleanFlag(WORKFLOW_ADVANCED_KEY),
     controlsCollapsed: readBooleanFlag(CONTROLS_COLLAPSED_KEY),
   }
@@ -59,7 +63,7 @@ export function readSettingsBootstrapState(): SettingsBootstrapState {
 
 export function applySettingsBootstrapFromStorage(): void {
   const state = readSettingsBootstrapState()
-  if (!state.theme && !state.effect && !state.helpMode && state.workflowAdvanced == null && state.controlsCollapsed == null) return
+  if (!state.theme && !state.effect && !state.helpMode && !state.densityMode && state.workflowAdvanced == null && state.controlsCollapsed == null) return
   const pinia = resolveRuntimePinia()
   if (!pinia) return
   const store = useSettingsStore(pinia)
@@ -74,6 +78,10 @@ export function applySettingsBootstrapFromStorage(): void {
 
   if (state.helpMode) {
     store.setSelectField('settingsHelpMode', state.helpMode)
+  }
+
+  if (state.densityMode) {
+    store.setSelectField('settingsDensityMode', state.densityMode)
   }
 
   if (state.workflowAdvanced != null) {

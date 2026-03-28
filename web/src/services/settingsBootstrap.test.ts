@@ -17,6 +17,12 @@ type StorageMap = Record<string, string>
 function installStorage(values: StorageMap): void {
   vi.stubGlobal('localStorage', {
     getItem: (key: string) => (Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null),
+    setItem: (key: string, value: string) => {
+      values[key] = value
+    },
+    removeItem: (key: string) => {
+      delete values[key]
+    },
   })
 }
 
@@ -44,6 +50,7 @@ describe('settings bootstrap service', () => {
       vta_theme_pref_v1: 'Dark',
       vta_window_effect_v1: 'MICA',
       vta_help_mode_v1: 'concise',
+      vta_density_mode_v1: 'dense',
       vta_workflow_advanced_v1: '1',
       vta_controls_collapsed_v1: 'false',
     })
@@ -52,6 +59,7 @@ describe('settings bootstrap service', () => {
       theme: 'dark',
       effect: 'mica',
       helpMode: 'concise',
+      densityMode: 'dense',
       workflowAdvanced: true,
       controlsCollapsed: false,
     })
@@ -62,6 +70,7 @@ describe('settings bootstrap service', () => {
       vta_theme_pref_v1: 'midnight',
       vta_window_effect_v1: 'blur',
       vta_help_mode_v1: 'verbose',
+      vta_density_mode_v1: 'spacious',
       vta_workflow_advanced_v1: 'maybe',
       vta_controls_collapsed_v1: 'sometimes',
     })
@@ -70,6 +79,7 @@ describe('settings bootstrap service', () => {
       theme: '',
       effect: '',
       helpMode: '',
+      densityMode: '',
       workflowAdvanced: null,
       controlsCollapsed: null,
     })
@@ -80,6 +90,7 @@ describe('settings bootstrap service', () => {
       vta_theme_pref_v1: 'light',
       vta_window_effect_v1: 'acrylic',
       vta_help_mode_v1: 'off',
+      vta_density_mode_v1: 'comfortable',
       vta_workflow_advanced_v1: 'true',
       vta_controls_collapsed_v1: '1',
     })
@@ -90,11 +101,13 @@ describe('settings bootstrap service', () => {
     expect(store.theme).toBe('light')
     expect(store.effect).toBe('acrylic')
     expect(store.helpMode).toBe('off')
+    expect(store.densityMode).toBe('comfortable')
     expect(store.workflowAdvanced).toBe(true)
     expect(store.controlsCollapsed).toBe(true)
     expect(dataset.themePref).toBe('light')
     expect(dataset.windowEffect).toBe('acrylic')
     expect(dataset.helpMode).toBe('off')
+    expect(dataset.density).toBe('comfortable')
     expect(dataset.workflowAdvanced).toBe('1')
     expect(dataset.controlsCollapsed).toBe('1')
     expect(invokeCommandMock).toHaveBeenCalledWith(

@@ -75,6 +75,27 @@ export interface OverallProgress {
   atUnixMs: number;
 }
 
+export interface TaskPostureCounts {
+  queued: number;
+  running: number;
+  cancelling: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  active: number;
+  terminal: number;
+}
+
+export interface TaskPostureSnapshot {
+  queued: TrackedTask[];
+  running: TrackedTask[];
+  cancelling: TrackedTask[];
+  completed: TrackedTask[];
+  failed: TrackedTask[];
+  cancelled: TrackedTask[];
+  counts: TaskPostureCounts;
+}
+
 export interface DoubleMaProgressPayload {
   processed_pairs: number;
   total_pairs: number;
@@ -115,6 +136,8 @@ interface TaskState {
   centerStatus: TaskCenterStatus;
   overallProgress: OverallProgress | null;
 }
+
+type TaskPostureStateLike = Pick<TaskState, "activeById" | "activeOrder" | "history">;
 
 interface PersistedTaskCenterV1 {
   version: 1;
@@ -522,6 +545,61 @@ export function activeTasksCount(): number {
     if (st.activeById[id]) count += 1;
   }
   return count;
+}
+
+export function taskPostureSnapshot(
+  stateOrHistoryLimit?: TaskPostureStateLike | number,
+  historyLimitArg = 8,
+): TaskPostureSnapshot {
+  const st =
+    stateOrHistoryLimit && typeof stateOrHistoryLimit === "object"
+      ? stateOrHistoryLimit
+      : taskStoreSingleton();
+  const historyLimit =
+    typeof stateOrHistoryLimit === "number" ? stateOrHistoryLimit : historyLimitArg;
+  const queued: TrackedTask[] = [];
+  const running: TrackedTask[] = [];
+  const cancelling: TrackedTask[] = [];
+  const completed: TrackedTask[] = [];
+  const failed: TrackedTask[] = [];
+  const cancelled: TrackedTask[] = [];
+
+  for (const id of st.activeOrder) {
+    const task = st.activeById[id];
+    if (!task) continue;
+    if (task.status === "queued") queued.push(task);
+    else if (task.status === "running") running.push(task);
+    else if (task.status === "cancelling") cancelling.push(task);
+  }
+
+  const recentHistory = st.history.slice(
+    0,
+    Math.max(1, Math.floor(Number(historyLimit || 8))),
+  );
+  for (const task of recentHistory) {
+    if (task.status === "success") completed.push(task);
+    else if (task.status === "failed") failed.push(task);
+    else if (task.status === "cancelled") cancelled.push(task);
+  }
+
+  return {
+    queued,
+    running,
+    cancelling,
+    completed,
+    failed,
+    cancelled,
+    counts: {
+      queued: queued.length,
+      running: running.length,
+      cancelling: cancelling.length,
+      completed: completed.length,
+      failed: failed.length,
+      cancelled: cancelled.length,
+      active: queued.length + running.length + cancelling.length,
+      terminal: completed.length + failed.length + cancelled.length,
+    },
+  };
 }
 
 export function cancelCommandFor(command: string): TauriCommand | null {

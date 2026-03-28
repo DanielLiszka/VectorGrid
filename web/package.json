@@ -18,6 +18,7 @@
     "parity": "node ./scripts/check-tauri-parity.mjs",
     "test": "vitest run",
     "analyze:bundle": "vue-tsc -b && vite build --mode analyze",
+    "check:bundle-budget": "node ./scripts/check-bundle-budget.mjs",
     "bench:request-builder": "vitest run src/services/optimizeRequestBuilder.bench.test.ts",
     "bench:request-builder:compare": "node ./scripts/compare-request-builder-bench.mjs",
     "build": "vue-tsc -b && vite build",

@@ -184,7 +184,8 @@ describe("analysis service", () => {
     expect(store.topTableRows[0]?.selected).toBe(false);
     expect(store.topTableRows[1]?.selected).toBe(false);
     expect(store.topTableRows[2]?.selected).toBe(true);
-    expect(String(store.topSelectionGuardrail || "")).toContain("3");
+    expect(String(store.topSelectionGuardrail || "")).toBe("—");
+    expect(String(store.statusLine || "")).toContain("Selected top row 3.");
     expect(store.source).toBe("vue");
   });
 

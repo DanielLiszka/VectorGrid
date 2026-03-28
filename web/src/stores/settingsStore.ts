@@ -1,9 +1,11 @@
 import { defineStore } from 'pinia'
 import {
   CONTROLS_COLLAPSED_KEY,
+  DENSITY_MODE_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
   WINDOW_EFFECT_KEY,
+  WORKSTATION_PERSPECTIVES_KEY,
   WORKFLOW_ADVANCED_KEY,
 } from '../utils/core/storageKeys'
 import {
@@ -15,12 +17,33 @@ import {
 import { useDataStore } from './dataStore'
 import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowStore } from './workflowStore'
+import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
 
 const THEME_KEYS = new Set(['light', 'dark', 'system'])
 const EFFECT_KEYS = new Set(['none', 'mica', 'acrylic', 'vibrancy'])
 const HELP_MODE_KEYS = new Set(['full', 'concise', 'off'])
+const DENSITY_MODE_KEYS = new Set(['comfortable', 'standard', 'dense'])
 
 export type HelpMode = 'full' | 'concise' | 'off'
+export type DensityMode = 'comfortable' | 'standard' | 'dense'
+
+export interface WorkstationPerspectiveSnapshot {
+  workspace: string
+  workflow: string
+  workflowStep: string
+  controlsTab: string
+  resultsTab: string
+  aggregateTab: string
+  splitFraction: number
+  densityMode: DensityMode
+}
+
+export interface WorkstationPerspective {
+  id: string
+  name: string
+  builtIn: boolean
+  snapshot: WorkstationPerspectiveSnapshot
+}
 
 function normalizeTheme(value: unknown): string {
   const next = String(value ?? '').trim().toLowerCase()
@@ -38,6 +61,18 @@ function normalizeHelpMode(value: unknown): HelpMode {
   return 'full'
 }
 
+function normalizeDensityMode(value: unknown): DensityMode {
+  const next = String(value ?? '').trim().toLowerCase()
+  if (DENSITY_MODE_KEYS.has(next)) return next as DensityMode
+  return 'standard'
+}
+
+function normalizeSplitFraction(value: unknown): number {
+  const next = Number(value)
+  if (!Number.isFinite(next)) return 0.34
+  return Math.min(0.9, Math.max(0.1, next))
+}
+
 function resolveTheme(pref: string): string {
   if (pref === 'dark') return 'dark'
   if (pref === 'light') return 'light'
@@ -47,40 +82,51 @@ function resolveTheme(pref: string): string {
 
 function setRootDataAttr(name: string, value: string): void {
   if (typeof document === 'undefined') return
-  document.documentElement.dataset[name as keyof DOMStringMap] = value
+  if (value) document.documentElement.dataset[name as keyof DOMStringMap] = value
+  else delete document.documentElement.dataset[name as keyof DOMStringMap]
 }
 
 function persistTheme(pref: string): void {
-  try {
-    localStorage.setItem(THEME_PREF_KEY, pref)
-  } catch {}
+  writeStorageString(THEME_PREF_KEY, pref)
 }
 
 function persistEffect(effect: string): void {
-  try {
-    if (effect === 'none') {
-      localStorage.removeItem(WINDOW_EFFECT_KEY)
-      return
-    }
-    localStorage.setItem(WINDOW_EFFECT_KEY, effect)
-  } catch {}
+  if (effect === 'none') {
+    removeStorageKey(WINDOW_EFFECT_KEY)
+    return
+  }
+  writeStorageString(WINDOW_EFFECT_KEY, effect)
 }
 
 function persistHelpMode(mode: HelpMode): void {
-  try {
-    if (mode === 'full') {
-      localStorage.removeItem(HELP_MODE_KEY)
-      return
-    }
-    localStorage.setItem(HELP_MODE_KEY, mode)
-  } catch {}
+  if (mode === 'full') {
+    removeStorageKey(HELP_MODE_KEY)
+    return
+  }
+  writeStorageString(HELP_MODE_KEY, mode)
 }
 
 function persistBoolFlag(key: string, enabled: boolean): void {
-  try {
-    if (enabled) localStorage.setItem(key, '1')
-    else localStorage.removeItem(key)
-  } catch {}
+  if (enabled) writeStorageString(key, '1')
+  else removeStorageKey(key)
+}
+
+function persistDensityMode(mode: DensityMode): void {
+  if (mode === 'standard') {
+    removeStorageKey(DENSITY_MODE_KEY)
+    return
+  }
+  writeStorageString(DENSITY_MODE_KEY, mode)
+}
+
+function persistPerspectives(perspectives: WorkstationPerspective[]): void {
+  writeStorageString(WORKSTATION_PERSPECTIVES_KEY, JSON.stringify(perspectives))
+}
+
+function applyDensityModeLocally(mode: DensityMode): void {
+  const normalized = normalizeDensityMode(mode)
+  setRootDataAttr('density', normalized)
+  persistDensityMode(normalized)
 }
 
 function applyThemeLocally(pref: string): void {
@@ -115,6 +161,137 @@ function applyHelpModeLocally(mode: HelpMode): void {
   persistHelpMode(normalized)
 }
 
+const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
+  {
+    id: 'builtin_optimize',
+    name: 'Optimize',
+    builtIn: true,
+    snapshot: {
+      workspace: 'workflow',
+      workflow: 'optimize',
+      workflowStep: 'optimize',
+      controlsTab: 'opt',
+      resultsTab: 'overview',
+      aggregateTab: 'meta',
+      splitFraction: 0.34,
+      densityMode: 'standard',
+    },
+  },
+  {
+    id: 'builtin_validate',
+    name: 'Validate',
+    builtIn: true,
+    snapshot: {
+      workspace: 'workflow',
+      workflow: 'validate',
+      workflowStep: 'validate',
+      controlsTab: 'opt',
+      resultsTab: 'validate',
+      aggregateTab: 'meta',
+      splitFraction: 0.34,
+      densityMode: 'standard',
+    },
+  },
+  {
+    id: 'builtin_top_results_triage',
+    name: 'Top Results Triage',
+    builtIn: true,
+    snapshot: {
+      workspace: 'workflow',
+      workflow: 'analyze',
+      workflowStep: 'analyze',
+      controlsTab: 'opt',
+      resultsTab: 'top',
+      aggregateTab: 'meta',
+      splitFraction: 0.34,
+      densityMode: 'dense',
+    },
+  },
+  {
+    id: 'builtin_execution_review',
+    name: 'Execution Review',
+    builtIn: true,
+    snapshot: {
+      workspace: 'settings',
+      workflow: 'data',
+      workflowStep: 'data',
+      controlsTab: 'data',
+      resultsTab: 'overview',
+      aggregateTab: 'meta',
+      splitFraction: 0.34,
+      densityMode: 'standard',
+    },
+  },
+  {
+    id: 'builtin_run_library',
+    name: 'Run Library',
+    builtIn: true,
+    snapshot: {
+      workspace: 'library',
+      workflow: 'history',
+      workflowStep: 'data',
+      controlsTab: 'data',
+      resultsTab: 'history',
+      aggregateTab: 'meta',
+      splitFraction: 0.34,
+      densityMode: 'dense',
+    },
+  },
+]
+
+function normalizePerspectiveSnapshot(value: unknown): WorkstationPerspectiveSnapshot | null {
+  if (!value || typeof value !== 'object') return null
+  const row = value as Record<string, unknown>
+  return {
+    workspace: String(row.workspace || '').trim() || 'workflow',
+    workflow: String(row.workflow || '').trim() || 'data',
+    workflowStep: String(row.workflowStep || '').trim() || 'data',
+    controlsTab: String(row.controlsTab || '').trim() || 'data',
+    resultsTab: String(row.resultsTab || '').trim() || 'overview',
+    aggregateTab: String(row.aggregateTab || '').trim() || 'meta',
+    splitFraction: normalizeSplitFraction(row.splitFraction),
+    densityMode: normalizeDensityMode(row.densityMode),
+  }
+}
+
+function readStoredPerspectives(): WorkstationPerspective[] {
+  const byId = new Map<string, WorkstationPerspective>()
+  for (const entry of BUILTIN_PERSPECTIVES) byId.set(entry.id, { ...entry, snapshot: { ...entry.snapshot } })
+  try {
+    const raw = readStorageString(WORKSTATION_PERSPECTIVES_KEY, '')
+    if (!raw) return Array.from(byId.values())
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return Array.from(byId.values())
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue
+      const row = item as Record<string, unknown>
+      const id = String(row.id || '').trim()
+      const name = String(row.name || '').trim()
+      const snapshot = normalizePerspectiveSnapshot(row.snapshot)
+      if (!id || !name || !snapshot) continue
+      const builtin = Boolean(row.builtIn)
+      if (byId.has(id)) {
+        const base = byId.get(id)
+        if (!base) continue
+        byId.set(id, {
+          id,
+          name: builtin ? base.name : name,
+          builtIn: true,
+          snapshot,
+        })
+        continue
+      }
+      byId.set(id, {
+        id,
+        name,
+        builtIn: false,
+        snapshot,
+      })
+    }
+  } catch {}
+  return Array.from(byId.values())
+}
+
 function runtimeCanMutateSettings(): boolean {
   if (typeof document === 'undefined') return true
   const root = document.documentElement as HTMLElement | undefined
@@ -126,8 +303,11 @@ interface SettingsState {
   theme: string
   effect: string
   helpMode: HelpMode
+  densityMode: DensityMode
   workflowAdvanced: boolean
   controlsCollapsed: boolean
+  perspectives: WorkstationPerspective[]
+  selectedPerspectiveId: string
   marketDataDir: string
   moveExisting: boolean
   marketDataDirHint: string
@@ -151,8 +331,11 @@ export const useSettingsStore = defineStore('settings', {
     theme: 'system',
     effect: 'none',
     helpMode: 'full',
+    densityMode: normalizeDensityMode(readStorageString(DENSITY_MODE_KEY, '')),
     workflowAdvanced: false,
     controlsCollapsed: false,
+    perspectives: readStoredPerspectives(),
+    selectedPerspectiveId: 'builtin_optimize',
     marketDataDir: '',
     moveExisting: true,
     marketDataDirHint: '—',
@@ -181,8 +364,11 @@ export const useSettingsStore = defineStore('settings', {
       this.theme = String(snapshot.theme ?? this.theme ?? 'system').trim() || 'system'
       this.effect = String(snapshot.effect ?? this.effect ?? 'none').trim() || 'none'
       this.helpMode = normalizeHelpMode(snapshot.helpMode ?? this.helpMode ?? 'full')
+      this.densityMode = normalizeDensityMode(snapshot.densityMode ?? this.densityMode ?? 'standard')
       this.workflowAdvanced = Boolean(snapshot.workflowAdvanced ?? this.workflowAdvanced)
       this.controlsCollapsed = Boolean(snapshot.controlsCollapsed ?? this.controlsCollapsed)
+      this.perspectives = Array.isArray(snapshot.perspectives) ? snapshot.perspectives : this.perspectives
+      this.selectedPerspectiveId = String(snapshot.selectedPerspectiveId ?? this.selectedPerspectiveId ?? 'builtin_optimize').trim() || 'builtin_optimize'
       this.marketDataDir = String(snapshot.marketDataDir ?? this.marketDataDir ?? '').trim()
       this.moveExisting = Boolean(snapshot.moveExisting ?? this.moveExisting)
       this.marketDataDirHint = String(snapshot.marketDataDirHint ?? this.marketDataDirHint ?? '—').trim() || '—'
@@ -197,6 +383,7 @@ export const useSettingsStore = defineStore('settings', {
       this.canGotoLibrary = Boolean(snapshot.canGotoLibrary ?? this.canGotoLibrary)
       this.canGotoAggregate = Boolean(snapshot.canGotoAggregate ?? this.canGotoAggregate)
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
+      applyDensityModeLocally(this.densityMode)
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
@@ -231,6 +418,11 @@ export const useSettingsStore = defineStore('settings', {
         this.helpMode = normalized
         applyHelpModeLocally(normalized)
         this.markVueUpdate()
+      } else if (key === 'settingsDensityMode') {
+        const normalized = normalizeDensityMode(next)
+        this.densityMode = normalized
+        applyDensityModeLocally(normalized)
+        this.markVueUpdate()
       }
     },
 
@@ -249,6 +441,143 @@ export const useSettingsStore = defineStore('settings', {
         this.moveExisting = next
         this.markVueUpdate()
       }
+    },
+
+    selectPerspective(id: string): void {
+      const next = String(id || '').trim()
+      if (!next) return
+      if (!this.perspectives.some((entry) => entry.id === next)) return
+      this.selectedPerspectiveId = next
+      this.markVueUpdate()
+    },
+
+    createPerspective(name: string): void {
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      const workflowStore = useWorkflowStore(pinia)
+      const trimmedName = String(name || '').trim() || `Perspective ${this.perspectives.length + 1}`
+      const id = `perspective_${Date.now().toString(36)}`
+      const entry: WorkstationPerspective = {
+        id,
+        name: trimmedName,
+        builtIn: false,
+        snapshot: {
+          workspace: workflowStore.workspace,
+          workflow: workflowStore.workflow,
+          workflowStep: workflowStore.workflowStep,
+          controlsTab: workflowStore.controlsTab,
+          resultsTab: workflowStore.resultsTab,
+          aggregateTab: workflowStore.aggregateTab,
+          splitFraction: normalizeSplitFraction(workflowStore.splitFraction),
+          densityMode: this.densityMode,
+        },
+      }
+      this.perspectives = [...this.perspectives, entry]
+      this.selectedPerspectiveId = id
+      persistPerspectives(this.perspectives)
+      this.statusLine = `Saved perspective: ${trimmedName}.`
+      this.markVueUpdate()
+    },
+
+    overwritePerspective(id: string): void {
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      const workflowStore = useWorkflowStore(pinia)
+      const targetId = String(id || '').trim()
+      if (!targetId) return
+      const existing = this.perspectives.find((entry) => entry.id === targetId)
+      if (!existing) return
+      this.perspectives = this.perspectives.map((entry) =>
+        entry.id !== targetId
+          ? entry
+          : {
+              ...entry,
+              snapshot: {
+                workspace: workflowStore.workspace,
+                workflow: workflowStore.workflow,
+                workflowStep: workflowStore.workflowStep,
+                controlsTab: workflowStore.controlsTab,
+                resultsTab: workflowStore.resultsTab,
+                aggregateTab: workflowStore.aggregateTab,
+                splitFraction: normalizeSplitFraction(workflowStore.splitFraction),
+                densityMode: this.densityMode,
+              },
+            },
+      )
+      persistPerspectives(this.perspectives)
+      this.selectedPerspectiveId = targetId
+      this.statusLine = `Updated perspective: ${existing.name}.`
+      this.markVueUpdate()
+    },
+
+    applyPerspective(id: string): void {
+      const pinia = resolveRuntimePinia()
+      if (!pinia) return
+      const targetId = String(id || '').trim()
+      const entry = this.perspectives.find((item) => item.id === targetId)
+      if (!entry) return
+      const workflowStore = useWorkflowStore(pinia)
+      this.selectedPerspectiveId = targetId
+      this.densityMode = normalizeDensityMode(entry.snapshot.densityMode)
+      applyDensityModeLocally(this.densityMode)
+      workflowStore.applyLegacySnapshot({
+        workspace: entry.snapshot.workspace,
+        workflow: entry.snapshot.workflow,
+        workflowStep: entry.snapshot.workflowStep,
+        controlsTab: entry.snapshot.controlsTab,
+        resultsTab: entry.snapshot.resultsTab,
+        aggregateTab: entry.snapshot.aggregateTab,
+        splitFraction: entry.snapshot.splitFraction,
+      })
+      workflowStore.commitState('vue', true)
+      this.statusLine = `Restored perspective: ${entry.name}.`
+      this.markVueUpdate()
+    },
+
+    renamePerspective(id: string, name: string): void {
+      const targetId = String(id || '').trim()
+      const nextName = String(name || '').trim()
+      if (!targetId || !nextName) return
+      const target = this.perspectives.find((entry) => entry.id === targetId)
+      if (!target || target.builtIn) return
+      this.perspectives = this.perspectives.map((entry) =>
+        entry.id === targetId ? { ...entry, name: nextName } : entry,
+      )
+      persistPerspectives(this.perspectives)
+      this.selectedPerspectiveId = targetId
+      this.statusLine = `Renamed perspective to ${nextName}.`
+      this.markVueUpdate()
+    },
+
+    duplicatePerspective(id: string): void {
+      const targetId = String(id || '').trim()
+      const existing = this.perspectives.find((entry) => entry.id === targetId)
+      if (!existing) return
+      const copyName = `${existing.name} Copy`
+      const duplicate: WorkstationPerspective = {
+        id: `perspective_${Date.now().toString(36)}`,
+        name: copyName,
+        builtIn: false,
+        snapshot: {
+          ...existing.snapshot,
+        },
+      }
+      this.perspectives = [...this.perspectives, duplicate]
+      persistPerspectives(this.perspectives)
+      this.selectedPerspectiveId = duplicate.id
+      this.statusLine = `Duplicated perspective: ${existing.name}.`
+      this.markVueUpdate()
+    },
+
+    deletePerspective(id: string): void {
+      const targetId = String(id || '').trim()
+      const existing = this.perspectives.find((entry) => entry.id === targetId)
+      if (!existing || existing.builtIn) return
+      this.perspectives = this.perspectives.filter((entry) => entry.id !== targetId)
+      persistPerspectives(this.perspectives)
+      this.selectedPerspectiveId = this.perspectives[0]?.id || 'builtin_optimize'
+      this.statusLine = `Deleted perspective: ${existing.name}.`
+      this.markVueUpdate()
     },
 
     syncFromDataStore(): void {

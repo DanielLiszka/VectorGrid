@@ -14,7 +14,9 @@ Status note:
 
 - the frontend-only follow-up phases in this file are complete
 - the next active implementation plan now lives in `Frontend Review/desktop_productization_plan_2026-03-28.md`
+- the workstation UX plan in `Frontend Review/workstation_behavior_plan_2026-03-28.md` is now complete for the frontend-only scope it defined
 - use that document as the source of truth for open Tauri/runtime desktop-productization work
+- use the workstation-behavior plan as the implementation record for saved perspectives, compare/provenance, stale-state cues, density, and bundle-discipline follow-through
 
 ## Next Implementation Checklist
 

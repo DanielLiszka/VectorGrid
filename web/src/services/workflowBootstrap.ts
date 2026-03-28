@@ -4,6 +4,7 @@ import {
   RESULTS_TAB_KEY,
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
+  WORKSPACE_SPLIT_KEY,
   WORKSPACE_TAB_KEY,
 } from '../utils/core/storageKeys'
 import { resolveRuntimePinia } from '../stores/runtimePinia'
@@ -24,6 +25,7 @@ export interface WorkflowBootstrapState {
   controlsTab: string
   resultsTab: string
   aggregateTab: string
+  splitFraction: string
 }
 
 function normalize(value: unknown): string {
@@ -47,12 +49,13 @@ export function readWorkflowBootstrapState(): WorkflowBootstrapState {
     controlsTab: normalizeFromSet(readStorageValue(CONTROLS_TAB_KEY), CONTROLS_TAB_KEYS),
     resultsTab: normalizeFromSet(readStorageValue(RESULTS_TAB_KEY), RESULTS_TAB_KEYS),
     aggregateTab: normalizeFromSet(readStorageValue(AGGREGATE_TAB_KEY), AGGREGATE_TAB_KEYS),
+    splitFraction: readStorageValue(WORKSPACE_SPLIT_KEY),
   }
 }
 
 export function applyWorkflowBootstrapFromStorage(): void {
   const state = readWorkflowBootstrapState()
-  if (!state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab) return
+  if (!state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab && !state.splitFraction) return
 
   const pinia = resolveRuntimePinia()
   if (!pinia) return
@@ -88,5 +91,9 @@ export function applyWorkflowBootstrapFromStorage(): void {
     } else {
       store.primeAggregateTab(state.aggregateTab)
     }
+  }
+
+  if (state.splitFraction) {
+    store.setSplitFraction(Number(state.splitFraction), { persist: false })
   }
 }

@@ -202,4 +202,151 @@ describe('TopWorkspacePanel', () => {
     expect(selectionStatus?.textContent).toContain('row 2')
     expect(selectionStatus?.textContent).toContain('3.4')
   })
+
+  it('pins shortlist candidates into the compare tray', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 2
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      { selected: true, cells: [{ text: 'row 1', className: 'left', title: 'row 1' }] },
+      { selected: false, cells: [{ text: 'row 2', className: 'left', title: 'row 2' }] },
+    ]
+    const pinSelectedSpy = vi.spyOn(analysisStore, 'pinSelectedTopRow').mockImplementation(() => undefined)
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const pinButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Pin current candidate'),
+    )
+    pinButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+
+    expect(pinSelectedSpy).toHaveBeenCalled()
+  })
+
+  it('renders compare actions for pinned candidates', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      { selected: true, cells: [{ text: 'row 1', className: 'left', title: 'row 1' }] },
+    ]
+    analysisStore.pinnedTopCandidates = [
+      {
+        id: 'candidate_a',
+        rank: 1,
+        title: 'Rank #1 · row 1',
+        summary: 'Return 12% · Sharpe 1.8',
+        detail: 'Strategy DoubleMa · Objective Sharpe',
+        badges: ['Current leader', 'Filtered shortlist'],
+        staleReason: 'Hidden by the current shortlist filters.',
+      },
+    ]
+    const replaceSpy = vi.spyOn(analysisStore, 'replacePinnedTopCandidate').mockImplementation(() => undefined)
+    const removeSpy = vi.spyOn(analysisStore, 'unpinTopCandidate').mockImplementation(() => undefined)
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Pinned candidates')
+    expect(text).toContain('Filtered shortlist')
+    expect(text).toContain('Hidden by the current shortlist filters.')
+
+    const replaceButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Replace with current'),
+    )
+    const removeButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Remove'),
+    )
+
+    replaceButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    removeButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect(replaceSpy).toHaveBeenCalledWith('candidate_a')
+    expect(removeSpy).toHaveBeenCalledWith('candidate_a')
+  })
+
+  it('renders stale cues from deterministic store state', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      { selected: true, cells: [{ text: 'row 1', className: 'left', title: 'row 1' }] },
+    ]
+    analysisStore.topStaleCues = [
+      'The prior selection fell out of the current shortlist filters.',
+      'Hidden by the current shortlist filters.',
+    ]
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('The prior selection fell out of the current shortlist filters.')
+    expect(text).toContain('Hidden by the current shortlist filters.')
+  })
+
+  it('dispatches pin actions from shortlist row shortcuts', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 2
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      { selected: true, cells: [{ text: 'row 1', className: 'left', title: 'row 1' }] },
+      { selected: false, cells: [{ text: 'row 2', className: 'left', title: 'row 2' }] },
+    ]
+    const pinSpy = vi.spyOn(analysisStore, 'pinTopRow').mockImplementation(() => undefined)
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('tr[data-top-row="1"]'))
+    rows[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }))
+    expect(pinSpy).toHaveBeenCalledWith(1)
+  })
 })

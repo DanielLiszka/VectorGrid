@@ -13,7 +13,7 @@ type TopColumn = {
   alignLeft?: unknown;
 };
 type TopRowCell = { text?: unknown; className?: unknown; title?: unknown };
-type TopRow = { selected?: unknown; cells?: unknown };
+type TopRow = { rowId?: unknown; selected?: unknown; cells?: unknown };
 type SortDir = "asc" | "desc";
 type TopFilterValues = {
   minPnl?: number;
@@ -22,6 +22,16 @@ type TopFilterValues = {
   minTrades?: number;
   minExposure?: number;
 };
+
+interface TopPinnedCandidate {
+  id: string;
+  rank: number;
+  title: string;
+  summary: string;
+  detail: string;
+  badges: string[];
+  staleReason: string;
+}
 
 interface AnalysisStoreState {
   bestKicker?: unknown;
@@ -36,8 +46,14 @@ interface AnalysisStoreState {
   paretoMeta?: unknown;
   topColumns?: unknown;
   topTableRows?: unknown;
+  selectedTopTitle?: unknown;
+  selectedTopSummary?: unknown;
+  selectedTopDecisionNote?: unknown;
+  selectedTopProvenanceChips?: unknown;
+  pinnedTopCandidates?: unknown;
   topRows?: unknown;
   topFilterMeta?: unknown;
+  topStaleCues?: unknown;
   drillMeta?: unknown;
   drillStatus?: unknown;
   stabilityStatus?: unknown;
@@ -189,6 +205,7 @@ let drillSeq = 0;
 let drillSelectedTradeIdx = -1;
 let drillTradesRangeStart = 0;
 let topRowsModelCache: TopRowModel[] = [];
+let topRowsAllModelCache: TopRowModel[] = [];
 const baselineArtifactCache = new Map<string, BaselineRun>();
 const drillCurvesCache = new Map<string, unknown>();
 const stabilityCache = new Map<string, unknown>();
@@ -1206,6 +1223,203 @@ function applyTopFilters(
   });
 }
 
+function hasActiveTopFilters(filters: TopFilterValues): boolean {
+  return Object.values(filters).some((value) => Number.isFinite(value));
+}
+
+function topRowIdFor(row: TopRowModel): string {
+  return stableStringify(row.params || {});
+}
+
+function topBadgesFor(
+  rank: number,
+  metrics: Record<string, unknown>,
+  filters: TopFilterValues,
+  baselineSelected: string,
+): string[] {
+  const badges: string[] = [];
+  const trades = num(metrics.trades, 0);
+  const exposure = num(metrics.exposure, 0);
+  const maxDd = num(metrics.max_dd, 0);
+  if (rank === 1) badges.push("Current leader");
+  if (hasActiveTopFilters(filters)) badges.push("Filtered shortlist");
+  if (trades > 0 && trades < 20) badges.push("Low sample");
+  if (maxDd > 0 && maxDd <= 0.12) badges.push("Controlled drawdown");
+  else if (maxDd >= 0.25) badges.push("Drawdown heavy");
+  if (exposure >= 0.2 && exposure <= 0.8) badges.push("Balanced exposure");
+  else if (exposure >= 0.9) badges.push("Exposure concentrated");
+  if (hasValidationResult()) badges.push("Validation available");
+  if (baselineSelected) badges.push("Baseline armed");
+  return badges.slice(0, 4);
+}
+
+function buildTopDecisionNote(
+  rank: number,
+  total: number,
+  params: Record<string, unknown>,
+  metrics: Record<string, unknown>,
+  req: Record<string, unknown>,
+  scoreContext: Record<string, unknown>,
+): string {
+  const scoreMode = scoreModeOf(req);
+  const leadingMetricLabel = scoreMode ? scoreLabelOf(req) : objectiveOf(req);
+  const leadingMetricValue = scoreMode
+    ? fmtDisplay(
+        scoreOf(
+          metrics,
+          objectiveOf(req),
+          scoreMode,
+          params,
+          scoreContext,
+        ),
+        4,
+      )
+    : (() => {
+        const objective = objectiveOf(req);
+        if (objective === "Pnl") return fmtPctDisplay(metrics.pnl, 2);
+        if (objective === "MaxDrawdown") return fmtDisplay(metrics.max_dd, 4);
+        return fmtDisplay(
+          objective === "Sortino"
+            ? metrics.sortino
+            : objective === "Calmar"
+              ? metrics.calmar
+              : objective === "Omega"
+                ? metrics.omega
+                : objective === "Volatility"
+                  ? metrics.volatility
+                  : metrics.sharpe,
+          4,
+        );
+      })();
+  const trades = num(metrics.trades, 0);
+  const maxDd = num(metrics.max_dd, 0);
+  const exposure = num(metrics.exposure, 0);
+  const notes: string[] = [
+    `Rank #${rank} of ${Math.max(total, rank)} by ${leadingMetricLabel}${leadingMetricValue !== "-" ? ` (${leadingMetricValue})` : ""}.`,
+  ];
+  if (trades > 0 && trades < 20) notes.push("Trade count is still light, so this candidate needs extra caution.")
+  else if (trades >= 40) notes.push("Trade count is healthy enough for shortlist review.")
+  if (maxDd > 0 && maxDd <= 0.12) notes.push("Drawdown stays controlled under the current ranking.")
+  else if (maxDd >= 0.25) notes.push("Drawdown is elevated and should be pressure-tested before promotion.")
+  if (exposure >= 0.2 && exposure <= 0.8) notes.push("Exposure remains balanced.")
+  else if (exposure >= 0.9) notes.push("Exposure is concentrated.")
+  return notes.join(" ");
+}
+
+function buildTopCandidateSnapshot(
+  row: TopRowModel,
+  req: Record<string, unknown>,
+  filters: TopFilterValues,
+  baselineSelected: string,
+): TopPinnedCandidate {
+  const params = row.params || {};
+  const metrics = row.metrics || {};
+  const objective = objectiveOf(req);
+  const scoreMode = scoreModeOf(req);
+  const badges = topBadgesFor(row.rank, metrics, filters, baselineSelected);
+  const detailParts = [
+    `Return ${fmtPctDisplay(metrics.pnl, 2)}`,
+    `Sharpe ${fmtDisplay(metrics.sharpe, 4)}`,
+    `Max DD ${fmtDisplay(metrics.max_dd, 4)}`,
+    `Trades ${String(num(metrics.trades, 0))}`,
+  ];
+  return {
+    id: topRowIdFor(row),
+    rank: row.rank,
+    title: `Rank #${row.rank} · ${formatBestTitle(params)}`,
+    summary: detailParts.join(" · "),
+    detail: [
+      `Strategy ${kindFromReq(req)}`,
+      objective ? `Objective ${objective}` : "",
+      scoreMode ? `Score ${scoreLabelOf(req)}` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · "),
+    badges,
+    staleReason: "",
+  };
+}
+
+function syncTopSelectionState(
+  store: AnalysisStoreState,
+  filteredRows: TopRowModel[],
+  req: Record<string, unknown>,
+  res: Record<string, unknown>,
+): void {
+  const selectedIndex = readTopRows(store).findIndex((row) => !!row?.selected);
+  const selected = selectedIndex >= 0 ? filteredRows[selectedIndex] ?? null : null;
+  const filters = readFilters(store);
+  const baselineSelected = text(readHistoryStore()?.compareSelectedValue);
+  if (!selected) {
+    store.selectedTopTitle = filteredRows.length
+      ? "No ranked candidate selected."
+      : "No ranked candidates are available.";
+    store.selectedTopSummary = filteredRows.length
+      ? "No ranked candidate selected."
+      : "No ranked candidates are available.";
+    store.selectedTopDecisionNote =
+      "Select a ranked candidate to lock a review target before moving into Drilldown or Validation.";
+    store.selectedTopProvenanceChips = [];
+    return;
+  }
+  const snapshot = buildTopCandidateSnapshot(
+    selected,
+    req,
+    filters,
+    baselineSelected,
+  );
+  store.selectedTopTitle = snapshot.title;
+  store.selectedTopSummary = `Selected candidate ${selectedIndex + 1} of ${filteredRows.length}. ${snapshot.summary}.`;
+  store.selectedTopDecisionNote = buildTopDecisionNote(
+    selected.rank,
+    filteredRows.length,
+    selected.params || {},
+    selected.metrics || {},
+    req,
+    scoreObservationContextOf(res),
+  );
+  store.selectedTopProvenanceChips = markRawEntity(snapshot.badges);
+}
+
+function syncPinnedTopCandidates(
+  store: AnalysisStoreState,
+  filteredRows: TopRowModel[],
+  allRows: TopRowModel[],
+  req: Record<string, unknown>,
+): void {
+  const filters = readFilters(store);
+  const baselineSelected = text(readHistoryStore()?.compareSelectedValue);
+  const allById = new Map(allRows.map((row) => [topRowIdFor(row), row] as const));
+  const filteredIds = new Set(filteredRows.map((row) => topRowIdFor(row)));
+  const current = Array.isArray(store.pinnedTopCandidates)
+    ? (store.pinnedTopCandidates as TopPinnedCandidate[])
+    : [];
+  const reconciled = current.map((entry) => {
+    const model = allById.get(text(entry.id));
+    if (!model) {
+      return markRawEntity({
+        ...entry,
+        staleReason: "Unavailable in the current shortlist.",
+      });
+    }
+    const next = buildTopCandidateSnapshot(
+      model,
+      req,
+      filters,
+      baselineSelected,
+    );
+    return markRawEntity({
+      ...next,
+      staleReason: filteredIds.has(next.id) ? "" : "Hidden by the current shortlist filters.",
+    });
+  });
+  store.pinnedTopCandidates = markRawEntity(reconciled.slice(0, 4));
+  const staleCues = reconciled
+    .map((entry) => text(entry.staleReason))
+    .filter((entry, index, items) => entry && items.indexOf(entry) === index);
+  store.topStaleCues = markRawEntity(staleCues);
+}
+
 function sortRows(
   rows: TopRowModel[],
   key: string,
@@ -1729,7 +1943,6 @@ function buildLocalStabilityInvocation(
 }
 
 async function runVueDrillPipeline(
-  index: number,
   row: TopRowModel,
 ): Promise<boolean> {
   const store = readAnalysisStore();
@@ -1787,7 +2000,7 @@ async function runVueDrillPipeline(
         `bins=${num(eq.bins, 0)} start_t=${num(eq.start_t, 0)} end_t=${num(eq.end_t, 0)}`,
       );
       store.drillMeta = parts.join(" | ");
-      store.topSelectionGuardrail = `Selected row ${index + 1} of ${readTopRows(store).length}`;
+      store.topSelectionGuardrail = "—";
       markAnalysisVue(store);
     }
     setStatus(
@@ -1849,9 +2062,18 @@ export function refreshTopTableFromWorkflowRun(): boolean {
   const filters = readFilters(store);
   const filtered = buildTopRowModelsForCurrentFilters(store, req, res);
   topRowsModelCache = filtered;
-  const selectedOld = readTopRows(store).findIndex((row) => !!row?.selected);
+  topRowsAllModelCache = sorted;
+  const selectedOldRows = readTopRows(store);
+  const previousSelected = selectedOldRows.find((row) => !!row?.selected);
+  const previousSelectedId = text(previousSelected?.rowId);
+  const selectedOld = selectedOldRows.findIndex((row) => !!row?.selected);
+  const selectedByIdIndex = previousSelectedId
+    ? filtered.findIndex((row) => topRowIdFor(row) === previousSelectedId)
+    : -1;
   const selectedIndex = filtered.length
-    ? selectedOld >= 0
+    ? selectedByIdIndex >= 0
+      ? selectedByIdIndex
+      : selectedOld >= 0
       ? Math.min(selectedOld, filtered.length - 1)
       : 0
     : -1;
@@ -1974,10 +2196,15 @@ export function refreshTopTableFromWorkflowRun(): boolean {
             title: fmt(d.violation, 6),
           });
         }
-        return { selected: index === selectedIndex, cells };
+        return {
+          rowId: topRowIdFor(row),
+          selected: index === selectedIndex,
+          cells,
+        };
       })
     : [
         {
+          rowId: "top_empty_state",
           selected: false,
           cells: [
             {
@@ -1994,6 +2221,8 @@ export function refreshTopTableFromWorkflowRun(): boolean {
   store.topColumns = topColumnsFor(req, res, sort);
   store.topTableRows = rows;
   store.topRows = filtered.length;
+  syncTopSelectionState(store, filtered, req, res);
+  syncPinnedTopCandidates(store, filtered, sorted, req);
   if (!filtered.length && topK === 0 && !Array.isArray(res.pareto)) {
     const combos = combosOf(res);
     store.topFilterMeta =
@@ -2004,11 +2233,17 @@ export function refreshTopTableFromWorkflowRun(): boolean {
       "Set Advanced > Top K above 0, then rerun optimization to inspect a ranked shortlist.";
   } else {
     store.topFilterMeta = `showing ${filtered.length}/${sorted.length} rows`;
-    store.topSelectionGuardrail = filtered.length
-      ? hasValidationResult()
-        ? `Validation context loaded for ${text(req.strategy_kind ?? req.strategyKind) || "DoubleMa"}. Final selection should still include holdout/meta confirmation.`
-        : "Selection-bias guardrail: these are optimization-only winners. Run Validation before treating them as robust."
-      : "—";
+    if (filtered.length && previousSelectedId && selectedByIdIndex < 0) {
+      store.topSelectionGuardrail = hasActiveTopFilters(filters)
+        ? "The prior selection fell out of the current shortlist filters; focus moved to the nearest available candidate."
+        : "The prior selection no longer exists in the current shortlist; focus moved to the nearest available candidate."
+    } else {
+      store.topSelectionGuardrail = filtered.length
+        ? hasValidationResult()
+          ? `Validation context loaded for ${text(req.strategy_kind ?? req.strategyKind) || "DoubleMa"}. Final selection should still include holdout/meta confirmation.`
+          : "Selection-bias guardrail: these are optimization-only winners. Run Validation before treating them as robust."
+        : "—";
+    }
   }
   store.canClearTopFilters = Object.keys(filters).length > 0;
   markAnalysisVue(store);
@@ -2430,9 +2665,9 @@ function renderParetoCanvas(
     if (!best || best.dist > 18) return;
     const pinia = resolveRuntimePinia();
     if (pinia) {
-      useWorkflowStore(pinia).selectResultsTab("drill", { persist: false });
+      useWorkflowStore(pinia).selectResultsTab("drill");
     }
-    void runVueDrillPipeline(0, best.row);
+    void runVueDrillPipeline(best.row);
   };
 
   wrap.style.display = "block";
@@ -2897,9 +3132,9 @@ function renderHeatmapCanvas(
     };
     const pinia = resolveRuntimePinia();
     if (pinia) {
-      useWorkflowStore(pinia).selectResultsTab("drill", { persist: false });
+      useWorkflowStore(pinia).selectResultsTab("drill");
     }
-    void runVueDrillPipeline(0, { rank: 1, params, metrics });
+    void runVueDrillPipeline({ rank: 1, params, metrics });
   };
 
   wrap.style.display = "block";
@@ -4378,10 +4613,131 @@ export async function selectTopRow(index: number): Promise<void> {
     row.selected = i === bounded;
   }
   store.topTableRows = rows;
-  store.topSelectionGuardrail = `Selected row ${bounded + 1} of ${rows.length}`;
-  setStatus(store, `Selected top row ${bounded + 1}.`);
+  const run = readWorkflowRun();
+  if (run) {
+    syncTopSelectionState(store, topRowsModelCache, asRecord(run.req), asRecord(run.res));
+  }
   const model = resolveTopRowModelAtIndex(store, bounded);
-  if (model) await runVueDrillPipeline(bounded, model);
+  store.topSelectionGuardrail = "—";
+  setStatus(store, `Selected top row ${bounded + 1}.`);
+  if (model) await runVueDrillPipeline(model);
+}
+
+export async function pinTopRow(index: number): Promise<void> {
+  const store = readAnalysisStore();
+  if (!store) return;
+  const idx = parseIndex(index);
+  const run = readWorkflowRun();
+  const req = asRecord(run?.req);
+  const rows = topRowsModelCache.length
+    ? topRowsModelCache
+    : buildTopRowModelsForCurrentFilters(store, req, asRecord(run?.res));
+  const model = rows[idx] ?? null;
+  if (!model) {
+    setStatus(store, "No ranked candidate available to pin.");
+    return;
+  }
+  const filters = readFilters(store);
+  const baselineSelected = text(readHistoryStore()?.compareSelectedValue);
+  const candidate = buildTopCandidateSnapshot(
+    model,
+    req,
+    filters,
+    baselineSelected,
+  );
+  const current = Array.isArray(store.pinnedTopCandidates)
+    ? (store.pinnedTopCandidates as TopPinnedCandidate[])
+    : [];
+  if (current.some((entry) => text(entry.id) === candidate.id)) {
+    setStatus(store, `Candidate #${candidate.rank} is already pinned.`);
+    return;
+  }
+  const next = [...current, markRawEntity(candidate)].slice(-4);
+  store.pinnedTopCandidates = markRawEntity(next);
+  syncPinnedTopCandidates(store, rows, rows, req);
+  setStatus(
+    store,
+    current.length >= 4
+      ? `Pinned candidate #${candidate.rank}. Oldest compare slot was replaced.`
+      : `Pinned candidate #${candidate.rank} for compare.`,
+  );
+}
+
+export async function pinSelectedTopRow(): Promise<void> {
+  const store = readAnalysisStore();
+  if (!store) return;
+  const selectedIndex = readTopRows(store).findIndex((row) => !!row?.selected);
+  if (selectedIndex < 0) {
+    setStatus(store, "Select a ranked candidate before pinning it.");
+    return;
+  }
+  await pinTopRow(selectedIndex);
+}
+
+export async function replacePinnedTopCandidate(idRaw: unknown): Promise<void> {
+  const store = readAnalysisStore();
+  if (!store) return;
+  const targetId = text(idRaw);
+  if (!targetId) return;
+  const selectedIndex = readTopRows(store).findIndex((row) => !!row?.selected);
+  if (selectedIndex < 0) {
+    setStatus(store, "Select a ranked candidate before replacing a compare slot.");
+    return;
+  }
+  const run = readWorkflowRun();
+  const req = asRecord(run?.req);
+  const rows = topRowsModelCache.length
+    ? topRowsModelCache
+    : buildTopRowModelsForCurrentFilters(store, req, asRecord(run?.res));
+  const model = rows[selectedIndex] ?? null;
+  if (!model) return;
+  const filters = readFilters(store);
+  const baselineSelected = text(readHistoryStore()?.compareSelectedValue);
+  const candidate = buildTopCandidateSnapshot(
+    model,
+    req,
+    filters,
+    baselineSelected,
+  );
+  store.pinnedTopCandidates = markRawEntity(
+    (Array.isArray(store.pinnedTopCandidates)
+      ? (store.pinnedTopCandidates as TopPinnedCandidate[])
+      : []
+    ).map((entry) => (text(entry.id) === targetId ? markRawEntity(candidate) : entry)),
+  );
+  syncPinnedTopCandidates(store, rows, rows, req);
+  setStatus(store, `Replaced compare slot with candidate #${candidate.rank}.`);
+}
+
+export async function unpinTopCandidate(idRaw: unknown): Promise<void> {
+  const store = readAnalysisStore();
+  if (!store) return;
+  const targetId = text(idRaw);
+  if (!targetId) return;
+  const current = Array.isArray(store.pinnedTopCandidates)
+    ? (store.pinnedTopCandidates as TopPinnedCandidate[])
+    : [];
+  const next = current.filter((entry) => text(entry.id) !== targetId);
+  if (next.length === current.length) return;
+  store.pinnedTopCandidates = markRawEntity(next);
+  const run = readWorkflowRun();
+  const req = asRecord(run?.req);
+  syncPinnedTopCandidates(
+    store,
+    topRowsModelCache,
+    topRowsAllModelCache.length ? topRowsAllModelCache : topRowsModelCache,
+    req,
+  );
+  setStatus(store, "Removed pinned candidate.");
+}
+
+export async function clearPinnedTopCandidates(): Promise<void> {
+  const store = readAnalysisStore();
+  if (!store) return;
+  if (!Array.isArray(store.pinnedTopCandidates) || store.pinnedTopCandidates.length === 0) return;
+  store.pinnedTopCandidates = markRawEntity([]);
+  store.topStaleCues = markRawEntity([]);
+  setStatus(store, "Cleared pinned candidates.");
 }
 
 export async function copyBest(): Promise<void> {

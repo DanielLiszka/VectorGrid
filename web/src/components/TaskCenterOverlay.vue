@@ -20,21 +20,23 @@ import {
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import {
   activeTasksCount,
-  activeTasksSnapshot,
   cancelCommandFor,
   dismissToast,
   formatCommandLabel,
   markTaskCancelling,
   restoreTaskRunning,
+  taskPostureSnapshot,
   useTaskStore,
   type TaskEventItem,
   type TaskTimelineItem,
   type TaskToastItem,
   type TrackedTask,
 } from '../stores/taskStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 
 const taskStore = useTaskStore()
-const { centerStatus, history, events, overallProgress, timeline, toasts } = storeToRefs(taskStore)
+const workflowStore = useWorkflowStore()
+const { centerStatus, events, overallProgress, timeline, toasts } = storeToRefs(taskStore)
 
 const expanded = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
 const launcherPos = useStorage<{ x: number; y: number }>('VTA_TASK_CENTER_POS_V1', { x: 12, y: 12 })
@@ -64,8 +66,6 @@ function headItems<T>(items: T[], limit: number): T[] {
   return items.length <= limit ? items : items.slice(0, limit)
 }
 
-const activeTasks = computed(() => (expanded.value ? activeTasksSnapshot() : []))
-const historyTasks = computed(() => headItems(history.value, 8))
 const eventItems = computed(() => headItems(events.value, 8))
 const timelineItems = computed(() => headItems(timeline.value, 8))
 const toastItems = computed(() => headItems(toasts.value, 4))
@@ -85,6 +85,24 @@ const rootStyle = computed(() => {
 const toggleDragging = computed(() => !!dragState.value?.dragging)
 const centerStatusLabel = computed(() => {
   return taskLifecycleLabel(centerStatus.value)
+})
+const posture = computed(() => taskPostureSnapshot(taskStore.$state, 10))
+const queuedTasks = computed(() => (expanded.value ? posture.value.queued : []))
+const runningTasks = computed(() => (expanded.value ? posture.value.running : []))
+const cancellingTasks = computed(() => (expanded.value ? posture.value.cancelling : []))
+const completedTasks = computed(() => posture.value.completed)
+const failedTasks = computed(() => posture.value.failed)
+const cancelledTasks = computed(() => posture.value.cancelled)
+const postureSummary = computed(() => {
+  const parts = [
+    posture.value.counts.running ? `${posture.value.counts.running} running` : '',
+    posture.value.counts.queued ? `${posture.value.counts.queued} queued` : '',
+    posture.value.counts.cancelling ? `${posture.value.counts.cancelling} cancelling` : '',
+    posture.value.counts.failed ? `${posture.value.counts.failed} failed` : '',
+    posture.value.counts.cancelled ? `${posture.value.counts.cancelled} cancelled` : '',
+    posture.value.counts.completed ? `${posture.value.counts.completed} completed` : '',
+  ].filter((part) => part.length > 0)
+  return parts.join(' · ') || 'No active or recent commands.'
 })
 
 function toggleExpanded(): void {
@@ -352,6 +370,55 @@ function toastSummary(index: number): string {
 function eventSummary(index: number): string {
   return describeTaskEvent(eventItems.value[index] ?? null)
 }
+
+function sectionEmptyLabel(kind: 'queued' | 'running' | 'cancelling' | 'completed' | 'attention'): string {
+  if (kind === 'queued') return 'No queued commands.'
+  if (kind === 'running') return 'No running commands.'
+  if (kind === 'cancelling') return 'No cancellation requests in flight.'
+  if (kind === 'completed') return 'No recently completed commands.'
+  return 'No failed or cancelled commands.'
+}
+
+function taskSecondaryMeta(task: TrackedTask): string {
+  const phase = phaseLabel(task.phase)
+  const detail = taskDetail(task)
+  if (phase !== 'Unknown' && detail && detail !== phase) return `${phase} · ${detail}`
+  return detail
+}
+
+function relatedActionFor(task: TrackedTask): { label: string; run: () => void } | null {
+  const command = String(task.command || '').trim()
+  if (!command) return null
+  if (command.includes('validation')) {
+    return {
+      label: 'Open validation',
+      run: () => workflowStore.selectWorkflowStep('validate'),
+    }
+  }
+  if (command.includes('optimization')) {
+    return {
+      label: 'Open top results',
+      run: () => {
+        workflowStore.selectWorkflowStep('analyze')
+        workflowStore.selectResultsTab('top')
+      },
+    }
+  }
+  if (command.includes('meta') || command.includes('policy') || command.includes('stage4')) {
+    return {
+      label: 'Open aggregate analysis',
+      run: () => workflowStore.selectWorkspace('aggregate'),
+    }
+  }
+  return null
+}
+
+function openRelatedView(task: TrackedTask): void {
+  const action = relatedActionFor(task)
+  if (!action) return
+  action.run()
+  closePanel()
+}
 </script>
 
 <template>
@@ -414,6 +481,7 @@ function eventSummary(index: number): string {
           <div :id="panelDescriptionId" class="muted">
             Review active commands, recent events, and the command timeline. Press Escape to close this panel.
           </div>
+          <div class="postureSummary mono">{{ postureSummary }}</div>
         </div>
         <button type="button" class="panelCloseBtn" @click="closePanel">Close</button>
       </div>
@@ -426,41 +494,148 @@ function eventSummary(index: number): string {
       </div>
 
       <div class="section">
-        <div class="sectionTitle">Running</div>
-        <div v-if="activeTasks.length === 0" class="muted">No active commands.</div>
-        <div v-else class="taskList">
-          <article v-for="task in activeTasks" :key="task.id" class="taskCard">
-            <div class="taskRow">
-              <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-              <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+        <div class="sectionTitle">Active posture</div>
+        <div class="postureColumns">
+          <div class="postureColumn">
+            <div class="postureHead">
+              <span>Running</span>
+              <span class="eventBadge running">{{ runningTasks.length }}</span>
             </div>
-            <div class="taskMeta">{{ taskDetail(task) }}</div>
-            <div v-if="Number.isFinite(task.progressPct)" class="bar thin">
-              <div class="fill" :style="{ width: `${task.progressPct?.toFixed(1)}%` }"></div>
+            <div v-if="runningTasks.length === 0" class="muted">{{ sectionEmptyLabel('running') }}</div>
+            <div v-else class="taskList">
+              <article v-for="task in runningTasks" :key="task.id" class="taskCard">
+                <div class="taskRow">
+                  <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                </div>
+                <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
+                <div v-if="Number.isFinite(task.progressPct)" class="bar thin">
+                  <div class="fill" :style="{ width: `${task.progressPct?.toFixed(1)}%` }"></div>
+                </div>
+                <div class="taskRow foot">
+                  <div class="time">{{ absoluteTime(task.startedAt) }} · {{ durationText(task) }}</div>
+                  <button
+                    v-if="canCancel(task)"
+                    class="cancelBtn"
+                    type="button"
+                    :disabled="isCancelBusy(task.id)"
+                    @click="cancelTask(task)"
+                  >
+                    {{ isCancelBusy(task.id) ? 'Cancelling…' : 'Cancel' }}
+                  </button>
+                </div>
+              </article>
             </div>
-            <div class="taskRow foot">
-              <div class="time">{{ absoluteTime(task.startedAt) }} · {{ durationText(task) }}</div>
-              <button
-                v-if="canCancel(task)"
-                class="cancelBtn"
-                type="button"
-                :disabled="isCancelBusy(task.id)"
-                @click="cancelTask(task)"
-              >
-                {{ isCancelBusy(task.id) ? 'Cancelling…' : 'Cancel' }}
-              </button>
+          </div>
+
+          <div class="postureColumn">
+            <div class="postureHead">
+              <span>Queued</span>
+              <span class="eventBadge queued">{{ queuedTasks.length }}</span>
             </div>
-          </article>
+            <div v-if="queuedTasks.length === 0" class="muted">{{ sectionEmptyLabel('queued') }}</div>
+            <div v-else class="taskList">
+              <article v-for="task in queuedTasks" :key="task.id" class="taskCard taskCardQueued">
+                <div class="taskRow">
+                  <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                </div>
+                <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
+                <div class="taskRow foot">
+                  <div class="time">{{ absoluteTime(task.startedAt) }}</div>
+                  <button
+                    v-if="canCancel(task)"
+                    class="cancelBtn"
+                    type="button"
+                    :disabled="isCancelBusy(task.id)"
+                    @click="cancelTask(task)"
+                  >
+                    {{ isCancelBusy(task.id) ? 'Cancelling…' : 'Cancel' }}
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div class="postureHead postureHeadSecondary">
+              <span>Cancelling</span>
+              <span class="eventBadge cancelling">{{ cancellingTasks.length }}</span>
+            </div>
+            <div v-if="cancellingTasks.length === 0" class="muted">{{ sectionEmptyLabel('cancelling') }}</div>
+            <div v-else class="taskList">
+              <article v-for="task in cancellingTasks" :key="task.id" class="taskCard taskCardCancelling">
+                <div class="taskRow">
+                  <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                </div>
+                <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
+                <div class="time">{{ absoluteTime(task.startedAt) }} · {{ durationText(task) }}</div>
+              </article>
+            </div>
+          </div>
         </div>
       </div>
 
       <div class="section">
-        <div class="sectionTitle">Recent</div>
-        <div v-if="historyTasks.length === 0" class="muted">No completed commands yet.</div>
-        <div v-else class="miniList">
-          <div v-for="task in historyTasks" :key="task.id" class="miniRow">
-            <span class="miniName">{{ formatCommandLabel(task.command) }}</span>
-            <span class="miniStatus" :class="statusClass(task)">{{ statusLabel(task) }}</span>
+        <div class="sectionTitle">Recent outcomes</div>
+        <div class="postureColumns">
+          <div class="postureColumn">
+            <div class="postureHead">
+              <span>Attention</span>
+              <span class="eventBadge warn">{{ failedTasks.length + cancelledTasks.length }}</span>
+            </div>
+            <div v-if="failedTasks.length + cancelledTasks.length === 0" class="muted">{{ sectionEmptyLabel('attention') }}</div>
+            <div v-else class="taskList">
+              <article
+                v-for="task in [...failedTasks, ...cancelledTasks]"
+                :key="task.id"
+                class="taskCard"
+              >
+                <div class="taskRow">
+                  <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                </div>
+                <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
+                <div class="taskRow foot">
+                  <div class="time">{{ absoluteTime(task.endedAt || task.startedAt) }}</div>
+                  <button
+                    v-if="relatedActionFor(task)"
+                    type="button"
+                    class="relatedBtn"
+                    @click="openRelatedView(task)"
+                  >
+                    {{ relatedActionFor(task)?.label }}
+                  </button>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <div class="postureColumn">
+            <div class="postureHead">
+              <span>Completed</span>
+              <span class="eventBadge success">{{ completedTasks.length }}</span>
+            </div>
+            <div v-if="completedTasks.length === 0" class="muted">{{ sectionEmptyLabel('completed') }}</div>
+            <div v-else class="taskList">
+              <article v-for="task in completedTasks" :key="task.id" class="taskCard taskCardSuccess">
+                <div class="taskRow">
+                  <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                </div>
+                <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
+                <div class="taskRow foot">
+                  <div class="time">{{ absoluteTime(task.endedAt || task.startedAt) }}</div>
+                  <button
+                    v-if="relatedActionFor(task)"
+                    type="button"
+                    class="relatedBtn"
+                    @click="openRelatedView(task)"
+                  >
+                    {{ relatedActionFor(task)?.label }}
+                  </button>
+                </div>
+              </article>
+            </div>
           </div>
         </div>
       </div>
@@ -720,6 +895,12 @@ function eventSummary(index: number): string {
   gap: 4px;
 }
 
+.postureSummary {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--task-muted);
+}
+
 .overallWrap {
   display: grid;
   gap: 6px;
@@ -733,6 +914,33 @@ function eventSummary(index: number): string {
 .section {
   display: grid;
   gap: 6px;
+}
+
+.postureColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.postureColumn {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.postureHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--task-muted);
+}
+
+.postureHeadSecondary {
+  margin-top: 4px;
 }
 
 .sectionTitle {
@@ -766,6 +974,18 @@ function eventSummary(index: number): string {
   gap: 6px;
   background: color-mix(in oklab, var(--surface-working) 92%, var(--panel));
   box-shadow: var(--shadow-inline);
+}
+
+.taskCardQueued {
+  background: color-mix(in oklab, var(--surface-inline) 92%, var(--panel));
+}
+
+.taskCardCancelling {
+  background: color-mix(in oklab, var(--surface-warning) 78%, var(--panel));
+}
+
+.taskCardSuccess {
+  background: color-mix(in oklab, var(--surface-success) 84%, var(--panel));
 }
 
 .taskRow {
@@ -866,6 +1086,15 @@ function eventSummary(index: number): string {
   font-size: 0.72rem;
   color: var(--danger-ink);
   background: color-mix(in oklab, var(--surface-danger) 88%, var(--surface-inline));
+}
+
+.relatedBtn {
+  border: 1px solid color-mix(in oklab, var(--accent) 38%, var(--border));
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  color: var(--selection-text);
+  background: color-mix(in oklab, var(--selection-fill) 86%, var(--surface-inline));
 }
 
 .cancelBtn:disabled {
@@ -973,6 +1202,10 @@ function eventSummary(index: number): string {
 
   .taskPanel {
     width: min(96vw, 420px);
+  }
+
+  .postureColumns {
+    grid-template-columns: 1fr;
   }
 }
 </style>

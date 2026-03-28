@@ -8,7 +8,7 @@ import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useDataStore } from '../stores/dataStore'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { useSettingsStore } from '../stores/settingsStore'
-import { dismissToast, useTaskStore } from '../stores/taskStore'
+import { dismissToast, taskPostureSnapshot, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import {
   describeLatestTaskOutcome,
@@ -32,9 +32,12 @@ const runtimeStore = useRuntimeStore()
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 const {
+  densityMode,
   theme,
   effect,
   helpMode,
+  perspectives,
+  selectedPerspectiveId,
   workflowAdvanced,
   controlsCollapsed,
   marketDataDir,
@@ -75,17 +78,35 @@ let runtimeObserver: MutationObserver | null = null
 const themeDraft = ref('system')
 const effectDraft = ref('none')
 const helpModeDraft = ref('full')
+const densityModeDraft = ref('standard')
 const marketDataDirDraft = ref('')
+const perspectiveNameDraft = ref('')
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
 const settingsSummaryChips = computed(() => [
   `Theme ${String(themeDraft.value || 'system').trim() || 'system'}`,
   `Effect ${String(effectDraft.value || 'none').trim() || 'none'}`,
   `Help ${String(helpModeDraft.value || 'full').trim() || 'full'}`,
+  `Density ${String(densityModeDraft.value || 'standard').trim() || 'standard'}`,
   workflowAdvanced.value ? 'Advanced controls on' : 'Advanced controls off',
   controlsCollapsed.value ? 'Controls collapsed first' : 'Controls expanded first',
   marketDataDirDraft.value.trim().length > 0 ? 'Custom data folder' : 'Default data folder',
 ])
+const selectedPerspective = computed(() =>
+  perspectives.value.find((entry) => entry.id === selectedPerspectiveId.value) ?? perspectives.value[0] ?? null,
+)
+const selectedPerspectiveLabel = computed(() => selectedPerspective.value?.name || 'No perspective selected')
+const canDeletePerspective = computed(() => !!selectedPerspective.value && !selectedPerspective.value.builtIn)
+const canRenamePerspective = computed(() => !!selectedPerspective.value && !selectedPerspective.value.builtIn)
+const perspectiveSummaryChips = computed(() => {
+  const current = selectedPerspective.value
+  if (!current) return ['No saved perspective']
+  return [
+    current.builtIn ? 'Built-in' : 'Custom',
+    `Split ${Math.round(Number(current.snapshot.splitFraction || 0.34) * 100)}%`,
+    `Density ${String(current.snapshot.densityMode || 'standard').trim() || 'standard'}`,
+  ]
+})
 const diagnosticsSummaryChips = computed(() => [
   `Runtime ${runtimePhaseLabel.value}`,
   `Task center ${centerStatusLabel.value}`,
@@ -123,6 +144,30 @@ const latestTaskTone = computed(() => {
 const latestTaskStatusLabel = computed(() => {
   return latestTask.value ? taskLifecycleLabel(latestTask.value.status) : 'Idle'
 })
+const taskPosture = computed(() => taskPostureSnapshot(taskStore.$state, 8))
+const diagnosticsTaskChips = computed(() => {
+  const counts = taskPosture.value.counts
+  return [
+    counts.running ? `${counts.running} running` : '',
+    counts.queued ? `${counts.queued} queued` : '',
+    counts.cancelling ? `${counts.cancelling} cancelling` : '',
+    counts.failed ? `${counts.failed} failed` : '',
+    counts.cancelled ? `${counts.cancelled} cancelled` : '',
+    counts.completed ? `${counts.completed} completed` : '',
+  ].filter((chip) => chip.length > 0)
+})
+const taskAttentionLine = computed(() => {
+  const failed = taskPosture.value.failed[0] ?? null
+  if (failed) return `${failed.label} failed${String(failed.error || '').trim() ? `: ${String(failed.error || '').trim()}` : '.'}`
+  const cancelled = taskPosture.value.cancelled[0] ?? null
+  if (cancelled) return `${cancelled.label} was cancelled.`
+  return 'No recent failed or cancelled tasks.'
+})
+const taskCompletedLine = computed(() => {
+  const completed = taskPosture.value.completed[0] ?? null
+  if (!completed) return 'No recently completed tasks.'
+  return `${completed.label} completed.`
+})
 
 function diagnosticsLevelTone(level: string | null | undefined): string {
   return taskLevelTone(level)
@@ -153,13 +198,28 @@ watch(
     String(theme.value || 'system').trim() || 'system',
     String(effect.value || 'none').trim() || 'none',
     String(helpMode.value || 'full').trim() || 'full',
+    String(densityMode.value || 'standard').trim() || 'standard',
     String(marketDataDir.value || ''),
+    String(selectedPerspectiveId.value || ''),
   ] as const,
-  ([nextTheme, nextEffect, nextHelpMode, nextMarketDataDir]) => {
+  ([nextTheme, nextEffect, nextHelpMode, nextDensityMode, nextMarketDataDir, nextPerspectiveId]) => {
     if (themeDraft.value !== nextTheme) themeDraft.value = nextTheme
     if (effectDraft.value !== nextEffect) effectDraft.value = nextEffect
     if (helpModeDraft.value !== nextHelpMode) helpModeDraft.value = nextHelpMode
+    if (densityModeDraft.value !== nextDensityMode) densityModeDraft.value = nextDensityMode
     if (marketDataDirDraft.value !== nextMarketDataDir) marketDataDirDraft.value = nextMarketDataDir
+    if (perspectiveNameDraft.value !== (selectedPerspective.value?.name || '') && nextPerspectiveId) {
+      perspectiveNameDraft.value = selectedPerspective.value?.name || ''
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  selectedPerspective,
+  (next) => {
+    const nextName = next?.name || ''
+    if (perspectiveNameDraft.value !== nextName) perspectiveNameDraft.value = nextName
   },
   { immediate: true },
 )
@@ -194,6 +254,33 @@ function openTaskCenter(): void {
 
 function clearRecentAlerts(): void {
   for (const toast of recentAlerts.value) dismissToast(toast.id)
+}
+
+function createPerspectiveFromDraft(): void {
+  settingsStore.createPerspective(String(perspectiveNameDraft.value || '').trim())
+  perspectiveNameDraft.value = selectedPerspective.value?.name || ''
+}
+
+function applySelectedPerspective(): void {
+  settingsStore.applyPerspective(String(selectedPerspectiveId.value || '').trim())
+}
+
+function overwriteSelectedPerspective(): void {
+  settingsStore.overwritePerspective(String(selectedPerspectiveId.value || '').trim())
+}
+
+function renameSelectedPerspective(): void {
+  settingsStore.renamePerspective(String(selectedPerspectiveId.value || '').trim(), String(perspectiveNameDraft.value || '').trim())
+}
+
+function duplicateSelectedPerspective(): void {
+  settingsStore.duplicatePerspective(String(selectedPerspectiveId.value || '').trim())
+  perspectiveNameDraft.value = selectedPerspective.value?.name || ''
+}
+
+function deleteSelectedPerspective(): void {
+  settingsStore.deletePerspective(String(selectedPerspectiveId.value || '').trim())
+  perspectiveNameDraft.value = selectedPerspective.value?.name || ''
 }
 
 const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
@@ -290,6 +377,21 @@ onBeforeUnmount(() => {
               Use this as the global policy for optional in-app help. Safety notices, errors, and runtime status still stay visible.
             </div>
           </div>
+          <div class="rowSingle">
+            <label for="vueSettingsDensityMode">Density</label>
+            <select
+              id="vueSettingsDensityMode"
+              :value="densityModeDraft"
+              @change="densityModeDraft = String(($event.target as HTMLSelectElement).value || 'standard'); setSelectValue('settingsDensityMode', densityModeDraft)"
+            >
+              <option value="comfortable">Comfortable</option>
+              <option value="standard">Standard</option>
+              <option value="dense">Dense</option>
+            </select>
+            <div class="panelMuted">
+              Apply a consistent row, chip, and spacing density across the shell instead of relying on per-panel compaction.
+            </div>
+          </div>
           <div class="checks">
             <label>
               <input
@@ -349,6 +451,60 @@ onBeforeUnmount(() => {
             <button type="button" :disabled="!canOpenWorkflowData" @click="settingsStore.openWorkflowData()">Open workflow data panel</button>
           </div>
           <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ marketDataDirHint }}</div>
+        </section>
+
+        <section class="pane">
+          <div class="panelSectionHeader">
+            <div>
+              <div class="panelEyebrow">Workstation</div>
+              <h3 class="panelPaneTitle">Saved perspectives</h3>
+              <div class="panelSectionLead">
+                Save named shell layouts so the app restores a working posture instead of one generic remembered state.
+              </div>
+            </div>
+          </div>
+          <div class="panelSummaryChips" aria-label="Selected perspective summary">
+            <span v-for="chip in perspectiveSummaryChips" :key="`settings_perspective_${chip}`" class="panelSummaryChip mono">
+              {{ chip }}
+            </span>
+          </div>
+          <div class="rowTwo">
+            <div>
+              <label for="vueSettingsPerspectiveSelect">Perspective</label>
+              <select
+                id="vueSettingsPerspectiveSelect"
+                :value="selectedPerspectiveId"
+                @change="settingsStore.selectPerspective(String(($event.target as HTMLSelectElement).value || ''))"
+              >
+                <option v-for="entry in perspectives" :key="entry.id" :value="entry.id">
+                  {{ entry.name }}{{ entry.builtIn ? ' (built-in)' : '' }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label for="vueSettingsPerspectiveName">Name</label>
+              <input
+                id="vueSettingsPerspectiveName"
+                type="text"
+                :value="perspectiveNameDraft"
+                placeholder="Perspective name"
+                @input="perspectiveNameDraft = String(($event.target as HTMLInputElement).value || '')"
+              />
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" @click="applySelectedPerspective">Apply</button>
+            <button type="button" @click="overwriteSelectedPerspective">Save current to selected</button>
+            <button type="button" @click="createPerspectiveFromDraft">Save as new</button>
+          </div>
+          <div class="actions">
+            <button type="button" :disabled="!canRenamePerspective" @click="renameSelectedPerspective">Rename</button>
+            <button type="button" @click="duplicateSelectedPerspective">Duplicate</button>
+            <button type="button" class="danger-btn" :disabled="!canDeletePerspective" @click="deleteSelectedPerspective">Delete</button>
+          </div>
+          <div class="panelMuted">
+            {{ selectedPerspectiveLabel }}
+          </div>
         </section>
 
         <section class="pane">
@@ -435,6 +591,15 @@ onBeforeUnmount(() => {
                 <div class="diagnosticsLabel">Task posture</div>
                 <div class="mono diagnosticsStamp">{{ centerStatusLabel }}</div>
               </header>
+              <div v-if="diagnosticsTaskChips.length > 0" class="diagnosticsEntryMeta">
+                <span
+                  v-for="chip in diagnosticsTaskChips"
+                  :key="`diagnostics_task_${chip}`"
+                  class="mono diagnosticsBadge"
+                >
+                  {{ chip }}
+                </span>
+              </div>
               <div v-if="latestTask" class="diagnosticsPrimary">
                 {{ latestTaskLabel }}
               </div>
@@ -449,6 +614,12 @@ onBeforeUnmount(() => {
               </div>
               <div class="panelMuted">
                 {{ progressLabel }}
+              </div>
+              <div class="panelMuted">
+                {{ taskAttentionLine }}
+              </div>
+              <div class="panelMuted">
+                {{ taskCompletedLine }}
               </div>
             </section>
 

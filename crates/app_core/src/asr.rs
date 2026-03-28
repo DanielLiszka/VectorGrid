@@ -9,6 +9,8 @@ use crate::indicator_catalog::{
 };
 use crate::iterative_sim::{IntrabarRule, IterativeSimConfig};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "cuda")]
+use std::cell::RefCell;
 use ta_strategies::double_ma::{DoubleMaCurves, Metrics, StrategyConfig, Trade};
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
@@ -432,6 +434,47 @@ pub fn validate_asr_params(cfg: &AsrStrategyParams) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "cuda")]
+thread_local! {
+    static ASR_ROUTE_DIAGNOSTICS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(feature = "cuda")]
+fn record_asr_route_diagnostic(message: String) {
+    ASR_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.iter().any(|entry| entry == &message) {
+            return;
+        }
+        diagnostics.push(message);
+    });
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn clear_asr_route_diagnostics() {
+    ASR_ROUTE_DIAGNOSTICS.with(|cell| cell.borrow_mut().clear());
+}
+
+#[cfg(feature = "cuda")]
+pub(crate) fn take_asr_route_diagnostics() -> Option<Vec<String>> {
+    ASR_ROUTE_DIAGNOSTICS.with(|cell| {
+        let mut diagnostics = cell.borrow_mut();
+        if diagnostics.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut *diagnostics))
+        }
+    })
+}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn clear_asr_route_diagnostics() {}
+
+#[cfg(not(feature = "cuda"))]
+pub(crate) fn take_asr_route_diagnostics() -> Option<Vec<String>> {
+    None
+}
+
 pub fn resolve_asr_periods(
     cfg: &AsrStrategyParams,
     fast_len: u16,
@@ -789,6 +832,10 @@ fn compute_asr_zscore_sweep_cuda_ema_composed(
     period_step: u16,
     device_id: u32,
 ) -> Result<AsrPeriodSweepDevice, String> {
+    record_asr_route_diagnostic(
+        "ASR EMA z-score CUDA path used host-composed EMA/SMA sweep staging before device upload"
+            .to_string(),
+    );
     let runtime_device_id = prepared_inputs.runtime().device_id();
     if runtime_device_id != device_id {
         return Err(format!(

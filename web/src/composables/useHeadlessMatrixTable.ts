@@ -20,6 +20,7 @@ export interface MatrixCellLike {
 }
 
 export interface MatrixRowLike {
+  rowId?: string;
   selected?: boolean;
   cells: MatrixCellLike[];
 }
@@ -78,7 +79,10 @@ export function useHeadlessMatrixTable<
     },
     getCoreRowModel: getCoreRowModel(),
     manualSorting: true,
-    getRowId: (_row, index) => `matrix_row_${index}`,
+    getRowId: (row, index) => {
+      const explicit = String(row.rowId || "").trim();
+      return explicit || `matrix_row_${index}`;
+    },
   });
 
   const headerGroups = computed(() => table.getHeaderGroups());

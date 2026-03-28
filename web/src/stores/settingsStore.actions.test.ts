@@ -106,6 +106,7 @@ describe('settings store actions', () => {
     store.setSelectField('settingsThemeSelect', 'dark')
     store.setSelectField('settingsEffectSelect', 'mica')
     store.setSelectField('settingsHelpMode', 'off')
+    store.setSelectField('settingsDensityMode', 'dense')
     store.setCheckboxField('settingsWorkflowAdvanced', true)
     store.setCheckboxField('settingsControlsCollapsed', true)
     store.setCheckboxField('settingsMoveExisting', false)
@@ -116,6 +117,8 @@ describe('settings store actions', () => {
     expect(harness.dataset.themePref).toBe('dark')
     expect(store.helpMode).toBe('off')
     expect(harness.dataset.helpMode).toBe('off')
+    expect(store.densityMode).toBe('dense')
+    expect(harness.dataset.density).toBe('dense')
     expect(store.workflowAdvanced).toBe(true)
     expect(harness.dataset.workflowAdvanced).toBe('1')
     expect(store.controlsCollapsed).toBe(true)
@@ -160,6 +163,42 @@ describe('settings store actions', () => {
     expect(openPolygonMock).toHaveBeenCalled()
     expect(openRunsDirMock).toHaveBeenCalled()
     expect(openReportsDirMock).toHaveBeenCalled()
+  })
+
+  it('creates, applies, duplicates, renames, and deletes custom perspectives', () => {
+    const settingsStore = useSettingsStore()
+    const workflowStore = useWorkflowStore()
+
+    workflowStore.selectWorkflowStep('analyze')
+    workflowStore.selectResultsTab('top')
+    workflowStore.setSplitFraction(0.41, { persist: false })
+    settingsStore.setSelectField('settingsDensityMode', 'dense')
+
+    settingsStore.createPerspective('Review focus')
+    const created = settingsStore.perspectives.find((entry) => entry.name === 'Review focus')
+    expect(created).toBeTruthy()
+    expect(created?.snapshot.resultsTab).toBe('top')
+    expect(created?.snapshot.splitFraction).toBeCloseTo(0.41, 5)
+    expect(created?.snapshot.densityMode).toBe('dense')
+
+    workflowStore.selectWorkspace('library')
+    settingsStore.setSelectField('settingsDensityMode', 'comfortable')
+    settingsStore.applyPerspective(String(created?.id || ''))
+
+    expect(workflowStore.workspace).toBe('workflow')
+    expect(workflowStore.resultsTab).toBe('top')
+    expect(workflowStore.splitFraction).toBeCloseTo(0.41, 5)
+    expect(settingsStore.densityMode).toBe('dense')
+
+    settingsStore.duplicatePerspective(String(created?.id || ''))
+    const duplicate = settingsStore.perspectives.find((entry) => entry.name === 'Review focus Copy')
+    expect(duplicate).toBeTruthy()
+
+    settingsStore.renamePerspective(String(duplicate?.id || ''), 'Review focus alt')
+    expect(settingsStore.perspectives.some((entry) => entry.name === 'Review focus alt')).toBe(true)
+
+    settingsStore.deletePerspective(String(duplicate?.id || ''))
+    expect(settingsStore.perspectives.some((entry) => entry.id === duplicate?.id)).toBe(false)
   })
 
   it('syncs market-data fields from data store and applies runtime mutability flags', () => {

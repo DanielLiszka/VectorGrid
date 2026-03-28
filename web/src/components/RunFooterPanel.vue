@@ -7,10 +7,11 @@ import { useTaskLifecycleSummary } from "../composables/useTaskLifecycleSummary"
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useCommandActionStore } from "../stores/commandActionStore";
-import { useTaskStore } from "../stores/taskStore";
+import { taskPostureSnapshot, useTaskStore } from "../stores/taskStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import {
   formatOverallProgressLabel,
+  taskLifecycleLabel,
 } from "../utils/statusPresentation";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 
@@ -77,6 +78,22 @@ const analysisSummary = computed(() => {
   return "No scored run yet.";
 });
 const taskSummary = computed(() => taskHeadline.value);
+const taskPosture = computed(() => taskPostureSnapshot(taskStore.$state, 6));
+const taskPostureChips = computed(() => {
+  const counts = taskPosture.value.counts;
+  return [
+    counts.running ? `${counts.running} running` : "",
+    counts.queued ? `${counts.queued} queued` : "",
+    counts.cancelling ? `${counts.cancelling} cancelling` : "",
+    counts.failed ? `${counts.failed} failed` : "",
+    counts.cancelled ? `${counts.cancelled} cancelled` : "",
+    counts.completed ? `${counts.completed} completed` : "",
+  ].filter((chip) => chip.length > 0);
+});
+const latestAttentionTask = computed(
+  () => taskPosture.value.failed[0] ?? taskPosture.value.cancelled[0] ?? null,
+);
+const latestCompletedTask = computed(() => taskPosture.value.completed[0] ?? null);
 const overallProgressLabel = computed(() => {
   const shared = String(sharedOverallProgressLabel.value || "").trim();
   if (shared && shared !== "No active progress") return shared;
@@ -177,8 +194,23 @@ function toggleFooterDetails(): void {
           <div class="metaLine mono">
             {{ centerStatusLabel }} · {{ runningCount }} active
           </div>
+          <div v-if="taskPostureChips.length > 0" class="badges" aria-label="Task posture">
+            <span
+              v-for="chip in taskPostureChips"
+              :key="`task_posture_${chip}`"
+              class="badge postureBadge"
+            >
+              {{ chip }}
+            </span>
+          </div>
           <div class="status mono">{{ overallProgressLabel }}</div>
           <div class="status mono">{{ taskSummary }}</div>
+          <div v-if="latestAttentionTask" class="status mono">
+            Attention · {{ latestAttentionTask.label }} {{ taskLifecycleLabel(latestAttentionTask.status) }}
+          </div>
+          <div v-else-if="latestCompletedTask" class="status mono">
+            Latest complete · {{ latestCompletedTask.label }}
+          </div>
         </section>
       </div>
     </section>
@@ -344,6 +376,10 @@ function toggleFooterDetails(): void {
   padding: 0.24rem 0.52rem;
   font-size: 0.72rem;
   background: color-mix(in oklab, var(--panel) 84%, var(--surface));
+}
+
+.postureBadge {
+  background: color-mix(in oklab, var(--surface-inline) 88%, var(--panel));
 }
 
 .status {

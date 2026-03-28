@@ -11,6 +11,7 @@ import { useWorkflowStore } from './workflowStore'
 
 vi.mock('../services/analysisService', () => ({
   clearBaseline: vi.fn(async () => undefined),
+  clearPinnedTopCandidates: vi.fn(async () => undefined),
   clearTopFilters: vi.fn(async () => undefined),
   copyBest: vi.fn(async () => undefined),
   drillClearTradeSelection: vi.fn(async () => undefined),
@@ -19,14 +20,18 @@ vi.mock('../services/analysisService', () => ({
   exportTopCsv: vi.fn(async () => undefined),
   exportTopJson: vi.fn(async () => undefined),
   heatmapExportPng: vi.fn(async () => undefined),
+  pinSelectedTopRow: vi.fn(async () => undefined),
+  pinTopRow: vi.fn(async () => undefined),
   refreshHeatmapFromWorkflowRun: vi.fn(() => true),
   refreshParetoFromWorkflowRun: vi.fn(() => true),
   rerenderDrill: vi.fn(async () => undefined),
   refreshCompareSummary: vi.fn(async () => undefined),
   refreshTopTableFromWorkflowRun: vi.fn(() => true),
+  replacePinnedTopCandidate: vi.fn(async () => undefined),
   selectTopRow: vi.fn(async () => undefined),
   setBaseline: vi.fn(async () => undefined),
   sortTopTable: vi.fn(async () => undefined),
+  unpinTopCandidate: vi.fn(async () => undefined),
 }))
 
 vi.mock('../services/metaService', () => ({
@@ -73,6 +78,7 @@ vi.mock('../services/optimizeService', () => ({
 }))
 
 const clearBaselineMock = vi.mocked(analysisService.clearBaseline)
+const clearPinnedTopCandidatesMock = vi.mocked(analysisService.clearPinnedTopCandidates)
 const clearTopFiltersMock = vi.mocked(analysisService.clearTopFilters)
 const copyBestMock = vi.mocked(analysisService.copyBest)
 const drillClearTradeSelectionMock = vi.mocked(analysisService.drillClearTradeSelection)
@@ -81,14 +87,18 @@ const drillPrevTradeMock = vi.mocked(analysisService.drillPrevTrade)
 const exportTopCsvMock = vi.mocked(analysisService.exportTopCsv)
 const exportTopJsonMock = vi.mocked(analysisService.exportTopJson)
 const heatmapExportPngMock = vi.mocked(analysisService.heatmapExportPng)
+const pinSelectedTopRowMock = vi.mocked(analysisService.pinSelectedTopRow)
+const pinTopRowMock = vi.mocked(analysisService.pinTopRow)
 const refreshHeatmapFromWorkflowRunMock = vi.mocked(analysisService.refreshHeatmapFromWorkflowRun)
 const refreshParetoFromWorkflowRunMock = vi.mocked(analysisService.refreshParetoFromWorkflowRun)
 const rerenderDrillMock = vi.mocked(analysisService.rerenderDrill)
 const refreshCompareSummaryMock = vi.mocked(analysisService.refreshCompareSummary)
 const refreshTopTableFromWorkflowRunMock = vi.mocked(analysisService.refreshTopTableFromWorkflowRun)
+const replacePinnedTopCandidateMock = vi.mocked(analysisService.replacePinnedTopCandidate)
 const selectTopRowMock = vi.mocked(analysisService.selectTopRow)
 const setBaselineMock = vi.mocked(analysisService.setBaseline)
 const sortTopTableMock = vi.mocked(analysisService.sortTopTable)
+const unpinTopCandidateMock = vi.mocked(analysisService.unpinTopCandidate)
 
 const batchRefreshMock = vi.mocked(metaService.batchRefresh)
 const batchRevealSummaryMock = vi.mocked(metaService.batchRevealSummary)
@@ -188,6 +198,11 @@ describe('analysis store actions', () => {
     store.clearTopFilters()
     store.sortTopTable(' sharpe ')
     store.selectTopRow(3.9)
+    store.pinTopRow(1.2)
+    store.pinSelectedTopRow()
+    store.replacePinnedTopCandidate(' pinned_a ')
+    store.unpinTopCandidate(' pinned_b ')
+    store.clearPinnedTopCandidates()
     store.copyBest()
     store.exportTopCsv()
     store.exportTopJson()
@@ -202,6 +217,11 @@ describe('analysis store actions', () => {
     expect(clearTopFiltersMock).toHaveBeenCalled()
     expect(sortTopTableMock).toHaveBeenCalledWith('sharpe')
     expect(selectTopRowMock).toHaveBeenCalledWith(3)
+    expect(pinTopRowMock).toHaveBeenCalledWith(1)
+    expect(pinSelectedTopRowMock).toHaveBeenCalled()
+    expect(replacePinnedTopCandidateMock).toHaveBeenCalledWith('pinned_a')
+    expect(unpinTopCandidateMock).toHaveBeenCalledWith('pinned_b')
+    expect(clearPinnedTopCandidatesMock).toHaveBeenCalled()
     expect(copyBestMock).toHaveBeenCalled()
     expect(exportTopCsvMock).toHaveBeenCalled()
     expect(exportTopJsonMock).toHaveBeenCalled()

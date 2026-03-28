@@ -93,7 +93,10 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Renderer boot failed')
     expect(text).toContain('Optimize 42/100')
     expect(text).toContain('Task posture')
+    expect(text).toContain('Running')
+    expect(text).toContain('Failed')
     expect(text).toContain('Validation failed.')
+    expect(text).toContain('No recently completed tasks.')
     expect(text).toContain('Running')
     expect(text).toContain('Phase changed: Evaluate')
     expect(text).toContain('Optimization failed.')
@@ -124,5 +127,26 @@ describe('SettingsWorkspacePanel', () => {
 
     expect(localStorage.getItem('VTA_TASK_CENTER_OPEN_V1')).toBe('true')
     wrapper.unmount()
+  })
+
+  it('renders density and saved-perspective controls for workstation state', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Saved perspectives')
+    expect(text).toContain('Density')
+    expect(text).toContain('Top Results Triage')
+    expect(text).toContain('Save current to selected')
   })
 })

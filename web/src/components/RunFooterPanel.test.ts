@@ -7,6 +7,7 @@ import RunFooterPanel from "./RunFooterPanel.vue";
 import { useCommandActionStore } from "../stores/commandActionStore";
 import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
+import { useTaskStore } from "../stores/taskStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 
@@ -168,6 +169,62 @@ describe("RunFooterPanel", () => {
         (button) => button.textContent?.trim() === "Run optimization",
       ),
     ).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("surfaces grouped task posture in the footer task card", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    const taskStore = useTaskStore(pinia);
+    workflow.selectWorkflowStep("optimize", { persist: false });
+    optimize.progressMeta = "Optimize 42/100";
+    taskStore.$patch({
+      activeById: {
+        task_running: {
+          id: "task_running",
+          command: "run_double_ma_optimization",
+          label: "Optimization",
+          status: "running",
+          startedAt: 1_700_000_000_000,
+          message: "Evaluate (42.0%)",
+        },
+        task_queued: {
+          id: "task_queued",
+          command: "run_double_ma_validation",
+          label: "Validation",
+          status: "queued",
+          startedAt: 1_700_000_000_100,
+          message: "Queued.",
+        },
+      },
+      activeOrder: ["task_running", "task_queued"],
+      history: [
+        {
+          id: "task_failed",
+          command: "run_double_ma_validation",
+          label: "Validation",
+          status: "failed",
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_001_000,
+          error: "Validation failed.",
+        },
+      ],
+    });
+
+    const wrapper = mount(RunFooterPanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const text = document.body.textContent || "";
+    expect(text).toContain("1 running");
+    expect(text).toContain("1 queued");
+    expect(text).toContain("1 failed");
+    expect(text).toContain("Attention");
 
     wrapper.unmount();
   });

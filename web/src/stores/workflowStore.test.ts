@@ -88,6 +88,14 @@ describe('workflow store actions', () => {
     expect(store.aggregateTab).toBe('saved')
   })
 
+  it('stores shell split fraction as workflow layout state', () => {
+    const store = useWorkflowStore()
+    store.setSplitFraction(0.48, { persist: false })
+
+    expect(store.splitFraction).toBe(0.48)
+    expect(store.source).toBe('vue')
+  })
+
   it('ignores invalid values', () => {
     const store = useWorkflowStore()
     const snapshot = {

@@ -28,6 +28,7 @@ interface TopCell {
 }
 
 interface TopRow {
+  rowId?: string
   selected: boolean
   cells: TopCell[]
 }
@@ -36,17 +37,26 @@ const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
 const { topStage } = useUiReadiness()
 const {
+  bestKicker,
+  bestStats,
+  bestSummary,
   filterMinPnl,
   filterMinSharpe,
   filterMaxDd,
   filterMinTrades,
   filterMinExposure,
+  pinnedTopCandidates,
+  selectedTopDecisionNote,
+  selectedTopProvenanceChips,
+  selectedTopSummary,
+  selectedTopTitle,
   canClearTopFilters,
   topRows,
   topColumns,
   topTableRows,
   topFilterMeta,
   topSelectionGuardrail,
+  topStaleCues,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(analysisStore)
@@ -120,8 +130,38 @@ const topSummaryChips = computed(() => {
     topDisabledForRun.value ? 'Top-k disabled' : '',
   ].filter((chip) => String(chip || '').trim().length > 0)
 })
-const selectedTopSummary = computed(() => {
-  const selectedIndex = renderedRows.value.findIndex((row) => row.selected)
+const selectedTopIndex = computed(() => renderedRows.value.findIndex((row) => row.selected))
+const fallbackSelectedTopTitle = computed(() => {
+  const selectedIndex = selectedTopIndex.value
+  if (selectedIndex < 0) return 'No ranked candidate selected.'
+  const selectedRow = renderedRows.value[selectedIndex]
+  const title = String(selectedRow?.cells?.[1]?.text || selectedRow?.cells?.[0]?.text || '').trim()
+  return title ? `Rank #${selectedIndex + 1} · ${title}` : `Rank #${selectedIndex + 1}`
+})
+const fallbackSelectedTopProvenanceChips = computed(() => {
+  const chips: string[] = []
+  if (selectedTopIndex.value === 0 && hasTopResults.value) chips.push('Current leader')
+  if (filtersActive.value) chips.push('Filtered shortlist')
+  const kicker = String(bestKicker.value || '').trim()
+  if (kicker && kicker !== '—') chips.push(kicker)
+  for (const stat of bestStats.value.slice(0, 2)) {
+    const label = String(stat?.label || '').trim()
+    const value = String(stat?.value || '').trim()
+    if (!label || !value) continue
+    chips.push(`${label} ${value}`)
+  }
+  return chips
+})
+const fallbackSelectedTopDecisionNote = computed(() => {
+  const summary = String(bestSummary.value || '').trim()
+  if (!summary || summary === '-') {
+    if (selectedTopIndex.value < 0) return 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.'
+    return 'Use the current candidate as the working review target, then pin it if you need a side-by-side compare stack.'
+  }
+  return summary
+})
+const fallbackSelectedTopSummary = computed(() => {
+  const selectedIndex = selectedTopIndex.value
   if (selectedIndex < 0) {
     return hasTopResults.value
       ? 'No ranked candidate selected.'
@@ -142,6 +182,82 @@ const selectedTopSummary = computed(() => {
     ? `Selected candidate ${selectedIndex + 1} of ${renderedRows.value.length}: ${leadSummary}.`
     : `Selected candidate ${selectedIndex + 1} of ${renderedRows.value.length}.`
 })
+const hasExplicitSelectedTopState = computed(() => {
+  const explicitTitle = String(selectedTopTitle.value || '').trim()
+  const explicitSummary = String(selectedTopSummary.value || '').trim()
+  const explicitDecisionNote = String(selectedTopDecisionNote.value || '').trim()
+  const explicitChips = Array.isArray(selectedTopProvenanceChips.value)
+    ? selectedTopProvenanceChips.value.map((value) => String(value || '').trim()).filter((value) => value.length > 0)
+    : []
+  const explicitStaleCues = Array.isArray(topStaleCues.value)
+    ? topStaleCues.value.map((value) => String(value || '').trim()).filter((value) => value.length > 0)
+    : []
+  return (
+    explicitChips.length > 0 ||
+    explicitStaleCues.length > 0 ||
+    explicitSummary.startsWith('Selected candidate ') ||
+    (explicitTitle.length > 0 && explicitTitle !== 'No ranked candidate selected.') ||
+    (explicitSummary.length > 0 &&
+      explicitSummary !== 'No ranked candidate selected.' &&
+      explicitSummary !== 'No ranked candidates are available.') ||
+    (explicitDecisionNote.length > 0 &&
+      explicitDecisionNote !== 'Select a ranked candidate to lock a review target before moving into Drilldown or Validation.')
+  )
+})
+const displayedSelectedTopTitle = computed(() => {
+  const explicit = String(selectedTopTitle.value || '').trim()
+  return hasExplicitSelectedTopState.value ? explicit || fallbackSelectedTopTitle.value : fallbackSelectedTopTitle.value
+})
+const displayedSelectedTopSummary = computed(() => {
+  const explicit = String(selectedTopSummary.value || '').trim()
+  return hasExplicitSelectedTopState.value ? explicit || fallbackSelectedTopSummary.value : fallbackSelectedTopSummary.value
+})
+const displayedSelectedTopDecisionNote = computed(() => {
+  const explicit = String(selectedTopDecisionNote.value || '').trim()
+  return hasExplicitSelectedTopState.value ? explicit || fallbackSelectedTopDecisionNote.value : fallbackSelectedTopDecisionNote.value
+})
+const displayedSelectedTopProvenanceChips = computed(() => {
+  const explicit = Array.isArray(selectedTopProvenanceChips.value)
+    ? selectedTopProvenanceChips.value.map((value) => String(value || '').trim()).filter((value) => value.length > 0)
+    : []
+  return hasExplicitSelectedTopState.value && explicit.length ? explicit : fallbackSelectedTopProvenanceChips.value
+})
+const displayedTopStaleCues = computed(() =>
+  Array.isArray(topStaleCues.value)
+    ? topStaleCues.value
+        .map((value) => String(value || '').trim())
+        .filter((value, index, items) => value.length > 0 && value !== '—' && items.indexOf(value) === index)
+    : [],
+)
+const hasTopSelectionGuardrail = computed(() => {
+  const next = String(topSelectionGuardrail.value || '').trim()
+  return next.length > 0 && next !== '—'
+})
+const pinnedTopCandidateIds = computed(
+  () =>
+    new Set(
+      pinnedTopCandidates.value
+        .map((candidate) => String(candidate.id || '').trim())
+        .filter((value) => value.length > 0),
+    ),
+)
+const selectedTopRowId = computed(() => {
+  const selectedRow = selectedTopIndex.value >= 0 ? renderedRows.value[selectedTopIndex.value] : null
+  return String(selectedRow?.rowId || '').trim()
+})
+const canPinSelectedTopCandidate = computed(
+  () => selectedTopIndex.value >= 0 && !!selectedTopRowId.value && !pinnedTopCandidateIds.value.has(selectedTopRowId.value),
+)
+const canReplaceWithCurrent = computed(() => selectedTopIndex.value >= 0 && !!selectedTopRowId.value)
+
+function rowPinned(rowId: string | undefined): boolean {
+  const next = String(rowId || '').trim()
+  return next.length > 0 && pinnedTopCandidateIds.value.has(next)
+}
+
+function pinCellLabel(rowId: string | undefined): string {
+  return rowPinned(rowId) ? 'Pinned' : 'Pin'
+}
 
 watch(
   () => [
@@ -197,6 +313,10 @@ function clickTopRow(index: number): void {
   analysisStore.selectTopRow(index)
 }
 
+function pinTopRow(index: number): void {
+  analysisStore.pinTopRow(index)
+}
+
 function focusAdjacentTopRow(currentTarget: EventTarget | null, direction: 'prev' | 'next' | 'first' | 'last'): void {
   const row = currentTarget instanceof HTMLElement ? currentTarget : null
   const tbody = row?.parentElement
@@ -217,6 +337,11 @@ function onTopRowKeydown(index: number, event: KeyboardEvent): void {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
     clickTopRow(index)
+    return
+  }
+  if (event.key.toLowerCase() === 'p') {
+    event.preventDefault()
+    pinTopRow(index)
     return
   }
   if (event.key === 'ArrowUp') {
@@ -335,7 +460,7 @@ onBeforeUnmount(() => {
           <button type="button" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
         </div>
         <div class="panelAdvisory mono">{{ topFilterMeta }}</div>
-        <div v-if="topSelectionGuardrail" class="panelAdvisory mono bad">{{ topSelectionGuardrail }}</div>
+        <div v-if="hasTopSelectionGuardrail" class="panelAdvisory surfaceWarning mono">{{ topSelectionGuardrail }}</div>
       </section>
 
       <section class="pane">
@@ -357,8 +482,61 @@ onBeforeUnmount(() => {
           aria-atomic="true"
         >
           <div class="stickySelectionSummaryTitle">Current candidate</div>
-          <div class="stickySelectionSummaryBody">{{ selectedTopSummary }}</div>
+          <div class="compareCardTitle">{{ displayedSelectedTopTitle }}</div>
+          <div class="stickySelectionSummaryBody">{{ displayedSelectedTopSummary }}</div>
+          <div class="panelSummaryChips" aria-label="Current candidate provenance">
+            <span
+              v-for="chip in displayedSelectedTopProvenanceChips"
+              :key="`top_provenance_${chip}`"
+              class="panelSummaryChip mono"
+            >
+              {{ chip }}
+            </span>
+          </div>
+          <div class="panelMuted">{{ displayedSelectedTopDecisionNote }}</div>
+          <div class="actions stickySelectionActions">
+            <button type="button" :disabled="!canPinSelectedTopCandidate" @click="analysisStore.pinSelectedTopRow()">Pin current candidate</button>
+            <button type="button" :disabled="pinnedTopCandidates.length === 0" @click="analysisStore.clearPinnedTopCandidates()">Clear compare</button>
+          </div>
         </div>
+        <div v-if="displayedTopStaleCues.length > 0" class="staleCueStack">
+          <div v-for="cue in displayedTopStaleCues" :key="cue" class="panelAdvisory surfaceWarning mono">{{ cue }}</div>
+        </div>
+        <section v-if="pinnedTopCandidates.length > 0" class="compareTray surfaceSunken">
+          <div class="panelSectionHeader">
+            <div class="panelHeadCopy">
+              <div class="panelEyebrow">Compare</div>
+              <h4 class="panelPaneTitle">Pinned candidates</h4>
+              <div class="panelSectionLead">
+                Keep up to four shortlist candidates in view while you move through ranking, drilldown, and validation review.
+              </div>
+            </div>
+          </div>
+          <div class="compareTrayGrid">
+            <article v-for="candidate in pinnedTopCandidates" :key="candidate.id" class="compareCard surfaceFocus">
+              <div class="compareCardMeta mono">#{{ candidate.rank }}</div>
+              <div class="compareCardTitle">{{ candidate.title }}</div>
+              <div class="compareCardSummary">{{ candidate.summary }}</div>
+              <div v-if="candidate.badges.length > 0" class="panelSummaryChips" aria-label="Pinned candidate context">
+                <span
+                  v-for="badge in candidate.badges"
+                  :key="`${candidate.id}_${badge}`"
+                  class="panelSummaryChip mono"
+                >
+                  {{ badge }}
+                </span>
+              </div>
+              <div v-if="candidate.detail" class="panelMuted">{{ candidate.detail }}</div>
+              <div v-if="candidate.staleReason" class="panelAdvisory surfaceWarning mono">{{ candidate.staleReason }}</div>
+              <div class="actions">
+                <button type="button" :disabled="!canReplaceWithCurrent" @click="analysisStore.replacePinnedTopCandidate(candidate.id)">
+                  Replace with current
+                </button>
+                <button type="button" @click="analysisStore.unpinTopCandidate(candidate.id)">Remove</button>
+              </div>
+            </article>
+          </div>
+        </section>
         <div v-if="topStage !== 'ready' || !hasTopResults" class="emptyState topEmptyState">
           <div class="emptyTitle">{{ emptyTitle }}</div>
           <div class="emptyBody">{{ emptyBody }}</div>
@@ -366,7 +544,7 @@ onBeforeUnmount(() => {
             <button type="button" :disabled="!canClearTopFilters" @click="analysisStore.clearTopFilters()">Clear filters</button>
           </div>
           <div class="panelMuted mono panelNumeric">{{ topFilterMeta || statusLine }}</div>
-          <div v-if="topStage === 'ready' && topSelectionGuardrail" class="panelMuted mono panelNumeric">{{ topSelectionGuardrail }}</div>
+          <div v-if="topStage === 'ready' && hasTopSelectionGuardrail" class="panelMuted mono panelNumeric">{{ topSelectionGuardrail }}</div>
         </div>
 
         <div
@@ -425,7 +603,19 @@ onBeforeUnmount(() => {
                     :colspan="virtualRow.row.getVisibleCells().length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                     role="gridcell"
                   >
-                    {{ topCellPayload(cell).text }}
+                    <div class="topCellContent">
+                      <span>{{ topCellPayload(cell).text }}</span>
+                      <button
+                        v-if="cell.column.getIndex() === 0"
+                        type="button"
+                        class="pinCellBtn"
+                        :aria-label="`${pinCellLabel(virtualRow.row.original.rowId)} candidate ${virtualRow.row.index + 1}`"
+                        :disabled="rowPinned(virtualRow.row.original.rowId)"
+                        @click.stop="pinTopRow(virtualRow.row.index)"
+                      >
+                        {{ pinCellLabel(virtualRow.row.original.rowId) }}
+                      </button>
+                    </div>
                   </td>
                 </template>
               </tr>
@@ -459,7 +649,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--panel-footer);
-  padding: 0.75rem 0.8rem;
+  padding: var(--density-pane-y) var(--density-pane-x);
   min-width: 0;
 }
 
@@ -477,7 +667,7 @@ onBeforeUnmount(() => {
 }
 
 .actions button {
-  padding: 0.42rem 0.6rem;
+  padding: calc(var(--density-control-y) - 0.13rem) calc(var(--density-control-x) - 0.15rem);
   font-size: 0.76rem;
 }
 
@@ -501,7 +691,7 @@ onBeforeUnmount(() => {
 .topTableVue th,
 .topTableVue td {
   border-bottom: 1px solid var(--border);
-  padding: 0.38rem 0.45rem;
+  padding: var(--density-table-y) var(--density-table-x);
   text-align: right;
   vertical-align: top;
 }
@@ -546,6 +736,70 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
+.topCellContent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.pinCellBtn {
+  padding: calc(var(--density-chip-y) + 0.06rem) calc(var(--density-chip-x) - 0.02rem);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.stickySelectionActions {
+  margin-top: 0;
+}
+
+.staleCueStack {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+}
+
+.compareTray {
+  margin-bottom: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: var(--density-pane-y) var(--density-pane-x);
+}
+
+.compareTrayGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.compareCard {
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 72%, var(--border));
+  border-radius: 12px;
+  padding: calc(var(--density-pane-y) - 0.08rem) calc(var(--density-pane-x) - 0.05rem);
+  min-width: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.compareCardMeta {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.compareCardTitle {
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: var(--leading-tight);
+}
+
+.compareCardSummary {
+  font-size: 0.78rem;
+  line-height: var(--leading-compact);
+  color: var(--muted-strong);
+}
+
 .sortGlyph {
   margin-left: 0.25rem;
   font-size: 0.72rem;
@@ -581,10 +835,18 @@ onBeforeUnmount(() => {
   .gridFive {
     grid-template-columns: 1fr 1fr;
   }
+
+  .compareTrayGrid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 680px) {
   .gridFive {
+    grid-template-columns: 1fr;
+  }
+
+  .compareTrayGrid {
     grid-template-columns: 1fr;
   }
 }
