@@ -209,6 +209,21 @@ fn first_finite_idx_local_f32(values: &[f32]) -> Option<usize> {
     values.iter().position(|v| v.is_finite())
 }
 
+fn max_first_valid_idx(series: &[&[f64]]) -> Option<usize> {
+    series
+        .iter()
+        .filter_map(|values| first_finite_idx_local(values))
+        .max()
+}
+
+#[cfg(feature = "cuda")]
+fn max_first_valid_idx_f32(series: &[&[f32]]) -> Option<usize> {
+    series
+        .iter()
+        .filter_map(|values| first_finite_idx_local_f32(values))
+        .max()
+}
+
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
     match out.series {
         DynamicIndicatorSeries::F64(v) => v,
@@ -531,11 +546,12 @@ pub fn compute_kqsr_fast_signals(
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
     )?;
-    let first_valid = first_finite_idx_local(&j)
-        .zip(first_finite_idx_local(&srsi_k))
-        .zip(first_finite_idx_local(&srsi_d))
-        .zip(first_finite_idx_local(&ift_rsi))
-        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+    let first_valid = max_first_valid_idx(&[
+        j.as_slice(),
+        srsi_k.as_slice(),
+        srsi_d.as_slice(),
+        ift_rsi.as_slice(),
+    ])
         .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
 
     Ok(KqsrFastSignals {
@@ -645,11 +661,12 @@ pub fn compute_kqsr_slow_signals(
         prepared_cuda_inputs,
     )?;
 
-    let first_valid = first_finite_idx_local(&qqe_fast)
-        .zip(first_finite_idx_local(&qqe_slow))
-        .zip(first_finite_idx_local(&prb_upper))
-        .zip(first_finite_idx_local(&prb_lower))
-        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+    let first_valid = max_first_valid_idx(&[
+        qqe_fast.as_slice(),
+        qqe_slow.as_slice(),
+        prb_upper.as_slice(),
+        prb_lower.as_slice(),
+    ])
         .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
 
     Ok(KqsrSlowSignals {
@@ -762,11 +779,12 @@ pub fn compute_kqsr_fast_signals_f32(
         ift_rsi_params.as_slice(),
         prepared_cuda_inputs,
     )?;
-    let first_valid = first_finite_idx_local_f32(&j)
-        .zip(first_finite_idx_local_f32(&srsi_k))
-        .zip(first_finite_idx_local_f32(&srsi_d))
-        .zip(first_finite_idx_local_f32(&ift_rsi))
-        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+    let first_valid = max_first_valid_idx_f32(&[
+        j.as_slice(),
+        srsi_k.as_slice(),
+        srsi_d.as_slice(),
+        ift_rsi.as_slice(),
+    ])
         .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
 
     Ok(KqsrFastSignalsF32 {
@@ -873,11 +891,12 @@ pub fn compute_kqsr_slow_signals_f32(
         prepared_cuda_inputs,
     )?;
 
-    let first_valid = first_finite_idx_local_f32(&qqe_fast)
-        .zip(first_finite_idx_local_f32(&qqe_slow))
-        .zip(first_finite_idx_local_f32(&prb_upper))
-        .zip(first_finite_idx_local_f32(&prb_lower))
-        .map(|(((a, b), c), d)| a.max(b).max(c).max(d))
+    let first_valid = max_first_valid_idx_f32(&[
+        qqe_fast.as_slice(),
+        qqe_slow.as_slice(),
+        prb_upper.as_slice(),
+        prb_lower.as_slice(),
+    ])
         .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
 
     Ok(KqsrSlowSignalsF32 {
@@ -922,7 +941,16 @@ pub fn build_kqsr_desired_positions(
 ) -> Vec<i32> {
     let n = close.len();
     let mut desired = vec![0i32; n];
-    if start_t >= n {
+    if start_t >= n
+        || signals.j.len() < n
+        || signals.srsi_k.len() < n
+        || signals.srsi_d.len() < n
+        || signals.ift_rsi.len() < n
+        || signals.qqe_fast.len() < n
+        || signals.qqe_slow.len() < n
+        || signals.prb_upper.len() < n
+        || signals.prb_lower.len() < n
+    {
         return desired;
     }
 
@@ -933,22 +961,30 @@ pub fn build_kqsr_desired_positions(
     };
     let neutral = 50.0;
     let mut pos = 0i32;
+    let j = signals.j.as_slice();
+    let srsi_k = signals.srsi_k.as_slice();
+    let srsi_d = signals.srsi_d.as_slice();
+    let ift_rsi = signals.ift_rsi.as_slice();
+    let qqe_fast = signals.qqe_fast.as_slice();
+    let qqe_slow = signals.qqe_slow.as_slice();
+    let prb_upper = signals.prb_upper.as_slice();
+    let prb_lower = signals.prb_lower.as_slice();
 
     for t in start_t..n {
         let sig_t = t.saturating_sub(trade_offset);
         let prev_t = sig_t.saturating_sub(1);
 
-        let close_now = close.get(sig_t).copied().unwrap_or(f64::NAN);
-        let j_now = signals.j.get(sig_t).copied().unwrap_or(f64::NAN);
-        let j_prev = signals.j.get(prev_t).copied().unwrap_or(f64::NAN);
-        let srsi_k_now = signals.srsi_k.get(sig_t).copied().unwrap_or(f64::NAN);
-        let srsi_k_prev = signals.srsi_k.get(prev_t).copied().unwrap_or(f64::NAN);
-        let srsi_d_now = signals.srsi_d.get(sig_t).copied().unwrap_or(f64::NAN);
-        let ift_now = signals.ift_rsi.get(sig_t).copied().unwrap_or(f64::NAN);
-        let qqe_fast_now = signals.qqe_fast.get(sig_t).copied().unwrap_or(f64::NAN);
-        let qqe_slow_now = signals.qqe_slow.get(sig_t).copied().unwrap_or(f64::NAN);
-        let prb_upper_now = signals.prb_upper.get(sig_t).copied().unwrap_or(f64::NAN);
-        let prb_lower_now = signals.prb_lower.get(sig_t).copied().unwrap_or(f64::NAN);
+        let close_now = close[sig_t];
+        let j_now = j[sig_t];
+        let j_prev = j[prev_t];
+        let srsi_k_now = srsi_k[sig_t];
+        let srsi_k_prev = srsi_k[prev_t];
+        let srsi_d_now = srsi_d[sig_t];
+        let ift_now = ift_rsi[sig_t];
+        let qqe_fast_now = qqe_fast[sig_t];
+        let qqe_slow_now = qqe_slow[sig_t];
+        let prb_upper_now = prb_upper[sig_t];
+        let prb_lower_now = prb_lower[sig_t];
 
         let prb_frac = prb_band_fraction(close_now, prb_lower_now, prb_upper_now);
         let prb_long_ok = !prb_frac.is_finite() || prb_frac <= cfg.prb_threshold;

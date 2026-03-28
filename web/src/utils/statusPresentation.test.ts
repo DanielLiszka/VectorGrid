@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  describeLatestTaskOutcome,
+  describeTaskEvent,
+  describeTaskToast,
+  describeTimelineEntry,
   describeRuntimePhase,
   describeTaskActivity,
   describeTrackedTask,
+  formatTaskPhaseLabel,
+  formatTaskSourceLabel,
   formatOverallProgressLabel,
+  taskLevelLabel,
   runtimePhaseLabel,
   taskLifecycleLabel,
 } from './statusPresentation'
@@ -91,5 +98,55 @@ describe('statusPresentation', () => {
         error: 'Renderer boot failed',
       }),
     ).toBe('Renderer boot failed')
+  })
+
+  it('normalizes task severity, source, and phase labels for diagnostics surfaces', () => {
+    expect(taskLevelLabel('warn')).toBe('Warning')
+    expect(taskLevelLabel('success')).toBe('Success')
+    expect(formatTaskPhaseLabel('phase_changed')).toBe('Phase Changed')
+    expect(formatTaskSourceLabel('run_double_ma_optimization')).toBe('Double Ma Optimization')
+  })
+
+  it('describes timeline entries and alerts consistently', () => {
+    expect(
+      describeLatestTaskOutcome({
+        id: 'task_2',
+        command: 'run_double_ma_validation',
+        label: 'Validation',
+        status: 'failed',
+        startedAt: 1_700_000_000_000,
+      }),
+    ).toBe('Validation · Failed')
+
+    expect(
+      describeTimelineEntry({
+        id: 'timeline_1',
+        atUnixMs: 1_700_000_000_000,
+        source: 'run_double_ma_validation',
+        phase: 'running',
+        message: 'Phase changed: Evaluate',
+        level: 'info',
+      }),
+    ).toBe('Double Ma Validation · Running · Phase changed: Evaluate')
+
+    expect(
+      describeTaskToast({
+        id: 'toast_1',
+        atUnixMs: 1_700_000_000_000,
+        source: 'run_double_ma_validation',
+        message: 'Validation failed.',
+        level: 'error',
+      }),
+    ).toBe('Double Ma Validation · Validation failed.')
+
+    expect(
+      describeTaskEvent({
+        id: 'event_1',
+        atUnixMs: 1_700_000_000_000,
+        source: 'cancel_current_run',
+        message: 'Cancellation requested.',
+        level: 'warn',
+      }),
+    ).toBe('Cancel Current Run · Cancellation requested.')
   })
 })

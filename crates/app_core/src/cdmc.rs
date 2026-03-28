@@ -13,6 +13,7 @@ use crate::indicator_catalog::{
     find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
 use vector_ta::cuda::moving_averages::{CudaMama, DeviceArrayF32};
@@ -57,6 +58,18 @@ pub struct CdmcSignals {
     pub fama: Vec<f64>,
     pub decycler: Vec<f64>,
     pub first_valid: usize,
+}
+
+struct CdmcIndicatorIds {
+    dpo_period_key: String,
+    dpo_output: String,
+    correlation_cycle_period_key: String,
+    correlation_cycle_angle_output: String,
+    correlation_cycle_state_output: String,
+    #[cfg(feature = "cuda")]
+    decycler_period_key: String,
+    #[cfg(feature = "cuda")]
+    decycler_output: String,
 }
 
 #[cfg(feature = "cuda")]
@@ -217,6 +230,13 @@ fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
     values.iter().position(|v| v.is_finite())
 }
 
+fn max_first_valid_idx(series: &[&[f64]]) -> Option<usize> {
+    series
+        .iter()
+        .filter_map(|values| first_finite_idx_local(values))
+        .max()
+}
+
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
     match out.series {
         DynamicIndicatorSeries::F64(v) => v,
@@ -240,6 +260,31 @@ fn cuda_series_to_f64(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f64>
 #[cfg(feature = "cuda")]
 fn backend_prefers_gpu(backend: &Backend) -> bool {
     !matches!(backend, Backend::CpuOnly)
+}
+
+fn cdmc_indicator_ids() -> Result<&'static CdmcIndicatorIds, String> {
+    static IDS: OnceLock<Result<CdmcIndicatorIds, String>> = OnceLock::new();
+    IDS.get_or_init(|| {
+        Ok(CdmcIndicatorIds {
+            dpo_period_key: resolve_param_key("dpo", &["period", "length", "timeperiod"])?,
+            dpo_output: resolve_output_id("dpo", &["value", "dpo"])?,
+            correlation_cycle_period_key: resolve_param_key(
+                "correlation_cycle",
+                &["period", "length", "timeperiod"],
+            )?,
+            correlation_cycle_angle_output: resolve_output_id("correlation_cycle", &["angle"])?,
+            correlation_cycle_state_output: resolve_output_id("correlation_cycle", &["state"])?,
+            #[cfg(feature = "cuda")]
+            decycler_period_key: resolve_param_key(
+                "decycler",
+                &["hp_period", "period", "length"],
+            )?,
+            #[cfg(feature = "cuda")]
+            decycler_output: resolve_output_id("decycler", &["value", "decycler"])?,
+        })
+    })
+    .as_ref()
+    .map_err(|err| err.clone())
 }
 
 fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<String, String> {
@@ -280,7 +325,6 @@ fn resolve_output_id(indicator_id: &str, preferred_ids: &[&str]) -> Result<Strin
     Ok(descriptor.outputs[0].id.clone())
 }
 
-#[cfg(feature = "cuda")]
 fn resolve_param_key(indicator_id: &str, preferred_ids: &[&str]) -> Result<String, String> {
     let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
         format!("CDMC indicator '{indicator_id}' is not registered for dynamic dispatch")
@@ -403,13 +447,12 @@ pub fn compute_cdmc_dpo_sweep_cuda_device(
     period_end: u16,
     period_step: u16,
 ) -> Result<CdmcPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("dpo", &["period", "length", "timeperiod"])?;
-    let output_id = resolve_output_id("dpo", &["value", "dpo"])?;
+    let ids = cdmc_indicator_ids()?;
     compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "dpo",
-        output_id.as_str(),
-        period_key.as_str(),
+        ids.dpo_output.as_str(),
+        ids.dpo_period_key.as_str(),
         period_start,
         period_end,
         period_step,
@@ -425,8 +468,20 @@ pub fn compute_cdmc_correlation_cycle_output_sweep_cuda_device(
     period_end: u16,
     period_step: u16,
 ) -> Result<CdmcPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("correlation_cycle", &["period", "length", "timeperiod"])?;
-    let output_id = resolve_output_id("correlation_cycle", output_preferred_ids)?;
+    let ids = cdmc_indicator_ids()?;
+    let output_id = if output_preferred_ids
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case("angle"))
+    {
+        ids.correlation_cycle_angle_output.clone()
+    } else if output_preferred_ids
+        .iter()
+        .any(|id| id.eq_ignore_ascii_case("state"))
+    {
+        ids.correlation_cycle_state_output.clone()
+    } else {
+        resolve_output_id("correlation_cycle", output_preferred_ids)?
+    };
     let base_params = [IndicatorParamKV {
         key: "threshold".to_string(),
         value: IndicatorParamValue::Float(9.0),
@@ -435,7 +490,7 @@ pub fn compute_cdmc_correlation_cycle_output_sweep_cuda_device(
         prepared_inputs,
         "correlation_cycle",
         output_id.as_str(),
-        period_key.as_str(),
+        ids.correlation_cycle_period_key.as_str(),
         period_start,
         period_end,
         period_step,
@@ -450,8 +505,7 @@ pub fn compute_cdmc_decycler_sweep_cuda_device(
     period_end: u16,
     period_step: u16,
 ) -> Result<CdmcPeriodSweepDevice, String> {
-    let period_key = resolve_param_key("decycler", &["hp_period", "period", "length"])?;
-    let output_id = resolve_output_id("decycler", &["value", "decycler"])?;
+    let ids = cdmc_indicator_ids()?;
     let base_params = [IndicatorParamKV {
         key: "k".to_string(),
         value: IndicatorParamValue::Float(0.707),
@@ -459,8 +513,8 @@ pub fn compute_cdmc_decycler_sweep_cuda_device(
     compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "decycler",
-        output_id.as_str(),
-        period_key.as_str(),
+        ids.decycler_output.as_str(),
+        ids.decycler_period_key.as_str(),
         period_start,
         period_end,
         period_step,
@@ -670,9 +724,10 @@ fn compute_decycler_f64(
     {
         if backend_prefers_gpu(backend) {
             if let Some(prepared) = prepared_cuda_inputs {
+                let ids = cdmc_indicator_ids()?;
                 let params = vec![
                     IndicatorParamKV {
-                        key: "hp_period".to_string(),
+                        key: ids.decycler_period_key.clone(),
                         value: IndicatorParamValue::Int(i64::from(periods.decycler)),
                     },
                     IndicatorParamKV {
@@ -683,7 +738,7 @@ fn compute_decycler_f64(
                 let out = compute_dynamic_indicator_cuda_direct_with_inputs(
                     prepared,
                     "decycler",
-                    Some("value"),
+                    Some(ids.decycler_output.as_str()),
                     IndicatorInputKind::Slice,
                     params.as_slice(),
                     Kernel::Auto,
@@ -714,16 +769,14 @@ pub fn compute_cdmc_signals(
     cfg: &CdmcStrategyParams,
     #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
 ) -> Result<CdmcSignals, String> {
-    let dpo_output = resolve_output_id("dpo", &["value", "dpo"])?;
-    let cycle_angle_output = resolve_output_id("correlation_cycle", &["angle"])?;
-    let cycle_state_output = resolve_output_id("correlation_cycle", &["state"])?;
+    let ids = cdmc_indicator_ids()?;
     let dpo_params = vec![IndicatorParamKV {
-        key: "period".to_string(),
+        key: ids.dpo_period_key.clone(),
         value: IndicatorParamValue::Int(i64::from(periods.dpo)),
     }];
     let cycle_params = vec![
         IndicatorParamKV {
-            key: "period".to_string(),
+            key: ids.correlation_cycle_period_key.clone(),
             value: IndicatorParamValue::Int(i64::from(periods.correlation_cycle)),
         },
         IndicatorParamKV {
@@ -736,7 +789,7 @@ pub fn compute_cdmc_signals(
         ma_source,
         backend,
         "dpo",
-        dpo_output.as_str(),
+        ids.dpo_output.as_str(),
         dpo_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -746,7 +799,7 @@ pub fn compute_cdmc_signals(
         ma_source,
         backend,
         "correlation_cycle",
-        cycle_angle_output.as_str(),
+        ids.correlation_cycle_angle_output.as_str(),
         cycle_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -756,7 +809,7 @@ pub fn compute_cdmc_signals(
         ma_source,
         backend,
         "correlation_cycle",
-        cycle_state_output.as_str(),
+        ids.correlation_cycle_state_output.as_str(),
         cycle_params.as_slice(),
         #[cfg(feature = "cuda")]
         prepared_cuda_inputs,
@@ -778,13 +831,14 @@ pub fn compute_cdmc_signals(
         prepared_cuda_inputs,
     )?;
 
-    let first_valid = first_finite_idx_local(&dpo)
-        .zip(first_finite_idx_local(&cycle_angle))
-        .zip(first_finite_idx_local(&cycle_state))
-        .zip(first_finite_idx_local(&mama))
-        .zip(first_finite_idx_local(&fama))
-        .zip(first_finite_idx_local(&decycler))
-        .map(|(((((a, b), c), d), e), f)| a.max(b).max(c).max(d).max(e).max(f))
+    let first_valid = max_first_valid_idx(&[
+        dpo.as_slice(),
+        cycle_angle.as_slice(),
+        cycle_state.as_slice(),
+        mama.as_slice(),
+        fama.as_slice(),
+        decycler.as_slice(),
+    ])
         .ok_or_else(|| "CDMC signals are all non-finite".to_string())?;
 
     Ok(CdmcSignals {

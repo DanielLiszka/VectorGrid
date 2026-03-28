@@ -15,7 +15,7 @@ describe("DataWorkspacePanel", () => {
     `;
   });
 
-  it("exposes cached Polygon selection state and announces the current selection", async () => {
+  it("exposes cached Polygon selection state, keyboard navigation, and announces the current selection", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const dataStore = useDataStore(pinia);
@@ -73,5 +73,16 @@ describe("DataWorkspacePanel", () => {
       "polygonSelectedPath",
       "C:/cache/msft_5m.csv",
     );
+
+    buttons[0]?.focus();
+    buttons[0]?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+    );
+    expect(document.activeElement).toBe(buttons[1]);
+
+    buttons[1]?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+    );
+    expect(document.activeElement).toBe(buttons[0]);
   });
 });

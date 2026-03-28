@@ -11,9 +11,18 @@ import { useSettingsStore } from '../stores/settingsStore'
 import { dismissToast, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import {
+  describeLatestTaskOutcome,
+  describeTaskToast,
+  describeTimelineEntry,
   describeRuntimePhase,
+  describeTrackedTask,
+  formatTaskPhaseLabel,
+  formatTaskSourceLabel,
   runtimePhaseLabel as formatRuntimePhaseLabel,
+  taskLevelLabel,
+  taskLevelTone,
   taskLifecycleLabel,
+  taskLifecycleTone,
 } from '../utils/statusPresentation'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
@@ -52,6 +61,7 @@ const taskCenterOpen = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
 const {
   activeTaskCount,
   centerStatusLabel,
+  taskHeadline,
   latestTask,
   overallProgressLabel: progressLabel,
 } = useTaskLifecycleSummary()
@@ -102,10 +112,41 @@ const runtimeErrorBody = computed(() => String(bootErrorDetail.value || '').trim
 const recentTimeline = computed(() => timeline.value.slice(0, 6))
 const recentAlerts = computed(() => toasts.value.slice(0, 4))
 const latestTaskLabel = computed(() => {
-  const task = latestTask.value
-  if (!task) return ''
-  return `${task.label} · ${taskLifecycleLabel(task.status)}`
+  return describeLatestTaskOutcome(latestTask.value)
 })
+const latestTaskDetail = computed(() => {
+  return latestTask.value ? describeTrackedTask(latestTask.value) : 'No completed or cancelled tasks yet.'
+})
+const latestTaskTone = computed(() => {
+  return latestTask.value ? taskLifecycleTone(latestTask.value.status) : 'idle'
+})
+const latestTaskStatusLabel = computed(() => {
+  return latestTask.value ? taskLifecycleLabel(latestTask.value.status) : 'Idle'
+})
+
+function diagnosticsLevelTone(level: string | null | undefined): string {
+  return taskLevelTone(level)
+}
+
+function diagnosticsLevelLabel(level: string | null | undefined): string {
+  return taskLevelLabel(level)
+}
+
+function diagnosticsPhaseLabel(phase: string | null | undefined): string {
+  return formatTaskPhaseLabel(phase)
+}
+
+function diagnosticsSourceLabel(source: string | null | undefined): string {
+  return formatTaskSourceLabel(source)
+}
+
+function diagnosticsTimelineSummary(index: number): string {
+  return describeTimelineEntry(recentTimeline.value[index] ?? null)
+}
+
+function diagnosticsAlertSummary(index: number): string {
+  return describeTaskToast(recentAlerts.value[index] ?? null)
+}
 
 watch(
   () => [
@@ -391,13 +432,21 @@ onBeforeUnmount(() => {
 
             <section class="diagnosticsCard">
               <header class="diagnosticsHead">
-              <div class="diagnosticsLabel">Latest task</div>
-              <div class="mono diagnosticsStamp">{{ centerStatusLabel }}</div>
-            </header>
-            <div class="diagnosticsPrimary" v-if="latestTask">
+                <div class="diagnosticsLabel">Task posture</div>
+                <div class="mono diagnosticsStamp">{{ centerStatusLabel }}</div>
+              </header>
+              <div v-if="latestTask" class="diagnosticsPrimary">
                 {{ latestTaskLabel }}
               </div>
-              <div class="panelMuted" v-else>No completed or cancelled tasks yet.</div>
+              <div v-if="latestTask" class="diagnosticsEntryMeta">
+                <span class="mono diagnosticsBadge" :class="latestTaskTone">{{ latestTaskStatusLabel }}</span>
+              </div>
+              <div class="panelMuted">
+                {{ latestTaskDetail }}
+              </div>
+              <div class="panelMuted">
+                {{ taskHeadline }}
+              </div>
               <div class="panelMuted">
                 {{ progressLabel }}
               </div>
@@ -410,14 +459,19 @@ onBeforeUnmount(() => {
               </header>
               <div v-if="recentTimeline.length === 0" class="panelMuted">No timeline entries yet.</div>
               <ul v-else class="diagnosticsList">
-                <li v-for="entry in recentTimeline" :key="entry.id" class="diagnosticsEntry">
+                <li
+                  v-for="(entry, index) in recentTimeline"
+                  :key="entry.id"
+                  class="diagnosticsEntry"
+                  :aria-label="diagnosticsTimelineSummary(index)"
+                >
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge">{{ entry.level }}</span>
-                    <span class="mono diagnosticsBadge">{{ entry.phase }}</span>
+                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">{{ diagnosticsLevelLabel(entry.level) }}</span>
+                    <span class="mono diagnosticsBadge">{{ diagnosticsPhaseLabel(entry.phase) }}</span>
                   </div>
                   <div class="diagnosticsEntryBody">
-                    <strong>{{ entry.source }}</strong>
+                    <strong>{{ diagnosticsSourceLabel(entry.source) }}</strong>
                     <span>{{ entry.message }}</span>
                   </div>
                 </li>
@@ -431,13 +485,18 @@ onBeforeUnmount(() => {
               </header>
               <div v-if="recentAlerts.length === 0" class="panelMuted">No recent alerts.</div>
               <ul v-else class="diagnosticsList">
-                <li v-for="toast in recentAlerts" :key="toast.id" class="diagnosticsEntry">
+                <li
+                  v-for="(toast, index) in recentAlerts"
+                  :key="toast.id"
+                  class="diagnosticsEntry"
+                  :aria-label="diagnosticsAlertSummary(index)"
+                >
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(toast.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge">{{ toast.level }}</span>
+                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(toast.level)">{{ diagnosticsLevelLabel(toast.level) }}</span>
                   </div>
                   <div class="diagnosticsEntryBody">
-                    <strong>{{ toast.source }}</strong>
+                    <strong>{{ diagnosticsSourceLabel(toast.source) }}</strong>
                     <span>{{ toast.message }}</span>
                   </div>
                 </li>
@@ -619,6 +678,34 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   padding: 0.08rem 0.38rem;
   background: color-mix(in oklab, var(--surface-sunken) 76%, var(--panel-footer));
+}
+
+.diagnosticsBadge.info,
+.diagnosticsBadge.running {
+  border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
+  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-inline));
+  color: var(--selection-text);
+}
+
+.diagnosticsBadge.warn,
+.diagnosticsBadge.cancelling,
+.diagnosticsBadge.cancelled {
+  border-color: color-mix(in oklab, var(--warning) 38%, var(--border));
+  background: color-mix(in oklab, var(--surface-warning) 90%, var(--surface-inline));
+  color: var(--warning-ink);
+}
+
+.diagnosticsBadge.error,
+.diagnosticsBadge.failed {
+  border-color: color-mix(in oklab, var(--danger) 38%, var(--border));
+  background: color-mix(in oklab, var(--surface-danger) 90%, var(--surface-inline));
+  color: var(--danger-ink);
+}
+
+.diagnosticsBadge.success {
+  border-color: color-mix(in oklab, var(--ok) 38%, var(--border));
+  background: color-mix(in oklab, var(--surface-success) 90%, var(--surface-inline));
+  color: var(--ok-ink);
 }
 
 .diagnosticsPre {

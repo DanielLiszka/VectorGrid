@@ -92,8 +92,12 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Runtime and task center')
     expect(text).toContain('Renderer boot failed')
     expect(text).toContain('Optimize 42/100')
+    expect(text).toContain('Task posture')
+    expect(text).toContain('Validation failed.')
+    expect(text).toContain('Running')
     expect(text).toContain('Phase changed: Evaluate')
     expect(text).toContain('Optimization failed.')
+    expect(text).toContain('Error')
   })
 
   it('opens the shared task center from diagnostics actions', async () => {

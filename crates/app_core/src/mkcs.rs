@@ -4,17 +4,17 @@ use crate::dynamic_indicator_adapter::{
 };
 #[cfg(feature = "cuda")]
 use crate::dynamic_indicator_adapter::{
-    compute_dynamic_indicator_cuda_with_inputs, DynamicIndicatorCudaComputeOutput,
-    DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
+    compute_dynamic_indicator_cuda_direct_with_inputs, compute_dynamic_indicator_cuda_with_inputs,
+    DynamicIndicatorCudaComputeOutput, DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 use crate::indicator_catalog::{
-    find_dynamic_indicator_descriptor, IndicatorParamKV, IndicatorParamValue,
+    find_dynamic_indicator_descriptor, IndicatorInputKind, IndicatorParamKV, IndicatorParamValue,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use ta_strategies::double_ma::StrategyConfig;
 #[cfg(feature = "cuda")]
-use vector_ta::cuda::CudaDeviceVectorF32;
+use vector_ta::indicators::dispatch::DeviceMatrixF32;
 use vector_ta::utilities::data_loader::Candles;
 use vector_ta::utilities::enums::Kernel;
 
@@ -95,14 +95,18 @@ pub struct MkcsDonchianSweepsDevice {
 struct MkcsIndicatorIds {
     stddev_period_key: String,
     stddev_output: String,
+    #[cfg(feature = "cuda")]
+    stddev_input_kind: IndicatorInputKind,
     donchian_period_key: String,
     donchian_upper_output: String,
     donchian_lower_output: String,
+    #[cfg(feature = "cuda")]
+    donchian_input_kind: IndicatorInputKind,
 }
 
 #[cfg(feature = "cuda")]
 enum MkcsDeviceMatrixOwner {
-    Raw(CudaDeviceVectorF32),
+    Dispatch(DeviceMatrixF32),
 }
 
 #[cfg(feature = "cuda")]
@@ -116,20 +120,20 @@ pub struct MkcsDeviceMatrix {
 
 #[cfg(feature = "cuda")]
 impl MkcsDeviceMatrix {
-    fn from_raw(owner: CudaDeviceVectorF32, rows: usize, cols: usize) -> Self {
+    fn from_dispatch(owner: DeviceMatrixF32) -> Self {
         Self {
-            device_ptr: owner.buffer().as_device_ptr().as_raw() as u64,
-            rows,
-            cols,
-            device_id: owner.device_id(),
-            _owner: MkcsDeviceMatrixOwner::Raw(owner),
+            device_ptr: owner.device_ptr,
+            rows: owner.rows,
+            cols: owner.cols,
+            device_id: owner.device_id,
+            _owner: MkcsDeviceMatrixOwner::Dispatch(owner),
         }
     }
 
     fn keepalive_tag(&self) -> u8 {
         match self._owner {
-            MkcsDeviceMatrixOwner::Raw(ref owner) => {
-                let _ = owner.len();
+            MkcsDeviceMatrixOwner::Dispatch(ref owner) => {
+                let _ = owner.rows;
                 1
             }
         }
@@ -236,11 +240,13 @@ fn cuda_series_to_f64(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f64>
 }
 
 #[cfg(feature = "cuda")]
-fn cuda_series_to_host_f32(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f32>, String> {
+fn cuda_series_to_device_f32(
+    out: DynamicIndicatorCudaComputeOutput,
+) -> Result<MkcsDeviceMatrix, String> {
     match out.series {
-        DynamicIndicatorCudaSeries::HostF32(v) => Ok(v),
-        DynamicIndicatorCudaSeries::DeviceF32(_) => {
-            Err("MKCS expected CUDA HostF32 output".to_string())
+        DynamicIndicatorCudaSeries::DeviceF32(v) => Ok(MkcsDeviceMatrix::from_dispatch(v)),
+        DynamicIndicatorCudaSeries::HostF32(_) => {
+            Err("MKCS expected CUDA DeviceF32 output".to_string())
         }
     }
 }
@@ -337,9 +343,17 @@ fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
     static IDS: OnceLock<Result<MkcsIndicatorIds, String>> = OnceLock::new();
 
     IDS.get_or_init(|| {
+        let stddev_descriptor = find_dynamic_indicator_descriptor("stddev").ok_or_else(|| {
+            "MKCS indicator 'stddev' is not registered for dynamic dispatch".to_string()
+        })?;
+        let donchian_descriptor = find_dynamic_indicator_descriptor("donchian").ok_or_else(|| {
+            "MKCS indicator 'donchian' is not registered for dynamic dispatch".to_string()
+        })?;
         Ok(MkcsIndicatorIds {
             stddev_period_key: resolve_param_key("stddev", &["period", "length", "timeperiod"])?,
             stddev_output: resolve_output_id("stddev", &["value", "stddev", "stdev"])?,
+            #[cfg(feature = "cuda")]
+            stddev_input_kind: stddev_descriptor.input_kind,
             donchian_period_key: resolve_param_key(
                 "donchian",
                 &["period", "length", "timeperiod"],
@@ -352,6 +366,8 @@ fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
                 "donchian",
                 &["lower_band", "lowerband", "lower", "down"],
             )?,
+            #[cfg(feature = "cuda")]
+            donchian_input_kind: donchian_descriptor.input_kind,
         })
     })
     .as_ref()
@@ -364,10 +380,11 @@ fn backend_prefers_gpu(backend: &Backend) -> bool {
 }
 
 #[cfg(feature = "cuda")]
-fn compute_indicator_period_sweep_cuda_host_rows(
+fn compute_indicator_period_sweep_cuda_device(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     indicator_id: &str,
     output_id: &str,
+    input_kind: IndicatorInputKind,
     period_key: &str,
     period_start: u16,
     period_end: u16,
@@ -377,66 +394,32 @@ fn compute_indicator_period_sweep_cuda_host_rows(
     let start = period_start.max(1);
     let end = period_end.max(start);
     let step = period_step.max(1);
-    let rows = usize::from(((end - start) / step) + 1);
-    let cols = prepared_inputs.len();
-    let mut row_major: Vec<f32> = Vec::with_capacity(rows.saturating_mul(cols));
-    let mut params: Vec<IndicatorParamKV> = Vec::with_capacity(base_params.len() + 1);
+    let mut params: Vec<IndicatorParamKV> = Vec::with_capacity(base_params.len() + 3);
     params.extend_from_slice(base_params);
-    let period_slot = params.len();
     params.push(IndicatorParamKV {
-        key: period_key.to_string(),
+        key: format!("{period_key}_start"),
         value: IndicatorParamValue::Int(i64::from(start)),
     });
+    params.push(IndicatorParamKV {
+        key: format!("{period_key}_end"),
+        value: IndicatorParamValue::Int(i64::from(end)),
+    });
+    params.push(IndicatorParamKV {
+        key: format!("{period_key}_step"),
+        value: IndicatorParamValue::Int(i64::from(step)),
+    });
 
-    for period in (start..=end).step_by(usize::from(step)) {
-        params[period_slot].value = IndicatorParamValue::Int(i64::from(period));
-        let out = compute_dynamic_indicator_cuda_with_inputs(
-            prepared_inputs,
-            indicator_id,
-            Some(output_id),
-            &params,
-            Kernel::Auto,
-            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-        )
-        .map_err(|e| e.to_string())?;
-        let mut row = cuda_series_to_host_f32(out)?;
-        if row.len() != cols {
-            return Err(format!(
-                "MKCS CUDA host sweep column mismatch for indicator '{indicator_id}' period={period}: expected {cols}, got {}",
-                row.len()
-            ));
-        }
-        row_major.append(&mut row);
-    }
-
-    mkcs_period_sweep_device_from_host_rows(
+    let out = compute_dynamic_indicator_cuda_direct_with_inputs(
         prepared_inputs,
-        row_major.as_slice(),
-        rows,
-        start,
-        end,
-        step,
+        indicator_id,
+        Some(output_id),
+        input_kind,
+        params.as_slice(),
+        Kernel::Auto,
+        vector_ta::indicators::dispatch::CudaOutputTarget::DeviceF32,
     )
-}
-
-#[cfg(feature = "cuda")]
-fn mkcs_period_sweep_device_from_host_rows(
-    prepared_inputs: &PreparedCudaIndicatorInputs,
-    row_major: &[f32],
-    rows: usize,
-    start: u16,
-    end: u16,
-    step: u16,
-) -> Result<MkcsPeriodSweepDevice, String> {
-    let cols = prepared_inputs.len();
-    let matrix = MkcsDeviceMatrix::from_raw(
-        prepared_inputs
-            .runtime()
-            .upload_f32(row_major)
-            .map_err(|e| e.to_string())?,
-        rows,
-        cols,
-    );
+    .map_err(|e| e.to_string())?;
+    let matrix = cuda_series_to_device_f32(out)?;
 
     Ok(MkcsPeriodSweepDevice {
         matrix,
@@ -454,10 +437,11 @@ pub fn compute_mkcs_stddev_sweep_cuda_device(
     period_step: u16,
 ) -> Result<MkcsPeriodSweepDevice, String> {
     let ids = mkcs_indicator_ids()?;
-    compute_indicator_period_sweep_cuda_host_rows(
+    compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "stddev",
         ids.stddev_output.as_str(),
+        ids.stddev_input_kind,
         ids.stddev_period_key.as_str(),
         period_start,
         period_end,
@@ -474,74 +458,28 @@ pub fn compute_mkcs_donchian_sweeps_cuda_device(
     period_step: u16,
 ) -> Result<MkcsDonchianSweepsDevice, String> {
     let ids = mkcs_indicator_ids()?;
-    let start = period_start.max(1);
-    let end = period_end.max(start);
-    let step = period_step.max(1);
-    let rows = usize::from(((end - start) / step) + 1);
-    let cols = prepared_inputs.len();
-    let mut upper_row_major: Vec<f32> = Vec::with_capacity(rows.saturating_mul(cols));
-    let mut lower_row_major: Vec<f32> = Vec::with_capacity(rows.saturating_mul(cols));
-    let mut params = vec![IndicatorParamKV {
-        key: ids.donchian_period_key.clone(),
-        value: IndicatorParamValue::Int(i64::from(start)),
-    }];
-
-    for period in (start..=end).step_by(usize::from(step)) {
-        params[0].value = IndicatorParamValue::Int(i64::from(period));
-
-        let upper_out = compute_dynamic_indicator_cuda_with_inputs(
-            prepared_inputs,
-            "donchian",
-            Some(ids.donchian_upper_output.as_str()),
-            &params,
-            Kernel::Auto,
-            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-        )
-        .map_err(|e| e.to_string())?;
-        let mut upper_row = cuda_series_to_host_f32(upper_out)?;
-        if upper_row.len() != cols {
-            return Err(format!(
-                "MKCS CUDA host sweep column mismatch for indicator 'donchian' upper period={period}: expected {cols}, got {}",
-                upper_row.len()
-            ));
-        }
-        upper_row_major.append(&mut upper_row);
-
-        let lower_out = compute_dynamic_indicator_cuda_with_inputs(
-            prepared_inputs,
-            "donchian",
-            Some(ids.donchian_lower_output.as_str()),
-            &params,
-            Kernel::Auto,
-            vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
-        )
-        .map_err(|e| e.to_string())?;
-        let mut lower_row = cuda_series_to_host_f32(lower_out)?;
-        if lower_row.len() != cols {
-            return Err(format!(
-                "MKCS CUDA host sweep column mismatch for indicator 'donchian' lower period={period}: expected {cols}, got {}",
-                lower_row.len()
-            ));
-        }
-        lower_row_major.append(&mut lower_row);
-    }
-
     Ok(MkcsDonchianSweepsDevice {
-        upper: mkcs_period_sweep_device_from_host_rows(
+        upper: compute_indicator_period_sweep_cuda_device(
             prepared_inputs,
-            upper_row_major.as_slice(),
-            rows,
-            start,
-            end,
-            step,
+            "donchian",
+            ids.donchian_upper_output.as_str(),
+            ids.donchian_input_kind,
+            ids.donchian_period_key.as_str(),
+            period_start,
+            period_end,
+            period_step,
+            &[],
         )?,
-        lower: mkcs_period_sweep_device_from_host_rows(
+        lower: compute_indicator_period_sweep_cuda_device(
             prepared_inputs,
-            lower_row_major.as_slice(),
-            rows,
-            start,
-            end,
-            step,
+            "donchian",
+            ids.donchian_lower_output.as_str(),
+            ids.donchian_input_kind,
+            ids.donchian_period_key.as_str(),
+            period_start,
+            period_end,
+            period_step,
+            &[],
         )?,
     })
 }
@@ -565,10 +503,11 @@ pub fn compute_mkcs_donchian_output_sweep_cuda_device(
     } else {
         ids.donchian_upper_output.as_str()
     };
-    compute_indicator_period_sweep_cuda_host_rows(
+    compute_indicator_period_sweep_cuda_device(
         prepared_inputs,
         "donchian",
         output_id,
+        ids.donchian_input_kind,
         ids.donchian_period_key.as_str(),
         period_start,
         period_end,

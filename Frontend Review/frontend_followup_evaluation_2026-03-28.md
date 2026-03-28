@@ -17,39 +17,70 @@ This is the active open checklist for the next frontend wave. Unlike the complet
 
 ### Phase 1: Lifecycle / Status Consistency
 
-- [ ] Audit remaining task-status, runtime-status, and alert-summary presentation across the major workflow panels.
-- [ ] Route any remaining duplicated task/runtime wording through the shared status-presentation helpers.
-- [ ] Standardize severity, tone, and status-detail rendering across:
-  - [ ] task center
-  - [ ] runtime banner
-  - [ ] run footer
-  - [ ] settings diagnostics
-  - [ ] any remaining workflow-local status strips
-- [ ] Define and document the user-facing lifecycle taxonomy for long-running operations so the same states are described consistently across the app.
-- [ ] Add focused regression coverage for any surfaces moved onto the shared lifecycle/status model.
+- [x] Audit remaining task-status, runtime-status, and alert-summary presentation across the major workflow panels.
+- [x] Route any remaining duplicated task/runtime wording through the shared status-presentation helpers.
+- [x] Standardize severity, tone, and status-detail rendering across:
+  - [x] task center
+  - [x] runtime banner
+  - [x] run footer
+  - [x] settings diagnostics
+  - [x] any remaining workflow-local status strips that actually present shared task/runtime state
+- [x] Define and document the user-facing lifecycle taxonomy for long-running operations so the same states are described consistently across the app.
+- [x] Add focused regression coverage for any surfaces moved onto the shared lifecycle/status model.
+
+Current implementation note:
+
+- `statusPresentation.ts` now owns lifecycle labels, severity labels, humanized phase/source formatting, and shared timeline/alert descriptions
+- `TaskCenterOverlay.vue` and `SettingsWorkspacePanel.vue` now use that shared presentation layer for recent timeline, alert, and task-posture rendering
+- browser QA verified the task center and settings diagnostics surfaces after the change
 
 ### Phase 2: Data-Dense Surface Consistency
 
-- [ ] Audit remaining manual table/list surfaces and classify them as:
-  - [ ] already acceptable as list-style UI
-  - [ ] candidates for the shared headless matrix-table path
-  - [ ] intentionally bespoke
-- [ ] Finish migrating any high-ROI leftover matrix-style tables onto the shared headless matrix-table pattern.
-- [ ] Standardize selection, sorting, and summary semantics across dense results/review surfaces where behavior still drifts.
-- [ ] Add targeted regression coverage for any migrated table/list surface.
+- [x] Audit remaining manual table/list surfaces and classify them as:
+  - [x] already acceptable as list-style UI
+  - [x] candidates for the shared headless matrix-table path
+  - [x] intentionally bespoke
+- [x] Finish migrating any high-ROI leftover matrix-style tables onto the shared headless matrix-table pattern.
+- [x] Standardize selection, sorting, and summary semantics across dense results/review surfaces where behavior still drifts.
+- [x] Add targeted regression coverage for any migrated table/list surface.
+
+Current audit conclusion:
+
+- the shared headless matrix-table path is already the active foundation for Top, Validation, Meta, and the execution orders table
+- History run lists and cached-dataset cards are intentionally list-style surfaces rather than hidden table debt
+- cached Polygon dataset cards now follow the same Arrow/Home/End keyboard pattern as the Run Library lists, so the list-style selection surfaces no longer drift in navigation behavior
+- the remaining manual drilldown tables are imperative/chart-adjacent surfaces and do not currently justify a forced migration purely for checklist completion
 
 ### Phase 3: Form-Architecture Evaluation
 
-- [ ] Inventory the densest configuration forms across Strategy, Advanced, Data, and Validation.
-- [ ] Identify the best pilot surface for a schema-driven form migration rather than attempting a broad rewrite.
-- [ ] Evaluate `vee-validate` with `@vee-validate/zod` against that pilot surface.
-- [ ] Record whether a form-state migration is justified now, later, or not at all.
+- [x] Inventory the densest configuration forms across Strategy, Advanced, Data, and Validation.
+- [x] Identify the best pilot surface for a schema-driven form migration rather than attempting a broad rewrite.
+- [x] Evaluate `vee-validate` with `@vee-validate/zod` against that pilot surface.
+- [x] Record whether a form-state migration is justified now, later, or not at all.
+
+Current evaluation:
+
+- Strategy is still the largest and riskiest form surface by far, with roughly 115 input/select/checkbox controls and substantial strategy-specific branching
+- Validation is the next-heaviest setup surface at roughly 48 controls and still leans on store-driven queued writes
+- Advanced is materially smaller at roughly 17 controls, but its conditional ranking controls are intertwined with existing store setters
+- Data is the best low-risk pilot at roughly 14 controls because the CSV / Polygon setup is bounded, user-facing validation would be clearer there, and a failed pilot would not destabilize the main strategy authoring surface
+
+Decision:
+
+- a schema-driven migration is justified later, not now
+- the current frontend phase should not broaden into a form-state rewrite
+- if a form migration is started later, `DataWorkspacePanel.vue` is the preferred pilot surface before touching Strategy or Validation
 
 ### Phase 4: Diagnostics / Real-Gap Follow-Through
 
-- [ ] Re-evaluate the current Settings diagnostics surface after the lifecycle/status pass and identify missing operator-facing context.
-- [ ] Decide whether the current diagnostics view should remain Settings-scoped or graduate into a more explicit diagnostics surface later.
-- [ ] Keep the current in-app diagnostics path frontend-only unless scope is explicitly expanded to Tauri/plugin work.
+- [x] Re-evaluate the current Settings diagnostics surface after the lifecycle/status pass and identify missing operator-facing context.
+- [x] Decide whether the current diagnostics view should remain Settings-scoped or graduate into a more explicit diagnostics surface later.
+- [x] Keep the current in-app diagnostics path frontend-only unless scope is explicitly expanded to Tauri/plugin work.
+
+Decision:
+
+- keep diagnostics Settings-scoped for the current frontend phase
+- graduate it into a first-class diagnostics workspace only if later Tauri/plugin logging work materially expands what the operator needs to inspect
 
 ### Phase 5: Deferred Desktop Productization Track
 

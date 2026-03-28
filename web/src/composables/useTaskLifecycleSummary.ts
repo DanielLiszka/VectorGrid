@@ -2,6 +2,7 @@ import { computed } from "vue";
 import { storeToRefs } from "pinia";
 import { useTaskStore } from "../stores/taskStore";
 import {
+  describeLatestTaskOutcome,
   describeTaskActivity,
   formatOverallProgressLabel,
   taskLifecycleLabel,
@@ -26,9 +27,7 @@ export function useTaskLifecycleSummary() {
     formatOverallProgressLabel(overallProgress.value),
   );
   const latestTaskOutcome = computed(() =>
-    latestTask.value
-      ? `${latestTask.value.label} · ${taskLifecycleLabel(latestTask.value.status)}`
-      : "No completed or cancelled tasks yet.",
+    describeLatestTaskOutcome(latestTask.value),
   );
   const taskHeadline = computed(() => {
     return describeTaskActivity({

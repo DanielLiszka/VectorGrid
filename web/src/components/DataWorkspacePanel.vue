@@ -219,6 +219,49 @@ function polygonDatasetMetaId(index: number): string {
   return `polygon_dataset_meta_${index}`
 }
 
+function movePolygonDatasetFocus(
+  currentTarget: EventTarget | null,
+  direction: 'prev' | 'next' | 'first' | 'last',
+): void {
+  const button = currentTarget instanceof HTMLElement ? currentTarget : null
+  const list = button?.closest('.stackList')
+  if (!button || !list) return
+  const buttons = Array.from(
+    list.querySelectorAll<HTMLButtonElement>('button.listCard:not(:disabled)'),
+  )
+  if (!buttons.length) return
+  const currentIndex = buttons.indexOf(button as HTMLButtonElement)
+  if (currentIndex < 0) return
+  let nextIndex = currentIndex
+  if (direction === 'prev') nextIndex = Math.max(0, currentIndex - 1)
+  else if (direction === 'next') nextIndex = Math.min(buttons.length - 1, currentIndex + 1)
+  else if (direction === 'first') nextIndex = 0
+  else nextIndex = buttons.length - 1
+  buttons[nextIndex]?.focus()
+}
+
+function onPolygonDatasetKeydown(event: KeyboardEvent): void {
+  if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    movePolygonDatasetFocus(event.currentTarget, 'prev')
+    return
+  }
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    movePolygonDatasetFocus(event.currentTarget, 'next')
+    return
+  }
+  if (event.key === 'Home') {
+    event.preventDefault()
+    movePolygonDatasetFocus(event.currentTarget, 'first')
+    return
+  }
+  if (event.key === 'End') {
+    event.preventDefault()
+    movePolygonDatasetFocus(event.currentTarget, 'last')
+  }
+}
+
 onMounted(async () => {
   await nextTick()
   dataStore.hydrateStartupState()
@@ -449,6 +492,7 @@ onBeforeUnmount(() => {
               :aria-pressed="polygonSelectedPath === dataset.csvPath"
               :aria-describedby="`${polygonDatasetMetaId(index)} polygonSelectionStatus`"
               @click="selectPolygonDataset(dataset.csvPath)"
+              @keydown="onPolygonDatasetKeydown"
             >
               <span class="mono">{{ dataset.displaySymbol || dataset.polygonTicker || dataset.csvPath }}</span>
               <span :id="polygonDatasetMetaId(index)" class="muted mono">{{ dataset.timeframe }} · {{ dataset.rowCount }} rows</span>

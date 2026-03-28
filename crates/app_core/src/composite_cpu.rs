@@ -88,13 +88,17 @@ use crate::kqsr_gpu_kernel::{
     eval_kqsr_metrics_gpu_kernel_device_rows, KqsrGpuComboBatch, KqsrGpuDeviceSignalMatrices,
 };
 use crate::kvdf::{
-    build_kvdf_desired_positions, compute_kvdf_dti_signal, compute_kvdf_fast_signals,
-    compute_kvdf_shared_signals, compute_kvdf_signals, compute_kvdf_slow_signals,
-    compute_kvdf_start_t, resolve_kvdf_periods, validate_kvdf_params, KvdfStrategyParams,
+    build_kvdf_desired_positions, compute_kvdf_signals, compute_kvdf_start_t,
+    resolve_kvdf_periods, validate_kvdf_params, KvdfStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kvdf_gpu_kernel::{
     eval_kvdf_metrics_gpu_kernel_device_rows, KvdfGpuComboBatch, KvdfGpuDeviceSignalMatrices,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::kvdf::{
+    compute_kvdf_dti_signal_f32, compute_kvdf_fast_signals_f32, compute_kvdf_shared_signals_f32,
+    compute_kvdf_slow_signals_f32,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::mkcs::{
@@ -6413,6 +6417,8 @@ fn run_mkcs_optimization(
                     Ok(mut gpu_res) => {
                         if matches!(req.backend, Backend::Auto { .. }) {
                             gpu_res.backend_route = Some("Auto->GpuKernel".to_string());
+                        } else if matches!(req.backend, Backend::GpuKernel { .. }) {
+                            gpu_res.backend_route = Some("GpuKernel".to_string());
                         } else if !matches!(req.backend, Backend::GpuKernel { .. }) {
                             gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
                         }
@@ -8260,14 +8266,14 @@ fn run_kvdf_optimization_gpu(
         .checked_mul(n)
         .ok_or_else(|| "KVDF slow signal matrix overflow".to_string())?;
 
-    let shared = compute_kvdf_shared_signals(
+    let shared = compute_kvdf_shared_signals_f32(
         candles,
         &req.ma_source,
         &req.backend,
         &kvdf_cfg,
         Some(&prepared_cuda_inputs),
     )?;
-    let shared_vwap_f32: Vec<f32> = shared.vwap.iter().map(|v| *v as f32).collect();
+    let shared_vwap_f32 = shared.vwap.clone();
 
     let slow_seed = *slow_periods
         .first()
@@ -8281,7 +8287,7 @@ fn run_kvdf_optimization_gpu(
     let mut fast_first_valid: Vec<usize> = Vec::with_capacity(fast_rows);
     for &fast_len in &fast_periods {
         let periods = resolve_kvdf_periods(&kvdf_cfg, fast_len, slow_seed);
-        let fast = compute_kvdf_fast_signals(
+        let fast = compute_kvdf_fast_signals_f32(
             candles,
             &req.ma_source,
             &req.backend,
@@ -8289,8 +8295,8 @@ fn run_kvdf_optimization_gpu(
             Some(&prepared_cuda_inputs),
         )?;
         fast_first_valid.push(fast.first_valid);
-        fvg_upper_ts_row_major.extend(fast.fvg_upper_ts.iter().map(|v| *v as f32));
-        fvg_lower_ts_row_major.extend(fast.fvg_lower_ts.iter().map(|v| *v as f32));
+        fvg_upper_ts_row_major.extend_from_slice(fast.fvg_upper_ts.as_slice());
+        fvg_lower_ts_row_major.extend_from_slice(fast.fvg_lower_ts.as_slice());
     }
 
     let mut keltner_upper_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
@@ -8301,7 +8307,7 @@ fn run_kvdf_optimization_gpu(
     let mut slow_first_valid: Vec<usize> = Vec::with_capacity(slow_rows);
     for &slow_len in &slow_periods {
         let periods = resolve_kvdf_periods(&kvdf_cfg, fast_seed, slow_len);
-        let slow = compute_kvdf_slow_signals(
+        let slow = compute_kvdf_slow_signals_f32(
             candles,
             &req.ma_source,
             &req.backend,
@@ -8310,11 +8316,11 @@ fn run_kvdf_optimization_gpu(
             Some(&prepared_cuda_inputs),
         )?;
         slow_first_valid.push(slow.first_valid);
-        keltner_upper_row_major.extend(slow.keltner_upper.iter().map(|v| *v as f32));
-        keltner_middle_row_major.extend(slow.keltner_middle.iter().map(|v| *v as f32));
-        keltner_lower_row_major.extend(slow.keltner_lower.iter().map(|v| *v as f32));
-        devstop_long_row_major.extend(slow.devstop_long.iter().map(|v| *v as f32));
-        devstop_short_row_major.extend(slow.devstop_short.iter().map(|v| *v as f32));
+        keltner_upper_row_major.extend_from_slice(slow.keltner_upper.as_slice());
+        keltner_middle_row_major.extend_from_slice(slow.keltner_middle.as_slice());
+        keltner_lower_row_major.extend_from_slice(slow.keltner_lower.as_slice());
+        devstop_long_row_major.extend_from_slice(slow.devstop_long.as_slice());
+        devstop_short_row_major.extend_from_slice(slow.devstop_short.as_slice());
     }
 
     let mut dti_row_major: Vec<f32> = Vec::with_capacity(total_pairs * n);
@@ -8341,7 +8347,7 @@ fn run_kvdf_optimization_gpu(
             let dti_row = if let Some(&row) = dti_row_lookup.get(&dti_key) {
                 row
             } else {
-                let dti = compute_kvdf_dti_signal(
+                let dti = compute_kvdf_dti_signal_f32(
                     candles,
                     &req.ma_source,
                     &req.backend,
@@ -8350,8 +8356,8 @@ fn run_kvdf_optimization_gpu(
                 )?;
                 let row = i32::try_from(dti_first_valid_by_row.len())
                     .map_err(|_| "KVDF DTI row index exceeds i32 range".to_string())?;
-                dti_first_valid_by_row.push(first_finite_idx(&dti).unwrap_or(n));
-                dti_row_major.extend(dti.iter().map(|v| *v as f32));
+                dti_first_valid_by_row.push(dti.iter().position(|v| v.is_finite()).unwrap_or(n));
+                dti_row_major.extend_from_slice(dti.as_slice());
                 dti_row_lookup.insert(dti_key, row);
                 row
             };
@@ -14851,6 +14857,156 @@ mod tests {
         };
 
         assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "carm");
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_gpu_kernel_strategy_flag_parity_cases() {
+        let candles = make_carm_momentum_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let base_req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: Some(CarmStrategyParams::default()),
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "carm-flags".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+        let cases = vec![
+            (
+                "carm/long_only",
+                StrategyConfig {
+                    long_only: true,
+                    ..StrategyConfig::default()
+                },
+            ),
+            (
+                "carm/no_flip",
+                StrategyConfig {
+                    allow_flip: false,
+                    ..StrategyConfig::default()
+                },
+            ),
+            (
+                "carm/next_bar",
+                StrategyConfig {
+                    trade_on_next_bar: true,
+                    ..StrategyConfig::default()
+                },
+            ),
+            (
+                "carm/long_only_no_flip_next_bar",
+                StrategyConfig {
+                    long_only: true,
+                    allow_flip: false,
+                    trade_on_next_bar: true,
+                    ..StrategyConfig::default()
+                },
+            ),
+        ];
+
+        for (label, strategy) in cases {
+            let mut req = base_req.clone();
+            req.data_id = label.replace('/', "-");
+            req.strategy = strategy;
+            assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, label);
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_gpu_kernel_request_falls_back_to_cpu_with_stop_loss_overlay() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_carm_momentum_candles(640);
+        let cancel = AtomicBool::new(false);
+        let req = CompositeCpuRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: Some(CarmStrategyParams::default()),
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "carm-gpu-fallback".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig {
+                stop_loss_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("carm gpu fallback optimization");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without overlays/stop-loss/take-profit"));
     }
 
     #[test]

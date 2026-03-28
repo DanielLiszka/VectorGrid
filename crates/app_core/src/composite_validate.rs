@@ -68,8 +68,8 @@ use crate::kvdf::{
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kvdf::{
-    compute_kvdf_dti_signal, compute_kvdf_fast_signals, compute_kvdf_shared_signals,
-    compute_kvdf_slow_signals,
+    compute_kvdf_dti_signal_f32, compute_kvdf_fast_signals_f32, compute_kvdf_shared_signals_f32,
+    compute_kvdf_slow_signals_f32,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kvdf_gpu_kernel::{
@@ -8062,7 +8062,7 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
         }
 
         let periods = resolve_kvdf_periods(first_kvdf, cand.fast_len, cand.slow_len);
-        let slow = compute_kvdf_slow_signals(
+        let slow = compute_kvdf_slow_signals_f32(
             candles,
             &req.ma_source,
             &req.backend,
@@ -8070,14 +8070,14 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
             first_kvdf,
             Some(&prepared_cuda_inputs),
         )?;
-        let shared = compute_kvdf_shared_signals(
+        let shared = compute_kvdf_shared_signals_f32(
             candles,
             &req.ma_source,
             &req.backend,
             first_kvdf,
             Some(&prepared_cuda_inputs),
         )?;
-        let fast = compute_kvdf_fast_signals(
+        let fast = compute_kvdf_fast_signals_f32(
             candles,
             &req.ma_source,
             &req.backend,
@@ -8088,7 +8088,7 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
         let dti_row = if let Some(&row) = dti_row_lookup.get(&dti_key) {
             row
         } else {
-            let dti = compute_kvdf_dti_signal(
+            let dti = compute_kvdf_dti_signal_f32(
                 candles,
                 &req.ma_source,
                 &req.backend,
@@ -8097,8 +8097,8 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
             )?;
             let row = i32::try_from(dti_first_valid_by_row.len())
                 .map_err(|_| "KVDF GPU reopt DTI row index exceeds i32 range".to_string())?;
-            dti_first_valid_by_row.push(first_finite_idx(&dti).unwrap_or(n));
-            dti_row_major.extend(dti.iter().map(|v| *v as f32));
+            dti_first_valid_by_row.push(dti.iter().position(|v| v.is_finite()).unwrap_or(n));
+            dti_row_major.extend_from_slice(dti.as_slice());
             dti_row_lookup.insert(dti_key, row);
             row
         };
@@ -8118,14 +8118,14 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
             return Err("not enough candles after KVDF GPU reopt warmup".to_string());
         }
 
-        keltner_upper_row_major.extend(slow.keltner_upper.iter().map(|v| *v as f32));
-        keltner_middle_row_major.extend(slow.keltner_middle.iter().map(|v| *v as f32));
-        keltner_lower_row_major.extend(slow.keltner_lower.iter().map(|v| *v as f32));
-        vwap_row_major.extend(shared.vwap.iter().map(|v| *v as f32));
-        devstop_long_row_major.extend(slow.devstop_long.iter().map(|v| *v as f32));
-        devstop_short_row_major.extend(slow.devstop_short.iter().map(|v| *v as f32));
-        fvg_upper_ts_row_major.extend(fast.fvg_upper_ts.iter().map(|v| *v as f32));
-        fvg_lower_ts_row_major.extend(fast.fvg_lower_ts.iter().map(|v| *v as f32));
+        keltner_upper_row_major.extend_from_slice(slow.keltner_upper.as_slice());
+        keltner_middle_row_major.extend_from_slice(slow.keltner_middle.as_slice());
+        keltner_lower_row_major.extend_from_slice(slow.keltner_lower.as_slice());
+        vwap_row_major.extend_from_slice(shared.vwap.as_slice());
+        devstop_long_row_major.extend_from_slice(slow.devstop_long.as_slice());
+        devstop_short_row_major.extend_from_slice(slow.devstop_short.as_slice());
+        fvg_upper_ts_row_major.extend_from_slice(fast.fvg_upper_ts.as_slice());
+        fvg_lower_ts_row_major.extend_from_slice(fast.fvg_lower_ts.as_slice());
         combo_fast_row_idx.push(
             i32::try_from(idx)
                 .map_err(|_| "KVDF GPU reopt fast row index exceeds i32 range".to_string())?,
@@ -8346,14 +8346,14 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
         device_id as usize,
     )?;
 
-    let shared = compute_kvdf_shared_signals(
+    let shared = compute_kvdf_shared_signals_f32(
         candles,
         &req.ma_source,
         &req.backend,
         first_kvdf,
         Some(&prepared_cuda_inputs),
     )?;
-    let shared_vwap_f32: Vec<f32> = shared.vwap.iter().map(|v| *v as f32).collect();
+    let shared_vwap_f32 = shared.vwap.clone();
 
     let mut fast_periods: Vec<u16> = req.candidates.iter().map(|cand| cand.fast_len).collect();
     let mut slow_periods: Vec<u16> = req.candidates.iter().map(|cand| cand.slow_len).collect();
@@ -8381,7 +8381,7 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
     let mut fast_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(fast_rows);
     for &fast_len in &fast_periods {
         let periods = resolve_kvdf_periods(first_kvdf, fast_len, slow_seed);
-        let fast = compute_kvdf_fast_signals(
+        let fast = compute_kvdf_fast_signals_f32(
             candles,
             &req.ma_source,
             &req.backend,
@@ -8389,8 +8389,8 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
             Some(&prepared_cuda_inputs),
         )?;
         fast_first_valid_lookup.insert(fast_len, fast.first_valid);
-        fvg_upper_ts_row_major.extend(fast.fvg_upper_ts.iter().map(|v| *v as f32));
-        fvg_lower_ts_row_major.extend(fast.fvg_lower_ts.iter().map(|v| *v as f32));
+        fvg_upper_ts_row_major.extend_from_slice(fast.fvg_upper_ts.as_slice());
+        fvg_lower_ts_row_major.extend_from_slice(fast.fvg_lower_ts.as_slice());
     }
 
     let mut keltner_upper_row_major: Vec<f32> = Vec::with_capacity(row_major_len_slow);
@@ -8401,7 +8401,7 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
     let mut slow_first_valid_lookup: HashMap<u16, usize> = HashMap::with_capacity(slow_rows);
     for &slow_len in &slow_periods {
         let periods = resolve_kvdf_periods(first_kvdf, fast_seed, slow_len);
-        let slow = compute_kvdf_slow_signals(
+        let slow = compute_kvdf_slow_signals_f32(
             candles,
             &req.ma_source,
             &req.backend,
@@ -8410,11 +8410,11 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
             Some(&prepared_cuda_inputs),
         )?;
         slow_first_valid_lookup.insert(slow_len, slow.first_valid);
-        keltner_upper_row_major.extend(slow.keltner_upper.iter().map(|v| *v as f32));
-        keltner_middle_row_major.extend(slow.keltner_middle.iter().map(|v| *v as f32));
-        keltner_lower_row_major.extend(slow.keltner_lower.iter().map(|v| *v as f32));
-        devstop_long_row_major.extend(slow.devstop_long.iter().map(|v| *v as f32));
-        devstop_short_row_major.extend(slow.devstop_short.iter().map(|v| *v as f32));
+        keltner_upper_row_major.extend_from_slice(slow.keltner_upper.as_slice());
+        keltner_middle_row_major.extend_from_slice(slow.keltner_middle.as_slice());
+        keltner_lower_row_major.extend_from_slice(slow.keltner_lower.as_slice());
+        devstop_long_row_major.extend_from_slice(slow.devstop_long.as_slice());
+        devstop_short_row_major.extend_from_slice(slow.devstop_short.as_slice());
     }
 
     let fast_row_lookup: HashMap<u16, i32> = fast_periods
@@ -8481,7 +8481,7 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
         let dti_row = if let Some(&row) = dti_row_lookup.get(&dti_key) {
             row
         } else {
-            let dti = compute_kvdf_dti_signal(
+            let dti = compute_kvdf_dti_signal_f32(
                 candles,
                 &req.ma_source,
                 &req.backend,
@@ -8490,8 +8490,8 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
             )?;
             let row = i32::try_from(dti_first_valid_by_row.len())
                 .map_err(|_| "KVDF DTI row index exceeds i32 range".to_string())?;
-            dti_first_valid_by_row.push(first_finite_idx(&dti).unwrap_or(n));
-            dti_row_major.extend(dti.iter().map(|v| *v as f32));
+            dti_first_valid_by_row.push(dti.iter().position(|v| v.is_finite()).unwrap_or(n));
+            dti_row_major.extend_from_slice(dti.as_slice());
             dti_row_lookup.insert(dti_key, row);
             row
         };
@@ -22859,6 +22859,82 @@ mod tests {
             validation_context: None,
         };
         assert_gpu_in_sample_matches_cpu(mk, &candles, &cancel);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_validation_gpu_kernel_falls_back_to_cpu_with_stop_loss_overlay() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_noisy_trending_candles(3000);
+        let cancel = AtomicBool::new(false);
+
+        let candidate = CompositeParams {
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            fast_len: 10,
+            slow_len: 30,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: Some(CarmStrategyParams::default()),
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            strategy: StrategyConfig {
+                stop_loss_pct: Some(0.02),
+                ..StrategyConfig::default()
+            },
+        };
+
+        let req = CompositeValidationRequest {
+            data_id: "carm-gpu-fallback-test".to_string(),
+            backend: Backend::GpuKernel { device_id: 0 },
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![candidate],
+            walk_forward: None,
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: None,
+            spa: None,
+            seed: 41,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: None,
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("carm gpu fallback validation");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.backend_route.as_deref(), Some("GpuKernel->CpuOnly"));
+        assert!(res
+            .backend_fallback_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("without overlays/stop-loss/take-profit"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

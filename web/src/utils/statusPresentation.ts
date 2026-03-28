@@ -1,14 +1,24 @@
 import type {
+  TaskEventItem,
   OverallProgress,
   TaskCenterStatus,
   TaskStatus,
+  TaskTimelineItem,
   TaskToastItem,
   TrackedTask,
 } from '../stores/taskStore'
 import type { LegacyBootPhase } from '../stores/runtimeStore'
+import { formatCommandLabel } from '../stores/taskStore'
 import { formatUiPercentFromFraction } from './uiFormat'
 
 type TaskLifecycleValue = TaskStatus | TaskCenterStatus | string | null | undefined
+type TaskLevelValue =
+  | TaskEventItem['level']
+  | TaskTimelineItem['level']
+  | TaskToastItem['level']
+  | string
+  | null
+  | undefined
 
 export function taskLifecycleTone(status: TaskLifecycleValue): TaskCenterStatus | 'idle' {
   const value = String(status || 'idle').trim().toLowerCase()
@@ -30,6 +40,38 @@ export function taskLifecycleLabel(status: TaskLifecycleValue): string {
   if (tone === 'failed') return 'Failed'
   if (tone === 'cancelled') return 'Cancelled'
   return 'Idle'
+}
+
+export function taskLevelTone(level: TaskLevelValue): 'info' | 'warn' | 'error' | 'success' {
+  const value = String(level || 'info').trim().toLowerCase()
+  if (value === 'warn' || value === 'warning') return 'warn'
+  if (value === 'error' || value === 'danger' || value === 'failed') return 'error'
+  if (value === 'success' || value === 'ok' || value === 'done' || value === 'completed') return 'success'
+  return 'info'
+}
+
+export function taskLevelLabel(level: TaskLevelValue): string {
+  const tone = taskLevelTone(level)
+  if (tone === 'warn') return 'Warning'
+  if (tone === 'error') return 'Error'
+  if (tone === 'success') return 'Success'
+  return 'Info'
+}
+
+export function formatTaskPhaseLabel(phase: string | null | undefined): string {
+  const value = String(phase || '').trim()
+  if (!value) return 'Unknown'
+  const lifecycle = taskLifecycleTone(value)
+  if (lifecycle !== 'idle') return taskLifecycleLabel(value)
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b[a-z]/g, (segment) => segment.toUpperCase())
+}
+
+export function formatTaskSourceLabel(source: string | null | undefined): string {
+  const value = String(source || '').trim()
+  if (!value) return 'System'
+  return formatCommandLabel(value)
 }
 
 export function describeTrackedTask(task: TrackedTask | null | undefined): string {
@@ -62,6 +104,36 @@ export function describeTaskActivity(options: {
   }
 
   return 'No active commands.'
+}
+
+export function describeLatestTaskOutcome(
+  task: TrackedTask | null | undefined,
+  emptyMessage = 'No completed or cancelled tasks yet.',
+): string {
+  if (!task) return emptyMessage
+  return `${task.label} · ${taskLifecycleLabel(task.status)}`
+}
+
+export function describeTaskEvent(event: TaskEventItem | null | undefined): string {
+  if (!event) return 'No events yet.'
+  const source = formatTaskSourceLabel(event.source)
+  const message = String(event.message || '').trim()
+  return message ? `${source} · ${message}` : source
+}
+
+export function describeTimelineEntry(entry: TaskTimelineItem | null | undefined): string {
+  if (!entry) return 'No timeline entries yet.'
+  const source = formatTaskSourceLabel(entry.source)
+  const phase = formatTaskPhaseLabel(entry.phase)
+  const message = String(entry.message || '').trim()
+  return message ? `${source} · ${phase} · ${message}` : `${source} · ${phase}`
+}
+
+export function describeTaskToast(toast: TaskToastItem | null | undefined): string {
+  if (!toast) return 'No recent alerts.'
+  const source = formatTaskSourceLabel(toast.source)
+  const message = String(toast.message || '').trim()
+  return message ? `${source} · ${message}` : source
 }
 
 export function formatOverallProgressLabel(overall: OverallProgress | null | undefined): string {

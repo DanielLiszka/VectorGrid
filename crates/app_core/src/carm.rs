@@ -1251,6 +1251,152 @@ mod tests {
         assert_eq!(desired[5], 0);
     }
 
+    #[test]
+    fn build_carm_desired_positions_keeps_rocr_and_apo_thresholds_strict_but_otto_inclusive() {
+        let close = vec![100.0, 100.0, 100.0];
+        let mut strategy = StrategyConfig::default();
+        strategy.trade_on_next_bar = false;
+        strategy.allow_flip = false;
+        let cfg = CarmStrategyParams::default();
+
+        let no_entry_signals = CarmSignals {
+            coppock: vec![-0.1, 0.2, 0.2],
+            ao: vec![-0.1, 0.3, 0.3],
+            rocr: vec![0.99, 1.0, 1.0],
+            apo: vec![-0.1, 0.0, 0.0],
+            otto_hott: vec![100.0, 100.0, 100.0],
+            otto_lott: vec![160.0, 160.0, 160.0],
+            first_valid: 0,
+        };
+        let desired_no_entry =
+            build_carm_desired_positions(&close, &no_entry_signals, 1, &strategy, &cfg);
+        assert_eq!(desired_no_entry[1], 0);
+
+        let long_entry_signals = CarmSignals {
+            rocr: vec![0.99, 1.01, 1.01],
+            apo: vec![-0.1, 0.1, 0.1],
+            ..no_entry_signals
+        };
+        let desired_long_entry =
+            build_carm_desired_positions(&close, &long_entry_signals, 1, &strategy, &cfg);
+        assert_eq!(
+            desired_long_entry[1], 1,
+            "otto threshold equality should still permit the long entry once rocr/apo clear their strict boundaries"
+        );
+    }
+
+    #[test]
+    fn build_carm_desired_positions_long_only_blocks_short_entry() {
+        let close = vec![100.0, 99.0, 98.0];
+        let signals = CarmSignals {
+            coppock: vec![0.1, -0.2, -0.2],
+            ao: vec![0.1, -0.3, -0.3],
+            rocr: vec![1.01, 0.99, 0.99],
+            apo: vec![0.1, -0.2, -0.2],
+            otto_hott: vec![100.0, 160.0, 160.0],
+            otto_lott: vec![160.0, 100.0, 100.0],
+            first_valid: 0,
+        };
+
+        let long_only_desired = build_carm_desired_positions(
+            &close,
+            &signals,
+            1,
+            &StrategyConfig {
+                long_only: true,
+                trade_on_next_bar: false,
+                ..StrategyConfig::default()
+            },
+            &CarmStrategyParams::default(),
+        );
+        assert_eq!(long_only_desired[1], 0);
+
+        let bidirectional_desired = build_carm_desired_positions(
+            &close,
+            &signals,
+            1,
+            &StrategyConfig {
+                long_only: false,
+                trade_on_next_bar: false,
+                ..StrategyConfig::default()
+            },
+            &CarmStrategyParams::default(),
+        );
+        assert_eq!(bidirectional_desired[1], -1);
+    }
+
+    #[test]
+    fn build_carm_desired_positions_allow_flip_true_reverses_immediately() {
+        let close = vec![100.0, 101.0, 99.0];
+        let signals = CarmSignals {
+            coppock: vec![-0.1, 0.3, -0.4],
+            ao: vec![-0.1, 0.2, -0.3],
+            rocr: vec![0.99, 1.02, 0.98],
+            apo: vec![-0.1, 0.2, -0.2],
+            otto_hott: vec![100.0, 100.0, 160.0],
+            otto_lott: vec![160.0, 161.0, 100.0],
+            first_valid: 0,
+        };
+
+        let desired = build_carm_desired_positions(
+            &close,
+            &signals,
+            1,
+            &StrategyConfig {
+                long_only: false,
+                allow_flip: true,
+                trade_on_next_bar: false,
+                ..StrategyConfig::default()
+            },
+            &CarmStrategyParams::default(),
+        );
+
+        assert_eq!(desired[1], 1);
+        assert_eq!(desired[2], -1);
+    }
+
+    #[test]
+    fn build_carm_desired_positions_trade_on_next_bar_delays_transitions() {
+        let close = vec![100.0, 101.0, 102.0, 101.0, 99.0, 98.0, 99.0];
+        let signals = CarmSignals {
+            coppock: vec![f64::NAN, -0.2, 0.4, 0.8, 0.9, -0.1, -0.6],
+            ao: vec![f64::NAN, -0.5, 0.2, 0.5, 0.6, -0.1, -0.4],
+            rocr: vec![f64::NAN, 0.98, 1.02, 1.05, 1.06, 0.99, 0.96],
+            apo: vec![f64::NAN, -0.3, 0.2, 0.4, 0.5, -0.2, -0.5],
+            otto_hott: vec![f64::NAN, 100.6, 100.8, 101.5, 102.4, 103.4, 102.2],
+            otto_lott: vec![f64::NAN, 100.2, 161.6, 162.8, 163.6, 102.9, 100.8],
+            first_valid: 1,
+        };
+
+        let immediate = build_carm_desired_positions(
+            &close,
+            &signals,
+            1,
+            &StrategyConfig {
+                trade_on_next_bar: false,
+                ..StrategyConfig::default()
+            },
+            &CarmStrategyParams::default(),
+        );
+        let delayed = build_carm_desired_positions(
+            &close,
+            &signals,
+            1,
+            &StrategyConfig {
+                trade_on_next_bar: true,
+                ..StrategyConfig::default()
+            },
+            &CarmStrategyParams::default(),
+        );
+
+        assert_eq!(immediate[2], 1);
+        assert_eq!(delayed[2], 0);
+        assert_eq!(delayed[3], 1);
+        assert_eq!(immediate[5], 0);
+        assert_eq!(delayed[5], 1);
+        assert_eq!(delayed[6], 0);
+    }
+
     #[cfg(feature = "cuda")]
     #[test]
     fn compute_carm_signals_gpu_smoke_runs_with_all_indicator_surfaces() {

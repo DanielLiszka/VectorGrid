@@ -6,7 +6,14 @@ import { invokeCommand } from '../tauri/invoke'
 import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
 import { formatUiCompactDurationMs, formatUiPercentFromFraction } from '../utils/uiFormat'
 import {
+  describeTaskEvent,
+  describeTaskToast,
+  describeTimelineEntry,
   describeTrackedTask,
+  formatTaskPhaseLabel,
+  formatTaskSourceLabel,
+  taskLevelLabel,
+  taskLevelTone,
   taskLifecycleLabel,
   taskLifecycleTone,
 } from '../utils/statusPresentation'
@@ -20,6 +27,8 @@ import {
   markTaskCancelling,
   restoreTaskRunning,
   useTaskStore,
+  type TaskEventItem,
+  type TaskTimelineItem,
   type TaskToastItem,
   type TrackedTask,
 } from '../stores/taskStore'
@@ -316,11 +325,32 @@ function setCancelBusy(taskId: string, busy: boolean): void {
   busyCancelIds.value = next
 }
 
-function toastClass(toast: TaskToastItem): string {
-  if (toast.level === 'success') return 'success'
-  if (toast.level === 'warn') return 'warn'
-  if (toast.level === 'error') return 'error'
-  return 'info'
+function toastClass(item: Pick<TaskToastItem | TaskEventItem | TaskTimelineItem, 'level'>): string {
+  return taskLevelTone(item.level)
+}
+
+function levelLabel(level: string | null | undefined): string {
+  return taskLevelLabel(level)
+}
+
+function sourceLabel(source: string | null | undefined): string {
+  return formatTaskSourceLabel(source)
+}
+
+function phaseLabel(phase: string | null | undefined): string {
+  return formatTaskPhaseLabel(phase)
+}
+
+function timelineEntrySummary(index: number): string {
+  return describeTimelineEntry(timelineItems.value[index] ?? null)
+}
+
+function toastSummary(index: number): string {
+  return describeTaskToast(toastItems.value[index] ?? null)
+}
+
+function eventSummary(index: number): string {
+  return describeTaskEvent(eventItems.value[index] ?? null)
 }
 </script>
 
@@ -349,7 +379,17 @@ function toastClass(toast: TaskToastItem): string {
     </div>
 
     <section v-if="toastItems.length > 0" class="toastStack">
-      <article v-for="toast in toastItems" :key="toast.id" class="toastCard" :class="toastClass(toast)">
+      <article
+        v-for="(toast, index) in toastItems"
+        :key="toast.id"
+        class="toastCard"
+        :class="toastClass(toast)"
+        :aria-label="toastSummary(index)"
+      >
+        <div class="toastMeta">
+          <span class="toastSource">{{ sourceLabel(toast.source) }}</span>
+          <span class="toastLevel">{{ levelLabel(toast.level) }}</span>
+        </div>
         <div class="toastBody">{{ toast.message }}</div>
         <button class="toastClose" type="button" @click="dismissToast(toast.id)">Close</button>
       </article>
@@ -429,8 +469,17 @@ function toastClass(toast: TaskToastItem): string {
         <div class="sectionTitle">Events</div>
         <div v-if="eventItems.length === 0" class="muted">No events yet.</div>
         <div v-else class="miniList">
-          <div v-for="evt in eventItems" :key="evt.id" class="eventRow">
-            <span class="eventTime">{{ absoluteTime(evt.atUnixMs) }}</span>
+          <div
+            v-for="(evt, index) in eventItems"
+            :key="evt.id"
+            class="eventRow"
+            :aria-label="eventSummary(index)"
+          >
+            <div class="eventMeta">
+              <span class="eventTime">{{ absoluteTime(evt.atUnixMs) }}</span>
+              <span class="eventBadge" :class="toastClass(evt)">{{ levelLabel(evt.level) }}</span>
+              <span class="eventSource">{{ sourceLabel(evt.source) }}</span>
+            </div>
             <span class="eventText">{{ evt.message }}</span>
           </div>
         </div>
@@ -440,8 +489,18 @@ function toastClass(toast: TaskToastItem): string {
         <div class="sectionTitle">Timeline</div>
         <div v-if="timelineItems.length === 0" class="muted">No timeline entries yet.</div>
         <div v-else class="miniList">
-          <div v-for="entry in timelineItems" :key="entry.id" class="eventRow">
-            <span class="eventTime">{{ absoluteTime(entry.atUnixMs) }}</span>
+          <div
+            v-for="(entry, index) in timelineItems"
+            :key="entry.id"
+            class="eventRow"
+            :aria-label="timelineEntrySummary(index)"
+          >
+            <div class="eventMeta">
+              <span class="eventTime">{{ absoluteTime(entry.atUnixMs) }}</span>
+              <span class="eventBadge" :class="toastClass(entry)">{{ levelLabel(entry.level) }}</span>
+              <span class="eventBadge">{{ phaseLabel(entry.phase) }}</span>
+              <span class="eventSource">{{ sourceLabel(entry.source) }}</span>
+            </div>
             <span class="eventText">{{ entry.message }}</span>
           </div>
         </div>
@@ -593,6 +652,32 @@ function toastClass(toast: TaskToastItem): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.toastMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.toastSource {
+  font-size: 0.69rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toastLevel {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 0.64rem;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .toastClose {
@@ -795,9 +880,22 @@ function toastClass(toast: TaskToastItem): string {
 .miniRow,
 .eventRow {
   display: grid;
+  gap: 4px;
+  align-items: start;
+}
+
+.miniRow {
   grid-template-columns: 1fr auto;
+}
+
+.eventRow {
+  grid-template-columns: 1fr;
+}
+
+.eventMeta {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  font-size: 0.74rem;
   align-items: center;
 }
 
@@ -812,19 +910,59 @@ function toastClass(toast: TaskToastItem): string {
   justify-self: end;
 }
 
-.eventRow {
-  grid-template-columns: auto 1fr;
-}
-
 .eventTime {
   color: var(--task-muted-soft);
+}
+
+.eventBadge {
+  justify-self: start;
+  border: 1px solid color-mix(in oklab, var(--border-strong) 76%, transparent);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 0.65rem;
+  line-height: 1.15;
+  background: color-mix(in oklab, var(--surface-inline) 88%, transparent);
+  color: var(--task-muted);
+}
+
+.eventBadge.info,
+.eventBadge.running {
+  border-color: color-mix(in oklab, var(--accent) 34%, var(--border));
+  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-inline));
+  color: var(--selection-text);
+}
+
+.eventBadge.warn,
+.eventBadge.cancelling,
+.eventBadge.cancelled {
+  border-color: color-mix(in oklab, var(--warning) 36%, var(--border));
+  background: color-mix(in oklab, var(--warning-soft) 88%, var(--surface-inline));
+  color: var(--warning-ink);
+}
+
+.eventBadge.error,
+.eventBadge.failed {
+  border-color: color-mix(in oklab, var(--danger) 36%, var(--border));
+  background: var(--surface-danger);
+  color: var(--danger-ink);
+}
+
+.eventBadge.success {
+  border-color: color-mix(in oklab, var(--ok) 36%, var(--border));
+  background: var(--surface-success);
+  color: var(--ok-ink);
+}
+
+.eventSource {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--task-text);
 }
 
 .eventText {
   color: var(--task-muted);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 @media (max-width: 760px) {

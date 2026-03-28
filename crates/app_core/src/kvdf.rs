@@ -83,6 +83,32 @@ pub struct KvdfSharedSignals {
     pub first_valid: usize,
 }
 
+#[cfg(feature = "cuda")]
+#[derive(Clone, Debug)]
+pub struct KvdfSlowSignalsF32 {
+    pub keltner_upper: Vec<f32>,
+    pub keltner_middle: Vec<f32>,
+    pub keltner_lower: Vec<f32>,
+    pub devstop_long: Vec<f32>,
+    pub devstop_short: Vec<f32>,
+    pub first_valid: usize,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Clone, Debug)]
+pub struct KvdfFastSignalsF32 {
+    pub fvg_upper_ts: Vec<f32>,
+    pub fvg_lower_ts: Vec<f32>,
+    pub first_valid: usize,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Clone, Debug)]
+pub struct KvdfSharedSignalsF32 {
+    pub vwap: Vec<f32>,
+    pub first_valid: usize,
+}
+
 fn default_kvdf_keltner_period() -> u16 {
     20
 }
@@ -194,6 +220,11 @@ fn first_finite_idx_local(values: &[f64]) -> Option<usize> {
     values.iter().position(|v| v.is_finite())
 }
 
+#[cfg(feature = "cuda")]
+fn first_finite_idx_local_f32(values: &[f32]) -> Option<usize> {
+    values.iter().position(|v| v.is_finite())
+}
+
 fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
     match out.series {
         DynamicIndicatorSeries::F64(v) => v,
@@ -205,9 +236,30 @@ fn series_to_f64(out: DynamicIndicatorComputeOutput) -> Vec<f64> {
 }
 
 #[cfg(feature = "cuda")]
+fn series_to_f32(out: DynamicIndicatorComputeOutput) -> Vec<f32> {
+    match out.series {
+        DynamicIndicatorSeries::F64(v) => v.into_iter().map(|x| x as f32).collect(),
+        DynamicIndicatorSeries::I32(v) => v.into_iter().map(|x| x as f32).collect(),
+        DynamicIndicatorSeries::Bool(v) => {
+            v.into_iter().map(|x| if x { 1.0 } else { 0.0 }).collect()
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
 fn cuda_series_to_f64(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f64>, String> {
     match out.series {
         DynamicIndicatorCudaSeries::HostF32(v) => Ok(v.into_iter().map(|x| x as f64).collect()),
+        DynamicIndicatorCudaSeries::DeviceF32(_) => {
+            Err("KVDF expected CUDA HostF32 output".to_string())
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn cuda_series_to_host_f32(out: DynamicIndicatorCudaComputeOutput) -> Result<Vec<f32>, String> {
+    match out.series {
+        DynamicIndicatorCudaSeries::HostF32(v) => Ok(v),
         DynamicIndicatorCudaSeries::DeviceF32(_) => {
             Err("KVDF expected CUDA HostF32 output".to_string())
         }
@@ -305,6 +357,50 @@ fn compute_indicator_f64(
     )
     .map_err(|e| e.to_string())?;
     Ok(series_to_f64(out))
+}
+
+#[cfg(feature = "cuda")]
+fn compute_indicator_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    indicator_id: &str,
+    output_id: &str,
+    params: &[IndicatorParamKV],
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<Vec<f32>, String> {
+    let descriptor = find_dynamic_indicator_descriptor(indicator_id).ok_or_else(|| {
+        format!("KVDF indicator '{indicator_id}' is not registered for dynamic dispatch")
+    })?;
+
+    let prefer_gpu = backend_prefers_gpu(backend)
+        && (descriptor.supports_cuda_single || descriptor.supports_cuda_sweep);
+    if prefer_gpu {
+        if let Some(prepared) = prepared_cuda_inputs {
+            let out = compute_dynamic_indicator_cuda_with_inputs(
+                prepared,
+                indicator_id,
+                Some(output_id),
+                params,
+                Kernel::Auto,
+                vector_ta::indicators::dispatch::CudaOutputTarget::HostF32,
+            );
+            if let Ok(values) = out {
+                return cuda_series_to_host_f32(values);
+            }
+        }
+    }
+
+    let out = compute_dynamic_indicator_cpu(
+        candles,
+        ma_source,
+        indicator_id,
+        Some(output_id),
+        params,
+        Kernel::Auto,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(series_to_f32(out))
 }
 
 pub fn compute_kvdf_signals(
@@ -511,6 +607,143 @@ pub fn compute_kvdf_slow_signals(
     })
 }
 
+#[cfg(feature = "cuda")]
+pub fn compute_kvdf_slow_signals_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: KvdfResolvedPeriods,
+    cfg: &KvdfStrategyParams,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<KvdfSlowSignalsF32, String> {
+    let keltner_upper_output = resolve_output_id("keltner", &["upper_band", "upperband", "upper"])?;
+    let keltner_middle_output =
+        resolve_output_id("keltner", &["middle_band", "middleband", "middle"])?;
+    let keltner_lower_output = resolve_output_id("keltner", &["lower_band", "lowerband", "lower"])?;
+    let devstop_output = resolve_output_id("devstop", &["value"])?;
+
+    let keltner_params = vec![
+        IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.keltner)),
+        },
+        IndicatorParamKV {
+            key: "multiplier".to_string(),
+            value: IndicatorParamValue::Float(cfg.keltner_mult),
+        },
+        IndicatorParamKV {
+            key: "ma_type".to_string(),
+            value: IndicatorParamValue::EnumString("ema".to_string()),
+        },
+    ];
+    let devstop_long_params = vec![
+        IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.devstop)),
+        },
+        IndicatorParamKV {
+            key: "mult".to_string(),
+            value: IndicatorParamValue::Float(cfg.devstop_mult),
+        },
+        IndicatorParamKV {
+            key: "devtype".to_string(),
+            value: IndicatorParamValue::Int(0),
+        },
+        IndicatorParamKV {
+            key: "direction".to_string(),
+            value: IndicatorParamValue::EnumString("long".to_string()),
+        },
+        IndicatorParamKV {
+            key: "ma_type".to_string(),
+            value: IndicatorParamValue::EnumString("sma".to_string()),
+        },
+    ];
+    let devstop_short_params = vec![
+        IndicatorParamKV {
+            key: "period".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.devstop)),
+        },
+        IndicatorParamKV {
+            key: "mult".to_string(),
+            value: IndicatorParamValue::Float(cfg.devstop_mult),
+        },
+        IndicatorParamKV {
+            key: "devtype".to_string(),
+            value: IndicatorParamValue::Int(0),
+        },
+        IndicatorParamKV {
+            key: "direction".to_string(),
+            value: IndicatorParamValue::EnumString("short".to_string()),
+        },
+        IndicatorParamKV {
+            key: "ma_type".to_string(),
+            value: IndicatorParamValue::EnumString("sma".to_string()),
+        },
+    ];
+
+    let keltner_upper = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "keltner",
+        keltner_upper_output.as_str(),
+        keltner_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let keltner_middle = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "keltner",
+        keltner_middle_output.as_str(),
+        keltner_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let keltner_lower = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "keltner",
+        keltner_lower_output.as_str(),
+        keltner_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let devstop_long = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "devstop",
+        devstop_output.as_str(),
+        devstop_long_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let devstop_short = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "devstop",
+        devstop_output.as_str(),
+        devstop_short_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let first_valid = first_finite_idx_local_f32(&keltner_upper)
+        .zip(first_finite_idx_local_f32(&keltner_middle))
+        .zip(first_finite_idx_local_f32(&keltner_lower))
+        .zip(first_finite_idx_local_f32(&devstop_long))
+        .zip(first_finite_idx_local_f32(&devstop_short))
+        .map(|((((a, b), c), d), e)| a.max(b).max(c).max(d).max(e))
+        .ok_or_else(|| "KVDF slow signals are all non-finite".to_string())?;
+
+    Ok(KvdfSlowSignalsF32 {
+        keltner_upper,
+        keltner_middle,
+        keltner_lower,
+        devstop_long,
+        devstop_short,
+        first_valid,
+    })
+}
+
 pub fn compute_kvdf_shared_signals(
     candles: &Candles,
     ma_source: &str,
@@ -536,6 +769,33 @@ pub fn compute_kvdf_shared_signals(
     let first_valid = first_finite_idx_local(&vwap)
         .ok_or_else(|| "KVDF VWAP signal is all non-finite".to_string())?;
     Ok(KvdfSharedSignals { vwap, first_valid })
+}
+
+#[cfg(feature = "cuda")]
+pub fn compute_kvdf_shared_signals_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    cfg: &KvdfStrategyParams,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<KvdfSharedSignalsF32, String> {
+    let vwap_output = resolve_output_id("vwap", &["value", "vwap"])?;
+    let vwap_params = vec![IndicatorParamKV {
+        key: "anchor".to_string(),
+        value: IndicatorParamValue::EnumString(normalize_kvdf_vwap_anchor(&cfg.vwap_anchor)),
+    }];
+    let vwap = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "vwap",
+        vwap_output.as_str(),
+        vwap_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let first_valid = first_finite_idx_local_f32(&vwap)
+        .ok_or_else(|| "KVDF VWAP signal is all non-finite".to_string())?;
+    Ok(KvdfSharedSignalsF32 { vwap, first_valid })
 }
 
 pub fn compute_kvdf_dti_signal(
@@ -568,6 +828,40 @@ pub fn compute_kvdf_dti_signal(
         dti_output.as_str(),
         dti_params.as_slice(),
         #[cfg(feature = "cuda")]
+        prepared_cuda_inputs,
+    )
+}
+
+#[cfg(feature = "cuda")]
+pub fn compute_kvdf_dti_signal_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: KvdfResolvedPeriods,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<Vec<f32>, String> {
+    let dti_output = resolve_output_id("dti", &["value", "dti"])?;
+    let dti_params = vec![
+        IndicatorParamKV {
+            key: "r".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.dti_r)),
+        },
+        IndicatorParamKV {
+            key: "s".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.dti_s)),
+        },
+        IndicatorParamKV {
+            key: "u".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.dti_u)),
+        },
+    ];
+    compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "dti",
+        dti_output.as_str(),
+        dti_params.as_slice(),
         prepared_cuda_inputs,
     )
 }
@@ -620,6 +914,59 @@ pub fn compute_kvdf_fast_signals(
         .map(|(a, b)| a.max(b))
         .ok_or_else(|| "KVDF fast signals are all non-finite".to_string())?;
     Ok(KvdfFastSignals {
+        fvg_upper_ts,
+        fvg_lower_ts,
+        first_valid,
+    })
+}
+
+#[cfg(feature = "cuda")]
+pub fn compute_kvdf_fast_signals_f32(
+    candles: &Candles,
+    ma_source: &str,
+    backend: &Backend,
+    periods: KvdfResolvedPeriods,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+) -> Result<KvdfFastSignalsF32, String> {
+    let fvg_upper_ts_output = resolve_output_id("fvg_trailing_stop", &["upper_ts", "upper"])?;
+    let fvg_lower_ts_output = resolve_output_id("fvg_trailing_stop", &["lower_ts", "lower"])?;
+    let fvg_params = vec![
+        IndicatorParamKV {
+            key: "unmitigated_fvg_lookback".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.fvg_lookback)),
+        },
+        IndicatorParamKV {
+            key: "smoothing_length".to_string(),
+            value: IndicatorParamValue::Int(i64::from(periods.fvg_smoothing)),
+        },
+        IndicatorParamKV {
+            key: "reset_on_cross".to_string(),
+            value: IndicatorParamValue::Bool(false),
+        },
+    ];
+    let fvg_upper_ts = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "fvg_trailing_stop",
+        fvg_upper_ts_output.as_str(),
+        fvg_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let fvg_lower_ts = compute_indicator_f32(
+        candles,
+        ma_source,
+        backend,
+        "fvg_trailing_stop",
+        fvg_lower_ts_output.as_str(),
+        fvg_params.as_slice(),
+        prepared_cuda_inputs,
+    )?;
+    let first_valid = first_finite_idx_local_f32(&fvg_upper_ts)
+        .zip(first_finite_idx_local_f32(&fvg_lower_ts))
+        .map(|(a, b)| a.max(b))
+        .ok_or_else(|| "KVDF fast signals are all non-finite".to_string())?;
+    Ok(KvdfFastSignalsF32 {
         fvg_upper_ts,
         fvg_lower_ts,
         first_valid,
