@@ -524,6 +524,7 @@ fn build_request(
         persist_followup_cache: false,
         hurdle_tau: None,
         include_trade_metrics: false,
+        metric_contract: None,
     }
 }
 

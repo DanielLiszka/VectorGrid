@@ -45,7 +45,7 @@ pub mod mkcs;
 pub mod mkcs_gpu_kernel;
 pub mod ml_confidence;
 pub mod ml_signal;
-pub(crate) mod nvtx;
+pub mod nvtx;
 pub(crate) mod prescan_predictive;
 pub mod progress;
 pub(crate) mod request_normalization;

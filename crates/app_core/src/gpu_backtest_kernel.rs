@@ -33,10 +33,11 @@ use crate::double_ma::{
     derived_long_exposure, derived_mean, derived_short_exposure, effective_sample_lcb_10_score,
     effective_score, exact_fee_stress_pnl, metrics_pass_constraints, objective_score,
     score_mode_metrics_count_floor, score_mode_needs_pair_observation_context, score_mode_score_fn,
-    DoubleMaConstraints, DoubleMaScoreMode, DoubleMaShortlistConfidenceMode,
-    DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode, PairObservationScoreContextResolved,
-    ShortlistSliceBenchmarkRelativeSummary, ShortlistSliceCandidateDiagnostics,
-    ShortlistSliceDiagnostics, ShortlistSliceModeDiagnostics, ShortlistSliceSnapshot,
+    DoubleMaConstraints, DoubleMaMetricContract, DoubleMaScoreMode,
+    DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
+    PairObservationScoreContextResolved, ShortlistSliceBenchmarkRelativeSummary,
+    ShortlistSliceCandidateDiagnostics, ShortlistSliceDiagnostics, ShortlistSliceModeDiagnostics,
+    ShortlistSliceSnapshot,
 };
 use crate::progress::ProgressSink;
 use crate::strategy_gpu_program::{
@@ -1211,6 +1212,57 @@ impl HostTransferScratchF32 {
         stream.synchronize().map_err(|e| e.to_string())?;
         Ok(&self.pageable[..elems])
     }
+
+    fn copy_device_prefix_to_host_timed<'a>(
+        &'a mut self,
+        src: &DeviceBuffer<f32>,
+        elems: usize,
+        stream: &Stream,
+        d2h_copy_elapsed: &mut Duration,
+        sync_elapsed: &mut Duration,
+    ) -> Result<&'a [f32], String> {
+        if elems == 0 {
+            return Ok(&[]);
+        }
+
+        self.ensure_capacity(elems)?;
+        let bytes = elems
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| "device-to-host copy size overflow".to_string())?;
+
+        if kernel_pinned_d2h_enabled() {
+            let pinned = self
+                .pinned
+                .as_mut()
+                .ok_or_else(|| "missing pinned host transfer scratch".to_string())?;
+            let d2h_t0 = Instant::now();
+            cu_result(unsafe {
+                cuda_sys::cuMemcpyDtoHAsync_v2(
+                    pinned.as_mut_ptr() as *mut c_void,
+                    src.as_device_ptr().as_raw(),
+                    bytes,
+                    stream.as_inner(),
+                )
+            })?;
+            *d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+            sync_stream_timed(stream, sync_elapsed)?;
+            return Ok(&pinned.as_slice()[..elems]);
+        }
+
+        resize_uninit_f32(&mut self.pageable, elems);
+        let d2h_t0 = Instant::now();
+        cu_result(unsafe {
+            cuda_sys::cuMemcpyDtoHAsync_v2(
+                self.pageable.as_mut_ptr() as *mut c_void,
+                src.as_device_ptr().as_raw(),
+                bytes,
+                stream.as_inner(),
+            )
+        })?;
+        *d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+        sync_stream_timed(stream, sync_elapsed)?;
+        Ok(&self.pageable[..elems])
+    }
 }
 
 #[derive(Default)]
@@ -1691,6 +1743,7 @@ pub struct KernelConfig {
     pub slow_alma_sigma: f64,
     pub hurdle_tau: f64,
     pub include_trade_metrics: bool,
+    pub metric_contract: Option<DoubleMaMetricContract>,
 }
 
 pub struct PrecomputedHostMaMatrix<'a> {
@@ -1799,6 +1852,7 @@ pub(crate) fn rerank_shortlist_by_slice_robustness_for_host(
                     slow_alma_sigma,
                     hurdle_tau,
                     include_trade_metrics,
+                    metric_contract: None,
                 },
                 None,
                 None,
@@ -2418,6 +2472,7 @@ impl Default for KernelConfig {
             slow_alma_sigma: 6.0,
             hurdle_tau: 0.0,
             include_trade_metrics: false,
+            metric_contract: None,
         }
     }
 }
@@ -4719,7 +4774,8 @@ fn kernel_finalist_profile_enabled() -> bool {
 #[inline]
 fn kernel_product_reduced_rows_enabled_for_objective(objective: ObjectiveKind) -> bool {
     // Default policy: for the Sharpe/Volatility product family, prefer a single pass that
-    // emits enough metrics to skip the small-finalist replay entirely.
+    // emits enough metrics to skip the small-finalist replay entirely without widening all
+    // the way to the full 17-metric row contract.
     //
     // Env override:
     // - Unset: enabled only for Sharpe/Volatility
@@ -4964,6 +5020,37 @@ pub(crate) fn search_metrics_count_for_optimization(
     slow_precomputed_enabled: bool,
     include_trade_metrics: bool,
 ) -> usize {
+    search_metrics_count_for_optimization_with_contract(
+        objective,
+        score_mode,
+        constraints,
+        include_all,
+        export_enabled,
+        fast_precomputed_enabled,
+        slow_precomputed_enabled,
+        include_trade_metrics,
+        None,
+    )
+}
+
+#[inline]
+pub(crate) fn search_metrics_count_for_optimization_with_contract(
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    constraints: Option<&DoubleMaConstraints>,
+    include_all: bool,
+    export_enabled: bool,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
+) -> usize {
+    if matches!(metric_contract, Some(DoubleMaMetricContract::Trade22)) {
+        return TRADE_METRICS_COUNT;
+    }
+    if matches!(metric_contract, Some(DoubleMaMetricContract::Full17)) {
+        return METRICS_COUNT;
+    }
     if include_trade_metrics {
         return TRADE_METRICS_COUNT;
     }
@@ -4983,7 +5070,7 @@ pub(crate) fn search_metrics_count_for_optimization(
     metrics_count = metrics_count.max(min_metrics_count_for_constraints(constraints));
     metrics_count = metrics_count.max(score_mode_metrics_count_floor(score_mode));
     if kernel_product_reduced_rows_enabled_for_objective(objective) {
-        metrics_count = metrics_count.max(METRICS_COUNT);
+        metrics_count = metrics_count.max(PRODUCT_REDUCED_METRICS_COUNT);
     }
 
     metrics_count.min(METRICS_COUNT)
@@ -5042,7 +5129,7 @@ fn copy_device_prefix_to_host_f32(
 }
 
 #[inline]
-fn pack_metric_rows_for_host_copy(
+fn pack_metric_rows_for_host_copy<'a>(
     stream: &Stream,
     scratch: &mut KernelScratch,
     pack_metric_rows: &Function,
@@ -5051,11 +5138,11 @@ fn pack_metric_rows_for_host_copy(
     metrics_rows_ptr: cuda_sys::CUdeviceptr,
     rows: usize,
     metrics_count: usize,
-    host_out: &mut Vec<f32>,
+    host_out: &'a mut HostTransferScratchF32,
     launch_submit_elapsed: &mut Duration,
     d2h_copy_elapsed: &mut Duration,
     sync_elapsed: &mut Duration,
-) -> Result<(), String> {
+) -> Result<&'a [f32], String> {
     let packed_stride = metrics_count.saturating_add(2);
     let packed_len = rows.saturating_mul(packed_stride);
     KernelScratch::ensure_len_f32(&mut scratch.d_top_packed, packed_len, stream)?;
@@ -5093,18 +5180,16 @@ fn pack_metric_rows_for_host_copy(
             )?;
         }
     }
-    let d2h_t0 = Instant::now();
-    copy_device_prefix_to_host_f32(
+    host_out.copy_device_prefix_to_host_timed(
         scratch
             .d_top_packed
             .as_ref()
             .ok_or_else(|| "missing packed top-row buffer".to_string())?,
-        host_out,
         packed_len,
         stream,
-    )?;
-    *d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
-    sync_stream_timed(stream, sync_elapsed)
+        d2h_copy_elapsed,
+        sync_elapsed,
+    )
 }
 
 #[inline]
@@ -6910,23 +6995,20 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let bt_stream = &rt.stream;
     let bt_module = &rt.module;
     let device_launch_caps = rt.launch_caps;
-    let compute_returns = bt_module
-        .get_function("compute_log_and_simple_returns_f32")
-        .map_err(|e| e.to_string())?;
+    let load_bt_fn = |name: &str| {
+        bt_module
+            .get_function(name)
+            .map_err(|e| format!("{name}: {e}"))
+    };
+    let compute_returns = load_bt_fn("compute_log_and_simple_returns_f32")?;
     let compute_returns_launch_caps =
         rt.launch_caps_for_kernel(CachedKernelKey::ComputeReturns, &compute_returns);
     let use_fast_path = !fast_precomputed_enabled
         && !slow_precomputed_enabled
         && kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
-    let transpose = bt_module
-        .get_function("transpose_row_to_tm")
-        .map_err(|e| e.to_string())?;
-    let backtest = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32")
-        .map_err(|e| e.to_string())?;
-    let backtest_windowed = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_windowed")
-        .map_err(|e| e.to_string())?;
+    let transpose = load_bt_fn("transpose_row_to_tm")?;
+    let backtest = load_bt_fn("double_cross_backtest_tm_flex_f32")?;
+    let backtest_windowed = load_bt_fn("double_cross_backtest_tm_flex_f32_windowed")?;
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
         .ok();
@@ -6965,9 +7047,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest_fast_warp = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
         .ok();
-    let fill_f32 = bt_module
-        .get_function("fill_f32")
-        .map_err(|e| e.to_string())?;
+    let fill_f32 = load_bt_fn("fill_f32")?;
     let transpose_launch_caps =
         rt.launch_caps_for_kernel(CachedKernelKey::TransposeRowToTm, &transpose);
     let backtest_launch_caps =
@@ -8848,7 +8928,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let mut processed = 0usize;
     emit_progress(progress, processed, total_pairs, "gpu-kernel");
 
-    let metrics_count: usize = search_metrics_count_for_optimization(
+    let metrics_count: usize = search_metrics_count_for_optimization_with_contract(
         objective,
         score_mode,
         constraints,
@@ -8857,6 +8937,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         fast_precomputed_enabled,
         slow_precomputed_enabled,
         cfg.include_trade_metrics,
+        cfg.metric_contract,
     );
     let topk_select: usize = if top_k == 0 { 1 } else { top_k };
     if !device_include_all && topk_select > 256 {
@@ -8878,16 +8959,15 @@ fn optimize_double_ma_gpu_kernel_impl(
         && !slow_precomputed_enabled;
     let use_valid_pair_map = kernel_valid_pair_map_enabled();
     let valid_pair_map_max_pairs = kernel_valid_pair_map_max_pairs();
+    let load_bt_fn = |name: &str| {
+        bt_module
+            .get_function(name)
+            .map_err(|e| format!("{name}: {e}"))
+    };
 
-    let transpose = bt_module
-        .get_function("transpose_row_to_tm")
-        .map_err(|e| e.to_string())?;
-    let backtest = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32")
-        .map_err(|e| e.to_string())?;
-    let backtest_windowed = bt_module
-        .get_function("double_cross_backtest_tm_flex_f32_windowed")
-        .map_err(|e| e.to_string())?;
+    let transpose = load_bt_fn("transpose_row_to_tm")?;
+    let backtest = load_bt_fn("double_cross_backtest_tm_flex_f32")?;
+    let backtest_windowed = load_bt_fn("double_cross_backtest_tm_flex_f32_windowed")?;
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
         .ok();
@@ -8905,6 +8985,22 @@ fn optimize_double_ma_gpu_kernel_impl(
         .ok();
     let backtest_lockstep_m7_regime_off_norisk_eps0 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m10_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m10_regime_off_norisk_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m10_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m10_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_eps0_nocomm",
+        )
         .ok();
     let backtest_lockstep_m7_regime_on = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_on")
@@ -8926,21 +9022,11 @@ fn optimize_double_ma_gpu_kernel_impl(
     let backtest_fast_warp = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_fast_warp_dedup")
         .ok();
-    let fill_f32 = bt_module
-        .get_function("fill_f32")
-        .map_err(|e| e.to_string())?;
-    let fill_i32 = bt_module
-        .get_function("fill_i32")
-        .map_err(|e| e.to_string())?;
-    let heatmap_update = bt_module
-        .get_function("heatmap_update_scores_tm_f32")
-        .map_err(|e| e.to_string())?;
-    let select_topk_pairs_legacy = bt_module
-        .get_function("select_topk_from_pairs_tm_f32")
-        .map_err(|e| e.to_string())?;
-    let select_topk_candidates_legacy = bt_module
-        .get_function("select_topk_from_candidates_tm_f32")
-        .map_err(|e| e.to_string())?;
+    let fill_f32 = load_bt_fn("fill_f32")?;
+    let fill_i32 = load_bt_fn("fill_i32")?;
+    let heatmap_update = load_bt_fn("heatmap_update_scores_tm_f32")?;
+    let select_topk_pairs_legacy = load_bt_fn("select_topk_from_pairs_tm_f32")?;
+    let select_topk_candidates_legacy = load_bt_fn("select_topk_from_candidates_tm_f32")?;
     let select_topk_pairs_v2 = bt_module
         .get_function("select_topk_from_pairs_tm_f32_v2")
         .ok();
@@ -8950,12 +9036,8 @@ fn optimize_double_ma_gpu_kernel_impl(
     let select_v2_supported = !kernel_force_legacy_topk_enabled()
         && select_topk_pairs_v2.is_some()
         && select_topk_candidates_v2.is_some();
-    let gather_topk = bt_module
-        .get_function("gather_topk_pairs_tm_f32")
-        .map_err(|e| e.to_string())?;
-    let pack_metric_rows = bt_module
-        .get_function("pack_metric_rows_f32")
-        .map_err(|e| e.to_string())?;
+    let gather_topk = load_bt_fn("gather_topk_pairs_tm_f32")?;
+    let pack_metric_rows = load_bt_fn("pack_metric_rows_f32")?;
     let select_topk_rows_legacy = bt_module.get_function("select_topk_metric_rows_f32").ok();
     let select_topk_rows_candidates_legacy = bt_module
         .get_function("select_topk_metric_rows_from_candidates_f32")
@@ -9270,7 +9352,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         })
         .collect();
 
-    let mut top_packed_host: Vec<f32> = Vec::new();
+    let mut top_packed_host = HostTransferScratchF32::default();
 
     if !device_include_all {
         let max_pairs_tile = pf_tile.saturating_mul(ps_tile).max(1);
@@ -9286,7 +9368,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             topk_select * metrics_count,
             bt_stream,
         )?;
-        top_packed_host = alloc_uninit_copy(topk_select * metrics_count.saturating_add(2));
+        top_packed_host.ensure_capacity(topk_select * metrics_count.saturating_add(2))?;
         if global_topk_mode {
             KernelScratch::ensure_len_i32(&mut global_fast_rows, global_rows_cap, bt_stream)?;
             KernelScratch::ensure_len_i32(&mut global_slow_rows, global_rows_cap, bt_stream)?;
@@ -9858,6 +9940,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut eval_end_i = eval_end_t as i32;
                         let use_windowed_eval = eval_range.is_some();
                         let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
+                        let zero_commission_mode = commission <= 0.0f32;
                         let eps_zero_mode = eps_rel <= 0.0f32;
 
                         let use_lockstep_time = !use_windowed_eval
@@ -9886,6 +9969,9 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 metrics_count,
                                 backtest_lockstep_m7.is_some(),
                             );
+                        let use_lockstep_m10_product = use_lockstep_m7
+                            && metrics_count == PRODUCT_REDUCED_METRICS_COUNT
+                            && tile_metrics_stride == PRODUCT_REDUCED_METRICS_COUNT;
                         let use_fast_warp_dedup = !use_windowed_eval
                             && !use_lockstep_time
                             && fast_warp_dedup_enabled
@@ -9926,7 +10012,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         };
                         if kernel_log_dispatch_enabled() {
                             eprintln!(
-                                "VECTORBT_KERNEL_DISPATCH: pair={}/{} launch_pairs={} fast_path={} multi_tile={} dispatch={} use_m7={} use_lockstep_time={} use_lockstep_m7={} use_fast_warp={}",
+                                "VECTORBT_KERNEL_DISPATCH: pair={}/{} launch_pairs={} fast_path={} multi_tile={} dispatch={} use_m7={} use_lockstep_time={} use_lockstep_m7={} use_lockstep_m10_product={} use_fast_warp={} metrics_count={} tile_metrics_stride={} decode_without_recompute={}",
                                 fast_ma,
                                 slow_ma,
                                 launch_pairs,
@@ -9936,7 +10022,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 use_m7,
                                 use_lockstep_time,
                                 use_lockstep_m7,
-                                use_fast_warp_dedup
+                                use_lockstep_m10_product,
+                                use_fast_warp_dedup,
+                                metrics_count,
+                                tile_metrics_stride,
+                                can_decode_current_gpu_product_metrics_without_recompute(
+                                    metrics_count
+                                )
                             );
                         }
                         let backtest_fn = if use_windowed_eval {
@@ -9958,12 +10050,45 @@ fn optimize_double_ma_gpu_kernel_impl(
                                             .or(backtest_lockstep_m7.as_ref())
                                             .expect("checked lockstep m7 kernel availability")
                                     } else {
-                                        backtest_lockstep_m7_regime_off_norisk_eps0
-                                            .as_ref()
-                                            .or(backtest_lockstep_m7_regime_off_norisk.as_ref())
-                                            .or(backtest_lockstep_m7_regime_off.as_ref())
-                                            .or(backtest_lockstep_m7.as_ref())
-                                            .expect("checked lockstep m7 kernel availability")
+                                        if use_lockstep_m10_product {
+                                            if zero_commission_mode {
+                                                backtest_lockstep_m10_regime_off_norisk_eps0_nocomm
+                                                    .as_ref()
+                                                    .or(backtest_lockstep_m10_regime_off_norisk_eps0
+                                                        .as_ref())
+                                                    .or(backtest_lockstep_m10_regime_off_norisk_nocomm
+                                                        .as_ref())
+                                                    .or(backtest_lockstep_m10_regime_off_norisk
+                                                        .as_ref())
+                                                    .or(backtest_lockstep_m7_regime_off_norisk_eps0
+                                                        .as_ref())
+                                                    .or(backtest_lockstep_m7_regime_off_norisk.as_ref())
+                                                    .or(backtest_lockstep_m7_regime_off.as_ref())
+                                                    .or(backtest_lockstep_m7.as_ref())
+                                                    .expect("checked lockstep m7 kernel availability")
+                                            } else {
+                                                backtest_lockstep_m10_regime_off_norisk_eps0
+                                                    .as_ref()
+                                                    .or(backtest_lockstep_m10_regime_off_norisk
+                                                        .as_ref())
+                                                    .or(backtest_lockstep_m7_regime_off_norisk_eps0
+                                                        .as_ref())
+                                                    .or(backtest_lockstep_m7_regime_off_norisk
+                                                        .as_ref())
+                                                    .or(backtest_lockstep_m7_regime_off.as_ref())
+                                                    .or(backtest_lockstep_m7.as_ref())
+                                                    .expect(
+                                                        "checked lockstep m7 kernel availability",
+                                                    )
+                                            }
+                                        } else {
+                                            backtest_lockstep_m7_regime_off_norisk_eps0
+                                                .as_ref()
+                                                .or(backtest_lockstep_m7_regime_off_norisk.as_ref())
+                                                .or(backtest_lockstep_m7_regime_off.as_ref())
+                                                .or(backtest_lockstep_m7.as_ref())
+                                                .expect("checked lockstep m7 kernel availability")
+                                        }
                                     }
                                 } else if use_regime_hybrid_i != 0 {
                                     backtest_lockstep_m7_regime_hybrid_norisk
@@ -9978,11 +10103,31 @@ fn optimize_double_ma_gpu_kernel_impl(
                                         .or(backtest_lockstep_m7.as_ref())
                                         .expect("checked lockstep m7 kernel availability")
                                 } else {
-                                    backtest_lockstep_m7_regime_off_norisk
-                                        .as_ref()
-                                        .or(backtest_lockstep_m7_regime_off.as_ref())
-                                        .or(backtest_lockstep_m7.as_ref())
-                                        .expect("checked lockstep m7 kernel availability")
+                                    if use_lockstep_m10_product {
+                                        if zero_commission_mode {
+                                            backtest_lockstep_m10_regime_off_norisk_nocomm
+                                                .as_ref()
+                                                .or(backtest_lockstep_m10_regime_off_norisk
+                                                    .as_ref())
+                                                .or(backtest_lockstep_m7_regime_off_norisk.as_ref())
+                                                .or(backtest_lockstep_m7_regime_off.as_ref())
+                                                .or(backtest_lockstep_m7.as_ref())
+                                                .expect("checked lockstep m7 kernel availability")
+                                        } else {
+                                            backtest_lockstep_m10_regime_off_norisk
+                                                .as_ref()
+                                                .or(backtest_lockstep_m7_regime_off_norisk.as_ref())
+                                                .or(backtest_lockstep_m7_regime_off.as_ref())
+                                                .or(backtest_lockstep_m7.as_ref())
+                                                .expect("checked lockstep m7 kernel availability")
+                                        }
+                                    } else {
+                                        backtest_lockstep_m7_regime_off_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m7_regime_off.as_ref())
+                                            .or(backtest_lockstep_m7.as_ref())
+                                            .expect("checked lockstep m7 kernel availability")
+                                    }
                                 }
                             } else if lockstep_m7_regime_mode_specialize_enabled {
                                 if use_regime_hybrid_i != 0 {
@@ -11136,7 +11281,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     }
 
                     let _sync_and_decode_scope = crate::nvtx::scope("kernel", "sync_and_decode");
-                    pack_metric_rows_for_host_copy(
+                    let top_packed_host_slice = pack_metric_rows_for_host_copy(
                         bt_stream,
                         scratch,
                         &pack_metric_rows,
@@ -11169,7 +11314,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     let decode_t0 = Instant::now();
                     for r in 0..topk_select {
                         let Some((fast_len, slow_len, metrics)) = decode_packed_topk_metric_row(
-                            &top_packed_host,
+                            top_packed_host_slice,
                             r,
                             metrics_count,
                             cfg.hurdle_tau,
@@ -11240,7 +11385,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                          rows_metrics: &DeviceBuffer<f32>|
          -> Result<(), String> {
             let _sync_and_decode_scope = crate::nvtx::scope("kernel", "sync_and_decode");
-            pack_metric_rows_for_host_copy(
+            let top_packed_host_slice = pack_metric_rows_for_host_copy(
                 bt_stream,
                 scratch,
                 &pack_metric_rows,
@@ -11258,7 +11403,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             let decode_t0 = Instant::now();
             for r in 0..topk_select {
                 let Some((fast_len, slow_len, metrics)) = decode_packed_topk_metric_row(
-                    &top_packed_host,
+                    top_packed_host_slice,
                     r,
                     metrics_count,
                     cfg.hurdle_tau,
@@ -11577,16 +11722,17 @@ mod tests {
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
         max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
         rerank_shortlist_by_union_mode, search_metrics_count_for_optimization,
-        shortlist_candidate_track_record_bars, shortlist_slice_ranges,
-        should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
-        upload_double_ma_dynamic_program_batch, EffectiveSampleScoreContext,
-        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
-        TRADE_METRICS_COUNT,
+        search_metrics_count_for_optimization_with_contract, shortlist_candidate_track_record_bars,
+        shortlist_slice_ranges, should_force_low_pair_m7_recompute,
+        should_use_compact_valid_pair_output, upload_double_ma_dynamic_program_batch,
+        EffectiveSampleScoreContext, ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT,
+        PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
     };
     use crate::composite_validate::SpaBenchmarkKind;
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
-        DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
+        DoubleMaMetricContract, DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode,
+        DoubleMaShortlistUnionMode,
     };
     use crate::strategy_dynamic::{
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
@@ -12845,7 +12991,7 @@ mod tests {
         let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
         let prev_recompute = std::env::var("VECTORBT_KERNEL_FINALIST_RECOMPUTE").ok();
 
-        // Default: Sharpe/Volatility now promotes to the full 17-row single-pass product
+        // Default: Sharpe/Volatility now promotes to the 10-row single-pass product
         // contract while still avoiding finalist replay.
         std::env::remove_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS");
         std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", "0");
@@ -12860,10 +13006,10 @@ mod tests {
                 false,
                 false,
             ),
-            METRICS_COUNT
+            PRODUCT_REDUCED_METRICS_COUNT
         );
         assert!(can_decode_current_gpu_product_metrics_without_recompute(
-            METRICS_COUNT
+            PRODUCT_REDUCED_METRICS_COUNT
         ));
 
         // Override disable: force legacy reduced rows.
@@ -12882,7 +13028,7 @@ mod tests {
             7
         );
 
-        // Override enable: allow any objective to widen to the full single-pass product rows.
+        // Override enable: allow any objective to widen to the reduced single-pass product rows.
         std::env::set_var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS", "1");
         assert_eq!(
             search_metrics_count_for_optimization(
@@ -12895,7 +13041,7 @@ mod tests {
                 false,
                 false,
             ),
-            METRICS_COUNT
+            PRODUCT_REDUCED_METRICS_COUNT
         );
 
         match prev {
@@ -12906,6 +13052,38 @@ mod tests {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
             None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
         }
+    }
+
+    #[test]
+    fn search_metrics_count_metric_contract_override_forces_requested_rows() {
+        assert_eq!(
+            search_metrics_count_for_optimization_with_contract(
+                ObjectiveKind::Sharpe,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Some(DoubleMaMetricContract::Full17),
+            ),
+            METRICS_COUNT
+        );
+        assert_eq!(
+            search_metrics_count_for_optimization_with_contract(
+                ObjectiveKind::Sharpe,
+                None,
+                None,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Some(DoubleMaMetricContract::Trade22),
+            ),
+            TRADE_METRICS_COUNT
+        );
     }
 
     #[test]

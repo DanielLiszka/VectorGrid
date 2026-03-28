@@ -125,6 +125,7 @@ interface DoubleMaRequestOverrides {
   slowStep?: unknown;
   scoreMode?: unknown;
   hurdleTau?: unknown;
+  metricContract?: unknown;
   includeTradeMetrics?: unknown;
   extraShortlistObjectives?: unknown;
   shortlistConfidenceMode?: unknown;
@@ -241,6 +242,7 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   score_mode: { storeId: "advanced", key: "scoreMode" },
   hurdleTau: { storeId: "advanced", key: "hurdleTau" },
   hurdle_tau: { storeId: "advanced", key: "hurdleTau" },
+  metricContract: { storeId: "advanced", key: "metricContract" },
   extraShortlistObjectives: {
     storeId: "advanced",
     key: "extraShortlistObjectives",
@@ -1624,6 +1626,8 @@ async function buildAutoDoubleMaRequest(
     objective: readStoreTextInputValue("objective"),
     scoreMode: overrides.scoreMode ?? readStoreTextInputValue("scoreMode"),
     hurdleTau: overrides.hurdleTau ?? readStoreTextInputValue("hurdleTau"),
+    metricContract:
+      overrides.metricContract ?? readStoreTextInputValue("metricContract"),
     includeTradeMetrics:
       overrides.includeTradeMetrics ??
       readStoreCheckboxValue("includeTradeMetrics"),
@@ -1809,6 +1813,7 @@ async function buildDynamicDoubleMaRuntimeRequest(
     objective: readStoreTextInputValue("objective"),
     scoreMode: readStoreTextInputValue("scoreMode"),
     hurdleTau: readStoreTextInputValue("hurdleTau"),
+    metricContract: readStoreTextInputValue("metricContract"),
     includeTradeMetrics: readStoreCheckboxValue("includeTradeMetrics"),
     extraShortlistObjectives: readStoreTextInputValue(
       "extraShortlistObjectives",

@@ -45,9 +45,9 @@ pub(crate) mod color {
 
 #[derive(Clone, Copy)]
 struct NvtxApi {
-    domain_create_a: NvtxDomainCreateAFn,
-    domain_range_push_ex: NvtxDomainRangePushExFn,
-    domain_range_pop: NvtxDomainRangePopFn,
+    domain_create_a: Option<NvtxDomainCreateAFn>,
+    domain_range_push_ex: Option<NvtxDomainRangePushExFn>,
+    domain_range_pop: Option<NvtxDomainRangePopFn>,
     range_push_ex: NvtxRangePushExFn,
     range_pop: NvtxRangePopFn,
 }
@@ -102,16 +102,16 @@ impl NvtxEventAttributes {
     }
 }
 
-pub(crate) struct RangeGuard {
+pub struct RangeGuard {
     domain: Option<NvtxDomainHandle>,
-    mirrored_default_range: bool,
+    pushed_default_range: bool,
 }
 
 impl RangeGuard {
     fn disabled() -> Self {
         Self {
             domain: None,
-            mirrored_default_range: false,
+            pushed_default_range: false,
         }
     }
 }
@@ -122,11 +122,13 @@ impl Drop for RangeGuard {
             return;
         };
         if let Some(domain) = self.domain {
-            unsafe {
-                (api.domain_range_pop)(domain);
+            if let Some(domain_range_pop) = api.domain_range_pop {
+                unsafe {
+                    domain_range_pop(domain);
+                }
             }
         }
-        if self.mirrored_default_range {
+        if self.pushed_default_range {
             unsafe {
                 (api.range_pop)();
             }
@@ -142,7 +144,7 @@ pub(crate) fn kernel_range(name: &str, color: u32) -> RangeGuard {
     range(Domain::Kernel, name, color)
 }
 
-pub(crate) fn scope(domain: &str, name: &str) -> RangeGuard {
+pub fn scope(domain: &str, name: &str) -> RangeGuard {
     let color = default_color(name);
     match domain {
         "engine" => engine_range(name, color),
@@ -158,23 +160,51 @@ fn range(domain: Domain, name: &str, color: u32) -> RangeGuard {
     let Some(api) = api() else {
         return RangeGuard::disabled();
     };
-    let Some(domain_handle) = domain_handle(domain) else {
-        return RangeGuard::disabled();
+    let domain_handle = domain_handle(domain);
+    let can_use_domain_api = domain_handle.is_some() && api.domain_range_push_ex.is_some();
+    let pushed_default_range = !can_use_domain_api || should_mirror_default_range(domain, name);
+    let default_name = if pushed_default_range {
+        fallback_default_range_name(domain, name)
+    } else {
+        None
     };
-    let Ok(name_c) = CString::new(name) else {
-        return RangeGuard::disabled();
+    let default_name_c = match default_name {
+        Some(ref value) => match CString::new(value.as_str()) {
+            Ok(v) => Some(v),
+            Err(_) => return RangeGuard::disabled(),
+        },
+        None => None,
     };
-    let attrs = NvtxEventAttributes::ascii(name_c.as_c_str(), color);
-    let mirrored_default_range = should_mirror_default_range(domain, name);
-    unsafe {
-        if mirrored_default_range {
-            (api.range_push_ex)(&attrs);
+    let domain_name_c = if can_use_domain_api {
+        match CString::new(name) {
+            Ok(v) => Some(v),
+            Err(_) => return RangeGuard::disabled(),
         }
-        (api.domain_range_push_ex)(domain_handle, &attrs);
+    } else {
+        None
+    };
+    unsafe {
+        if let Some(ref default_name_c) = default_name_c {
+            let default_attrs = NvtxEventAttributes::ascii(default_name_c.as_c_str(), color);
+            (api.range_push_ex)(&default_attrs);
+        }
+        if let (Some(domain_handle), Some(domain_range_push_ex)) =
+            (domain_handle, api.domain_range_push_ex)
+        {
+            let domain_name_c = domain_name_c
+                .as_ref()
+                .expect("domain name must exist when domain API is enabled");
+            let domain_attrs = NvtxEventAttributes::ascii(domain_name_c.as_c_str(), color);
+            domain_range_push_ex(domain_handle, &domain_attrs);
+        }
     }
     RangeGuard {
-        domain: Some(domain_handle),
-        mirrored_default_range,
+        domain: if can_use_domain_api {
+            domain_handle
+        } else {
+            None
+        },
+        pushed_default_range,
     }
 }
 
@@ -182,7 +212,10 @@ fn should_mirror_default_range(domain: Domain, name: &str) -> bool {
     matches!(domain, Domain::Engine)
         && matches!(
             name,
-            "steady_iteration" | "double_ma_optimization" | "double_ma_opt_total"
+            "steady_iteration"
+                | "double_ma_optimization"
+                | "double_ma_opt_total"
+                | "tauri_double_ma_request"
         )
 }
 
@@ -199,7 +232,8 @@ fn domain_handle(domain: Domain) -> Option<NvtxDomainHandle> {
 
 fn create_domain(name: &[u8]) -> Option<usize> {
     let api = api()?;
-    let ptr = unsafe { (api.domain_create_a)(name.as_ptr().cast()) };
+    let domain_create_a = api.domain_create_a?;
+    let ptr = unsafe { domain_create_a(name.as_ptr().cast()) };
     if ptr.is_null() {
         None
     } else {
@@ -223,9 +257,9 @@ extern "system" {
 #[cfg(all(target_os = "windows", feature = "nvtx-profiling"))]
 fn api() -> Option<NvtxApi> {
     Some(NvtxApi {
-        domain_create_a: nvtxDomainCreateA,
-        domain_range_push_ex: nvtxDomainRangePushEx,
-        domain_range_pop: nvtxDomainRangePop,
+        domain_create_a: Some(nvtxDomainCreateA),
+        domain_range_push_ex: Some(nvtxDomainRangePushEx),
+        domain_range_pop: Some(nvtxDomainRangePop),
         range_push_ex: nvtxRangePushEx,
         range_pop: nvtxRangePop,
     })
@@ -242,21 +276,6 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
         let Ok(lib) = Library::new(candidate) else {
             continue;
         };
-        let Some(domain_create_a) =
-            load_symbol::<NvtxDomainCreateAFn>(&lib, b"nvtxDomainCreateA\0")
-        else {
-            continue;
-        };
-        let Some(domain_range_push_ex) =
-            load_symbol::<NvtxDomainRangePushExFn>(&lib, b"nvtxDomainRangePushEx\0")
-        else {
-            continue;
-        };
-        let Some(domain_range_pop) =
-            load_symbol::<NvtxDomainRangePopFn>(&lib, b"nvtxDomainRangePop\0")
-        else {
-            continue;
-        };
         let Some(range_push_ex) = load_symbol::<NvtxRangePushExFn>(&lib, b"nvtxRangePushEx\0")
         else {
             continue;
@@ -264,11 +283,30 @@ unsafe fn try_load_api() -> Option<NvtxApi> {
         let Some(range_pop) = load_symbol::<NvtxRangePopFn>(&lib, b"nvtxRangePop\0") else {
             continue;
         };
+        let domain_create_a = load_symbol::<NvtxDomainCreateAFn>(&lib, b"nvtxDomainCreateA\0");
+        let domain_range_push_ex =
+            load_symbol::<NvtxDomainRangePushExFn>(&lib, b"nvtxDomainRangePushEx\0");
+        let domain_range_pop =
+            load_symbol::<NvtxDomainRangePopFn>(&lib, b"nvtxDomainRangePop\0");
+        let has_full_domain_api =
+            domain_create_a.is_some() && domain_range_push_ex.is_some() && domain_range_pop.is_some();
         std::mem::forget(lib);
         return Some(NvtxApi {
-            domain_create_a,
-            domain_range_push_ex,
-            domain_range_pop,
+            domain_create_a: if has_full_domain_api {
+                domain_create_a
+            } else {
+                None
+            },
+            domain_range_push_ex: if has_full_domain_api {
+                domain_range_push_ex
+            } else {
+                None
+            },
+            domain_range_pop: if has_full_domain_api {
+                domain_range_pop
+            } else {
+                None
+            },
             range_push_ex,
             range_pop,
         });
@@ -333,9 +371,10 @@ static KERNEL_DOMAIN: OnceLock<Option<usize>> = OnceLock::new();
 
 fn default_color(name: &str) -> u32 {
     match name {
-        "steady_iteration" | "double_ma_optimization" | "double_ma_opt_total" => {
-            color::STEADY_ITERATION
-        }
+        "steady_iteration"
+        | "double_ma_optimization"
+        | "double_ma_opt_total"
+        | "tauri_double_ma_request" => color::STEADY_ITERATION,
         "prepare_inputs" | "route_resolve" => color::PREPARE_INPUTS,
         "backend_result_build" | "build_result" | "result_finalize" | "host_finalize" => {
             color::BUILD_RESULT
@@ -353,5 +392,45 @@ fn default_color(name: &str) -> u32 {
         "topk_select" | "launch_submit" => color::TOPK_SELECT,
         "copy_out" | "h2d_upload" | "sync_and_decode" => color::COPY_OUT,
         _ => color::BACKEND_EXECUTE,
+    }
+}
+
+fn fallback_default_range_name(domain: Domain, name: &str) -> Option<String> {
+    if should_mirror_default_range(domain, name) {
+        return Some(name.to_string());
+    }
+    let prefix = match domain {
+        Domain::Engine => "engine",
+        Domain::Kernel => "kernel",
+    };
+    Some(format!("{prefix}::{name}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fallback_default_range_name, Domain};
+
+    #[test]
+    fn fallback_preserves_top_level_engine_capture_names() {
+        assert_eq!(
+            fallback_default_range_name(Domain::Engine, "steady_iteration").as_deref(),
+            Some("steady_iteration")
+        );
+        assert_eq!(
+            fallback_default_range_name(Domain::Engine, "tauri_double_ma_request").as_deref(),
+            Some("tauri_double_ma_request")
+        );
+    }
+
+    #[test]
+    fn fallback_prefixes_nested_ranges_when_domain_api_is_missing() {
+        assert_eq!(
+            fallback_default_range_name(Domain::Engine, "prepare_inputs").as_deref(),
+            Some("engine::prepare_inputs")
+        );
+        assert_eq!(
+            fallback_default_range_name(Domain::Kernel, "backtest_core").as_deref(),
+            Some("kernel::backtest_core")
+        );
     }
 }

@@ -954,6 +954,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
                         gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                         persist_followup_cache: false,
                         include_trade_metrics: false,
+                        metric_contract: None,
                         hurdle_tau: None,
                     };
 

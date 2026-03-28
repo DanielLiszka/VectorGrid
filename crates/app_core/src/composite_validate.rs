@@ -1076,6 +1076,7 @@ fn base_composite_gpu_metric_map(
                 slow_alma_sigma: inputs.slow_alma_sigma,
                 hurdle_tau: 0.0,
                 include_trade_metrics: false,
+                metric_contract: None,
             },
             Some(&fast_precomputed),
             Some(&slow_precomputed),

@@ -89,6 +89,7 @@ pub async fn run_double_ma_optimization(
     let cancel2 = cancel.clone();
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _nvtx_scope = ta_app_core::nvtx::scope("engine", "tauri_double_ma_request");
         let sink = TauriProgressSink { app: app2 };
         ta_app_core::run_double_ma_optimization_blocking_with_candles(
             req,
@@ -172,6 +173,7 @@ mod tests {
             gpu_execution: Default::default(),
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
 
             hurdle_tau: None,
         }

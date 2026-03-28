@@ -193,7 +193,7 @@ describe('AdvancedWorkspacePanel', () => {
     })
     await flushPanelTimers()
 
-    expect(document.querySelector('#vueIncludeTradeMetrics')).not.toBeNull()
+    expect(document.querySelector('#vueMetricContract')).not.toBeNull()
     expect(document.querySelector('#vueExtraShortlistObjectives')).not.toBeNull()
     expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
 
@@ -218,12 +218,12 @@ describe('AdvancedWorkspacePanel', () => {
     })
     await flushPanelTimers()
 
-    expect(document.querySelector('#vueIncludeTradeMetrics')).toBeNull()
+    expect(document.querySelector('#vueMetricContract')).toBeNull()
     expect(document.querySelector('#vueExtraShortlistObjectives')).toBeNull()
     expect(document.querySelector('#vueShortlistConfidenceMode')).toBeNull()
     expect(document.querySelector('#vueShortlistUnionMode')).toBeNull()
     expect(document.querySelector('#vueShortlistSliceMode')).toBeNull()
-    expect(document.body.textContent || '').toContain('advanced exact-kernel shortlist/score/trade-metric controls are disabled')
+    expect(document.body.textContent || '').toContain('advanced exact-kernel shortlist/score/metric-contract controls are disabled')
 
     wrapper.unmount()
   })
@@ -246,7 +246,7 @@ describe('AdvancedWorkspacePanel', () => {
 
     expect(document.querySelector('#vueExtraShortlistObjectives')).not.toBeNull()
     expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
-    expect(document.querySelector('#vueIncludeTradeMetrics')).not.toBeNull()
+    expect(document.querySelector('#vueMetricContract')).not.toBeNull()
     expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
     expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
     expect(document.querySelector('#vueShortlistSliceBenchmark')).not.toBeNull()
@@ -297,6 +297,31 @@ describe('AdvancedWorkspacePanel', () => {
 
     expect(document.querySelector('#vueShortlistUnionMode')).not.toBeNull()
     expect(document.body.textContent || '').toContain('union shortlist')
+
+    wrapper.unmount()
+  })
+
+  it('shows the explicit metric contract control for Double MA on the GpuKernel route and reflects the stored value', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    optimize.backend = 'GpuKernel'
+    advanced.metricContract = 'full_17'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    const select = document.querySelector('#vueMetricContract') as HTMLSelectElement | null
+    expect(select).not.toBeNull()
+    expect(select?.value).toBe('full_17')
+    expect(document.body.textContent || '').toContain('Full 17-row metrics')
 
     wrapper.unmount()
   })

@@ -40,6 +40,7 @@ export interface DoubleMaOptimizationBuildInputs {
   objective?: unknown;
   scoreMode?: unknown;
   hurdleTau?: unknown;
+  metricContract?: unknown;
   includeTradeMetrics?: unknown;
   extraShortlistObjectives?: unknown;
   shortlistConfidenceMode?: unknown;
@@ -480,6 +481,38 @@ function normalizeDoubleMaScoreMode(value: unknown): string | null {
   }
   throw new Error(
     "Unsupported score mode. Supported values: balanced_risk_adjusted_10, adversarial_envelope_10, support_shrunk_10, active_sortino_10, effective_sample_lcb_10, omega_vs_sharpe_10, robust_margin_10.",
+  );
+}
+
+function normalizeDoubleMaMetricContract(
+  value: unknown,
+): "auto" | "full_17" | "trade_22" {
+  const raw = normalizeText(value);
+  if (!raw) return "auto";
+  const normalized = raw.toLowerCase();
+  if (normalized === "auto" || normalized === "default") {
+    return "auto";
+  }
+  if (
+    normalized === "full_17" ||
+    normalized === "full17" ||
+    normalized === "17" ||
+    normalized === "17_row" ||
+    normalized === "17-row"
+  ) {
+    return "full_17";
+  }
+  if (
+    normalized === "trade_22" ||
+    normalized === "trade22" ||
+    normalized === "22" ||
+    normalized === "22_row" ||
+    normalized === "22-row"
+  ) {
+    return "trade_22";
+  }
+  throw new Error(
+    "Unsupported metric contract. Supported values: auto, full_17, trade_22.",
   );
 }
 
@@ -1978,7 +2011,15 @@ export function buildDoubleMaOptimizationRequest(
   const objective = normalizeText(inputs.objective || "Sharpe") || "Sharpe";
   const scoreMode = normalizeDoubleMaScoreMode(inputs.scoreMode);
   const hurdleTau = parseOptionalFinite(inputs.hurdleTau);
-  const includeTradeMetrics = normalizeBoolean(inputs.includeTradeMetrics);
+  const metricContract = normalizeDoubleMaMetricContract(inputs.metricContract);
+  const includeTradeMetricsRequested = normalizeBoolean(inputs.includeTradeMetrics);
+  if (metricContract === "full_17" && includeTradeMetricsRequested) {
+    throw new Error(
+      "metricContract=full_17 conflicts with includeTradeMetrics=true.",
+    );
+  }
+  const includeTradeMetrics =
+    metricContract === "trade_22" || includeTradeMetricsRequested;
   const extraShortlistObjectives = normalizeExtraShortlistObjectives(
     inputs.extraShortlistObjectives,
     objective,
@@ -2206,6 +2247,11 @@ export function buildDoubleMaOptimizationRequest(
       );
     }
   }
+  if (metricContract !== "auto" && !kernelRoute) {
+    throw new Error(
+      "metricContract currently requires the exact GpuKernel backend route",
+    );
+  }
 
   if (exportAllCsvPath) {
     if (includeAll)
@@ -2382,6 +2428,7 @@ export function buildDoubleMaOptimizationRequest(
     gpu_execution: gpuExecution,
     persist_followup_cache: true,
     include_trade_metrics: includeTradeMetrics,
+    metric_contract: metricContract === "auto" ? null : metricContract,
   };
 }
 

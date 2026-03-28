@@ -225,6 +225,7 @@ fn make_request(backend: Backend, strategy: StrategyConfig) -> DoubleMaRequest {
         gpu_execution: Default::default(),
         persist_followup_cache: false,
         include_trade_metrics: false,
+        metric_contract: None,
 
         hurdle_tau: None,
     }

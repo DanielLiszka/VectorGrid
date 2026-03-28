@@ -236,6 +236,13 @@ pub enum DoubleMaShortlistSliceMode {
     Quartiles,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoubleMaMetricContract {
+    Full17,
+    Trade22,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VdpsConfig {
     #[serde(default)]
@@ -317,6 +324,8 @@ pub struct DoubleMaRequest {
     pub persist_followup_cache: bool,
     #[serde(default)]
     pub include_trade_metrics: bool,
+    #[serde(default)]
+    pub metric_contract: Option<DoubleMaMetricContract>,
 }
 
 fn default_ma_source() -> String {
@@ -4612,7 +4621,12 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     let requested_shortlist_slice_benchmark = req.shortlist_slice_benchmark.clone();
     let requested_shortlist_neighborhood_radius = req.shortlist_neighborhood_radius;
     let requested_shortlist_neighborhood_step = req.shortlist_neighborhood_step;
-    let requested_trade_metrics = req.include_trade_metrics;
+    let requested_metric_contract = req.metric_contract;
+    let requested_trade_metrics = req.include_trade_metrics
+        || matches!(
+            requested_metric_contract,
+            Some(DoubleMaMetricContract::Trade22)
+        );
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
     if export_all_csv_path.is_some() && include_all {
         return Err(
@@ -5101,6 +5115,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         requested_shortlist_neighborhood_radius,
                         requested_shortlist_neighborhood_step,
                         requested_trade_metrics,
+                        requested_metric_contract,
                         top_k,
                         include_all,
                         fast_alma_offset,
@@ -6734,6 +6749,20 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 .to_string(),
         );
     }
+    if requested_metric_contract.is_some()
+        && dynamic_runtime_plan.is_some()
+        && !dynamic_exact_gpu_kernel_route
+    {
+        return Err(
+            "metric_contract currently requires an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+                .to_string(),
+        );
+    }
+    if requested_metric_contract.is_some() && !matches!(backend, Backend::GpuKernel { .. }) {
+        return Err(
+            "metric_contract currently requires the exact GpuKernel backend route".to_string(),
+        );
+    }
     let mut run_idx: usize = 0;
     for (fi, fast_params_opt) in fast_param_variants.iter().enumerate() {
         for (si, slow_params_opt) in slow_param_variants.iter().enumerate() {
@@ -7168,6 +7197,7 @@ fn grid_search_double_ma_gpu_kernel(
         slow_alma_sigma: sigma,
         hurdle_tau: 0.0,
         include_trade_metrics: false,
+        metric_contract: None,
     };
     let metrics = crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel(
         candles,
@@ -12480,6 +12510,7 @@ pub(crate) fn validate_double_ma_gpu_hybrid_kernel_exact_combos(
                 slow_alma_sigma,
                 hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
                 include_trade_metrics: false,
+                metric_contract: None,
             },
             fast_precomputed.as_ref(),
             slow_precomputed.as_ref(),
@@ -12779,6 +12810,7 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
     _shortlist_neighborhood_radius: Option<u16>,
     _shortlist_neighborhood_step: Option<u16>,
     include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
     top_k: usize,
     include_all: bool,
     fast_alma_offset: f64,
@@ -12858,7 +12890,7 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
         )
         .fold(0usize, |current, candidate_objective| {
             current.max(
-                crate::gpu_backtest_kernel::search_metrics_count_for_optimization(
+                crate::gpu_backtest_kernel::search_metrics_count_for_optimization_with_contract(
                     candidate_objective,
                     score_mode,
                     constraints,
@@ -12867,6 +12899,7 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
                     false,
                     false,
                     include_trade_metrics,
+                    metric_contract,
                 ),
             )
         });
@@ -13115,6 +13148,7 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
     _shortlist_neighborhood_radius: Option<u16>,
     _shortlist_neighborhood_step: Option<u16>,
     _include_trade_metrics: bool,
+    _metric_contract: Option<DoubleMaMetricContract>,
     _top_k: usize,
     _include_all: bool,
     _fast_alma_offset: f64,
@@ -13274,6 +13308,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_device_regime(
             slow_alma_sigma,
             hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
             include_trade_metrics: false,
+            metric_contract: None,
         },
         None,
         None,
@@ -13377,6 +13412,7 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
             slow_alma_sigma,
             hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
             include_trade_metrics: false,
+            metric_contract: None,
         },
         fast_precomputed.as_ref(),
         slow_precomputed.as_ref(),
@@ -13736,6 +13772,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
         }
     }
@@ -13883,6 +13920,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         }
     }
@@ -14952,6 +14990,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -15149,6 +15188,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -15200,6 +15240,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -15265,6 +15306,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -15343,6 +15385,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -15404,6 +15447,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -15484,6 +15528,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -15561,6 +15606,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -16566,6 +16612,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -16626,6 +16673,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -16699,6 +16747,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -16786,6 +16835,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -16850,6 +16900,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -16924,6 +16975,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17004,6 +17056,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17203,6 +17256,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17289,6 +17343,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17362,6 +17417,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17435,6 +17491,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17530,6 +17587,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17622,6 +17680,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -17709,6 +17768,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let cpu_res = run_double_ma_optimization_blocking_with_candles(
@@ -17816,6 +17876,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -17885,6 +17946,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
             let hybrid_req = DoubleMaRequest {
@@ -17893,6 +17955,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
                 ..cpu_req.clone()
             };
@@ -18009,6 +18072,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -18078,6 +18142,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -18154,6 +18219,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -18235,6 +18301,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -18339,6 +18406,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
 
@@ -18438,6 +18506,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let req_gpu = DoubleMaRequest {
@@ -18446,6 +18515,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
             ..req_cpu.clone()
         };
@@ -18625,6 +18695,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
             let req_gpu = DoubleMaRequest {
@@ -18727,6 +18798,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: Some(0.01),
             };
             let req_gpu = DoubleMaRequest {
@@ -18822,6 +18894,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -18902,6 +18975,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
 
@@ -19001,6 +19075,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19082,6 +19157,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19155,6 +19231,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
@@ -19225,6 +19302,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19433,6 +19511,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19489,6 +19568,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19539,6 +19619,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19589,6 +19670,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19639,6 +19721,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19689,6 +19772,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19739,6 +19823,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19789,6 +19874,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19845,6 +19931,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19901,6 +19988,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -19957,6 +20045,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -20013,6 +20102,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -20069,6 +20159,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -20125,6 +20216,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -20181,6 +20273,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -20770,6 +20863,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -20839,6 +20933,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -21261,6 +21356,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -21325,6 +21421,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
 
@@ -21389,6 +21486,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -21427,6 +21525,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -21495,6 +21594,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -21531,6 +21631,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -21655,6 +21756,7 @@ mod tests {
                     gpu_execution: GpuExecutionPolicy::BestEffort,
                     persist_followup_cache: false,
                     include_trade_metrics: true,
+                    metric_contract: None,
                     hurdle_tau: None,
                 },
                 &candles,
@@ -21745,6 +21847,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             },
             &candles,
@@ -21798,6 +21901,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             },
             &candles,
@@ -21851,6 +21955,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             },
             &candles,
@@ -21916,6 +22021,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -21952,6 +22058,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -22088,6 +22195,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
             let req_union = DoubleMaRequest {
@@ -22229,6 +22337,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -22265,6 +22374,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -22452,6 +22562,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -22539,6 +22650,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
 
@@ -22640,6 +22752,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let req_union = DoubleMaRequest {
@@ -22676,6 +22789,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -22948,6 +23062,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -23259,6 +23374,7 @@ mod tests {
                 gpu_execution: GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
 
@@ -23372,6 +23488,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
         let constraints = req.constraints.clone();
@@ -23471,6 +23588,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -23564,6 +23682,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: true,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -23642,6 +23761,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -23804,6 +23924,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -23874,6 +23995,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -23942,6 +24064,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24012,6 +24135,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24082,6 +24206,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24156,6 +24281,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24229,6 +24355,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24299,6 +24426,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24369,6 +24497,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24439,6 +24568,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24509,6 +24639,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24578,6 +24709,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24651,6 +24783,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24721,6 +24854,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24791,6 +24925,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24861,6 +24996,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -24931,6 +25067,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -25001,6 +25138,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -25071,6 +25209,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 
@@ -25141,6 +25280,7 @@ mod tests {
             gpu_execution: GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 

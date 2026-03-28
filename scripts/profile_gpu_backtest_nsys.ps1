@@ -27,26 +27,52 @@ param(
   [ValidateSet("off", "on")]
   [string]$DynamicStrategyMode = "off",
   [ValidateSet("inherit", "off", "on")]
-  [string]$CudaGraphsMode = "off"
+  [string]$CudaGraphsMode = "off",
+  [string]$NsysExePath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-$nsysCandidates = @(
-  "C:\Program Files\NVIDIA Corporation\Nsight Systems 2023.3.3\target-windows-x64\nsys.exe",
-  "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe",
-  "C:\Program Files\NVIDIA Corporation\Nsight Systems 2022.4.2\target-windows-x64\nsys.exe",
-  "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\host\target-windows-x64\nsys.exe"
-)
-$nsysExe = $nsysCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $nsysExe) {
-  $cmd = Get-Command nsys.exe -ErrorAction SilentlyContinue
-  if ($null -ne $cmd) {
-    $nsysExe = $cmd.Source
+if (-not [string]::IsNullOrWhiteSpace($NsysExePath)) {
+  $nsysExe = $NsysExePath
+} else {
+  $nsysCandidates = @(
+    "C:\Program Files\NVIDIA Corporation\Nsight Systems 2023.3.3\target-windows-x64\nsys.exe",
+    "C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\target-windows-x64\nsys.exe",
+    "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.6.3\target-windows-x64\nsys.exe",
+    "C:\Program Files\NVIDIA Corporation\Nsight Systems 2025.3.2\target-windows-x64\nsys.exe",
+    "C:\Program Files\NVIDIA Corporation\Nsight Systems 2023.1.2\target-windows-x64\nsys.exe",
+    "C:\Program Files\NVIDIA Corporation\Nsight Systems 2022.4.2\target-windows-x64\nsys.exe",
+    "C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.0\host\target-windows-x64\nsys.exe",
+    "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\host\target-windows-x64\nsys.exe"
+  )
+  $nsysExe = $nsysCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if (-not $nsysExe) {
+    $cmd = Get-Command nsys.exe -ErrorAction SilentlyContinue
+    if ($null -ne $cmd) {
+      $nsysExe = $cmd.Source
+    }
   }
 }
 if (-not $nsysExe -or !(Test-Path $nsysExe)) {
   throw "Nsight Systems CLI not found (expected nsys.exe)."
+}
+Write-Host "Using Nsight Systems CLI: $nsysExe"
+
+$nsightTempDir = Join-Path $env:LOCALAPPDATA "Temp\nvidia\nsight_systems"
+New-Item -ItemType Directory -Force -Path $nsightTempDir | Out-Null
+$nsysInstallRoot = Split-Path (Split-Path $nsysExe -Parent) -Parent
+
+$isElevated = $false
+try {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  $isElevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch {
+  $isElevated = $false
+}
+if ($nsysInstallRoot -match "Nsight Systems 20(25|26)" -and -not $isElevated) {
+  Write-Warning "Local Nsight Systems 2025.x/2026.x on this machine has failed unelevated with 'Access is denied' while opening the create-agent memory-mapped file. If capture startup times out or no report is produced, rerun from an elevated shell or repair/reinstall Nsight Systems."
 }
 
 if ($Target -eq "runner") {
@@ -75,7 +101,12 @@ if ($Target -eq "runner") {
   }
 }
 
-$outDir = Split-Path -Parent $OutputPrefix
+$outputPrefixPath = if ([System.IO.Path]::IsPathRooted($OutputPrefix)) {
+  $OutputPrefix
+} else {
+  Join-Path (Get-Location) $OutputPrefix
+}
+$outDir = Split-Path -Parent $outputPrefixPath
 if ($outDir) {
   New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 }
@@ -121,7 +152,7 @@ $nsysArgs = @(
   "--stop-on-exit=true",
   "--stats=false",
   "--force-overwrite=true",
-  "--output=$OutputPrefix"
+  "--output=$outputPrefixPath"
 )
 if ($NvtxMode -eq "on") {
   $nsysArgs += @(
@@ -162,8 +193,23 @@ if ($Target -eq "runner") {
   )
 }
 
-& $nsysExe @nsysArgs
-$exitCode = $LASTEXITCODE
+$nsysWorkDir = if ($outDir -and (Test-Path (Join-Path $outDir "nvlog.config"))) {
+  $outDir
+} else {
+  $null
+}
+if ($null -ne $nsysWorkDir) {
+  Push-Location $nsysWorkDir
+  try {
+    & $nsysExe @nsysArgs
+    $exitCode = $LASTEXITCODE
+  } finally {
+    Pop-Location
+  }
+} else {
+  & $nsysExe @nsysArgs
+  $exitCode = $LASTEXITCODE
+}
 
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_FAST_PATH", $prevFastPath, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_KERNEL_USE_CUDA_GRAPHS", $prevGraphs, "Process")
@@ -171,15 +217,29 @@ $exitCode = $LASTEXITCODE
 [System.Environment]::SetEnvironmentVariable("VECTORBT_GPU_NATIVE_BENCH_ONLY", $prevBenchOnly, "Process")
 [System.Environment]::SetEnvironmentVariable("VECTORBT_ENABLE_NVTX", $prevNvtx, "Process")
 
-$reportPath = "$OutputPrefix.nsys-rep"
+$reportPath = "$outputPrefixPath.nsys-rep"
+$nvLogPaths = @()
+if ($outDir) {
+  $nvLogPaths += Join-Path $outDir "nsys-ui.log"
+}
+$nvLogPaths += Join-Path (Get-Location) "nsys-ui.log"
+$nvLogPaths = $nvLogPaths | Select-Object -Unique
 if (!(Test-Path $reportPath)) {
-  $altReport = "$OutputPrefix.qdrep"
+  $altReport = "$outputPrefixPath.qdrep"
   $deadline = (Get-Date).AddSeconds(30)
   while ((Get-Date) -lt $deadline) {
     if ((Test-Path $reportPath) -or (Test-Path $altReport)) {
       break
     }
     Start-Sleep -Milliseconds 500
+  }
+  foreach ($nvLogPath in $nvLogPaths) {
+    if ((!(Test-Path $reportPath)) -and (!(Test-Path $altReport)) -and (Test-Path $nvLogPath)) {
+      $nvlogTail = Get-Content $nvLogPath -Tail 200 -ErrorAction SilentlyContinue
+      if ($nvlogTail -match "Failed to open memory mapped file" -and $nvlogTail -match "Access is denied") {
+        throw "Nsight Systems failed before capture startup. Local profiler logs show 'Access is denied' while opening the create-agent memory-mapped file. On this machine that points to a local 2025.x/2026.x Nsight Systems privilege/tooling problem. Rerun from an elevated shell or repair/reinstall the selected Nsight Systems build."
+      }
+    }
   }
   if (Test-Path $altReport) {
     $reportPath = $altReport

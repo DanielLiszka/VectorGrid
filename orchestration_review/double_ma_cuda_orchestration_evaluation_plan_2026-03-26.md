@@ -39,21 +39,158 @@ Completed on 2026-03-27:
   - measured iterations via `--measure-iterations` or `--iterations`
   - heatmap bins
   - device id
+  - objective selection
+  - explicit `fast_ma` / `slow_ma` selection
+  - candle-shape selection, including the benchmark-like `synth` generator
   - CUDA graph mode via `--cuda-graphs` or `--graphs`
   - NVTX mode via `--nvtx`
   - JSON-line output via `--emit-json`
+- For hot ALMA product-path screening, the direct runner is now the preferred first perf surface instead of Criterion because it can reproduce the shape in a single process:
+  - build once with `cargo build -p ta_app_core --release --features cuda,cuda-backtest-kernel --bin profile_gpu_dynamic_runner`
+  - then run `target/release/profile_gpu_dynamic_runner.exe --strategy double_ma --workload large --fast-ma alma --slow-ma alma --candle-shape synth --objective sharpe --warmup-iterations 2 --measure-iterations 5 --heatmap-bins 64 --emit-json`
+  - use Criterion only for isolated confirmation once a candidate already looks promising on that direct-runner path
 - The Nsight helper scripts now expose the knobs needed for graph A/B and warmup control:
   - warmup iterations
   - heatmap bins
   - device id
   - CUDA graph mode
   - NVTX capture-range mode
+- The Nsight Systems helper now also accepts an explicit `-NsysExePath` override and precreates the local `Temp\\nvidia\\nsight_systems` directory before launching `nsys`.
+  - Current local result:
+    - `2023.3.3` still produces usable CUDA captures but no NVTX tables from this Rust path
+    - `2025.3.2`, `2025.6.3`, and `2026.2.1` all fail unelevated during their local agent/session startup on this machine before a capture completes
+    - `2025.3.2` and `2026.2.1` both reproduce the deeper session-manager symptom on CLI-side probes:
+      - `2025.3.2` cannot open `SessionManager-NSys-2025.3.2` under `LOCALAPPDATA\\Temp\\nvidia\\nsight_systems`
+      - `2026.2.1` cannot open `SessionManager-NSys-2026.2.1` under the same root, even on `nsys sessions list`
+    - profiler-side verbose logging now shows the bounded newer-CLI failure pattern:
+      - the spawned `--start-agent` process fails with `Access is denied` while reopening the `create-agent-...` memory-mapped file
+      - the created file ACL grants `SYSTEM` and `Administrators`, but not the current unelevated user SID
+    - rerunning from an elevated PowerShell fixes the `2026.2.1` startup blocker:
+      - a minimal `--trace=none` smoke test now completes and writes `target\\nsight\\nsys_2026_smoke_elevated.nsys-rep`
+      - a whole-process Double MA runner capture now completes and writes `target\\nsight\\nvtx_2026_elevated_whole.nsys-rep`
+    - even under an elevated `2026.2.1` capture, `nsys stats --report nvtx_sum --report nvtx_gpu_proj_sum` still reports no NVTX data from the current Rust path
+    - rebuilding the runner with `nvtx-profiling` still does not produce NVTX tables under elevated `2026.2.1`
+      - on this machine, that raw-dylib path also requires `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` on `PATH` just to start cleanly
+      - the installed standalone `nvToolsExt64_1.dll` is the legacy 2016 package from `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64`
+  - Interpretation:
+    - the newer-profiler startup blocker is a local privilege/tooling issue and is now confirmed to be solvable by an elevated shell on this machine
+    - the remaining NVTX visibility problem is no longer just profiler startup; it is now bounded to the current Rust NVTX emission / runtime interop path because both `2023.3.3` and elevated `2026.2.1` still record zero NVTX tables
 - NVTX ranges now exist in app-core behind `VECTORBT_ENABLE_NVTX=1`, and the wrapper uses runtime-loaded NVTX symbols instead of static toolkit linkage.
+- The Tauri command path now also emits a `tauri_double_ma_request` NVTX range, so the app boundary is instrumented even though the local Nsight Systems install still does not expose NVTX records from this Rust path.
+- The default single-pass product-row policy for the exact `GpuKernel` route now uses the 10-metric reduced contract instead of widening to the full 17-metric contract.
+  - This keeps the route single-pass for the normal Sharpe/Volatility product family while avoiding the extra width that was not required to skip finalist replay.
+  - Current validation:
+    - targeted replay-vs-reduced parity tests still pass
+    - `scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed
+    - `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/end_to_end_product` improved from about 85.49 ms to about 81.98 ms
+    - the replay-backed comparison path `.../search_plus_finalist_recompute` still sits around 167.29 ms on the same shape, which reinforces the single-pass preference
+- Packed top-k materialization now reuses `HostTransferScratchF32` instead of a throwaway pageable `Vec<f32>`, which means the exact `GpuKernel` shortlist/materialization path can use pinned D2H staging when `VECTORBT_KERNEL_PINNED_D2H=1`.
+  - Current validation:
+    - focused global-top-k and product-row tests still pass
+    - `scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed after the change
+    - `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/end_to_end_product` stayed at about 81.85 ms, which is within noise and therefore not a regression
+- A low-risk launch-bounds experiment on the dominant lockstep M7 no-risk kernel path was tested and then reverted.
+  - The experiment tightened the relevant specializations to `__launch_bounds__(128, 8)` in an attempt to trade codegen toward lower register pressure.
+  - It did not improve the warm runner path and pushed `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/end_to_end_product` up to about 83.57 ms, so it was removed.
+- A host-side launch-shape sweep using the existing `VECTORBT_KERNEL_BLOCK_X` override was also tested as a possible low-risk improvement.
+  - One exploratory `xlarge` plus `heatmap_bins=64` sweep temporarily suggested that `block_x=160` might help.
+  - The confirmation pass did not hold up:
+    - `large` plus `heatmap_bins=64`: auto about 84 ms vs `160` about 82 ms
+    - `xlarge` plus `heatmap_bins=64`: auto about 348 ms vs `160` about 347 ms
+    - `xlarge` plus `heatmap_bins=0`: auto about 347 ms vs `160` about 1004 ms
+  - Conclusion: there is no stable low-risk host-side launch-shape override to promote into the default chooser right now.
+- A dispatch A/B using the existing env gates also confirmed that the current `lockstep_m7` fast path remains the best of the low-risk selection options tested.
+  - disabling `VECTORBT_KERNEL_M7_SPECIALIZE` regressed relative to the default dispatch
+  - disabling `VECTORBT_KERNEL_LOCKSTEP_TIME` regressed further
+- The remaining measurement checklist is now materially complete for the current route:
+  - warm graph A/B on `xlarge` with `heatmap_bins=0` showed no meaningful steady-state win; warm medians stayed about 327 ms with graphs off and on
+  - a fresh lean warm Nsight Systems pass on the `xlarge` runner with `heatmap_bins=64` again showed kernel dominance and tiny physical memops
+  - a pipeline-profile run on the same product-like shape showed about 98 percent of executor time inside `tile_score`, almost all of it in the backtest kernel itself
+  - a direct Nsight Compute pass on the dominant backtest kernel showed:
+    - about 70 registers per thread
+    - theoretical occupancy about 58.3 percent and achieved occupancy about 50.1 percent
+    - compute throughput about 61.9 percent vs memory throughput about 17.2 percent
+    - a dominant L1TEX scoreboard stall reason, estimated at about 47 percent of average issue latency
+  - an app-path faceoff run on a real CSV-backed `GpuKernel` request showed harness wall time effectively matching engine wall time, so there is no new warm-path evidence that a dedicated worker thread would beat the current app shell on steady-state cost alone
+- The Nsight Compute helper script now resolves the local `2026.1.0` install path in addition to older layouts.
+- `scripts/run_gpu_perf_gate.ps1` now waits for benchmark/profiler processes to drain before and after each benchmark/profile segment instead of assuming `cargo bench` has fully settled when it returns.
+  - This was added because the local Criterion path can leave a spawned benchmark executable alive after the parent command exits, which contaminates follow-on measurements if it is not drained first.
+  - Current validation:
+    - script parses cleanly
+    - `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` completed successfully after the hardening change
+- The env-gated `VECTORBT_KERNEL_DISPATCH` log now emits the exact row-contract indicators needed for the current kernel-body track:
+  - `metrics_count`
+  - `tile_metrics_stride`
+  - `use_lockstep_m10_product`
+  - `decode_without_recompute`
+- A first current-branch CUDA kernel-body change is now landed on the hot ALMA/ALMA product shape.
+  - Added zero-commission specializations for the existing exact 10-row lockstep no-risk regime-off product kernels in the release `sm_89` cubin:
+    - `double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_nocomm`
+    - `double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_eps0_nocomm`
+  - Rust dispatch now prefers those kernels only when all of the following are true:
+    - the route is already on the exact 10-row lockstep product path
+    - no stop-loss or take-profit path is active
+    - effective commission is exactly zero
+    - `eps_zero_mode` selects the matching `_eps0_nocomm` variant when applicable
+  - Intent:
+    - keep the same single-pass product work and same result contract
+    - remove zero-commission transition work from the hot exact-product kernels without changing nonzero-commission behavior
+    - keep broader dispatch policy unchanged and preserve fallback behavior on PTX-only paths
+  - Current validation:
+    - targeted reduced-row parity tests still pass
+    - focused global-top-k and dynamic GPU parity tests still pass
+    - the exact-fee-stress GPU rerun test still passes on a nonzero-commission route
+    - isolated Criterion reruns for `double_ma/gpu_kernel_contract_split/alma_alma/200k/large/58300pairs/end_to_end_product` landed around `77.45 ms` to `80.23 ms` and then `78.71 ms` to `79.03 ms`
+    - `scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed after isolated rerun from idle
+    - release `sm_89` cubin inspection confirms the new `_nocomm` symbols are present
+    - generated PTX does not carry those `m10` specializations, so PTX fallback continues to use the existing kernels rather than losing functionality
+  - Interpretation:
+    - this is the first currently-kept kernel-body optimization on the branch that improved the product benchmark while preserving the existing single-pass product contract
+    - the win is narrower than the earlier orchestration work and stays entirely inside kernel/runtime cost, not host launch cost
+    - the remaining optimization track, if more work is warranted, stays inside CUDA kernel-body work rather than host orchestration
+    - if deeper CUDA work continues, the next likely wins are still per-thread instruction / latency reductions on the small-grid ALMA product path
+- A second low-risk kernel-body follow-up is now kept on the same hot path.
+  - Change:
+    - the hot exact backtest body and regime helpers now use an explicit read-only load helper for one-dimensional scalar inputs such as `lr`, `ret1`, `regime_filter`, and the period arrays
+    - this matches the existing read-only-load pattern already used for the MA matrices and keeps all result semantics unchanged
+  - Current validation:
+    - `double_ma::tests::gpu_kernel_product_reduced_rows_matches_replay_contract_for_sharpe`: pass
+    - `gpu_backtest_kernel::tests::dynamic_double_ma_program_gpu_kernel_matches_cpu_plain_sma_metrics`: pass
+    - isolated single-process ALMA/synth runner confirmation on `target/release/profile_gpu_dynamic_runner.exe`
+      - prior baseline band: about `84/77/77/80/78 ms`
+      - kept-change confirmation bands: about `83/77/77/78/76 ms` and `77/77/76/77/77 ms`
+  - Interpretation:
+    - this is a small but repeatable non-regressing improvement on the single-process product-like runner path
+    - it is narrower than the zero-commission specialization win and should still be treated as a modest kernel-body cleanup rather than a first-order shift
+    - a later isolated Criterion confirmation is still desirable, but the change already clears the repo's functionality bar and the current measurement-hygiene bar
+- Mandatory kernel-symbol lookup errors now include the symbol name in `gpu_backtest_kernel.rs`.
+  - This was added after one transient `named symbol not found` perf-gate run gave poor debugging value.
+  - A fresh rebuild cleared that transient failure and the GPU perf gate completed successfully afterward.
+- A follow-on branch-specialization attempt for the same exact product path was rejected and reverted.
+  - Tested idea:
+    - specialize away the runtime `compact_output` and valid-pair-map branches for the exact 10-row ALMA product path
+  - Result:
+    - targeted GPU tests still passed
+    - isolated Criterion rerun stayed in the same band, about `79.74 ms` to `81.04 ms`
+    - no meaningful improvement, so the extra specialization was removed
+- A follow-on default-product-flags specialization inside the existing exact `m10` wrapper symbols was also rejected and reverted.
+  - Tested idea:
+    - keep the existing kernel symbol names, but route the common exact-product flag combination through a compile-time-specialized inner path instead of the current runtime-flag path
+  - Result:
+    - compile succeeded, but exact-path GPU tests did not
+    - replay-backed parity hit `named symbol not found`
+    - dynamic GPU parity hit `an illegal memory access was encountered`
+  - Conclusion:
+    - do not revisit this in-wrapper flag-specialization idea until the symbol/runtime failure mode is understood
+    - the branch was restored immediately to the last known-good exact `m10` state
 
 Still not implemented:
 
-- a profiler-visible NVTX capture-range workflow on the local Nsight Systems 2023.3.3 install
-- a first profiler-validated lean Nsight Systems capture using the new NVTX ranges
+- a profiler-visible NVTX capture-range workflow on the local machine, because:
+  - Nsight Systems `2023.3.3` captures CUDA but still emits no NVTX tables from this Rust path
+  - Nsight Systems `2026.2.1` now captures successfully from an elevated shell, but it also emits no NVTX tables from this Rust path
+  - rebuilding the runner with `nvtx-profiling` does not change that outcome under elevated `2026.2.1`
+  - the `nvtx-profiling` raw-dylib path additionally depends on `C:\\Program Files\\NVIDIA Corporation\\NvToolsExt\\bin\\x64` being present on `PATH` for a clean process startup on this machine
 
 ## Scope
 
@@ -307,6 +444,11 @@ This section is the minimum operator checklist for turning the review into actio
 
 - [ ] Confirm the target is Double MA, not the Tauri shell or a composite profile.
 - [ ] Confirm no other benchmark or profiler run is active.
+- [ ] Confirm the measurement is isolated.
+  - A single `cargo bench` invocation can appear as both `cargo.exe` and the spawned benchmark executable at the same time.
+  - That is expected.
+  - What is not acceptable is overlapping benchmark commands, overlapping profiler commands, or more than one benchmark executable from separate runs.
+  - Any sample captured during overlapping perf work should be treated as contaminated and excluded from optimization decisions.
 - [ ] Decide whether the target metric is:
   - app-shell cost
   - engine-side warm orchestration cost
@@ -337,20 +479,20 @@ This section is the minimum operator checklist for turning the review into actio
 
 ### Nsight Systems checklist
 
-- [ ] Do a lean pass first.
-- [ ] Use warm steady-state capture, not a cold first-use iteration.
-- [ ] Inspect CUDA API time, queue time, sync calls, memcpy structure, and launch gaps.
+- [x] Do a lean pass first.
+- [x] Use warm steady-state capture, not a cold first-use iteration.
+- [x] Inspect CUDA API time, queue time, sync calls, memcpy structure, and launch gaps.
 - [ ] Only if host overhead is visible, run a host-backtrace pass.
-- [ ] Save the `.nsys-rep` path and an exported stats summary.
+- [x] Save the `.nsys-rep` path and an exported stats summary.
 
 ### Graph A/B checklist
 
-- [ ] Use the same dataset and search shape.
-- [ ] Disable heatmap.
-- [ ] Keep `include_all=false`.
-- [ ] Keep score mode off unless the graph path explicitly supports it.
-- [ ] Run graphs off and graphs on with the same warmup/measurement procedure.
-- [ ] Compare warm wall time and CUDA API time, not just kernel runtime.
+- [x] Use the same dataset and search shape.
+- [x] Disable heatmap.
+- [x] Keep `include_all=false`.
+- [x] Keep score mode off unless the graph path explicitly supports it.
+- [x] Run graphs off and graphs on with the same warmup/measurement procedure.
+- [x] Compare warm wall time and CUDA API time, not just kernel runtime.
 
 ### Improvement checklist
 
@@ -359,7 +501,7 @@ This section is the minimum operator checklist for turning the review into actio
 - [ ] If sync time dominates, remove blocking structure before touching kernel math.
 - [ ] If H2D dominates, prioritize cache reuse, batching, or pinned staging.
 - [ ] If host finalize dominates, optimize result materialization before kernel work.
-- [ ] If kernel runtime still dominates after orchestration cleanup, switch to Nsight Compute work.
+- [x] If kernel runtime still dominates after orchestration cleanup, switch to Nsight Compute work.
 
 ### Current viable optimization checklist
 
@@ -374,17 +516,22 @@ Measured state for the current warm `xlarge` Double MA `GpuKernel` route:
 
 That means further performance work should currently focus on the following paths, in this order:
 
-- [ ] Run Nsight Compute on the dominant backtest kernel, not on the full app shell.
-- [ ] Capture Launch Statistics, occupancy, memory workload, scheduler / warp-state, and source correlation for the dominant kernel.
-- [ ] Record whether the main bottleneck is register pressure, memory behavior, stall reasons, or wasted work in the kernel body.
-- [ ] If the main backtest kernel still accounts for more than 70 percent of warm engine runtime, treat kernel/runtime work as the primary optimization track.
-- [ ] Inspect the queued device-side tail around reduction, shortlist, top-k, and finalist work rather than treating the D2H API bucket as a copy-bandwidth problem.
-- [ ] Use pipeline profiling or Systems summaries to determine whether `tile_finalize` or `final_finalize` is materially extending the host wait at the D2H API site.
-- [ ] Prefer device-resident shortlist and finalist handling until the smallest practical host payload is ready.
-- [ ] Only treat copy tuning as a real target if `cuda_gpu_mem_time_sum` shows non-trivial physical H2D or D2H memop time.
-- [ ] If app-path cold-start or p95 latency matters, measure whether `spawn_blocking` plus thread-local `CudaKernelRuntime` reuse is unstable on the Tauri route.
-- [ ] If thread hopping causes repeated runtime construction, design a dedicated GPU worker thread per device before changing product-path code.
-- [ ] Compare any dedicated-worker design against the same cold and warm baseline before adopting it.
+- [x] Run Nsight Compute on the dominant backtest kernel, not on the full app shell.
+- [x] Capture Launch Statistics, occupancy, memory workload, scheduler / warp-state, and source correlation for the dominant kernel.
+- [x] Record whether the main bottleneck is register pressure, memory behavior, stall reasons, or wasted work in the kernel body.
+- [x] If the main backtest kernel still accounts for more than 70 percent of warm engine runtime, treat kernel/runtime work as the primary optimization track.
+- [x] Inspect the queued device-side tail around reduction, shortlist, top-k, and finalist work rather than treating the D2H API bucket as a copy-bandwidth problem.
+- [x] Use pipeline profiling or Systems summaries to determine whether `tile_finalize` or `final_finalize` is materially extending the host wait at the D2H API site.
+- [x] Prefer device-resident shortlist and finalist handling until the smallest practical host payload is ready.
+- [x] Only treat copy tuning as a real target if `cuda_gpu_mem_time_sum` shows non-trivial physical H2D or D2H memop time.
+- [x] Probe low-risk host-side launch-shape overrides before changing the default chooser.
+- [x] Reject launch-shape tuning as a default change unless it helps both heatmap and no-heatmap steady-state shapes.
+- [x] A/B the current dispatch against `VECTORBT_KERNEL_M7_SPECIALIZE=0` and `VECTORBT_KERNEL_LOCKSTEP_TIME=0` before changing the selector; the default `lockstep_m7` route remained the best of the low-risk options tested.
+- [x] If app-path cold-start or p95 latency matters, measure whether `spawn_blocking` plus thread-local `CudaKernelRuntime` reuse is unstable on the Tauri route.
+- [x] If thread hopping causes repeated runtime construction, design a dedicated GPU worker thread per device before changing product-path code.
+- [x] Compare any dedicated-worker design against the same cold and warm baseline before adopting it.
+- [x] Move into CUDA-kernel body changes aimed at reducing register pressure and L1TEX scoreboard stalls in the dominant backtest kernel.
+- [x] Prefer narrow exact-product specializations that preserve the same single-pass work, such as zero-commission wrapper variants, before considering any functionality-reducing shortcuts.
 - [ ] Keep NVTX visibility work as a tooling task, but do not block kernel/runtime optimization on it.
 
 ## Exact NVTX Insertion Checklist
@@ -393,9 +540,9 @@ Use this checklist for the first instrumentation pass.
 
 ### Tauri and engine boundaries
 
-- [ ] `src-tauri/src/commands_optimize.rs`
-  - [ ] range: `tauri_double_ma_request`
-- [ ] `crates/app_core/src/double_ma.rs`
+- [x] `src-tauri/src/commands_optimize.rs`
+  - [x] range: `tauri_double_ma_request`
+- [x] `crates/app_core/src/double_ma.rs`
   - [x] range: `double_ma_opt_total`
   - [x] range: `route_resolve`
   - [x] range: `gpu_kernel_dispatch`
@@ -409,10 +556,10 @@ Use this checklist for the first instrumentation pass.
 
 ### Kernel-path boundaries
 
-- [ ] `crates/app_core/src/double_ma.rs`
+- [x] `crates/app_core/src/double_ma.rs`
   - [x] range: `gpu_kernel_dispatch`
   - [x] range: `hybrid_*` phase ranges when applicable
-- [ ] `crates/app_core/src/gpu_backtest_kernel.rs`
+- [x] `crates/app_core/src/gpu_backtest_kernel.rs`
   - [x] range: `kernel_executor_total`
   - [x] range: `executor_impl`
   - [x] range: `runtime_init`
@@ -429,8 +576,8 @@ Use this checklist for the first instrumentation pass.
 ### Instrumentation acceptance checks
 
 - [x] NVTX can be disabled by env flag (`VECTORBT_ENABLE_NVTX`) for low-friction benchmarking.
-- [ ] Range names are stable and short.
-- [ ] Range placement does not create one marker per tiny row-level operation.
+- [x] Range names are stable and short.
+- [x] Range placement does not create one marker per tiny row-level operation.
 - [ ] Lean Nsight capture overhead stays acceptable after adding the ranges.
 
 ## Command Templates

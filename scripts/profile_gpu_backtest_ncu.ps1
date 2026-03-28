@@ -29,15 +29,24 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ncuExe = "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\ncu.bat"
-if (!(Test-Path $ncuExe)) {
+$ncuCandidates = @(
+  "C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.0\ncu.bat",
+  "C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.0\target\windows-desktop-win7-x64\ncu.exe",
+  "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\ncu.bat",
+  "C:\Program Files\NVIDIA Corporation\Nsight Compute 2025.3.1\host\target-windows-x64\ncu.exe"
+)
+$ncuExe = $ncuCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $ncuExe) {
   $cmd = Get-Command ncu.bat -ErrorAction SilentlyContinue
+  if ($null -eq $cmd) {
+    $cmd = Get-Command ncu.exe -ErrorAction SilentlyContinue
+  }
   if ($null -ne $cmd) {
     $ncuExe = $cmd.Source
   }
 }
 if (!(Test-Path $ncuExe)) {
-  throw "Nsight Compute CLI not found (expected ncu.bat)."
+  throw "Nsight Compute CLI not found (expected ncu.bat or ncu.exe)."
 }
 
 if ($Target -eq "runner") {

@@ -211,6 +211,7 @@ fn gpu_exact_combo_metrics_for_ranges(
                 slow_alma_sigma: plan.slow_alma_sigma,
                 hurdle_tau: 0.0,
                 include_trade_metrics: false,
+                metric_contract: None,
             },
             &plan.first_strategy,
             ranges,
@@ -6807,6 +6808,7 @@ mod tests {
                 slow_alma_sigma: 6.0,
                 hurdle_tau: 0.0,
                 include_trade_metrics: false,
+                metric_contract: None,
             },
             None,
             None,
@@ -6881,6 +6883,7 @@ mod tests {
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             },
             &candles,
@@ -6959,6 +6962,7 @@ mod tests {
                 slow_alma_sigma: 6.0,
                 hurdle_tau: 0.0,
                 include_trade_metrics: false,
+                metric_contract: None,
             },
             None,
             None,
@@ -7074,6 +7078,7 @@ mod tests {
                 slow_alma_sigma: 6.0,
                 hurdle_tau: 0.0,
                 include_trade_metrics: false,
+                metric_contract: None,
             },
             None,
             None,
@@ -8401,6 +8406,7 @@ mod tests {
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
 
@@ -8830,6 +8836,7 @@ mod tests {
                 gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
                 hurdle_tau: None,
             };
 

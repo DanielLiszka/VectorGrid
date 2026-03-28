@@ -36,6 +36,15 @@ enum AdxMode {
 }
 
 #[derive(Clone, Copy)]
+enum CandleShape {
+    Auto,
+    Synth,
+    Trending,
+    Choppy,
+    Breakout,
+}
+
+#[derive(Clone, Copy)]
 enum ToggleMode {
     Inherit,
     Off,
@@ -78,6 +87,10 @@ fn parse_workload_kind() -> Result<WorkloadKind, String> {
     }
 }
 
+fn parse_ma_type(flag: &str, default: &str) -> String {
+    parse_arg_value(flag).unwrap_or_else(|| default.to_string())
+}
+
 fn parse_iterations() -> Result<usize, String> {
     let raw = parse_arg_value("--measure-iterations")
         .or_else(|| parse_arg_value("--iterations"))
@@ -104,6 +117,22 @@ fn parse_heatmap_bins() -> Result<u16, String> {
     raw.trim()
         .parse::<u16>()
         .map_err(|e| format!("invalid --heatmap-bins '{}': {e}", raw.trim()))
+}
+
+fn parse_objective_kind() -> Result<ObjectiveKind, String> {
+    let raw = parse_arg_value("--objective").unwrap_or_else(|| "sharpe".to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "sharpe" => Ok(ObjectiveKind::Sharpe),
+        "pnl" => Ok(ObjectiveKind::Pnl),
+        "sortino" => Ok(ObjectiveKind::Sortino),
+        "omega" => Ok(ObjectiveKind::Omega),
+        "calmar" => Ok(ObjectiveKind::Calmar),
+        "max_drawdown" | "maxdd" | "drawdown" => Ok(ObjectiveKind::MaxDrawdown),
+        "volatility" | "vol" => Ok(ObjectiveKind::Volatility),
+        other => Err(format!(
+            "unsupported --objective '{other}' (expected: sharpe|pnl|sortino|omega|calmar|max_drawdown|volatility)"
+        )),
+    }
 }
 
 fn parse_dynamic_mode() -> Result<bool, String> {
@@ -149,6 +178,20 @@ fn parse_toggle_mode_alias(
 
 fn parse_emit_json() -> bool {
     std::env::args().skip(1).any(|arg| arg == "--emit-json")
+}
+
+fn parse_candle_shape() -> Result<CandleShape, String> {
+    let raw = parse_arg_value("--candle-shape").unwrap_or_else(|| "auto".to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(CandleShape::Auto),
+        "synth" => Ok(CandleShape::Synth),
+        "trend" | "trending" => Ok(CandleShape::Trending),
+        "choppy" => Ok(CandleShape::Choppy),
+        "breakout" => Ok(CandleShape::Breakout),
+        other => Err(format!(
+            "unsupported --candle-shape '{other}' (expected: auto|synth|trending|choppy|breakout)"
+        )),
+    }
 }
 
 fn parse_device_id() -> Result<u32, String> {
@@ -208,6 +251,31 @@ fn make_trending_candles(len: usize) -> Candles {
         high.push(base + 1.0);
         low.push(base - 1.0);
         close.push(base + 0.5);
+        vol.push(1_000.0);
+    }
+
+    Candles::new(ts, open, high, low, close, vol)
+}
+
+fn make_synth_candles(len: usize) -> Candles {
+    let mut ts = Vec::with_capacity(len);
+    let mut open = Vec::with_capacity(len);
+    let mut high = Vec::with_capacity(len);
+    let mut low = Vec::with_capacity(len);
+    let mut close = Vec::with_capacity(len);
+    let mut vol: Vec<f64> = Vec::with_capacity(len);
+
+    let mut px = 100.0f64;
+    for i in 0..len {
+        ts.push(i as i64);
+        let drift = 0.00005;
+        let noise = (i as f64 * 0.017).sin() * 0.001;
+        px *= 1.0 + drift + noise;
+
+        open.push(px);
+        high.push(px * 1.001);
+        low.push(px * 0.999);
+        close.push(px);
         vol.push(1_000.0);
     }
 
@@ -314,6 +382,16 @@ fn candles_for_strategy(kind: StrategyKind, len: usize) -> Candles {
     }
 }
 
+fn candles_for_run(kind: StrategyKind, shape: CandleShape, len: usize) -> Candles {
+    match shape {
+        CandleShape::Auto => candles_for_strategy(kind, len),
+        CandleShape::Synth => make_synth_candles(len),
+        CandleShape::Trending => make_trending_candles(len),
+        CandleShape::Choppy => make_choppy_candles(len),
+        CandleShape::Breakout => make_breakout_candles(len),
+    }
+}
+
 fn backend_for_strategy(kind: StrategyKind, adx_mode: AdxMode, device_id: u32) -> Backend {
     match kind {
         StrategyKind::TrendQuality if matches!(adx_mode, AdxMode::On) => {
@@ -358,6 +436,10 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let objective = parse_objective_kind().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
     let dynamic_enabled = parse_dynamic_mode().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
@@ -375,7 +457,13 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let fast_ma_type = parse_ma_type("--fast-ma", "sma");
+    let slow_ma_type = parse_ma_type("--slow-ma", "sma");
     let adx_mode = parse_adx_mode().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    let candle_shape = parse_candle_shape().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
     });
@@ -395,7 +483,7 @@ fn main() {
     apply_nvtx_phase(nvtx_mode, warmup_iterations > 0);
 
     let strategy = strategy_config(strategy_kind, adx_mode);
-    let candles = candles_for_strategy(strategy_kind, 200_000);
+    let candles = candles_for_run(strategy_kind, candle_shape, 200_000);
     let (fast_range, slow_range) = workload_ranges(workload_kind);
     let cancel = AtomicBool::new(false);
 
@@ -404,8 +492,8 @@ fn main() {
         data_id: "profile-gpu-dynamic-runner".to_string(),
         fast_range,
         slow_range,
-        fast_ma_types: vec!["sma".to_string()],
-        slow_ma_types: vec!["sma".to_string()],
+        fast_ma_types: vec![fast_ma_type.clone()],
+        slow_ma_types: vec![slow_ma_type.clone()],
         ma_source: "close".to_string(),
         export_all_csv_path: None,
         fast_ma_params: None,
@@ -414,7 +502,7 @@ fn main() {
         slow_ma_param_sweeps: None,
         strategy,
         halftrend_filter: None,
-        objective: ObjectiveKind::Sharpe,
+        objective,
         score_mode: None,
         extra_shortlist_objectives: None,
         shortlist_confidence_mode: None,
@@ -433,6 +521,7 @@ fn main() {
         gpu_execution: Default::default(),
         persist_followup_cache: false,
         include_trade_metrics: false,
+        metric_contract: None,
 
         hurdle_tau: None,
     };
@@ -468,6 +557,9 @@ fn main() {
                 "backend_route": &res.backend_route,
                 "runtime_ms": res.runtime_ms,
                 "wall_ms": wall_ms,
+                "objective": format!("{:?}", objective),
+                "fast_ma": &fast_ma_type,
+                "slow_ma": &slow_ma_type,
                 "heatmap_bins": heatmap_bins,
                 "cuda_graphs": match cuda_graphs_mode {
                     ToggleMode::Inherit => "inherit",
@@ -499,11 +591,14 @@ fn main() {
             continue;
         }
         println!(
-            "phase={} iter={} backend={:?} route={} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
+            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={:?} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
             if is_warmup { "warmup" } else { "measure" },
             iter_index,
+            fast_ma_type,
+            slow_ma_type,
             res.backend_used,
             res.backend_route.as_deref().unwrap_or("<none>"),
+            objective,
             res.runtime_ms,
             wall_ms,
             heatmap_bins,

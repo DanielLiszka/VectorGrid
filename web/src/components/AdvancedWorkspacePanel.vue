@@ -20,6 +20,7 @@ const {
   objectiveOptions,
   scoreMode,
   hurdleTau,
+  metricContract,
   includeTradeMetrics,
   extraShortlistObjectives,
   shortlistConfidenceMode,
@@ -54,7 +55,7 @@ const maSourceDraft = ref('close')
 const objectiveDraft = ref('Sharpe')
 const scoreModeDraft = ref('')
 const hurdleTauDraft = ref('')
-const includeTradeMetricsDraft = ref(false)
+const metricContractDraft = ref('auto')
 const extraShortlistObjectivesDraft = ref('')
 const shortlistConfidenceModeDraft = ref('')
 const shortlistUnionModeDraft = ref('')
@@ -110,8 +111,8 @@ const showScoreModeControl = computed(() => [
 const extraShortlistKindSupported = computed(
   () => strategyCapabilities.value.supportsExtraShortlistObjectives,
 )
-const tradeMetricsKindSupported = computed(
-  () => strategyCapabilities.value.supportsTradeMetrics,
+const metricContractKindSupported = computed(
+  () => strategyCapabilities.value.supportsAdvancedExactKernelControls,
 )
 const shortlistConfidenceKindSupported = computed(
   () => strategyCapabilities.value.supportsShortlistConfidenceMode,
@@ -125,8 +126,8 @@ const shortlistSliceKindSupported = computed(
 const showExtraShortlistObjectivesControl = computed(() =>
   extraShortlistKindSupported.value || extraShortlistObjectivesDraft.value.trim().length > 0,
 )
-const showIncludeTradeMetricsControl = computed(() =>
-  tradeMetricsKindSupported.value || includeTradeMetricsDraft.value,
+const showMetricContractControl = computed(() =>
+  metricContractKindSupported.value || metricContractDraft.value !== 'auto',
 )
 const showShortlistConfidenceModeControl = computed(() =>
   shortlistConfidenceKindSupported.value || shortlistConfidenceModeDraft.value.trim().length > 0,
@@ -180,21 +181,30 @@ const extraShortlistObjectivesStateNote = computed(() => {
   }
   return 'Additional exact shortlist heads. Comma-separated objectives such as Pnl, Omega. Current primary objective is always included automatically.'
 })
-const includeTradeMetricsStateNote = computed(() => {
-  const hasValue = includeTradeMetricsDraft.value
-  if (!tradeMetricsKindSupported.value) {
-    return hasValue
-      ? 'The current route does not support trade metrics. Turn this off or switch to the exact GpuKernel route.'
+const metricContractStateNote = computed(() => {
+  const current = String(metricContractDraft.value || 'auto').trim() || 'auto'
+  const hasExplicitValue = current !== 'auto'
+  if (!metricContractKindSupported.value) {
+    return hasExplicitValue
+      ? 'The current route does not support explicit metric contracts. Clear this or switch to the exact GpuKernel route.'
       : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
   }
   if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
-    return hasValue
-      ? 'Adds trade-summary metrics to exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) requests. Unsupported dynamic shapes will reject or fall back cleanly.'
-      : 'Optional trade-summary metrics for exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) requests.'
+    if (current === 'full_17') {
+      return 'Forces the full 17-metric contract on exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) requests.'
+    }
+    if (current === 'trade_22') {
+      return 'Forces the 22-metric trade-summary contract on exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) requests.'
+    }
+    return 'Auto preserves the current default contract. Use 17 or 22 only when you want an explicit exact-kernel metric width.'
   }
-  return hasValue
-    ? 'Adds trade-summary metrics to the one-pass optimization request. This currently requires the exact GpuKernel route; hybrid and CPU fallback routes will reject it.'
-    : 'Optional trade-summary metrics. Leaving this off preserves the current default request surface.'
+  if (current === 'full_17') {
+    return 'Forces the full 17-metric contract without trade-summary rows.'
+  }
+  if (current === 'trade_22') {
+    return 'Forces the 22-metric trade-summary contract on the exact GpuKernel route.'
+  }
+  return 'Auto preserves the current default contract. Use 17 or 22 only when you want an explicit exact-kernel metric width.'
 })
 const shortlistConfidenceModeStateNote = computed(() => {
   const hasValue = shortlistConfidenceModeDraft.value.trim().length > 0
@@ -344,6 +354,11 @@ const scoreModeOptionItems = computed(() => [
   { value: 'omega_vs_sharpe_10', label: 'Omega vs Sharpe 10', disabled: false },
   { value: 'robust_margin_10', label: 'Robust Margin 10', disabled: false },
 ])
+const metricContractOptionItems = computed(() => [
+  { value: 'auto', label: 'Auto (default contract)', disabled: false },
+  { value: 'full_17', label: 'Full 17-row metrics', disabled: false },
+  { value: 'trade_22', label: 'Trade-summary 22-row metrics', disabled: false },
+])
 const shortlistConfidenceModeOptionItems = computed(() => [
   { value: '', label: 'Off (default)', disabled: false },
   { value: 'psr', label: 'PSR rerank', disabled: false },
@@ -375,6 +390,7 @@ watch(
     String(objective.value || 'Sharpe'),
     String(scoreMode.value || ''),
     String(hurdleTau.value || ''),
+    String(metricContract.value || ''),
     Boolean(includeTradeMetrics.value),
     String(extraShortlistObjectives.value || ''),
     String(shortlistConfidenceMode.value || ''),
@@ -394,6 +410,7 @@ watch(
     nextObjective,
     nextScoreMode,
     nextHurdleTau,
+    nextMetricContractRaw,
     nextIncludeTradeMetrics,
     nextExtraShortlistObjectives,
     nextShortlistConfidenceMode,
@@ -412,9 +429,10 @@ watch(
     if (objectiveDraft.value !== nextObjective) objectiveDraft.value = nextObjective
     if (scoreModeDraft.value !== nextScoreMode) scoreModeDraft.value = nextScoreMode
     if (hurdleTauDraft.value !== nextHurdleTau) hurdleTauDraft.value = nextHurdleTau
-    if (includeTradeMetricsDraft.value !== nextIncludeTradeMetrics) {
-      includeTradeMetricsDraft.value = nextIncludeTradeMetrics
-    }
+    const nextMetricContract =
+      (String(nextMetricContractRaw || '').trim() || '')
+      || (nextIncludeTradeMetrics ? 'trade_22' : 'auto')
+    if (metricContractDraft.value !== nextMetricContract) metricContractDraft.value = nextMetricContract
     if (extraShortlistObjectivesDraft.value !== nextExtraShortlistObjectives) {
       extraShortlistObjectivesDraft.value = nextExtraShortlistObjectives
     }
@@ -886,21 +904,30 @@ onBeforeUnmount(() => {
             {{ ` ${hurdleTauStateNote}` }}
           </div>
         </div>
-        <div v-if="showIncludeTradeMetricsControl" class="gridThree" style="margin-top: 0.75rem;">
+        <div v-if="showMetricContractControl" class="gridThree" style="margin-top: 0.75rem;">
           <div>
-            <label for="vueIncludeTradeMetrics">Trade metrics</label>
-            <label class="checkboxRow" for="vueIncludeTradeMetrics">
-              <input
-                id="vueIncludeTradeMetrics"
-                type="checkbox"
-                :checked="includeTradeMetricsDraft"
-                @change="includeTradeMetricsDraft = ($event.target as HTMLInputElement).checked; advancedStore.setCheckboxField('includeTradeMetrics', includeTradeMetricsDraft)"
-              />
-              <span>Include trade summary metrics in the optimization result</span>
-            </label>
+            <label for="vueMetricContract">Metric contract</label>
+            <select
+              id="vueMetricContract"
+              :value="metricContractDraft"
+              @change="
+                metricContractDraft = String(($event.target as HTMLSelectElement).value || 'auto');
+                setSelectValue('metricContract', metricContractDraft);
+                advancedStore.setCheckboxField('includeTradeMetrics', metricContractDraft === 'trade_22');
+              "
+            >
+              <option
+                v-for="option in metricContractOptionItems"
+                :key="`metric_contract_${option.value}_${option.label}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
           </div>
           <div class="muted" style="grid-column: span 2;">
-            {{ includeTradeMetricsStateNote }}
+            {{ metricContractStateNote }}
           </div>
         </div>
         <div v-if="showExtraShortlistObjectivesControl" class="gridThree" style="margin-top: 0.75rem;">

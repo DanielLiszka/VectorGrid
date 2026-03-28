@@ -65,6 +65,7 @@ interface AdvancedState {
   objectiveOptions: AdvancedOption[]
   scoreMode: string
   hurdleTau: string
+  metricContract: string
   includeTradeMetrics: boolean
   extraShortlistObjectives: string
   shortlistConfidenceMode: string
@@ -183,6 +184,7 @@ const ADVANCED_STRING_FIELD_IDS = new Set<string>([
   'objective',
   'scoreMode',
   'hurdleTau',
+  'metricContract',
   'extraShortlistObjectives',
   'shortlistConfidenceMode',
   'shortlistUnionMode',
@@ -331,6 +333,7 @@ export const useAdvancedStore = defineStore('advanced', {
     objectiveOptions: [],
     scoreMode: '',
     hurdleTau: '',
+    metricContract: 'auto',
     includeTradeMetrics: false,
     extraShortlistObjectives: '',
     shortlistConfidenceMode: '',
@@ -458,6 +461,7 @@ export const useAdvancedStore = defineStore('advanced', {
       this.objectiveOptions = normalizedOptions(snapshot.objectiveOptions ?? this.objectiveOptions ?? [])
       this.scoreMode = String(snapshot.scoreMode ?? this.scoreMode ?? '').trim()
       this.hurdleTau = String(snapshot.hurdleTau ?? this.hurdleTau ?? '').trim()
+      this.metricContract = String(snapshot.metricContract ?? this.metricContract ?? 'auto').trim() || 'auto'
       this.includeTradeMetrics = Boolean(snapshot.includeTradeMetrics ?? this.includeTradeMetrics)
       this.extraShortlistObjectives = String(snapshot.extraShortlistObjectives ?? this.extraShortlistObjectives ?? '').trim()
       this.shortlistConfidenceMode = String(snapshot.shortlistConfidenceMode ?? this.shortlistConfidenceMode ?? '').trim()

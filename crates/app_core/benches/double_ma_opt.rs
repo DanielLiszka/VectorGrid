@@ -456,6 +456,7 @@ fn bench_double_ma_cpu(c: &mut Criterion) {
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
 
                 hurdle_tau: None,
             };
@@ -562,6 +563,7 @@ fn bench_double_ma_gpu_sweep(c: &mut Criterion) {
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
 
                 hurdle_tau: None,
             };
@@ -693,6 +695,7 @@ fn bench_double_ma_gpu_kernel(c: &mut Criterion) {
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
 
                 hurdle_tau: None,
             };
@@ -774,6 +777,7 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
         gpu_execution: Default::default(),
         persist_followup_cache: false,
         include_trade_metrics: bench_include_trade_metrics,
+        metric_contract: None,
         hurdle_tau: bench_hurdle_tau,
     };
     let mut search_req = base_req.clone();
@@ -976,6 +980,7 @@ fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
 
                 hurdle_tau: None,
             };
@@ -1158,6 +1163,7 @@ fn bench_double_ma_gpu_kernel_extra_ma(c: &mut Criterion) {
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
 
                 hurdle_tau: None,
             };
@@ -1286,6 +1292,7 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
                     gpu_execution: Default::default(),
                     persist_followup_cache: false,
                     include_trade_metrics: false,
+                    metric_contract: None,
 
                     hurdle_tau: None,
                 };
@@ -1408,6 +1415,7 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
                     gpu_execution: Default::default(),
                     persist_followup_cache: false,
                     include_trade_metrics: false,
+                    metric_contract: None,
 
                     hurdle_tau: None,
                 };
@@ -1489,6 +1497,7 @@ fn bench_double_ma_dynamic_contract_overhead(c: &mut Criterion) {
         gpu_execution: Default::default(),
         persist_followup_cache: false,
         include_trade_metrics: false,
+        metric_contract: None,
 
         hurdle_tau: None,
     };
@@ -1842,6 +1851,7 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
 
                 hurdle_tau: None,
             };
@@ -1902,6 +1912,7 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
                 gpu_execution: Default::default(),
                 persist_followup_cache: false,
                 include_trade_metrics: false,
+                metric_contract: None,
 
                 hurdle_tau: None,
             };

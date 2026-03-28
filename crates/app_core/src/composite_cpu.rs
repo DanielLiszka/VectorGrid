@@ -1259,6 +1259,7 @@ fn try_optimize_base_composite_gpu_kernel(
             slow_alma_sigma,
             hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
             include_trade_metrics: false,
+            metric_contract: None,
         },
         Some(&fast_precomputed),
         Some(&slow_precomputed),
@@ -10066,6 +10067,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             gpu_execution: crate::double_ma::GpuExecutionPolicy::BestEffort,
             persist_followup_cache: false,
             include_trade_metrics: false,
+            metric_contract: None,
             hurdle_tau: None,
         };
 

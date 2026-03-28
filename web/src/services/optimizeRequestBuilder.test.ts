@@ -567,6 +567,115 @@ describe("optimizeRequestBuilder", () => {
     expect((req as Record<string, unknown>).include_trade_metrics).toBe(true);
   });
 
+  it("allows an explicit full_17 metric contract on the exact GpuKernel route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-metric-contract-full17",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      metricContract: "full_17",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      metric_contract: "full_17",
+      include_trade_metrics: false,
+    });
+  });
+
+  it("allows an explicit trade_22 metric contract on the exact GpuKernel route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-metric-contract-trade22",
+        current_data_meta: { has_close: true },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      metricContract: "trade_22",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      metric_contract: "trade_22",
+      include_trade_metrics: true,
+    });
+  });
+
+  it("rejects an explicit full_17 metric contract when includeTradeMetrics=true", () => {
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "DoubleMa",
+          data_id: "data-metric-contract-conflict",
+          current_data_meta: { has_close: true },
+        },
+        backend: "GpuKernel",
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        metricContract: "full_17",
+        includeTradeMetrics: true,
+        mode: "Grid",
+        topK: "20",
+        includeAll: "false",
+        heatmapBins: "0",
+        startingEquity: "10000",
+        costPreset: "custom",
+        feeBps: "0",
+        spreadBps: "0",
+        slippageBps: "0",
+        epsRel: "0",
+      }),
+    ).toThrow(/metricContract=full_17 conflicts with includeTradeMetrics=true/i);
+  });
+
   it("rejects extra shortlist objectives when score mode is enabled", () => {
     expect(() =>
       buildDoubleMaOptimizationRequest({

@@ -12,6 +12,36 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-PerfProcesses() {
+  @(Get-Process | Where-Object {
+      $_.ProcessName -match '^(cargo|criterion|nsys|ncu)$' -or $_.ProcessName -like 'double_ma_opt*'
+    } | Select-Object ProcessName, Id, CPU, StartTime)
+}
+
+function Wait-NoPerfProcesses(
+  [int]$TimeoutSeconds = 300,
+  [int]$PollMilliseconds = 500,
+  [string]$Context = ""
+) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ($true) {
+    $procs = @(Get-PerfProcesses)
+    if ($procs.Count -eq 0) {
+      return
+    }
+    if ((Get-Date) -ge $deadline) {
+      $summary = ($procs | ForEach-Object {
+          "{0}#{1}" -f $_.ProcessName, $_.Id
+        }) -join ", "
+      if ([string]::IsNullOrWhiteSpace($Context)) {
+        throw "Timed out waiting for benchmark/profiler processes to drain: $summary"
+      }
+      throw "Timed out waiting for benchmark/profiler processes to drain ${Context}: $summary"
+    }
+    Start-Sleep -Milliseconds $PollMilliseconds
+  }
+}
+
 function Write-PassFailLine([string]$name, [bool]$pass, [string]$msg) {
   if ($pass) {
     Write-Host "[PASS] ${name}: $msg"
@@ -39,6 +69,7 @@ function Find-LatestGpuKernelEstimate([string]$glob) {
 }
 
 function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabled, [string]$estimateSnapshotPath) {
+  Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU benchmark launch"
   if ($dynamicStrategyEnabled) {
     $env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL = "1"
     Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight ON..."
@@ -55,10 +86,34 @@ function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabl
     "--",
     $benchFilter
   )
-  cargo @benchCmd
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $proc = Start-Process -FilePath "cargo" `
+      -ArgumentList $benchCmd `
+      -NoNewWindow `
+      -Wait `
+      -PassThru `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath
+    $output = @()
+    if (Test-Path $stdoutPath) {
+      $output += Get-Content $stdoutPath
+    }
+    if (Test-Path $stderrPath) {
+      $output += Get-Content $stderrPath
+    }
+    foreach ($line in $output) {
+      Write-Host $line
+    }
+    $global:LASTEXITCODE = $proc.ExitCode
+  } finally {
+    Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
+  }
   if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
   }
+  Wait-NoPerfProcesses -TimeoutSeconds 900 -Context "after GPU benchmark completion"
 
   $estimate = Find-LatestGpuKernelEstimate -glob $CriterionEstimatesGlob
   if (![string]::IsNullOrWhiteSpace($estimateSnapshotPath)) {
@@ -80,6 +135,7 @@ function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabl
 }
 
 function Invoke-DynamicStrategyProfileRun([bool]$dynamicStrategyEnabled, [int]$iterations = 5) {
+  Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before dynamic strategy profile run"
   if ($dynamicStrategyEnabled) {
     Write-Host "Running profile_gpu_dynamic_runner with dynamic strategy preflight ON..."
   } else {
@@ -124,6 +180,7 @@ function Invoke-DynamicStrategyProfileRun([bool]$dynamicStrategyEnabled, [int]$i
   if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
   }
+  Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "after dynamic strategy profile run"
 
   $iterRows = @()
   foreach ($item in $output) {
@@ -156,6 +213,7 @@ function Invoke-DynamicStrategyProfileRun([bool]$dynamicStrategyEnabled, [int]$i
 
 $prevDynamicFlag = [Environment]::GetEnvironmentVariable("VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL", "Process")
 $offSnapshotPath = "target/gpu_perf/off_estimates.json"
+Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU perf gate start"
 try {
   $offRun = Invoke-GpuKernelBench -benchFilter $BenchFilter -dynamicStrategyEnabled $false -estimateSnapshotPath $offSnapshotPath
   $offDynRun = $null
@@ -253,6 +311,8 @@ if ($CheckDynamicStrategyRatio -and $null -ne $summary.dynamic_strategy) {
   $dynamicPass = $onMean -le ($offMean * $dynamicBudget)
   Write-PassFailLine "gpu_dynamic_strategy_ratio_not_regressed_${DynamicStrategyRegressionPct}pct" $dynamicPass "$onMean ms (on) vs $offMean ms (off)"
 }
+
+Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "before GPU perf gate exit"
 
 if (!($pass -and $dynamicPass)) {
   throw "GPU performance gate failed"

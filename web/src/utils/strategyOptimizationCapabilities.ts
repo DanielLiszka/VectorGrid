@@ -159,7 +159,7 @@ function describeCompositeOutputSummary(
       supportsShortlistConfidenceMode: true,
       supportsShortlistUnionMode: true,
       supportsAdvancedExactKernelControls: true,
-      outputSummary: `Top-K, heatmap, include-all, export, and advanced exact-kernel shortlist/score/trade-metric controls apply to ${kind} through the current kernel-targeted double-MA route.`,
+      outputSummary: `Top-K, heatmap, include-all, export, and advanced exact-kernel shortlist/score/metric-contract controls apply to ${kind} through the current kernel-targeted double-MA route.`,
     }
   }
 
@@ -172,8 +172,8 @@ function describeCompositeOutputSummary(
     supportsAdvancedExactKernelControls: false,
     outputSummary:
       route.targetBackend === 'CpuOnly'
-        ? `Top-K, heatmap, and include-all controls apply to ${kind} through the current CPU double-MA route. Export-all and advanced exact-kernel shortlist/score/trade-metric controls are disabled on this route.`
-        : `Top-K, heatmap, and include-all controls apply to ${kind} through the current hybrid double-MA route. Export-all and advanced exact-kernel shortlist/score/trade-metric controls are disabled on this route.`,
+        ? `Top-K, heatmap, and include-all controls apply to ${kind} through the current CPU double-MA route. Export-all and advanced exact-kernel shortlist/score/metric-contract controls are disabled on this route.`
+        : `Top-K, heatmap, and include-all controls apply to ${kind} through the current hybrid double-MA route. Export-all and advanced exact-kernel shortlist/score/metric-contract controls are disabled on this route.`,
   }
 }
 
@@ -228,14 +228,14 @@ export function describeStrategyOptimizationCapabilities(
           outputSummary:
             kind === 'DynamicDoubleMa'
               ? 'DynamicDoubleMa builds constrained strategy_ir payloads, previews the resolved backend, and runs through the normal optimizer path after validation. Include-all stays available broadly; extra shortlist objectives are requestable on the GpuKernel preview path for exact-compatible dynamic_strategy_v1 shapes.'
-                + ' Trade metrics follow that same exact-compatible dynamic GpuKernel path.'
+                + ' Explicit 17-row and 22-row metric-contract overrides follow that same exact-compatible dynamic GpuKernel path.'
                 + ' Shortlist confidence mode follows that same exact-compatible dynamic GpuKernel path.'
                 + ' Shortlist union mode follows that same exact-compatible dynamic GpuKernel path once extra shortlist heads are present.'
                 + ' Shortlist slice and neighborhood diagnostics follow that same exact-compatible dynamic GpuKernel path.'
               : kind === 'Vfct'
                 ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend.'
-                : kind === 'DoubleMa'
-                  ? 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs.'
+              : kind === 'DoubleMa'
+                  ? 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs. Exact GpuKernel routes also expose explicit 17-row and 22-row metric-contract overrides.'
                   : `Top-K, heatmap, include-all, and export controls apply to ${kind} through the double-MA backend.`,
         }
 

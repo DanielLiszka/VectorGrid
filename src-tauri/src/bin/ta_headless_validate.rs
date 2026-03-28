@@ -438,6 +438,7 @@ fn main() -> Result<(), String> {
         gpu_execution: Default::default(),
         persist_followup_cache: false,
         include_trade_metrics: false,
+        metric_contract: None,
 
         hurdle_tau: None,
     };

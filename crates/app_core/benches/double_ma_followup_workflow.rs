@@ -77,6 +77,7 @@ fn base_request(
         persist_followup_cache,
         hurdle_tau: None,
         include_trade_metrics: false,
+        metric_contract: None,
     }
 }
 
