@@ -218,7 +218,8 @@ Measured smoke results:
   - verified active via Nsight on `trend_quality` xlarge ALMA runs:
     - `double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_on_norisk_eps0_nocomm`: about `420.0 ms`
     - `double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_on_norisk_eps0_nocomm`: about `444.4 ms`
-- targeted lockstep `regime_hybrid` full-row specializations are compiled and routed in the exact-kernel path, but the current `profile_gpu_dynamic_runner` cannot benchmark them with fixed metric contracts because the `regime_hybrid` strategy does not currently stay on the exact `GpuKernel` backend route.
+- targeted lockstep `regime_hybrid` full-row specializations remain compiled and routed in the exact-kernel path.
+- the direct exact benchmark runner now keeps `regime_hybrid` on the `GpuKernel` backend route, so fixed-contract exact profiling is available on that strategy surface.
 - targeted non-lockstep `regime_on` full-row routing is now verified active on the small exact-route benchmark surface:
   - `trend_quality` + `alma/alma` + `small/1590pairs` + `full17` logs `dispatch=m17`
   - `trend_quality` + `alma/alma` + `small/1590pairs` + `trade22` logs `dispatch=m22`
@@ -259,6 +260,16 @@ Measured smoke results:
   - xlarge `trend_quality` + `alma/alma` lockstep hot-kernel summary:
     - `lockstep_time_m17_regime_on_norisk_eps0_nocomm`: `474.24 ms`, compute throughput `61.62%`, memory throughput `25.05%`, `56` registers/thread, theoretical occupancy `75.0%`, achieved occupancy `59.81%`
     - `lockstep_time_m22_regime_on_norisk_eps0_nocomm`: `484.96 ms`, compute throughput `59.76%`, memory throughput `20.97%`, `64` registers/thread, theoretical occupancy `66.67%`, achieved occupancy `53.42%`
+- Nsight Compute is now also captured on the direct windowed `regime_hybrid` exact surface:
+  - reports captured at `target/nsight/regime_hybrid_windowed_full17_direct_profile.ncu-rep` and `target/nsight/regime_hybrid_windowed_trade22_direct_profile.ncu-rep`
+  - xlarge `regime_hybrid` + `alma/alma` + `eval_range=[1000,199000)` hot-kernel summary:
+    - `windowed_m17_regime_hybrid_norisk_eps0_nocomm`: `411.06 ms`, compute throughput `68.29%`, memory throughput `26.53%`, `53` registers/thread, theoretical occupancy `75.0%`, achieved occupancy `59.32%`
+    - `windowed_m22_regime_hybrid_norisk_eps0_nocomm`: `430.34 ms`, compute throughput `67.66%`, memory throughput `23.61%`, `59` registers/thread, theoretical occupancy `66.67%`, achieved occupancy `54.38%`
+  - both windowed reports show the same dominant hints:
+    - no local or shared spilling
+    - ALU is still the highest-utilized pipeline
+    - the largest sampled stall remains L1TEX scoreboard dependency
+    - global load/store sector utilization is poor enough that future work should treat coalescing and load/store locality as a more credible next target than generic launch-bounds tuning
 - a selective `__launch_bounds__(128, 2)` experiment on just the two benchmark-hot lockstep regime-on kernels was measured and reverted:
   - workload: xlarge `trend_quality` + `alma/alma` + objective `sharpe`
   - baseline before the experiment:
@@ -285,10 +296,71 @@ Current interpretation:
   - that makes warp-uniform regime-value broadcast cleanup a lower-confidence next step than it looked before profiling
 - the first bounded register-pressure experiment also failed to produce a stable cross-contract win
   - future occupancy tuning should stay narrowly targeted and be treated as opt-in experimentation, not presumed progress
-- windowed exact full-row hotness is still unmeasured, but it is now clearer why:
-  - `profile_gpu_dynamic_runner` currently constructs only a plain grid `DoubleMaRequest`
-  - `DoubleMaRequest` does not currently expose an explicit windowed optimization surface for this benchmark harness to drive
-- remaining open work is now centered on regime-hybrid verification once there is an exact-kernel benchmark surface for it, any bounded register-pressure / occupancy experiments that can justify themselves against the new Nsight Compute data, and any windowed full-row families that profiling can justify
+- shortlist-slice reruns are now confirmed as a usable windowed exact/full-row benchmark surface:
+  - `profile_gpu_dynamic_runner` already drives it through `shortlist_slice_mode`
+  - this is not a direct request-level `eval_range` surface, but it does trigger exact subrange reruns inside the kernel executor
+- a direct request-level windowed benchmark surface is now available for exact GPU routes:
+  - public entrypoint: `run_double_ma_optimization_blocking_with_candles_and_eval_range(...)`
+  - runner flags: `--eval-start` and `--eval-end`
+  - direct smoke runs on `xlarge` `double_ma` + `alma/alma` + objective `sharpe`:
+    - `full17` with `[1000, 199000)` logs `dispatch=windowed_m17` and ran at `335 ms`
+    - `trade22` with `[1000, 199000)` logs `dispatch=windowed_m22` and ran at `359 ms`
+  - when `eval_range` is set, the current runner stays on the exact non-dynamic kernel path even if dynamic preflight is available
+- windowed exact full-row hotness is now measured and justified:
+  - before specialization, `xlarge` `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves` ran at `507 ms` in a direct runner pass
+  - Nsight Systems on that same surface showed the generic `double_cross_backtest_tm_flex_f32_windowed` kernel at `140.1 ms` total across 6 launches, `30.7%` of GPU kernel time
+- the first narrow windowed specialization slice is now implemented:
+  - new CUDA symbols:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17`
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm`
+    - `double_cross_backtest_tm_flex_f32_windowed_m22`
+    - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_off_norisk_eps0_nocomm`
+  - host dispatch now routes fixed-contract windowed requests to the new symbols when present
+  - the exact shortlist-slice rerun helper now routes its 17-row windowed replay path to `windowed_m17`, preferring the hot `regime_off + no_risk + eps0 + nocomm` flavor when applicable
+- the measured gain is material:
+  - `xlarge` `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves` now runs at `433 / 429 / 425 ms` min / median / max, `429.0 ms` mean across 3 measured iterations after 1 warmup
+  - `xlarge` `double_ma` + `alma/alma` + `trade22` + `shortlist_slice_mode=halves` now runs at `442 / 445 / 447 ms` min / median / max, `444.7 ms` mean across 3 measured iterations after 1 warmup
+  - `trade22` benefits here because the current shortlist-slice rerank still replays full 17-row metrics
+  - Nsight Systems after specialization shows the 6 rerun launches now using `double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm` at `95.4 ms` total, `22.5%` of GPU kernel time
+- the direct windowed `trend_quality` exact surface is now measured and specialized:
+  - before the new slice, direct `xlarge` `trend_quality` + `alma/alma` + `eval_range=[1000,199000)` smokes landed on:
+    - `dispatch=windowed_m17` at about `454 ms`
+    - `dispatch=windowed_m22` at about `488 ms`
+  - Nsight Systems on that direct surface showed the generic windowed full-row kernels dominating:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17`: `395.0 ms`, `96.5%` of GPU kernel time
+    - `double_cross_backtest_tm_flex_f32_windowed_m22`: `440.0 ms`, `96.9%` of GPU kernel time
+  - the second narrow windowed specialization slice is now implemented:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk`
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk_eps0_nocomm`
+    - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk`
+    - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk_eps0_nocomm`
+  - host dispatch now routes windowed fixed-contract `RegimeOnNoRisk` and `RegimeOnNoRiskEps0NoComm` requests to those symbols when present
+  - warmed direct runner timings on the same exact surface now land at:
+    - `full17`: `417 / 418 / 423 ms` min / median / max, `419.3 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `437 / 437 / 439 ms` min / median / max, `437.7 ms` mean across 3 measured iterations after 1 warmup
+  - Nsight Systems now shows the new regime-on windowed kernels as the dominant exact kernels:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk_eps0_nocomm`: `413.5 ms`, `96.7%` of GPU kernel time
+    - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk_eps0_nocomm`: `444.0 ms`, `96.9%` of GPU kernel time
+- the direct windowed `regime_hybrid` exact surface is now measured and specialized:
+  - before the new slice, direct `xlarge` `regime_hybrid` + `alma/alma` + `eval_range=[1000,199000)` smokes landed on:
+    - `dispatch=windowed_m17` at about `475 ms`
+    - `dispatch=windowed_m22` at about `506 ms`
+  - Nsight Systems on that direct surface previously showed the generic windowed full-row kernels dominating:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17`: `426.9 ms`, `96.8%` of GPU kernel time
+    - `double_cross_backtest_tm_flex_f32_windowed_m22`: `457.2 ms`, `97.2%` of GPU kernel time
+  - the third narrow windowed specialization slice is now implemented:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk`
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm`
+    - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk`
+    - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm`
+  - host dispatch now routes windowed fixed-contract `RegimeHybridNoRisk` and `RegimeHybridNoRiskEps0NoComm` requests to those symbols when present
+  - warmed direct runner timings on the same exact surface now land at:
+    - `full17`: `379 / 379 / 384 ms` min / median / max, `380.7 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `383 / 386 / 389 ms` min / median / max, `386.0 ms` mean across 3 measured iterations after 1 warmup
+  - Nsight Systems now shows the new regime-hybrid windowed kernels as the dominant exact kernels:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm`: `372.4 ms`, `96.2%` of GPU kernel time
+    - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm`: `376.1 ms`, `96.2%` of GPU kernel time
+- remaining open work is now centered on source-level investigation of the windowed L1TEX dependency / coalescing hints, deciding whether the windowed family should expand beyond the now-proven `regime_off`, `regime_on`, and `regime_hybrid` hot slices, and only then reconsidering downstream fusion work if the backtest kernel stops dominating
 
 ## Implementation Order
 
@@ -667,6 +739,18 @@ Guardrails:
 - [x] Add `double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_hybrid_norisk`.
 - [x] Add `double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_hybrid_norisk_eps0_nocomm`.
 - [x] Add the same first-wave and second-wave family for `m22`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m17`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk_eps0_nocomm`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_off_norisk_eps0_nocomm`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk_eps0_nocomm`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk`.
+- [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm`.
 - [ ] Decide whether wrapper-only constant propagation is sufficient or a fixed-`M` template body is required.
 
 ### Phase 3 Checklist: Host Dispatch
@@ -675,6 +759,11 @@ Guardrails:
 - [x] Load all new M22 symbols in both host symbol-loading blocks.
 - [x] Extend both full-row dispatch blocks to route 17-row requests to M17 kernels.
 - [x] Extend both full-row dispatch blocks to route 22-row requests to M22 kernels.
+- [x] Route windowed fixed-contract requests to dedicated windowed M17 / M22 kernels when present.
+- [x] Route windowed `RegimeOnNoRisk` fixed-contract requests to dedicated M17 / M22 kernels when present.
+- [x] Route windowed `RegimeHybridNoRisk` fixed-contract requests to dedicated M17 / M22 kernels when present.
+- [x] Route shortlist-slice 17-row reruns to `windowed_m17` when present.
+- [x] Expose a direct `eval_start` / `eval_end` benchmark surface for exact GPU routes.
 - [x] Preserve current reduced-row M7 route precedence.
 - [x] Preserve current reduced-row M10 product-route precedence.
 - [x] Add or update dispatch logging so M17 / M22 routes are visible in logs.
@@ -691,15 +780,16 @@ Guardrails:
 - [ ] Add warp-uniform lockstep loads for `lr`.
 - [ ] Add warp-uniform lockstep loads for `ret1`.
 - [ ] Add warp-uniform regime-value loads for lockstep regime paths.
+- [ ] Investigate windowed L1TEX scoreboard stalls and poor global load/store sector utilization before any further launch-bounds or occupancy experiments.
 - [x] Benchmark whether M17 lockstep full-row routes should also get dedicated dedup variants.
 - [x] Benchmark whether M22 lockstep full-row routes should also get dedicated dedup variants.
 - [x] Keep dense / `pf`-major compact valid-pair ordering covered by tests or comments.
-- [ ] Re-check whether windowed exact full-row runs are hot enough to justify a dedicated family.
+- [x] Re-check whether windowed exact full-row runs are hot enough to justify a dedicated family.
 
 ### Phase 5 Checklist: Optional Pipeline Fusion
 
-- [ ] Re-profile after M17 / M22 specialization and route-matrix work.
-- [ ] Confirm whether downstream objective / constraint reread is now a material bottleneck.
+- [x] Re-profile after M17 / M22 specialization and route-matrix work.
+- [x] Confirm whether downstream objective / constraint reread is not yet a material bottleneck.
 - [ ] Only if profiling justifies it, prototype `score_out`.
 - [ ] Only if profiling justifies it, prototype `feasible_out`.
 - [ ] Keep the existing metrics-row result contract unchanged while testing fused outputs.
@@ -711,7 +801,7 @@ Guardrails:
 - [ ] Run targeted exact-route GPU tests for 22-row paths.
 - [x] Run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` before handoff.
 - [ ] Run Nsight Compute from an elevated PowerShell session for the benchmark matrix above.
-- [ ] Run Nsight Systems from an elevated PowerShell session if stage dominance changes after specialization.
+- [x] Run Nsight Systems from an elevated PowerShell session if stage dominance changes after specialization.
 
 ## Definition Of Done
 

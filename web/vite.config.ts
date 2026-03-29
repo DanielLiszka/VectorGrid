@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { configDefaults, defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 import { visualizer } from 'rollup-plugin-visualizer'
 
@@ -21,6 +21,9 @@ export default defineConfig(({ mode }) => ({
     host: '127.0.0.1',
     port: 1420,
     strictPort: true,
+  },
+  test: {
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
   build: {
     outDir: 'dist',

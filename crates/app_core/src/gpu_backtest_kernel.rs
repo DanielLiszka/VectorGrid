@@ -833,6 +833,8 @@ fn fixed_metrics_contract_rows(metrics_count: usize, metrics_stride: usize) -> O
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FixedContractDispatchKind {
     None,
+    WindowedM17,
+    WindowedM22,
     M17,
     M22,
     LockstepM17,
@@ -847,13 +849,19 @@ fn choose_fixed_contract_dispatch_kind(
     use_fast_warp_dedup: bool,
     use_m7: bool,
     use_lockstep_m7: bool,
+    has_windowed_m17: bool,
+    has_windowed_m22: bool,
     has_m17: bool,
     has_m22: bool,
     has_lockstep_m17: bool,
     has_lockstep_m22: bool,
 ) -> FixedContractDispatchKind {
     if use_windowed_eval {
-        return FixedContractDispatchKind::None;
+        return match fixed_metrics_contract {
+            Some(METRICS_COUNT) if has_windowed_m17 => FixedContractDispatchKind::WindowedM17,
+            Some(TRADE_METRICS_COUNT) if has_windowed_m22 => FixedContractDispatchKind::WindowedM22,
+            _ => FixedContractDispatchKind::None,
+        };
     }
 
     match fixed_metrics_contract {
@@ -7128,6 +7136,14 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let transpose = load_bt_fn("transpose_row_to_tm")?;
     let backtest = load_bt_fn("double_cross_backtest_tm_flex_f32")?;
     let backtest_windowed = load_bt_fn("double_cross_backtest_tm_flex_f32_windowed")?;
+    let backtest_windowed_m17 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17")
+        .ok();
+    let backtest_windowed_m17_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
         .ok();
@@ -7887,12 +7903,13 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             && fast_warp_dedup_enabled
                             && launch_pairs >= fast_warp_dedup_min_pairs
                             && backtest_fast_warp.is_some();
+                        let use_windowed_m17 = use_windowed_eval && backtest_windowed_m17.is_some();
                         let use_m17 = !use_windowed_eval
                             && !use_lockstep_time
                             && !use_fast_warp_dedup
                             && !use_m7
                             && backtest_m17.is_some();
-                        let launch_caps = if use_windowed_eval {
+                        let launch_caps = if use_windowed_m17 || use_windowed_eval {
                             backtest_launch_caps
                         } else if use_lockstep_m7 {
                             backtest_lockstep_m7_launch_caps
@@ -7922,7 +7939,25 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         let zero_commission_mode = commission <= 0.0f32;
                         let eps_zero_mode = eps_rel <= 0.0f32;
                         let backtest_fn = if use_windowed_eval {
-                            &backtest_windowed
+                            if use_windowed_m17 {
+                                if no_risk_mode
+                                    && use_regime_i == 0
+                                    && use_regime_hybrid_i == 0
+                                    && zero_commission_mode
+                                    && eps_zero_mode
+                                {
+                                    backtest_windowed_m17_regime_off_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_windowed_m17.as_ref())
+                                        .expect("checked windowed m17 kernel availability")
+                                } else {
+                                    backtest_windowed_m17
+                                        .as_ref()
+                                        .expect("checked windowed m17 kernel availability")
+                                }
+                            } else {
+                                &backtest_windowed
+                            }
                         } else if use_lockstep_m7 {
                             if lockstep_m7_norisk_specialize_enabled && no_risk_mode {
                                 if lockstep_m7_eps0_specialize_enabled && eps_zero_mode {
@@ -9296,6 +9331,50 @@ fn optimize_double_ma_gpu_kernel_impl(
     let transpose = load_bt_fn("transpose_row_to_tm")?;
     let backtest = load_bt_fn("double_cross_backtest_tm_flex_f32")?;
     let backtest_windowed = load_bt_fn("double_cross_backtest_tm_flex_f32_windowed")?;
+    let backtest_windowed_m17 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17")
+        .ok();
+    let backtest_windowed_m17_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_windowed_m17_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk")
+        .ok();
+    let backtest_windowed_m17_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_windowed_m17_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk")
+        .ok();
+    let backtest_windowed_m17_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_windowed_m22 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22")
+        .ok();
+    let backtest_windowed_m22_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m22_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_windowed_m22_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk")
+        .ok();
+    let backtest_windowed_m22_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_windowed_m22_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk")
+        .ok();
+    let backtest_windowed_m22_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm",
+        )
+        .ok();
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
         .ok();
@@ -10466,51 +10545,64 @@ fn optimize_double_ma_gpu_kernel_impl(
                             use_fast_warp_dedup,
                             use_m7,
                             use_lockstep_m7,
+                            backtest_windowed_m17.is_some(),
+                            backtest_windowed_m22.is_some(),
                             backtest_m17.is_some(),
                             backtest_m22.is_some(),
                             backtest_lockstep_m17.is_some(),
                             backtest_lockstep_m22.is_some(),
                         );
+                        let use_windowed_m17 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::WindowedM17;
+                        let use_windowed_m22 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::WindowedM22;
                         let use_lockstep_m17 =
                             fixed_contract_dispatch == FixedContractDispatchKind::LockstepM17;
                         let use_lockstep_m22 =
                             fixed_contract_dispatch == FixedContractDispatchKind::LockstepM22;
                         let use_m17 = fixed_contract_dispatch == FixedContractDispatchKind::M17;
                         let use_m22 = fixed_contract_dispatch == FixedContractDispatchKind::M22;
-                        let launch_caps = if use_windowed_eval {
-                            backtest_launch_caps
-                        } else if use_lockstep_m7 {
-                            backtest_lockstep_m7_launch_caps
-                                .or(backtest_lockstep_launch_caps)
-                                .unwrap_or(backtest_launch_caps)
-                        } else if use_lockstep_m17 {
-                            backtest_lockstep_m17_launch_caps
-                                .or(backtest_lockstep_launch_caps)
-                                .unwrap_or(backtest_launch_caps)
-                        } else if use_lockstep_m22 {
-                            backtest_lockstep_m22_launch_caps
-                                .or(backtest_lockstep_launch_caps)
-                                .unwrap_or(backtest_launch_caps)
-                        } else if use_lockstep_time {
-                            backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else if use_fast_warp_dedup {
-                            backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else if use_m17 {
-                            backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else if use_m22 {
-                            backtest_m22_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else if use_m7 {
-                            backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else {
-                            backtest_launch_caps
-                        };
+                        let launch_caps =
+                            if use_windowed_m17 || use_windowed_m22 || use_windowed_eval {
+                                backtest_launch_caps
+                            } else if use_lockstep_m7 {
+                                backtest_lockstep_m7_launch_caps
+                                    .or(backtest_lockstep_launch_caps)
+                                    .unwrap_or(backtest_launch_caps)
+                            } else if use_lockstep_m17 {
+                                backtest_lockstep_m17_launch_caps
+                                    .or(backtest_lockstep_launch_caps)
+                                    .unwrap_or(backtest_launch_caps)
+                            } else if use_lockstep_m22 {
+                                backtest_lockstep_m22_launch_caps
+                                    .or(backtest_lockstep_launch_caps)
+                                    .unwrap_or(backtest_launch_caps)
+                            } else if use_lockstep_time {
+                                backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_fast_warp_dedup {
+                                backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_m17 {
+                                backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_m22 {
+                                backtest_m22_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_m7 {
+                                backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else {
+                                backtest_launch_caps
+                            };
                         let launch = choose_backtest_launch_shape_1d(
                             launch_pairs,
                             device_launch_caps,
                             launch_caps,
                         );
                         let dispatch_label = if use_windowed_eval {
-                            "windowed"
+                            if use_windowed_m17 {
+                                "windowed_m17"
+                            } else if use_windowed_m22 {
+                                "windowed_m22"
+                            } else {
+                                "windowed"
+                            }
                         } else if use_lockstep_m7 {
                             "lockstep_m7"
                         } else if use_lockstep_m17 {
@@ -10564,7 +10656,85 @@ fn optimize_double_ma_gpu_kernel_impl(
                             eps_zero_mode,
                         );
                         let backtest_fn = if use_windowed_eval {
-                            &backtest_windowed
+                            if use_windowed_m17 {
+                                match fixed_contract_flavor {
+                                    FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                        backtest_windowed_m17_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                        backtest_windowed_m17_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                        backtest_windowed_m17_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m17_regime_on_norisk.as_ref())
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                        backtest_windowed_m17_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                        backtest_windowed_m17_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m17_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    _ => backtest_windowed_m17
+                                        .as_ref()
+                                        .expect("checked windowed m17 kernel availability"),
+                                }
+                            } else if use_windowed_m22 {
+                                match fixed_contract_flavor {
+                                    FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                        backtest_windowed_m22_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                        backtest_windowed_m22_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                        backtest_windowed_m22_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m22_regime_on_norisk.as_ref())
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                        backtest_windowed_m22_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                        backtest_windowed_m22_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m22_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    _ => backtest_windowed_m22
+                                        .as_ref()
+                                        .expect("checked windowed m22 kernel availability"),
+                                }
+                            } else {
+                                &backtest_windowed
+                            }
                         } else if use_lockstep_m7 {
                             if lockstep_m7_norisk_specialize_enabled && no_risk_mode {
                                 if lockstep_m7_eps0_specialize_enabled && eps_zero_mode {
@@ -12505,8 +12675,8 @@ mod tests {
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
         upload_double_ma_dynamic_program_batch, EffectiveSampleScoreContext,
         FixedContractDispatchKind, FixedContractKernelFlavor, ShortlistConfidenceMode,
-        ShortlistSliceMode, STRAT_SIGNED_EXPOSURE, METRICS_COUNT,
-        PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
+        ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, STRAT_SIGNED_EXPOSURE,
+        TRADE_METRICS_COUNT,
     };
     use crate::composite_validate::SpaBenchmarkKind;
     use crate::double_ma::{
@@ -13932,11 +14102,30 @@ mod tests {
         assert_eq!(
             choose_fixed_contract_dispatch_kind(
                 Some(METRICS_COUNT),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+            ),
+            FixedContractDispatchKind::WindowedM17
+        );
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(METRICS_COUNT),
                 false,
                 true,
                 false,
                 false,
                 false,
+                true,
+                true,
                 true,
                 true,
                 true,
@@ -13947,11 +14136,30 @@ mod tests {
         assert_eq!(
             choose_fixed_contract_dispatch_kind(
                 Some(TRADE_METRICS_COUNT),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                true,
+                true,
+                true,
+                true,
+                true,
+            ),
+            FixedContractDispatchKind::WindowedM22
+        );
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(TRADE_METRICS_COUNT),
                 false,
                 false,
                 false,
                 false,
                 false,
+                true,
+                true,
                 true,
                 true,
                 true,
@@ -13966,6 +14174,23 @@ mod tests {
         assert_eq!(
             choose_fixed_contract_dispatch_kind(
                 Some(METRICS_COUNT),
+                true,
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                true,
+                true,
+                true,
+                true,
+            ),
+            FixedContractDispatchKind::None
+        );
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(METRICS_COUNT),
                 false,
                 true,
                 false,
@@ -13973,7 +14198,26 @@ mod tests {
                 false,
                 true,
                 true,
+                true,
+                true,
                 false,
+                true,
+            ),
+            FixedContractDispatchKind::None
+        );
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(TRADE_METRICS_COUNT),
+                true,
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                true,
+                true,
+                true,
                 true,
             ),
             FixedContractDispatchKind::None
@@ -13986,6 +14230,8 @@ mod tests {
                 false,
                 false,
                 false,
+                true,
+                true,
                 true,
                 false,
                 true,
@@ -14010,8 +14256,16 @@ mod tests {
             FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm
         );
         assert_eq!(
+            choose_fixed_contract_kernel_flavor(true, true, false, false, false),
+            FixedContractKernelFlavor::RegimeOnNoRisk
+        );
+        assert_eq!(
             choose_fixed_contract_kernel_flavor(true, false, true, false, false),
             FixedContractKernelFlavor::RegimeHybridNoRisk
+        );
+        assert_eq!(
+            choose_fixed_contract_kernel_flavor(true, false, true, true, true),
+            FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm
         );
         assert_eq!(
             choose_fixed_contract_kernel_flavor(false, true, true, true, true),
@@ -14268,10 +14522,8 @@ mod tests {
             ..Default::default()
         };
 
-        let reduced = build_device_constraint_args(
-            Some(&constraints),
-            PRODUCT_REDUCED_METRICS_COUNT,
-        );
+        let reduced =
+            build_device_constraint_args(Some(&constraints), PRODUCT_REDUCED_METRICS_COUNT);
         let full17 = build_device_constraint_args(Some(&constraints), METRICS_COUNT);
         let trade22 = build_device_constraint_args(Some(&constraints), TRADE_METRICS_COUNT);
 

@@ -4214,6 +4214,588 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
 }
 
 extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)commission;
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk_eps0_nocomm(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)commission;
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)commission;
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regime_off_norisk_eps0_nocomm(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)commission;
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk_eps0_nocomm(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)commission;
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    (void)commission;
+    (void)M;
+    (void)metrics_out_stride;
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        eval_start, eval_end,
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
 __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,

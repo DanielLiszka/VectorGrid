@@ -2392,7 +2392,12 @@ fn base_cross_sign(f: f64, s: f64, cfg: &StrategyConfig) -> i32 {
 }
 
 #[inline]
-fn regime_hybrid_range_sign(spread_rel: f64, current_pos: i32, entry_rel: f64, exit_rel: f64) -> i32 {
+fn regime_hybrid_range_sign(
+    spread_rel: f64,
+    current_pos: i32,
+    entry_rel: f64,
+    exit_rel: f64,
+) -> i32 {
     if current_pos > 0 {
         if spread_rel >= entry_rel {
             -1
@@ -2773,8 +2778,7 @@ where
         overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
         let ht_sig = halftrend.map(|h| h[t_sig]);
-        let raw_sign =
-            desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig, pos);
+        let raw_sign = desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig, pos);
         let persisted_sign =
             overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
         let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
@@ -3334,8 +3338,7 @@ where
         overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
         let ht_sig = halftrend.map(|h| h[t_sig]);
-        let raw_sign =
-            desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig, pos);
+        let raw_sign = desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig, pos);
         let persisted_sign =
             overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
         let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
@@ -4515,6 +4518,18 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<BackendOptimizationResult, String> {
+    run_double_ma_optimization_blocking_with_candles_and_eval_range(
+        req, candles, cancel, progress, None,
+    )
+}
+
+pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
+    req: DoubleMaRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+    eval_range: Option<(usize, usize)>,
+) -> Result<BackendOptimizationResult, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
@@ -4914,6 +4929,28 @@ pub fn run_double_ma_optimization_blocking_with_candles(
         }
     }
 
+    if let Some((eval_start, eval_end)) = eval_range {
+        if eval_start >= eval_end {
+            return Err(format!(
+                "evaluation window requires eval_start < eval_end, got [{eval_start}, {eval_end})"
+            ));
+        }
+        if eval_end > n {
+            return Err(format!(
+                "evaluation window end {eval_end} exceeds candle length {n}"
+            ));
+        }
+        match backend {
+            Backend::GpuKernel { .. } | Backend::GpuHybridKernel { .. } => {}
+            Backend::Auto { .. } | Backend::CpuOnly | Backend::GpuOnly { .. } => {
+                return Err(
+                    "evaluation window currently requires an exact GPU backend (GpuKernel or GpuHybridKernel)."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
     if matches!(mode_used, OptimizationModeResolved::GpuVdps) {
         #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
         if let Backend::GpuOnly { device_id } = &backend {
@@ -5124,9 +5161,16 @@ pub fn run_double_ma_optimization_blocking_with_candles(
             GpuGridDispatch::GpuKernel { device_id } => {
                 let _nvtx_scope = crate::nvtx::scope("engine", "gpu_kernel_dispatch");
                 let kernel_t0 = std::time::Instant::now();
-                let result = if let DynamicGpuExecutionSelection::Supported(handle) =
-                    dynamic_gpu_execution
-                {
+                let dynamic_gpu_handle = if eval_range.is_none() {
+                    match dynamic_gpu_execution {
+                        DynamicGpuExecutionSelection::Supported(handle) => Some(handle),
+                        DynamicGpuExecutionSelection::CpuFallback { .. }
+                        | DynamicGpuExecutionSelection::Disabled => None,
+                    }
+                } else {
+                    None
+                };
+                let result = if let Some(handle) = dynamic_gpu_handle {
                     optimize_double_ma_dynamic_gpu_kernel_tiled(
                         candles,
                         device_id,
@@ -5199,7 +5243,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
-                            None,
+                            eval_range,
                             cancel,
                             progress,
                         )?
@@ -5248,7 +5292,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
-                            None,
+                            eval_range,
                             cancel,
                             progress,
                         )?
@@ -5297,7 +5341,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
-                            None,
+                            eval_range,
                             cancel,
                             progress,
                         )?
@@ -5346,7 +5390,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
-                            None,
+                            eval_range,
                             cancel,
                             progress,
                         )?
@@ -5395,7 +5439,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             export_all_csv_path,
                             total_pairs,
                             heatmap_bins,
-                            None,
+                            eval_range,
                             cancel,
                             progress,
                         )?
@@ -5447,6 +5491,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         export_all_csv_path,
                         total_pairs,
                         heatmap_bins,
+                        eval_range,
                         cancel,
                         progress,
                     )?
@@ -5454,12 +5499,9 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                 let gpu_kernel_timing_ms = Some(build_gpu_kernel_timing(
                     kernel_t0.elapsed().as_millis() as u64,
                 ));
-                let route_note = match dynamic_gpu_execution {
-                    DynamicGpuExecutionSelection::Supported(_) => {
-                        Some("GpuKernel(dynamic_strategy_v1)".to_string())
-                    }
-                    DynamicGpuExecutionSelection::CpuFallback { .. }
-                    | DynamicGpuExecutionSelection::Disabled => None,
+                let route_note = match dynamic_gpu_handle {
+                    Some(_) => Some("GpuKernel(dynamic_strategy_v1)".to_string()),
+                    None => None,
                 };
                 Ok((
                     result,
@@ -5508,7 +5550,7 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         progress,
                         req.gpu_execution,
                         !matches!(mode_used, OptimizationModeResolved::GpuVdps),
-                        None,
+                        eval_range,
                     )?;
                 Ok((
                     result,
@@ -13281,6 +13323,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
     heatmap_bins: usize,
+    eval_range: Option<(usize, usize)>,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -13319,7 +13362,7 @@ fn optimize_double_ma_gpu_kernel_tiled(
         export_all_csv_path,
         total_pairs,
         heatmap_bins,
-        None,
+        eval_range,
         cancel,
         progress,
     )
@@ -20920,9 +20963,18 @@ mod tests {
             regime_hybrid_reversion_exit_rel: 0.002,
             ..StrategyConfig::default()
         };
-        assert_eq!(desired_sign_with_filters(102.0, 100.0, &cfg, Some(2.0), 0), -1);
-        assert_eq!(desired_sign_with_filters(98.0, 100.0, &cfg, Some(2.0), 0), 1);
-        assert_eq!(desired_sign_with_filters(100.05, 100.0, &cfg, Some(2.0), 0), 0);
+        assert_eq!(
+            desired_sign_with_filters(102.0, 100.0, &cfg, Some(2.0), 0),
+            -1
+        );
+        assert_eq!(
+            desired_sign_with_filters(98.0, 100.0, &cfg, Some(2.0), 0),
+            1
+        );
+        assert_eq!(
+            desired_sign_with_filters(100.05, 100.0, &cfg, Some(2.0), 0),
+            0
+        );
     }
 
     #[test]
@@ -20935,11 +20987,26 @@ mod tests {
             ..StrategyConfig::default()
         };
 
-        assert_eq!(desired_sign_with_filters(100.6, 100.0, &cfg, Some(2.0), -1), -1);
-        assert_eq!(desired_sign_with_filters(100.1, 100.0, &cfg, Some(2.0), -1), 0);
-        assert_eq!(desired_sign_with_filters(99.4, 100.0, &cfg, Some(2.0), 1), 1);
-        assert_eq!(desired_sign_with_filters(99.9, 100.0, &cfg, Some(2.0), 1), 0);
-        assert_eq!(desired_sign_with_filters(98.8, 100.0, &cfg, Some(2.0), -1), 1);
+        assert_eq!(
+            desired_sign_with_filters(100.6, 100.0, &cfg, Some(2.0), -1),
+            -1
+        );
+        assert_eq!(
+            desired_sign_with_filters(100.1, 100.0, &cfg, Some(2.0), -1),
+            0
+        );
+        assert_eq!(
+            desired_sign_with_filters(99.4, 100.0, &cfg, Some(2.0), 1),
+            1
+        );
+        assert_eq!(
+            desired_sign_with_filters(99.9, 100.0, &cfg, Some(2.0), 1),
+            0
+        );
+        assert_eq!(
+            desired_sign_with_filters(98.8, 100.0, &cfg, Some(2.0), -1),
+            1
+        );
     }
 
     #[test]

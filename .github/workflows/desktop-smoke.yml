@@ -1,0 +1,52 @@
+name: Desktop Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop-smoke:
+    name: Desktop Smoke (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm --prefix web ci
+
+      - name: Build frontend
+        run: npm --prefix web run build
+
+      - name: Build Tauri app (debug)
+        run: cargo build -p ta_desktop_demo_app
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Install matching EdgeDriver
+        shell: pwsh
+        run: |
+          cargo install --git https://github.com/chippers/msedgedriver-tool
+          & "$HOME/.cargo/bin/msedgedriver-tool.exe"
+          $PWD.Path >> $env:GITHUB_PATH
+
+      - name: Run desktop smoke suite
+        run: npm --prefix web run test:desktop:smoke
+
+      - name: Upload desktop smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-smoke-artifacts
+          path: output/wdio/desktop-smoke/**
+          if-no-files-found: ignore

@@ -11,8 +11,10 @@ npm run parity
 npm run parity:outputs
 npm run test
 npm run build
+npm run typecheck:desktop
 npm run dev
 npm run gen:commands
+npm run test:desktop:smoke
 ```
 
 ## Runtime notes
@@ -31,3 +33,5 @@ npm run gen:commands
 - `src/tauri/commands.ts` is generated from Rust `generate_handler!` via `npm run gen:commands`; `npm run check:commands` and `scripts/check-known-tauri-commands.mjs` gate command drift and unknown literal command strings.
 - `scripts/check-tauri-parity.mjs` enforces command parity between backend `generate_handler!` and frontend command registry.
 - `npm run parity:outputs` runs `scripts/check_output_parity.mjs` against representative JSON/CSV/XLSX artifact pairs to verify output-structure compatibility.
+- `wdio.desktop.conf.ts` plus `e2e/desktop/` own the Windows-first `WebdriverIO + tauri-driver` desktop smoke harness for the real Tauri shell.
+- Desktop smoke local run instructions and prerequisite notes live in `e2e/desktop/README.md`.

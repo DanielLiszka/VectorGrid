@@ -2,13 +2,15 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use serde_json::json;
-use ta_app_core::double_ma::DoubleMaMetricContract;
+use ta_app_core::composite_validate::SpaBenchmarkKind;
+use ta_app_core::double_ma::{DoubleMaMetricContract, DoubleMaShortlistSliceMode};
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
     trend_quality_strategy_for_kernel,
 };
 use ta_app_core::{
-    run_double_ma_optimization_blocking_with_candles, Backend, BackendUsed, DoubleMaRequest,
+    run_double_ma_optimization_blocking_with_candles_and_eval_range, Backend, BackendUsed,
+    DoubleMaRequest,
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
@@ -120,6 +122,38 @@ fn parse_heatmap_bins() -> Result<u16, String> {
         .map_err(|e| format!("invalid --heatmap-bins '{}': {e}", raw.trim()))
 }
 
+fn parse_optional_usize_flag(flag: &str) -> Result<Option<usize>, String> {
+    let Some(raw) = parse_arg_value(flag) else {
+        return Ok(None);
+    };
+    raw.trim()
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|e| format!("invalid {flag} '{}': {e}", raw.trim()))
+}
+
+fn parse_eval_range(total_bars: usize) -> Result<Option<(usize, usize)>, String> {
+    let eval_start = parse_optional_usize_flag("--eval-start")?;
+    let eval_end = parse_optional_usize_flag("--eval-end")?;
+    match (eval_start, eval_end) {
+        (None, None) => Ok(None),
+        (Some(start), Some(end)) => {
+            if start >= end {
+                return Err(format!(
+                    "--eval-start must be < --eval-end, got [{start}, {end})"
+                ));
+            }
+            if end > total_bars {
+                return Err(format!(
+                    "--eval-end {end} exceeds candle length {total_bars}"
+                ));
+            }
+            Ok(Some((start, end)))
+        }
+        _ => Err("--eval-start and --eval-end must be provided together".to_string()),
+    }
+}
+
 fn parse_metric_contract() -> Result<Option<DoubleMaMetricContract>, String> {
     let Some(raw) = parse_arg_value("--metric-contract") else {
         return Ok(None);
@@ -130,6 +164,34 @@ fn parse_metric_contract() -> Result<Option<DoubleMaMetricContract>, String> {
         "trade22" | "trade_22" | "trade-22" => Ok(Some(DoubleMaMetricContract::Trade22)),
         other => Err(format!(
             "unsupported --metric-contract '{other}' (expected: auto|full17|trade22)"
+        )),
+    }
+}
+
+fn parse_shortlist_slice_mode() -> Result<Option<DoubleMaShortlistSliceMode>, String> {
+    let Some(raw) = parse_arg_value("--shortlist-slice-mode") else {
+        return Ok(None);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" => Ok(None),
+        "halves" => Ok(Some(DoubleMaShortlistSliceMode::Halves)),
+        "quartiles" => Ok(Some(DoubleMaShortlistSliceMode::Quartiles)),
+        other => Err(format!(
+            "unsupported --shortlist-slice-mode '{other}' (expected: none|halves|quartiles)"
+        )),
+    }
+}
+
+fn parse_shortlist_slice_benchmark() -> Result<Option<SpaBenchmarkKind>, String> {
+    let Some(raw) = parse_arg_value("--shortlist-slice-benchmark") else {
+        return Ok(None);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "none" => Ok(None),
+        "flat" => Ok(Some(SpaBenchmarkKind::Flat)),
+        "buy_and_hold" | "buy-and-hold" | "buyandhold" => Ok(Some(SpaBenchmarkKind::BuyAndHold)),
+        other => Err(format!(
+            "unsupported --shortlist-slice-benchmark '{other}' (expected: none|flat|buy_and_hold)"
         )),
     }
 }
@@ -200,6 +262,22 @@ fn metric_contract_label(metric_contract: Option<DoubleMaMetricContract>) -> &'s
         Some(DoubleMaMetricContract::Full17) => "full17",
         Some(DoubleMaMetricContract::Trade22) => "trade22",
         None => "auto",
+    }
+}
+
+fn shortlist_slice_mode_label(mode: Option<DoubleMaShortlistSliceMode>) -> &'static str {
+    match mode {
+        Some(DoubleMaShortlistSliceMode::Halves) => "halves",
+        Some(DoubleMaShortlistSliceMode::Quartiles) => "quartiles",
+        None => "none",
+    }
+}
+
+fn shortlist_slice_benchmark_label(benchmark: Option<&SpaBenchmarkKind>) -> &'static str {
+    match benchmark {
+        Some(SpaBenchmarkKind::Flat) => "flat",
+        Some(SpaBenchmarkKind::BuyAndHold) => "buy_and_hold",
+        None => "none",
     }
 }
 
@@ -423,8 +501,32 @@ fn backend_for_strategy(kind: StrategyKind, adx_mode: AdxMode, device_id: u32) -
         StrategyKind::BreakoutMomentum if matches!(adx_mode, AdxMode::On) => {
             Backend::GpuHybridKernel { device_id }
         }
-        StrategyKind::RegimeHybrid => Backend::GpuHybridKernel { device_id },
         _ => Backend::GpuKernel { device_id },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{backend_for_strategy, AdxMode, Backend, StrategyKind};
+
+    #[test]
+    fn backend_for_strategy_keeps_regime_hybrid_on_exact_gpu_kernel_surface() {
+        assert!(matches!(
+            backend_for_strategy(StrategyKind::RegimeHybrid, AdxMode::Off, 7),
+            Backend::GpuKernel { device_id: 7 }
+        ));
+    }
+
+    #[test]
+    fn backend_for_strategy_keeps_adx_bearing_profiles_on_hybrid_route() {
+        assert!(matches!(
+            backend_for_strategy(StrategyKind::TrendQuality, AdxMode::On, 3),
+            Backend::GpuHybridKernel { device_id: 3 }
+        ));
+        assert!(matches!(
+            backend_for_strategy(StrategyKind::BreakoutMomentum, AdxMode::On, 5),
+            Backend::GpuHybridKernel { device_id: 5 }
+        ));
     }
 }
 
@@ -460,6 +562,14 @@ fn main() {
         std::process::exit(2);
     });
     let metric_contract = parse_metric_contract().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    let shortlist_slice_mode = parse_shortlist_slice_mode().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    let shortlist_slice_benchmark = parse_shortlist_slice_benchmark().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
     });
@@ -516,6 +626,10 @@ fn main() {
 
     let strategy = strategy_config(strategy_kind, adx_mode);
     let candles = candles_for_run(strategy_kind, candle_shape, 200_000);
+    let eval_range = parse_eval_range(candles.close.len()).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
     let (fast_range, slow_range) = workload_ranges(workload_kind);
     let cancel = AtomicBool::new(false);
     let include_trade_metrics = match include_trade_metrics_mode {
@@ -533,9 +647,22 @@ fn main() {
         );
         std::process::exit(2);
     }
+    if shortlist_slice_benchmark.is_some() && shortlist_slice_mode.is_none() {
+        eprintln!("--shortlist-slice-benchmark requires --shortlist-slice-mode");
+        std::process::exit(2);
+    }
+
+    let backend = backend_for_strategy(strategy_kind, adx_mode, device_id);
+    if shortlist_slice_mode.is_some() && !matches!(backend, Backend::GpuKernel { .. }) {
+        eprintln!(
+            "--shortlist-slice-mode currently requires an exact GpuKernel route; resolved backend was {:?}",
+            backend
+        );
+        std::process::exit(2);
+    }
 
     let req = DoubleMaRequest {
-        backend: backend_for_strategy(strategy_kind, adx_mode, device_id),
+        backend,
         data_id: "profile-gpu-dynamic-runner".to_string(),
         fast_range,
         slow_range,
@@ -554,8 +681,8 @@ fn main() {
         extra_shortlist_objectives: None,
         shortlist_confidence_mode: None,
         shortlist_union_mode: None,
-        shortlist_slice_mode: None,
-        shortlist_slice_benchmark: None,
+        shortlist_slice_mode,
+        shortlist_slice_benchmark: shortlist_slice_benchmark.clone(),
         shortlist_neighborhood_radius: None,
         shortlist_neighborhood_step: None,
         mode: OptimizationMode::Grid,
@@ -582,12 +709,17 @@ fn main() {
         };
         apply_nvtx_phase(nvtx_mode, is_warmup);
         let t0 = Instant::now();
-        let res =
-            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
-                .unwrap_or_else(|e| {
-                    eprintln!("run failed (iter {}): {}", i + 1, e);
-                    std::process::exit(1);
-                });
+        let res = run_double_ma_optimization_blocking_with_candles_and_eval_range(
+            req.clone(),
+            &candles,
+            &cancel,
+            None,
+            eval_range,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("run failed (iter {}): {}", i + 1, e);
+            std::process::exit(1);
+        });
         if !matches!(res.backend_used, BackendUsed::Gpu) {
             eprintln!(
                 "unexpected backend_used={:?}; expected GPU",
@@ -606,6 +738,9 @@ fn main() {
                 "wall_ms": wall_ms,
                 "objective": format!("{:?}", objective),
                 "metric_contract": metric_contract_label(metric_contract),
+                "shortlist_slice_mode": shortlist_slice_mode_label(shortlist_slice_mode),
+                "shortlist_slice_benchmark": shortlist_slice_benchmark_label(shortlist_slice_benchmark.as_ref()),
+                "eval_range": eval_range.map(|(start, end)| json!({ "start": start, "end": end })),
                 "include_trade_metrics": include_trade_metrics,
                 "fast_ma": &fast_ma_type,
                 "slow_ma": &slow_ma_type,
@@ -640,7 +775,7 @@ fn main() {
             continue;
         }
         println!(
-            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={:?} metric_contract={} include_trade_metrics={} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
+            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={:?} metric_contract={} shortlist_slice_mode={} shortlist_slice_benchmark={} eval_range={} include_trade_metrics={} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
             if is_warmup { "warmup" } else { "measure" },
             iter_index,
             fast_ma_type,
@@ -649,6 +784,11 @@ fn main() {
             res.backend_route.as_deref().unwrap_or("<none>"),
             objective,
             metric_contract_label(metric_contract),
+            shortlist_slice_mode_label(shortlist_slice_mode),
+            shortlist_slice_benchmark_label(shortlist_slice_benchmark.as_ref()),
+            eval_range
+                .map(|(start, end)| format!("[{start}, {end})"))
+                .unwrap_or_else(|| "full".to_string()),
             include_trade_metrics,
             res.runtime_ms,
             wall_ms,

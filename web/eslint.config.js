@@ -12,7 +12,7 @@ export default [
     ],
   },
   {
-    files: ['src/**/*.{ts,vue}', 'vite.config.ts'],
+    files: ['src/**/*.{ts,vue}', 'e2e/**/*.ts', 'vite.config.ts', 'wdio.desktop.conf.ts'],
     languageOptions: {
       parser: vueParser,
       parserOptions: {
