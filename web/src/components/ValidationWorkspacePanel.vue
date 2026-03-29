@@ -6,6 +6,7 @@ import {
   useHeadlessMatrixTable,
   type MatrixColumnMeta,
 } from '../composables/useHeadlessMatrixTable'
+import { usePersistedMatrixColumnState } from '../composables/usePersistedMatrixColumnState'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
@@ -14,6 +15,7 @@ import ContextHelpTip from './ContextHelpTip.vue'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { previewValidationExecutionSummaryFromStores } from '../services/validationService'
+import { VALIDATION_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface ValidationColumn {
@@ -164,9 +166,20 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'valida
 const showValidationResults = computed(() => validationStage.value === 'ready')
 const renderedColumns = computed<ValidationColumn[]>(() => validationColumns.value as ValidationColumn[])
 const renderedRows = computed<ValidationRow[]>(() => validationRows.value as ValidationRow[])
-const { headerGroups, rowModelRows } = useHeadlessMatrixTable(
+const {
+  columnOptions,
+  columnVisibility,
+  visibleCount: visibleColumnCount,
+  hiddenCount: hiddenColumnCount,
+  canRestoreDefaults,
+  toggleColumnVisibility,
+  restoreDefaultColumns,
+  canHideColumn,
+} = usePersistedMatrixColumnState(renderedColumns, VALIDATION_RESULTS_TABLE_STATE_KEY)
+const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
   renderedColumns,
   renderedRows,
+  { columnVisibility },
 )
 const renderedCrossDatasets = computed<CrossDatasetItem[]>(() => crossDatasets.value as CrossDatasetItem[])
 const {
@@ -198,6 +211,15 @@ const validationSummaryChips = computed(() => {
     routeSummary ? `Route ${routeSummary}` : '',
     crossSummary || '',
   ].filter((chip) => String(chip || '').trim().length > 0)
+})
+const columnVisibilitySummary = computed(
+  () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
+)
+const columnVisibilityHint = computed(() => {
+  if (hiddenColumnCount.value > 0) {
+    return `${hiddenColumnCount.value} hidden columns. Restore defaults to recover the full validation review table.`
+  }
+  return 'Hide secondary result columns when you want a tighter validation review pass.'
 })
 
 watch(
@@ -397,6 +419,10 @@ function headerMeta(header: Header<ValidationRow, unknown>): MatrixColumnMeta {
 
 function validationCellPayload(cell: Cell<ValidationRow, unknown>): ValidationCell {
   return cell.getValue() as ValidationCell
+}
+
+function validationColumnToggleId(columnKey: string): string {
+  return `validationColumnToggle_${String(columnKey || '').replace(/[^a-zA-Z0-9_-]+/g, '_')}`
 }
 
 onMounted(async () => {
@@ -1035,9 +1061,41 @@ onBeforeUnmount(() => {
         <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
         <div class="metaLine mono">{{ validationShortlistMeta }}</div>
         <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
+        <details v-if="renderedColumns.length > 0" class="columnDetails">
+          <summary class="columnDetailsSummary">
+            <span>Visible columns</span>
+            <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+          </summary>
+          <div class="columnDetailsBody">
+            <div class="panelMuted">{{ columnVisibilityHint }}</div>
+            <div class="columnToggleGrid" role="group" aria-label="Visible validation result columns">
+              <label
+                v-for="column in columnOptions"
+                :key="column.key"
+                class="columnToggle"
+                :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                :for="validationColumnToggleId(column.key)"
+              >
+                <input
+                  :id="validationColumnToggleId(column.key)"
+                  type="checkbox"
+                  :checked="column.visible"
+                  :disabled="!canHideColumn(column.key) && column.visible"
+                  @change="toggleColumnVisibility(column.key)"
+                />
+                <span>{{ column.label }}</span>
+              </label>
+            </div>
+            <div class="actions columnDetailsActions">
+              <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                Restore defaults
+              </button>
+            </div>
+          </div>
+        </details>
         <div
           ref="tableScrollElementRef"
-          class="tableWrap"
+          class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
           tabindex="0"
           aria-label="Validation results table"
         >
@@ -1059,21 +1117,20 @@ onBeforeUnmount(() => {
             </thead>
             <tbody>
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
+                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
               <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
                 <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
                   <td
                     :class="validationCellPayload(cell).className"
                     :title="validationCellPayload(cell).title || undefined"
-                    :colspan="virtualRow.row.getVisibleCells().length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                   >
                     {{ validationCellPayload(cell).text }}
                   </td>
                 </template>
               </tr>
               <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
+                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
               </tr>
             </tbody>
           </table>
@@ -1187,6 +1244,62 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
+.columnDetails {
+  margin-top: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-sunken);
+}
+
+.columnDetailsSummary {
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  padding: calc(var(--density-pane-y) - 0.12rem) calc(var(--density-pane-x) - 0.02rem);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.columnDetailsSummary::-webkit-details-marker {
+  display: none;
+}
+
+.columnDetailsBody {
+  border-top: 1px solid var(--border);
+  padding: calc(var(--density-pane-y) - 0.05rem) calc(var(--density-pane-x) - 0.02rem);
+  display: grid;
+  gap: 0.65rem;
+}
+
+.columnToggleGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+}
+
+.columnToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.76rem;
+}
+
+.columnToggle.disabled {
+  opacity: 0.62;
+}
+
+.columnToggle input {
+  margin: 0;
+}
+
+.columnDetailsActions {
+  margin-top: 0;
+}
+
 .validationTableVue {
   width: 100%;
   border-collapse: collapse;
@@ -1273,12 +1386,20 @@ onBeforeUnmount(() => {
   .gridThree {
     grid-template-columns: 1fr 1fr;
   }
+
+  .columnToggleGrid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 680px) {
   .gridFive,
   .gridFour,
   .gridThree {
+    grid-template-columns: 1fr;
+  }
+
+  .columnToggleGrid {
     grid-template-columns: 1fr;
   }
 }

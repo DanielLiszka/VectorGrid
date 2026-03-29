@@ -1,4 +1,5 @@
 import { watch, type WatchStopHandle } from 'vue'
+import { useDocumentVisibility } from '@vueuse/core'
 import { attachConsole, attachLogger, info as writeDesktopInfoLog, LogLevel } from '@tauri-apps/plugin-log'
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
 import { filename as windowStateFilename, saveWindowState, StateFlags } from '@tauri-apps/plugin-window-state'
@@ -15,6 +16,7 @@ let loggerDetach: (() => void) | null = null
 let taskWatchStop: WatchStopHandle | null = null
 let saveWindowStateBound = false
 const notifiedTaskIds = new Set<string>()
+const documentVisibility = typeof document === 'undefined' ? null : useDocumentVisibility()
 
 function runtimeStoreOrNull() {
   const pinia = resolveRuntimePinia()
@@ -111,7 +113,9 @@ function installTaskNotificationRouting(): void {
     async (taskId, previousTaskId) => {
       if (!taskId || taskId === previousTaskId || notifiedTaskIds.has(taskId)) return
       const task = taskStore.history.find((entry) => entry.id === taskId) ?? null
-      const intent = desktopNotificationIntentForTask(task, settingsStore.desktopNotificationMode)
+      const intent = desktopNotificationIntentForTask(task, settingsStore.desktopNotificationMode, {
+        documentVisibility: documentVisibility?.value,
+      })
       if (!intent) return
 
       if (runtimeStore.desktopNotificationPermission !== 'granted') {

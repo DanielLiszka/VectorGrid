@@ -24,6 +24,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
 - `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
 - `Frontend Review/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan, completed phases, and open checklist
+- `Frontend Review/desktop_e2e_testing_plan_2026-03-29.md` for the planned Windows-first `WebdriverIO + tauri-driver` desktop smoke harness and implementation checklist
 - `Frontend Review/desktop_capability_inventory_2026-03-28.md` for the current desktop capability/window-label inventory
 - `Frontend Review/desktop_plugin_inventory_2026-03-28.md` for the adopted/deferred desktop plugin record
 - `Frontend Review/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase
@@ -85,6 +86,7 @@ Open these first before broad search:
 - `web/src/components/DesktopTitlebar.vue`
 - `web/src/components/VueWorkspaceShell.vue`
 - `web/src/services/desktopProductization.ts`
+  - desktop plugin bridge for logging, window-state persistence, and background-aware OS-notification routing
 - `web/src/preflight.ts`
 - `web/src/utils/strategyOptimizationCapabilities.ts`
 - `web/src/strategies/compositeProfileGpuPolicy.ts`
@@ -599,8 +601,12 @@ These are good first files when the task is global shortcuts, quick actions, run
   - owns the top-level workspace shell plus the control/result mount slots that decide where those panels render
 - `web/src/components/MetaWorkspacePanel.vue`
   - owns aggregate-subworkspace switching for `meta`, `batch`, `saved`, and `compare`
+- `web/src/components/ContextActionMenu.vue`
+  - shared secondary-action menu primitive now used to collapse repeated saved-artifact action clusters without losing keyboard access or focus return
 - `web/src/components/HistoryWorkspacePanel.vue`
-  - owns saved-run inspection, rerun, reveal, and apply flows once the history/library surface is active
+  - owns saved-run inspection, rerun, reveal, apply, and the local Saved Runs fuzzy-search surface once the history/library surface is active
+- `web/src/components/SettingsWorkspacePanel.vue`
+  - owns workstation preferences, saved perspectives, diagnostics, desktop notification policy controls, and the local saved-perspective search surface
 
 ### `web/src` structure
 
@@ -634,6 +640,7 @@ These are good first files when the task is global shortcuts, quick actions, run
 - `web/src/stores/advancedStore.ts`
 - `web/src/stores/executionStore.ts`
 - `web/src/stores/historyStore.ts`
+  - owns saved-run search state, fuzzy ranking, selected-run detail hydration, and library actions
 - `web/src/stores/settingsStore.ts`
 - `web/src/stores/workflowArtifactsStore.ts`
 - `web/src/stores/commandPaletteStore.ts`
@@ -676,12 +683,18 @@ These are good first files when the task is global shortcuts, quick actions, run
   - shared task/runtime summary model used by footer and diagnostics surfaces
 - `web/src/composables/useHeadlessMatrixTable.ts`
   - shared TanStack-backed headless table model now used by Top, Validation, Meta, and execution-order review
+- `web/src/composables/usePersistedMatrixColumnState.ts`
+  - shared persisted column-visibility state currently adopted by Top Results, Validation, and Meta
 - `web/src/composables/useUiReadiness.ts`
   - derives empty-state and readiness stages for history, meta, top, and validation surfaces
 - `web/src/composables/useVirtualTableRows.ts`
   - shared virtualization helper for large table-style panels, especially Top, Validation, Meta, and execution-order review
 - `web/src/composables/useAnchoredOverlay.ts`
   - shared anchored overlay positioning helper for floating UI surfaces
+- `web/src/utils/perspectiveSearch.ts`
+  - shared local fuzzy-ranking helper for saved perspectives; keeps Settings search scoped and subordinate to the global command palette
+- `web/src/utils/iconography.ts`
+  - shared minimal icon grammar for task state, compare/pin actions, artifact actions, and diagnostics badges
 
 ### Runtime events and task tracking
 
@@ -696,11 +709,11 @@ The frontend event path is:
 - `web/src/utils/statusPresentation.ts`
   - shared lifecycle labels, severity labels, and timeline/alert summaries used by task/diagnostics UI
 - `web/src/components/TaskCenterOverlay.vue`
-  - task-center UI
+  - task-center UI; now the primary high-signal task-state icon surface
 - `web/src/components/RunFooterPanel.vue`
   - footer status summary
 - `web/src/components/SettingsWorkspacePanel.vue`
-  - current in-app diagnostics surface for runtime, task posture, timeline, and recent alerts
+  - current in-app diagnostics surface for runtime, task posture, timeline, recent alerts, desktop notification policy controls, and desktop-log filtering/copy/clear actions
 
 Current named event channels handled on the frontend:
 
@@ -723,6 +736,10 @@ Current named event channels handled on the frontend:
   - user-facing settings state
 - `web/src/services/settingsService.ts`
   - window effect and settings orchestration
+- `web/src/services/desktopProductization.ts`
+  - desktop plugin bridge for logging, window-state persistence, and visibility-aware OS notification routing
+- `web/src/utils/desktopNotificationPolicy.ts`
+  - high-signal desktop-notification policy; success/failure routing now suppresses OS toasts while the desktop window remains visible
 - `web/src/main.ts`
   - applies `applyRecommendedOptimizationDefaults()` during app boot
 - `web/src/components/AdvancedWorkspacePanel.vue`
@@ -767,6 +784,8 @@ For command-palette and quick-action behavior, start with:
   - best high-level file for frontend dynamic-strategy IR building and preview input shaping
 - `web/src/composables/useHeadlessMatrixTable.ts`
   - best high-level file for the current shared dense-table model
+- `web/src/composables/usePersistedMatrixColumnState.ts`
+  - best high-level file for current persisted dense-table column posture across Top, Validation, and Meta
 - `web/src/components/OptimizeWorkspacePanel.vue`
   - dense control-surface summary of what optimization UI currently exposes
 

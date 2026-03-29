@@ -135,6 +135,15 @@ const historySummaryChips = computed(() => {
   }
   return chips;
 });
+const savedRunsSearchSummary = computed(() => {
+  const query = String(searchDraft.value || "").trim();
+  const visibleCount = visibleSavedRuns.value.length;
+  const total = savedRunCount.value;
+  const localHelp = "Search filters the saved-run library only. Use Ctrl+K for global commands.";
+  if (!query) return `${total} saved runs available. ${localHelp}`;
+  const label = visibleCount === 1 ? "match" : "matches";
+  return `${visibleCount} ${label} for “${query}”. ${localHelp}`;
+});
 
 function basename(value: string): string {
   const next = String(value || "").trim();
@@ -485,18 +494,21 @@ onBeforeUnmount(() => {
           </div>
           <div class="row">
             <div>
-              <label for="vueSavedRunsSearch">Search</label>
+              <label for="vueSavedRunsSearch">Saved run search</label>
               <input
                 id="vueSavedRunsSearch"
                 type="text"
                 :value="searchDraft"
-                placeholder="ts, strategy, tag, csv…"
+                placeholder="strategy, dataset, tag, artifact…"
                 @input="
                   onSavedSearch(
                     String(($event.target as HTMLInputElement).value || ''),
                   )
                 "
               />
+              <div class="panelMuted fieldHint">
+                Filters Saved Runs only. Use Ctrl+K for global commands and navigation.
+              </div>
             </div>
             <div>
               <label for="vueSavedRunsTags">Tags</label>
@@ -525,6 +537,9 @@ onBeforeUnmount(() => {
 
           <div class="sectionMeta panelMuted metaLine mono panelNumeric" role="status" aria-live="polite">
             {{ savedRunsMeta }}
+          </div>
+          <div class="panelMuted searchScopeMeta">
+            {{ savedRunsSearchSummary }}
           </div>
           <ul
             v-if="visibleSavedRuns.length"
@@ -798,6 +813,17 @@ onBeforeUnmount(() => {
 .metaLine {
   margin-top: 0.55rem;
   font-size: 0.78rem;
+}
+
+.searchScopeMeta {
+  margin-top: 0.35rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.76rem;
+}
+
+.fieldHint {
+  margin-top: 0.28rem;
+  font-size: 0.74rem;
 }
 
 .runList {

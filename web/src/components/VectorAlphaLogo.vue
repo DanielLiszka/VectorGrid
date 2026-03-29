@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
 import animatedLogoUrl from '../assets/branding/vectoralpha-animated.svg'
 import staticLogoUrl from '../assets/branding/vectoralpha-static.svg'
 
@@ -20,18 +21,20 @@ const props = withDefaults(
 
 const sizeValue = computed(() => (typeof props.size === 'number' ? `${props.size}px` : String(props.size || '22px')))
 const staticAlt = computed(() => (props.decorative ? '' : props.alt))
+const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+const animateOnHover = computed(() => props.hoverAnimate && !prefersReducedMotion.value)
 </script>
 
 <template>
   <span
     class="vectorAlphaLogo"
-    :class="{ hoverAnimate }"
+    :class="{ hoverAnimate: animateOnHover }"
     :style="{ '--va-logo-size': sizeValue }"
     :aria-hidden="decorative ? 'true' : undefined"
   >
     <img class="vectorAlphaLogoImg vectorAlphaLogoStatic" :src="staticLogoUrl" :alt="staticAlt" draggable="false" />
     <img
-      v-if="hoverAnimate"
+      v-if="animateOnHover"
       class="vectorAlphaLogoImg vectorAlphaLogoAnimated"
       :src="animatedLogoUrl"
       alt=""

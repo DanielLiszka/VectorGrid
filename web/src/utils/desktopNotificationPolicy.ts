@@ -8,6 +8,10 @@ export interface DesktopNotificationIntent {
   body: string
 }
 
+export interface DesktopNotificationPolicyContext {
+  documentVisibility?: string | null | undefined
+}
+
 const IMPORTANT_SUCCESS_COMMANDS = new Set<TauriCommand>([
   'run_double_ma_optimization',
   'run_composite_cpu_optimization',
@@ -48,8 +52,11 @@ function classifyTaskBody(task: TrackedTask): string {
 export function desktopNotificationIntentForTask(
   task: TrackedTask | null | undefined,
   mode: DesktopNotificationMode,
+  context: DesktopNotificationPolicyContext = {},
 ): DesktopNotificationIntent | null {
   if (!task || mode === 'off') return null
+  const visibility = String(context.documentVisibility || '').trim().toLowerCase()
+  if (visibility === 'visible') return null
   const command = task.command as TauriCommand
   const terminal = task.status === 'success' || task.status === 'failed' || task.status === 'cancelled'
   if (!terminal) return null

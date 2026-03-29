@@ -17,6 +17,7 @@ import {
   taskLifecycleLabel,
   taskLifecycleTone,
 } from '../utils/statusPresentation'
+import { taskLevelIcon, taskStatusIcon, type AppIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import {
   activeTasksCount,
@@ -298,6 +299,14 @@ function statusClass(task: TrackedTask): string {
   return taskLifecycleTone(task.status)
 }
 
+function statusIcon(task: TrackedTask): AppIcon {
+  return taskStatusIcon(task.status)
+}
+
+function statusIconClass(task: TrackedTask): string {
+  return task.status === 'running' ? 'running' : ''
+}
+
 function taskDetail(task: TrackedTask): string {
   return describeTrackedTask(task)
 }
@@ -349,6 +358,10 @@ function toastClass(item: Pick<TaskToastItem | TaskEventItem | TaskTimelineItem,
 
 function levelLabel(level: string | null | undefined): string {
   return taskLevelLabel(level)
+}
+
+function levelIcon(level: string | null | undefined): AppIcon {
+  return taskLevelIcon(level)
 }
 
 function sourceLabel(source: string | null | undefined): string {
@@ -455,7 +468,10 @@ function openRelatedView(task: TrackedTask): void {
       >
         <div class="toastMeta">
           <span class="toastSource">{{ sourceLabel(toast.source) }}</span>
-          <span class="toastLevel">{{ levelLabel(toast.level) }}</span>
+          <span class="toastLevel">
+            <component :is="levelIcon(toast.level)" class="levelIcon" aria-hidden="true" />
+            <span>{{ levelLabel(toast.level) }}</span>
+          </span>
         </div>
         <div class="toastBody">{{ toast.message }}</div>
         <button class="toastClose" type="button" @click="dismissToast(toast.id)">Close</button>
@@ -506,7 +522,10 @@ function openRelatedView(task: TrackedTask): void {
               <article v-for="task in runningTasks" :key="task.id" class="taskCard">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">
+                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <span>{{ statusLabel(task) }}</span>
+                  </div>
                 </div>
                 <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
                 <div v-if="Number.isFinite(task.progressPct)" class="bar thin">
@@ -538,7 +557,10 @@ function openRelatedView(task: TrackedTask): void {
               <article v-for="task in queuedTasks" :key="task.id" class="taskCard taskCardQueued">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">
+                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <span>{{ statusLabel(task) }}</span>
+                  </div>
                 </div>
                 <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
                 <div class="taskRow foot">
@@ -565,7 +587,10 @@ function openRelatedView(task: TrackedTask): void {
               <article v-for="task in cancellingTasks" :key="task.id" class="taskCard taskCardCancelling">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">
+                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <span>{{ statusLabel(task) }}</span>
+                  </div>
                 </div>
                 <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
                 <div class="time">{{ absoluteTime(task.startedAt) }} · {{ durationText(task) }}</div>
@@ -592,7 +617,10 @@ function openRelatedView(task: TrackedTask): void {
               >
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">
+                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <span>{{ statusLabel(task) }}</span>
+                  </div>
                 </div>
                 <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
                 <div class="taskRow foot">
@@ -620,7 +648,10 @@ function openRelatedView(task: TrackedTask): void {
               <article v-for="task in completedTasks" :key="task.id" class="taskCard taskCardSuccess">
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
-                  <div class="taskStatus" :class="statusClass(task)">{{ statusLabel(task) }}</div>
+                  <div class="taskStatus" :class="statusClass(task)">
+                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <span>{{ statusLabel(task) }}</span>
+                  </div>
                 </div>
                 <div class="taskMeta">{{ taskSecondaryMeta(task) }}</div>
                 <div class="taskRow foot">
@@ -652,7 +683,10 @@ function openRelatedView(task: TrackedTask): void {
           >
             <div class="eventMeta">
               <span class="eventTime">{{ absoluteTime(evt.atUnixMs) }}</span>
-              <span class="eventBadge" :class="toastClass(evt)">{{ levelLabel(evt.level) }}</span>
+              <span class="eventBadge" :class="toastClass(evt)">
+                <component :is="levelIcon(evt.level)" class="levelIcon" aria-hidden="true" />
+                <span>{{ levelLabel(evt.level) }}</span>
+              </span>
               <span class="eventSource">{{ sourceLabel(evt.source) }}</span>
             </div>
             <span class="eventText">{{ evt.message }}</span>
@@ -672,7 +706,10 @@ function openRelatedView(task: TrackedTask): void {
           >
             <div class="eventMeta">
               <span class="eventTime">{{ absoluteTime(entry.atUnixMs) }}</span>
-              <span class="eventBadge" :class="toastClass(entry)">{{ levelLabel(entry.level) }}</span>
+              <span class="eventBadge" :class="toastClass(entry)">
+                <component :is="levelIcon(entry.level)" class="levelIcon" aria-hidden="true" />
+                <span>{{ levelLabel(entry.level) }}</span>
+              </span>
               <span class="eventBadge">{{ phaseLabel(entry.phase) }}</span>
               <span class="eventSource">{{ sourceLabel(entry.source) }}</span>
             </div>
@@ -846,6 +883,9 @@ function openRelatedView(task: TrackedTask): void {
 }
 
 .toastLevel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid currentColor;
   border-radius: 999px;
   padding: 1px 6px;
@@ -1006,6 +1046,9 @@ function openRelatedView(task: TrackedTask): void {
 }
 
 .taskStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 0.71rem;
   font-weight: 600;
   border-radius: 999px;
@@ -1144,6 +1187,9 @@ function openRelatedView(task: TrackedTask): void {
 }
 
 .eventBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   justify-self: start;
   border: 1px solid color-mix(in oklab, var(--border-strong) 76%, transparent);
   border-radius: 999px;
@@ -1152,6 +1198,33 @@ function openRelatedView(task: TrackedTask): void {
   line-height: 1.15;
   background: color-mix(in oklab, var(--surface-inline) 88%, transparent);
   color: var(--task-muted);
+}
+
+.statusIcon,
+.levelIcon {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+}
+
+.statusIcon.running {
+  animation: taskStatusSpin 1.1s linear infinite;
+}
+
+@keyframes taskStatusSpin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusIcon.running {
+    animation: none;
+  }
 }
 
 .eventBadge.info,

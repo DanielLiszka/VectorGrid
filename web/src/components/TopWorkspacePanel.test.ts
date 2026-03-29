@@ -7,6 +7,7 @@ import TopWorkspacePanel from './TopWorkspacePanel.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { TOP_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
 
 vi.mock('../composables/useVirtualTableRows', () => ({
   useVirtualTableRows: (rows: { value: unknown[] }) => ({
@@ -348,5 +349,146 @@ describe('TopWorkspacePanel', () => {
     const rows = Array.from(document.querySelectorAll<HTMLElement>('tr[data-top-row="1"]'))
     rows[1]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }))
     expect(pinSpy).toHaveBeenCalledWith(1)
+  })
+
+  it('persists visible top-result columns without disturbing the selection summary', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 2
+    analysisStore.topColumns = [
+      { key: 'rank', label: '#', sort: '', alignLeft: true },
+      { key: 'name', label: 'Name', sort: '', alignLeft: true },
+      { key: 'pnl', label: 'PnL', sort: '', alignLeft: false },
+    ]
+    analysisStore.topTableRows = [
+      {
+        rowId: 'candidate_a',
+        selected: false,
+        cells: [
+          { text: '1', className: 'left', title: '1' },
+          { text: 'row 1', className: 'left', title: 'row 1' },
+          { text: '1.2', className: '', title: '1.2' },
+        ],
+      },
+      {
+        rowId: 'candidate_b',
+        selected: true,
+        cells: [
+          { text: '2', className: 'left', title: '2' },
+          { text: 'row 2', className: 'left', title: 'row 2' },
+          { text: '3.4', className: '', title: '3.4' },
+        ],
+      },
+    ]
+
+    const wrapper = mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const pnlToggle = document.querySelector<HTMLInputElement>('#topColumnToggle_pnl')
+    expect(pnlToggle).not.toBeNull()
+    pnlToggle!.checked = false
+    pnlToggle!.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    await nextTick()
+
+    const headerText = Array.from(document.querySelectorAll('th')).map((cell) =>
+      String(cell.textContent || '').trim(),
+    )
+    expect(headerText).toEqual(['#', 'Name'])
+    const selectionStatus = document.querySelector<HTMLElement>('#topSelectionStatus')
+    expect(selectionStatus?.textContent).toContain('Selected candidate 2 of 2')
+    expect(selectionStatus?.textContent).toContain('row 2')
+    expect(selectionStatus?.textContent).toContain('3.4')
+    expect(localStorage.getItem(TOP_RESULTS_TABLE_STATE_KEY)).toContain('"visibleColumnKeys":["rank","name"]')
+
+    wrapper.unmount()
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const remountHeaderText = Array.from(document.querySelectorAll('th')).map((cell) =>
+      String(cell.textContent || '').trim(),
+    )
+    expect(remountHeaderText).toEqual(['#', 'Name'])
+
+    const restoreButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Restore defaults'),
+    )
+    restoreButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    await nextTick()
+
+    const restoredHeaderText = Array.from(document.querySelectorAll('th')).map((cell) =>
+      String(cell.textContent || '').trim(),
+    )
+    expect(restoredHeaderText).toEqual(['#', 'Name', 'PnL'])
+    expect(localStorage.getItem(TOP_RESULTS_TABLE_STATE_KEY)).toBeNull()
+  })
+
+  it('keeps the row pin affordance on the first visible cell when earlier columns are hidden', async () => {
+    localStorage.setItem(
+      TOP_RESULTS_TABLE_STATE_KEY,
+      JSON.stringify({
+        visibleColumnKeys: ['name', 'score'],
+        knownColumnKeys: ['rank', 'name', 'score'],
+      }),
+    )
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    analysisStore.topColumns = [
+      { key: 'rank', label: '#', sort: '', alignLeft: true },
+      { key: 'name', label: 'Name', sort: '', alignLeft: true },
+      { key: 'score', label: 'Score', sort: '', alignLeft: false },
+    ]
+    analysisStore.topTableRows = [
+      {
+        rowId: 'candidate_a',
+        selected: true,
+        cells: [
+          { text: '1', className: 'left', title: '1' },
+          { text: 'row 1', className: 'left', title: 'row 1' },
+          { text: '98', className: '', title: '98' },
+        ],
+      },
+    ]
+    const pinSpy = vi.spyOn(analysisStore, 'pinTopRow').mockImplementation(() => undefined)
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const firstRow = document.querySelector<HTMLElement>('tr[data-top-row="1"]')
+    const firstCell = firstRow?.querySelector<HTMLTableCellElement>('td')
+    const pinButton = firstCell?.querySelector<HTMLButtonElement>('button.pinCellBtn')
+    expect(firstCell?.textContent).toContain('row 1')
+    expect(pinButton?.textContent).toContain('Pin')
+
+    pinButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(pinSpy).toHaveBeenCalledWith(0)
   })
 })

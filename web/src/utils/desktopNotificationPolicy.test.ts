@@ -57,4 +57,22 @@ describe('desktopNotificationIntentForTask', () => {
       body: 'Access denied.',
     })
   })
+
+  it('suppresses notifications while the desktop window remains visible', () => {
+    const intent = desktopNotificationIntentForTask(
+      {
+        id: 'task_visible',
+        command: 'run_double_ma_validation',
+        label: 'Validation',
+        status: 'failed',
+        startedAt: 1,
+        endedAt: 2,
+        error: 'Validation failed.',
+      },
+      'important',
+      { documentVisibility: 'visible' },
+    )
+
+    expect(intent).toBeNull()
+  })
 })

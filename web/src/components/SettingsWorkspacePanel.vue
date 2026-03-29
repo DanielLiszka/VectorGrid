@@ -25,8 +25,12 @@ import {
   taskLifecycleLabel,
   taskLifecycleTone,
 } from '../utils/statusPresentation'
+import { taskLevelIcon, taskStatusIcon } from '../utils/iconography'
+import { searchPerspectives } from '../utils/perspectiveSearch'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
+
+type DesktopLogFilter = 'all' | 'attention' | 'errors'
 
 const settingsStore = useSettingsStore()
 const dataStore = useDataStore()
@@ -96,6 +100,10 @@ const densityModeDraft = ref('standard')
 const desktopNotificationModeDraft = ref('off')
 const marketDataDirDraft = ref('')
 const perspectiveNameDraft = ref('')
+const perspectiveSearchDraft = ref('')
+const desktopLogFilterDraft = ref<DesktopLogFilter>('all')
+const diagnosticsCopied = ref(false)
+let diagnosticsCopiedTimer: ReturnType<typeof setTimeout> | null = null
 
 const visible = computed(() => String(workspace.value || '').trim() === 'settings')
 const settingsSummaryChips = computed(() => [
@@ -123,6 +131,28 @@ const perspectiveSummaryChips = computed(() => {
     `Density ${String(current.snapshot.densityMode || 'standard').trim() || 'standard'}`,
   ]
 })
+const filteredPerspectives = computed(() => searchPerspectives(perspectives.value, perspectiveSearchDraft.value))
+const visiblePerspectiveOptions = computed(() => {
+  const selected = selectedPerspective.value
+  const filtered = filteredPerspectives.value
+  if (!selected) return filtered
+  if (filtered.some((entry) => entry.id === selected.id)) return filtered
+  return [selected, ...filtered]
+})
+const perspectiveSearchSummary = computed(() => {
+  const query = String(perspectiveSearchDraft.value || '').trim()
+  const matchCount = filteredPerspectives.value.length
+  const total = perspectives.value.length
+  const localHelp = 'Search stays local to saved perspectives; use Ctrl+K for global actions.'
+  if (!query) return `${total} saved perspectives. ${localHelp}`
+  const label = matchCount === 1 ? 'match' : 'matches'
+  const selectedHidden =
+    !!selectedPerspective.value && !filteredPerspectives.value.some((entry) => entry.id === selectedPerspective.value?.id)
+  if (selectedHidden) {
+    return `${matchCount} ${label} for “${query}”. Current selection stays visible while filtered. ${localHelp}`
+  }
+  return `${matchCount} ${label} for “${query}”. ${localHelp}`
+})
 const diagnosticsSummaryChips = computed(() => [
   `Runtime ${runtimePhaseLabel.value}`,
   `Task center ${centerStatusLabel.value}`,
@@ -149,7 +179,16 @@ const runtimeDetail = computed(() => {
 const runtimeErrorBody = computed(() => String(bootErrorDetail.value || '').trim())
 const recentTimeline = computed(() => timeline.value.slice(0, 6))
 const recentAlerts = computed(() => toasts.value.slice(0, 4))
-const recentDesktopLogs = computed(() => desktopLogs.value.slice(0, 6))
+const filteredDesktopLogs = computed(() => {
+  if (desktopLogFilterDraft.value === 'errors') {
+    return desktopLogs.value.filter((entry) => entry.level === 'error')
+  }
+  if (desktopLogFilterDraft.value === 'attention') {
+    return desktopLogs.value.filter((entry) => entry.level === 'warn' || entry.level === 'error')
+  }
+  return desktopLogs.value
+})
+const recentDesktopLogs = computed(() => filteredDesktopLogs.value.slice(0, 6))
 const latestTaskLabel = computed(() => {
   return describeLatestTaskOutcome(latestTask.value)
 })
@@ -206,6 +245,75 @@ const desktopWindowStateDetail = computed(() => {
   const file = String(desktopWindowStateFile.value || '').trim()
   return file ? `Window geometry persists to ${file}.` : 'Window geometry persists between launches.'
 })
+const desktopLogFilterLabel = computed(() => {
+  if (desktopLogFilterDraft.value === 'errors') return 'Errors only'
+  if (desktopLogFilterDraft.value === 'attention') return 'Warnings and errors'
+  return 'All levels'
+})
+const desktopLogStamp = computed(() => {
+  const total = desktopLogs.value.length
+  const visibleCount = recentDesktopLogs.value.length
+  if (desktopLogFilterDraft.value === 'all') {
+    return `${visibleCount} items`
+  }
+  return `${visibleCount} shown of ${total}`
+})
+const desktopLogEmptyLabel = computed(() => {
+  if (desktopLogs.value.length === 0) return 'No desktop log entries yet.'
+  return 'No desktop log entries match the current filter.'
+})
+const desktopDiagnosticsSnapshot = computed(() => {
+  const lines = [
+    'VectorAlpha desktop diagnostics snapshot',
+    `Captured: ${formatUiTimeFromUnixMs(Date.now())}`,
+    '',
+    'Runtime',
+    `- phase: ${runtimePhaseLabel.value}`,
+    `- detail: ${runtimeDetail.value}`,
+    runtimeErrorBody.value ? `- error: ${runtimeErrorBody.value}` : '',
+    '',
+    'Desktop',
+    `- notifications: ${desktopNotificationPermissionLabel.value}`,
+    `- window state: ${desktopWindowStateDetail.value}`,
+    `- console mirroring: ${desktopLogConsoleAttached.value ? 'attached in dev' : 'buffered in-app only'}`,
+    '',
+    'Task posture',
+    `- center: ${centerStatusLabel.value}`,
+    `- summary: ${taskHeadline.value}`,
+    `- progress: ${progressLabel.value}`,
+    diagnosticsTaskChips.value.length ? `- counts: ${diagnosticsTaskChips.value.join(', ')}` : '',
+    `- latest: ${latestTaskLabel.value}`,
+    `- latest detail: ${latestTaskDetail.value}`,
+    `- attention: ${taskAttentionLine.value}`,
+    `- completed: ${taskCompletedLine.value}`,
+    '',
+    'Recent desktop logs',
+    `- filter: ${desktopLogFilterLabel.value}`,
+    ...(recentDesktopLogs.value.length
+      ? recentDesktopLogs.value.map(
+          (entry) =>
+            `- ${formatUiTimeFromUnixMs(entry.atUnixMs)} [${String(entry.level || 'info').toUpperCase()}] ${entry.message}`,
+        )
+      : ['- none']),
+    '',
+    'Recent timeline',
+    ...(recentTimeline.value.length
+      ? recentTimeline.value.map(
+          (entry) =>
+            `- ${formatUiTimeFromUnixMs(entry.atUnixMs)} [${diagnosticsLevelLabel(entry.level)} / ${diagnosticsPhaseLabel(entry.phase)}] ${diagnosticsSourceLabel(entry.source)}: ${entry.message}`,
+        )
+      : ['- none']),
+    '',
+    'Recent alerts',
+    ...(recentAlerts.value.length
+      ? recentAlerts.value.map(
+          (toast) =>
+            `- ${formatUiTimeFromUnixMs(toast.atUnixMs)} [${diagnosticsLevelLabel(toast.level)}] ${diagnosticsSourceLabel(toast.source)}: ${toast.message}`,
+        )
+      : ['- none']),
+  ]
+  return lines.filter((line) => String(line || '').trim().length > 0).join('\n')
+})
 
 function diagnosticsLevelTone(level: string | null | undefined): string {
   return taskLevelTone(level)
@@ -215,8 +323,16 @@ function diagnosticsLevelLabel(level: string | null | undefined): string {
   return taskLevelLabel(level)
 }
 
+function diagnosticsLevelIcon(level: string | null | undefined) {
+  return taskLevelIcon(level)
+}
+
 function diagnosticsPhaseLabel(phase: string | null | undefined): string {
   return formatTaskPhaseLabel(phase)
+}
+
+function diagnosticsStatusIcon(status: string | null | undefined) {
+  return taskStatusIcon(status)
 }
 
 function diagnosticsSourceLabel(source: string | null | undefined): string {
@@ -304,6 +420,15 @@ function clearRecentAlerts(): void {
   for (const toast of recentAlerts.value) dismissToast(toast.id)
 }
 
+function clearDesktopLogs(): void {
+  runtimeStore.clearDesktopLogs()
+}
+
+async function copyDesktopDiagnostics(): Promise<void> {
+  const copied = await writeClipboardText(desktopDiagnosticsSnapshot.value)
+  markDiagnosticsCopied(copied)
+}
+
 function createPerspectiveFromDraft(): void {
   settingsStore.createPerspective(String(perspectiveNameDraft.value || '').trim())
   perspectiveNameDraft.value = selectedPerspective.value?.name || ''
@@ -335,6 +460,42 @@ async function requestDesktopNotifications(): Promise<void> {
   await requestDesktopNotificationPermission()
 }
 
+async function writeClipboardText(value: string): Promise<boolean> {
+  const text = String(value || '')
+  const clipboard = typeof navigator === 'undefined' ? null : navigator.clipboard
+  if (clipboard?.writeText) {
+    await clipboard.writeText(text)
+    return true
+  }
+  if (typeof document !== 'undefined' && typeof document.execCommand === 'function') {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', 'true')
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    return copied
+  }
+  return false
+}
+
+function markDiagnosticsCopied(active: boolean): void {
+  diagnosticsCopied.value = active
+  if (diagnosticsCopiedTimer) {
+    clearTimeout(diagnosticsCopiedTimer)
+    diagnosticsCopiedTimer = null
+  }
+  if (active) {
+    diagnosticsCopiedTimer = setTimeout(() => {
+      diagnosticsCopied.value = false
+      diagnosticsCopiedTimer = null
+    }, 1800)
+  }
+}
+
 const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 onMounted(async () => {
@@ -349,6 +510,10 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (diagnosticsCopiedTimer) {
+    clearTimeout(diagnosticsCopiedTimer)
+    diagnosticsCopiedTimer = null
+  }
   flushQueuedInputValuesNow()
   if (runtimeObserver) {
     runtimeObserver.disconnect()
@@ -468,7 +633,7 @@ onBeforeUnmount(() => {
               <option value="important">Important completions and failures</option>
             </select>
             <div class="panelMuted">
-              OS notifications complement the in-app task center. Keep them focused on high-signal outcomes so background work is visible without routine spam.
+              OS notifications complement the in-app task center. They stay focused on high-signal outcomes and only route when the desktop window is not visible, so background work stays visible without routine spam.
             </div>
             <div class="actions">
               <button type="button" :disabled="!canRequestDesktopNotifications" @click="requestDesktopNotifications">
@@ -553,6 +718,19 @@ onBeforeUnmount(() => {
               {{ chip }}
             </span>
           </div>
+          <div class="rowSingle">
+            <label for="vueSettingsPerspectiveSearch">Search saved perspectives</label>
+            <input
+              id="vueSettingsPerspectiveSearch"
+              type="text"
+              :value="perspectiveSearchDraft"
+              placeholder="name, workflow, density…"
+              @input="perspectiveSearchDraft = String(($event.target as HTMLInputElement).value || '')"
+            />
+            <div class="panelMuted">
+              {{ perspectiveSearchSummary }}
+            </div>
+          </div>
           <div class="rowTwo">
             <div>
               <label for="vueSettingsPerspectiveSelect">Perspective</label>
@@ -561,7 +739,7 @@ onBeforeUnmount(() => {
                 :value="selectedPerspectiveId"
                 @change="settingsStore.selectPerspective(String(($event.target as HTMLSelectElement).value || ''))"
               >
-                <option v-for="entry in perspectives" :key="entry.id" :value="entry.id">
+                <option v-for="entry in visiblePerspectiveOptions" :key="entry.id" :value="entry.id">
                   {{ entry.name }}{{ entry.builtIn ? ' (built-in)' : '' }}
                 </option>
               </select>
@@ -654,6 +832,9 @@ onBeforeUnmount(() => {
           </div>
           <div class="actions">
             <button type="button" @click="openTaskCenter">Open task center</button>
+            <button type="button" @click="copyDesktopDiagnostics">
+              {{ diagnosticsCopied ? 'Copied diagnostics snapshot' : 'Copy diagnostics snapshot' }}
+            </button>
             <button type="button" :disabled="recentAlerts.length === 0" @click="clearRecentAlerts">Clear recent alerts</button>
           </div>
           <div class="diagnosticsGrid">
@@ -701,7 +882,10 @@ onBeforeUnmount(() => {
                 {{ latestTaskLabel }}
               </div>
               <div v-if="latestTask" class="diagnosticsEntryMeta">
-                <span class="mono diagnosticsBadge" :class="latestTaskTone">{{ latestTaskStatusLabel }}</span>
+                <span class="mono diagnosticsBadge" :class="latestTaskTone">
+                  <component :is="diagnosticsStatusIcon(latestTask?.status)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                  <span>{{ latestTaskStatusLabel }}</span>
+                </span>
               </div>
               <div class="panelMuted">
                 {{ latestTaskDetail }}
@@ -736,9 +920,27 @@ onBeforeUnmount(() => {
             <section class="diagnosticsCard diagnosticsCardWide">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Desktop logs</div>
-                <div class="mono diagnosticsStamp">{{ recentDesktopLogs.length }} items</div>
+                <div class="mono diagnosticsStamp">{{ desktopLogStamp }}</div>
               </header>
-              <div v-if="recentDesktopLogs.length === 0" class="panelMuted">No desktop log entries yet.</div>
+              <div class="diagnosticsControls">
+                <label class="diagnosticsControl" for="settingsDesktopLogFilter">
+                  <span class="panelMuted">Filter</span>
+                  <select
+                    id="settingsDesktopLogFilter"
+                    :value="desktopLogFilterDraft"
+                    @change="desktopLogFilterDraft = String(($event.target as HTMLSelectElement).value || 'all') as DesktopLogFilter"
+                  >
+                    <option value="all">All levels</option>
+                    <option value="attention">Warnings and errors</option>
+                    <option value="errors">Errors only</option>
+                  </select>
+                </label>
+                <button type="button" :disabled="desktopLogs.length === 0" @click="clearDesktopLogs">Clear desktop logs</button>
+              </div>
+              <div class="panelMuted">
+                {{ desktopLogFilterDraft === 'all' ? 'Use the filter to isolate warnings or errors before copying a diagnostics snapshot.' : `Showing ${desktopLogFilterLabel.toLowerCase()}.` }}
+              </div>
+              <div v-if="recentDesktopLogs.length === 0" class="panelMuted">{{ desktopLogEmptyLabel }}</div>
               <ul v-else class="diagnosticsList">
                 <li
                   v-for="(entry, index) in recentDesktopLogs"
@@ -748,7 +950,10 @@ onBeforeUnmount(() => {
                 >
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">{{ diagnosticsLevelLabel(entry.level) }}</span>
+                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">
+                      <component :is="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                      <span>{{ diagnosticsLevelLabel(entry.level) }}</span>
+                    </span>
                   </div>
                   <div class="diagnosticsEntryBody">
                     <strong>Desktop runtime</strong>
@@ -773,7 +978,10 @@ onBeforeUnmount(() => {
                 >
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">{{ diagnosticsLevelLabel(entry.level) }}</span>
+                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">
+                      <component :is="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                      <span>{{ diagnosticsLevelLabel(entry.level) }}</span>
+                    </span>
                     <span class="mono diagnosticsBadge">{{ diagnosticsPhaseLabel(entry.phase) }}</span>
                   </div>
                   <div class="diagnosticsEntryBody">
@@ -799,7 +1007,10 @@ onBeforeUnmount(() => {
                 >
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(toast.atUnixMs) }}</span>
-                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(toast.level)">{{ diagnosticsLevelLabel(toast.level) }}</span>
+                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(toast.level)">
+                      <component :is="diagnosticsLevelIcon(toast.level)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                      <span>{{ diagnosticsLevelLabel(toast.level) }}</span>
+                    </span>
                   </div>
                   <div class="diagnosticsEntryBody">
                     <strong>{{ diagnosticsSourceLabel(toast.source) }}</strong>
@@ -948,6 +1159,19 @@ onBeforeUnmount(() => {
   gap: 0.7rem;
 }
 
+.diagnosticsControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.diagnosticsControl {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
 .diagnosticsCard {
   border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-working));
   border-radius: 10px;
@@ -1025,10 +1249,19 @@ onBeforeUnmount(() => {
 }
 
 .diagnosticsBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
   border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
   border-radius: 999px;
   padding: 0.08rem 0.38rem;
   background: color-mix(in oklab, var(--surface-sunken) 76%, var(--panel-footer));
+}
+
+.diagnosticsBadgeIcon {
+  width: 0.8rem;
+  height: 0.8rem;
+  flex: 0 0 auto;
 }
 
 .diagnosticsBadge.info,

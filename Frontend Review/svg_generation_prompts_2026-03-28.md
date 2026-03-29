@@ -74,7 +74,7 @@ Use a multi-pass internal design process before you answer:
 Do not output your intermediate concepts, critique, or iteration notes. Output only the final polished SVG.
 
 Global constraints:
-- Output exactly one standalone SVG file.
+- Output exactly one standalone Two SVG files, one with color, one without.
 - Transparent background.
 - No embedded JavaScript.
 - No raster images or base64 image payloads.
@@ -272,7 +272,7 @@ Styling:
 - clear silhouette at small size
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 2. `provenance-low-sample.svg`
@@ -306,7 +306,7 @@ Styling:
 - should pair well with other provenance icons in the same family
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 3. `provenance-slippage-sensitive.svg`
@@ -339,7 +339,7 @@ Styling:
 - use the minimum number of shapes needed to communicate drag / sensitivity
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 4. `provenance-regime-concentrated.svg`  ******
@@ -387,7 +387,7 @@ Distinctness requirement:
 - prioritize “multiple regimes with one dominant regime” over “too few observations”
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 5. `provenance-validation-stale.svg`
@@ -423,7 +423,7 @@ Distinctness requirement:
 - prioritize stale/lag semantics over source-reload semantics
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 6. `provenance-dataset-changed.svg`
@@ -459,7 +459,7 @@ Distinctness requirement:
 - prioritize lineage/source-shift semantics over time-lag semantics
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 7. `provenance-review-attention.svg`
@@ -492,7 +492,7 @@ Styling:
 - should feel review-oriented, not alarming
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 8. `compare-pin-candidate.svg`
@@ -529,7 +529,7 @@ Distinctness requirement:
 - the pin/retain action cue must be readable without turning into a stationery pushpin
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 9. `compare-candidates.svg`
@@ -565,7 +565,7 @@ Distinctness requirement:
 - prioritize simultaneous side-by-side review over substitution/exchange semantics
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 10. `compare-replace-pinned.svg`
@@ -600,7 +600,7 @@ Distinctness requirement:
 - substitution should be obvious, but the icon must not collapse into a generic sync symbol
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 11. `compare-remove-from-set.svg`
@@ -630,7 +630,7 @@ Styling:
 - should look like a compare action, not a global delete action
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 12. `compare-candidate-focus.svg`
@@ -661,7 +661,7 @@ Styling:
 - should fit naturally beside pin and compare icons
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 13. `task-queued.svg`
@@ -695,7 +695,7 @@ Distinctness requirement:
 - queued should read as waiting in order, not already stopped
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 14. `task-running.svg`
@@ -730,7 +730,7 @@ Distinctness requirement:
 - active computational motion should be implied without relying on animation
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 15. `task-cancelling.svg`
@@ -764,7 +764,7 @@ Distinctness requirement:
 - prioritise transitional interruption, not neutral stop or active progress
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 16. `task-completed.svg`
@@ -798,7 +798,7 @@ Distinctness requirement:
 - completion should read as resolved work, not a generic success badge
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 17. `task-failed.svg`
@@ -834,7 +834,7 @@ Distinctness requirement:
 - failure should read as broken/interrupted, not merely stopped
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 18. `task-cancelled.svg`
@@ -868,7 +868,7 @@ Distinctness requirement:
 - cancellation should read as deliberate operator stop, not passive waiting or system failure
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 19. `runtime-ready.svg`
@@ -898,7 +898,7 @@ Styling:
 - technical and operator-facing
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ## Batch B: Artifact And Utility SVGs
@@ -940,7 +940,7 @@ Distinctness requirement:
 - prioritize workbook/grid structure over generic document silhouette
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 21. `artifact-bundle.svg`
@@ -974,7 +974,7 @@ Distinctness requirement:
 - prioritize grouped artifact layers over single-sheet document structure
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 22. `artifact-reveal-path.svg`
@@ -1008,7 +1008,7 @@ Distinctness requirement:
 - prioritize “show containing location” over “send outward” semantics
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 23. `artifact-export-snapshot.svg`
@@ -1042,7 +1042,7 @@ Distinctness requirement:
 - prioritize exporting a reviewed state over opening a location
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 24. `artifact-reopen-report.svg`
@@ -1076,7 +1076,7 @@ Distinctness requirement:
 - prioritize revisiting/opening semantics over passive report identity
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ## Batch C: Empty-State Illustrations
@@ -1125,7 +1125,7 @@ Avoid:
 - decorative backgrounds
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 26. `empty-compare-workspace.svg`
@@ -1164,7 +1164,7 @@ Avoid:
 - glowing comparison tropes
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 27. `empty-artifact-library.svg`
@@ -1202,7 +1202,7 @@ Composition constraints:
 - keep the scene schematic rather than illustrative
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ## Batch D: Optional Shell Mode Glyphs
@@ -1247,7 +1247,7 @@ Distinctness requirement:
 - prioritize configuration-grid posture over inspection or live-runtime posture
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 29. `mode-review.svg`
@@ -1280,7 +1280,7 @@ Distinctness requirement:
 - prioritize inspection/review posture over construction or live operation
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### 30. `mode-operate.svg`
@@ -1314,7 +1314,7 @@ Distinctness requirement:
 - prioritize monitored runtime posture over setup or analysis posture
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ## Optional Animated Variant Prompts
@@ -1346,7 +1346,7 @@ Requirements:
 - no JavaScript
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### B. `compare-candidates.animated.svg`
@@ -1365,7 +1365,7 @@ Requirements:
 - no JavaScript
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ### C. `empty-results-workspace.animated.svg`
@@ -1385,7 +1385,7 @@ Requirements:
 - no JavaScript
 
 Output:
-- raw SVG only
+- Two SVG files, one with color, one without
 ```
 
 ## Recommended Generation Order
@@ -1413,7 +1413,7 @@ Keep the same core concept and file name, but make these corrections:
 - keep the geometry centered and balanced
 - do not add text
 - do not add decorative background elements
-- keep the output as raw SVG only
+- keep the output as Two SVG files, one with color, one without
 
 Specific corrections:
 - [paste the concrete issues here]

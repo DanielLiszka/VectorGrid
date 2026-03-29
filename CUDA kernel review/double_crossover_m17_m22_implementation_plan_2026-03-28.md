@@ -223,6 +223,51 @@ Measured smoke results:
   - `trend_quality` + `alma/alma` + `small/1590pairs` + `full17` logs `dispatch=m17`
   - `trend_quality` + `alma/alma` + `small/1590pairs` + `trade22` logs `dispatch=m22`
   - with `trend_quality_strategy_for_kernel()` enabling the regime filter and `StrategyConfig::default()` keeping `stop_loss_pct`, `take_profit_pct`, `commission`, and `eps_rel` at zero or `None`, those dispatches land on the `regime_on_norisk_eps0_nocomm` selectors for the non-lockstep M17 / M22 families
+- optimize-path full-row selection is now centralized behind pure fixed-contract dispatch / flavor helpers:
+  - route selection with symbols present is unit-tested
+  - fallback when the matching M17 / M22 symbol is unavailable is unit-tested
+  - the host-side `STRAT_SIGNED_EXPOSURE` invariant is now explicit in both code comments and unit tests
+- the first `__shfl_sync`-based warp-uniform lockstep load attempt for `lr[t]` and `ret1[t]` was measured and reverted in the same session:
+  - workload: `trend_quality` + `alma/alma` + `xlarge/370750pairs` + `objective=sharpe`
+  - with the helper enabled:
+    - `full17`: `496 / 489 / 500 ms` min / median / max, `495.0 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `505 / 507 / 509 ms` min / median / max, `507.0 ms` mean across 3 measured iterations after 1 warmup
+  - after reverting the helper:
+    - `full17`: `423 / 427 / 433 ms` min / median / max, `427.7 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `436 / 437 / 438 ms` min / median / max, `437.0 ms` mean across 3 measured iterations after 1 warmup
+  - conclusion: do not treat the current broadcast-helper form as the Phase 4 answer for warp-uniform lockstep loads
+- forced generic `fast_warp_dedup` is now benchmarked as a proxy for possible M17 / M22 dedicated dedup variants on the same hot xlarge regime-on slice:
+  - workload: `trend_quality` + `alma/alma` + `xlarge/370750pairs` + `objective=sharpe`
+  - current specialized lockstep routes:
+    - `dispatch=lockstep_m17`: `412 / 412 / 431 ms` min / median / max, `418.3 ms` mean across 3 measured iterations after 1 warmup
+    - `dispatch=lockstep_m22`: `437 / 449 / 455 ms` min / median / max, `447.0 ms` mean across 3 measured iterations after 1 warmup
+  - forced generic dedup-only route:
+    - `dispatch=fast_warp_dedup` + `full17`: `945 / 963 / 968 ms` min / median / max, `958.7 ms` mean across 3 measured iterations after 1 warmup
+    - `dispatch=fast_warp_dedup` + `trade22`: `958 / 962 / 974 ms` min / median / max, `964.7 ms` mean across 3 measured iterations after 1 warmup
+  - conclusion: do not add dedicated M17 / M22 dedup variants based on the current dedup design; the existing dedup route is more than 2x slower than the specialized lockstep full-row routes on this benchmark-hot surface
+- reduced-row and full-row max-drawdown constraint packing is now covered directly in unit tests:
+  - `build_device_constraint_args()` converts reduced rows into log-space
+  - `build_device_constraint_args()` keeps raw `max_drawdown` thresholds for both `full17` and `trade22`
+- compact valid-pair ordering is now covered directly at the builder level:
+  - `build_valid_pair_index_map_i32()` is unit-tested to preserve dense `pf`-major order while skipping invalid `fast >= slow` pairs
+- `regime_hybrid_reversion_exit_rel` is now implemented as a real hysteresis threshold instead of dead contract surface:
+  - CPU range-mode helpers now keep the current side until the spread crosses the exit band or an opposite entry threshold
+  - CUDA range-mode helpers now use the same current-position-aware rule
+  - covered by the `desired_sign_with_filters_*` unit tests and the existing GPU hybrid parity test
+- Nsight Compute is now usable on this machine when launched with workspace-local `HOME`, `TEMP`, and `TMP`:
+  - reports captured at `target/nsight/m17_regime_on_xlarge_profile.ncu-rep` and `target/nsight/m22_regime_on_xlarge_profile.ncu-rep`
+  - xlarge `trend_quality` + `alma/alma` lockstep hot-kernel summary:
+    - `lockstep_time_m17_regime_on_norisk_eps0_nocomm`: `474.24 ms`, compute throughput `61.62%`, memory throughput `25.05%`, `56` registers/thread, theoretical occupancy `75.0%`, achieved occupancy `59.81%`
+    - `lockstep_time_m22_regime_on_norisk_eps0_nocomm`: `484.96 ms`, compute throughput `59.76%`, memory throughput `20.97%`, `64` registers/thread, theoretical occupancy `66.67%`, achieved occupancy `53.42%`
+- a selective `__launch_bounds__(128, 2)` experiment on just the two benchmark-hot lockstep regime-on kernels was measured and reverted:
+  - workload: xlarge `trend_quality` + `alma/alma` + objective `sharpe`
+  - baseline before the experiment:
+    - `full17`: `423 / 427 / 433 ms` min / median / max, `427.7 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `436 / 437 / 438 ms` min / median / max, `437.0 ms` mean across 3 measured iterations after 1 warmup
+  - with `__launch_bounds__(128, 2)` on `lockstep_time_m17_regime_on_norisk_eps0_nocomm` and `lockstep_time_m22_regime_on_norisk_eps0_nocomm`:
+    - `full17`: `422 / 426 / 429 ms` min / median / max, `425.7 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `443 / 447 / 450 ms` min / median / max, `446.7 ms` mean across 3 measured iterations after 1 warmup
+  - conclusion: reject the experiment; the small 17-row gain does not justify the larger 22-row regression
 - Nsight Systems capture for this new non-lockstep regime-on slice is still pending in the recovered post-crash session:
   - older lockstep M17 / M22 captures remain valid
   - current `nsys` attach attempts time out before session creation even after repairing the temp directory
@@ -233,7 +278,17 @@ Current interpretation:
 - the `large` fixed-contract slice is already materially faster than the generic full-row path and `trade22` currently runs slightly tighter than `full17`
 - the `alma/alma` large fixed-contract slice is now running below the old mid-80 ms expectation in direct exact-route runner measurements
 - the generic combined lockstep/dedup idea is now measured as a regression, not an open presumed win
-- remaining open work is now centered on regime-hybrid verification once there is an exact-kernel benchmark surface for it, lockstep full-row load cleanup that is more targeted than the rejected generic dedup combination, and any windowed full-row families that profiling can justify
+- the existing generic dedup path is also a regression proxy for M17 / M22 full-row work, so dedicated dedup variants are now lower priority than lockstep load cleanup
+- the first Nsight Compute pass does not point to a DRAM-bound kernel:
+  - both hot lockstep regime-on kernels are primarily compute / latency limited
+  - both are register-limited on theoretical occupancy
+  - that makes warp-uniform regime-value broadcast cleanup a lower-confidence next step than it looked before profiling
+- the first bounded register-pressure experiment also failed to produce a stable cross-contract win
+  - future occupancy tuning should stay narrowly targeted and be treated as opt-in experimentation, not presumed progress
+- windowed exact full-row hotness is still unmeasured, but it is now clearer why:
+  - `profile_gpu_dynamic_runner` currently constructs only a plain grid `DoubleMaRequest`
+  - `DoubleMaRequest` does not currently expose an explicit windowed optimization surface for this benchmark harness to drive
+- remaining open work is now centered on regime-hybrid verification once there is an exact-kernel benchmark surface for it, any bounded register-pressure / occupancy experiments that can justify themselves against the new Nsight Compute data, and any windowed full-row families that profiling can justify
 
 ## Implementation Order
 
@@ -586,12 +641,12 @@ Guardrails:
 - [x] Add a device helper that centralizes the current search-row log-space rule for `M < 17`.
 - [x] Use that helper in the metric writer.
 - [x] Use that helper in calmar scoring.
-- [ ] Confirm that current reduced-row max-drawdown threshold conversion still matches the device-side comparison contract.
-- [ ] Decide the fate of `regime_range_exit_rel`: implement meaningfully or remove/deprecate the active contract.
+- [x] Confirm that current reduced-row max-drawdown threshold conversion still matches the device-side comparison contract.
+- [x] Decide the fate of `regime_range_exit_rel`: implement meaningfully or remove/deprecate the active contract.
 - [x] Add or update tests for 17-row calmar decode behavior.
-- [ ] Add or update tests for 17-row max-drawdown constraint behavior.
+- [x] Add or update tests for 17-row max-drawdown constraint behavior.
 - [x] Keep `trade_on_next_bar=true` validation explicit and unchanged.
-- [ ] Keep the current host-side `STRAT_SIGNED_EXPOSURE` invariant explicit in tests or comments.
+- [x] Keep the current host-side `STRAT_SIGNED_EXPOSURE` invariant explicit in tests or comments.
 
 ### Phase 2 Checklist: New Kernel Symbols
 
@@ -623,19 +678,22 @@ Guardrails:
 - [x] Preserve current reduced-row M7 route precedence.
 - [x] Preserve current reduced-row M10 product-route precedence.
 - [x] Add or update dispatch logging so M17 / M22 routes are visible in logs.
-- [ ] Add tests for specialized-route selection when symbols are present.
-- [ ] Add tests for clean fallback when a matching symbol is unavailable.
+- [x] Add tests for specialized-route selection when symbols are present.
+- [x] Add tests for clean fallback when a matching symbol is unavailable.
 
 ### Phase 4 Checklist: Route Matrix And Lockstep Overhead
 
 - [x] Benchmark a generic combined `double_cross_backtest_tm_flex_f32_lockstep_time_fast_warp_dedup` route.
 - [x] Revert the generic combined route after measured regression.
+- [x] Reject the first `__shfl_sync`-based warp-uniform `lr` / `ret1` lockstep helper after measured regression.
+- [x] Capture Nsight Compute on the hot lockstep `m17` / `m22` regime-on kernels and record whether they are memory- or register-limited.
+- [x] Reject the first selective `__launch_bounds__(128, 2)` experiment on the hot lockstep regime-on kernels after mixed results and a 22-row regression.
 - [ ] Add warp-uniform lockstep loads for `lr`.
 - [ ] Add warp-uniform lockstep loads for `ret1`.
 - [ ] Add warp-uniform regime-value loads for lockstep regime paths.
-- [ ] Benchmark whether M17 lockstep full-row routes should also get dedicated dedup variants.
-- [ ] Benchmark whether M22 lockstep full-row routes should also get dedicated dedup variants.
-- [ ] Keep dense / `pf`-major compact valid-pair ordering covered by tests or comments.
+- [x] Benchmark whether M17 lockstep full-row routes should also get dedicated dedup variants.
+- [x] Benchmark whether M22 lockstep full-row routes should also get dedicated dedup variants.
+- [x] Keep dense / `pf`-major compact valid-pair ordering covered by tests or comments.
 - [ ] Re-check whether windowed exact full-row runs are hot enough to justify a dedicated family.
 
 ### Phase 5 Checklist: Optional Pipeline Fusion

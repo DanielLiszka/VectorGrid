@@ -2392,7 +2392,40 @@ fn base_cross_sign(f: f64, s: f64, cfg: &StrategyConfig) -> i32 {
 }
 
 #[inline]
-fn desired_sign_with_filters(f: f64, s: f64, cfg: &StrategyConfig, regime_v: Option<f64>) -> i32 {
+fn regime_hybrid_range_sign(spread_rel: f64, current_pos: i32, entry_rel: f64, exit_rel: f64) -> i32 {
+    if current_pos > 0 {
+        if spread_rel >= entry_rel {
+            -1
+        } else if spread_rel < -exit_rel {
+            1
+        } else {
+            0
+        }
+    } else if current_pos < 0 {
+        if spread_rel <= -entry_rel {
+            1
+        } else if spread_rel > exit_rel {
+            -1
+        } else {
+            0
+        }
+    } else if spread_rel >= entry_rel {
+        -1
+    } else if spread_rel <= -entry_rel {
+        1
+    } else {
+        0
+    }
+}
+
+#[inline]
+fn desired_sign_with_filters(
+    f: f64,
+    s: f64,
+    cfg: &StrategyConfig,
+    regime_v: Option<f64>,
+    current_pos: i32,
+) -> i32 {
     let sign = base_cross_sign(f, s, cfg);
 
     if let Some(v) = regime_v {
@@ -2406,15 +2439,8 @@ fn desired_sign_with_filters(f: f64, s: f64, cfg: &StrategyConfig, regime_v: Opt
             let spread_rel = (f - s) / denom;
             let entry_rel = cfg.regime_hybrid_reversion_entry_rel();
             let exit_rel = cfg.regime_hybrid_reversion_exit_rel();
-            let mut range_sign = if spread_rel >= entry_rel {
-                -1
-            } else if spread_rel <= -entry_rel {
-                1
-            } else if spread_rel.abs() <= exit_rel {
-                0
-            } else {
-                0
-            };
+            let mut range_sign =
+                regime_hybrid_range_sign(spread_rel, current_pos, entry_rel, exit_rel);
             if cfg.long_only && range_sign < 0 {
                 range_sign = 0;
             }
@@ -2466,7 +2492,7 @@ pub(crate) fn desired_positions_with_exit_mode(
         for t in start_t..n_total {
             let t_sig = t.saturating_sub(trade_offset);
             let ht_sig = halftrend.map(|h| h[t_sig]);
-            let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+            let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig, pos);
 
             if pos == 0 && raw_sign != 0 {
                 pos = raw_sign;
@@ -2492,10 +2518,13 @@ pub(crate) fn desired_positions_with_exit_mode(
         return out;
     }
 
+    let mut pos: i32 = 0;
     for t in start_t..n_total {
         let t_sig = t.saturating_sub(trade_offset);
         let ht_sig = halftrend.map(|h| h[t_sig]);
-        out[t] = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+        let sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig, pos);
+        pos = sign;
+        out[t] = sign;
     }
 
     out
@@ -2744,7 +2773,8 @@ where
         overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
         let ht_sig = halftrend.map(|h| h[t_sig]);
-        let raw_sign = desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig);
+        let raw_sign =
+            desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig, pos);
         let persisted_sign =
             overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
         let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
@@ -3072,7 +3102,7 @@ fn eval_double_ma_curves_kaufman_f64(
         overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
         let ht_sig = halftrend.map(|h| h[t_sig]);
-        let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+        let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig, pos);
         let persisted_sign =
             overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
         let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
@@ -3304,7 +3334,8 @@ where
         overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
         let ht_sig = halftrend.map(|h| h[t_sig]);
-        let raw_sign = desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig);
+        let raw_sign =
+            desired_sign_with_filters(fast_at(t_sig), slow_at(t_sig), cfg, ht_sig, pos);
         let persisted_sign =
             overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
         let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
@@ -3632,7 +3663,7 @@ fn eval_double_ma_curves_cross_overlay_f64(
         overlay_on_bar_start(&mut overlay_state);
         let t_sig = t.saturating_sub(trade_offset);
         let ht_sig = halftrend.map(|h| h[t_sig]);
-        let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig);
+        let raw_sign = desired_sign_with_filters(fast[t_sig], slow[t_sig], cfg, ht_sig, pos);
         let persisted_sign =
             overlay_apply_signal_persistence(raw_sign, pos, &overlays, &mut overlay_state);
         let sign = overlay_apply_entry_cooldown(persisted_sign, pos, &overlay_state);
@@ -20889,9 +20920,26 @@ mod tests {
             regime_hybrid_reversion_exit_rel: 0.002,
             ..StrategyConfig::default()
         };
-        assert_eq!(desired_sign_with_filters(102.0, 100.0, &cfg, Some(2.0)), -1);
-        assert_eq!(desired_sign_with_filters(98.0, 100.0, &cfg, Some(2.0)), 1);
-        assert_eq!(desired_sign_with_filters(100.05, 100.0, &cfg, Some(2.0)), 0);
+        assert_eq!(desired_sign_with_filters(102.0, 100.0, &cfg, Some(2.0), 0), -1);
+        assert_eq!(desired_sign_with_filters(98.0, 100.0, &cfg, Some(2.0), 0), 1);
+        assert_eq!(desired_sign_with_filters(100.05, 100.0, &cfg, Some(2.0), 0), 0);
+    }
+
+    #[test]
+    fn desired_sign_with_filters_uses_exit_band_against_current_position() {
+        let cfg = StrategyConfig {
+            long_only: false,
+            regime_hybrid_enable: true,
+            regime_hybrid_reversion_entry_rel: 0.01,
+            regime_hybrid_reversion_exit_rel: 0.002,
+            ..StrategyConfig::default()
+        };
+
+        assert_eq!(desired_sign_with_filters(100.6, 100.0, &cfg, Some(2.0), -1), -1);
+        assert_eq!(desired_sign_with_filters(100.1, 100.0, &cfg, Some(2.0), -1), 0);
+        assert_eq!(desired_sign_with_filters(99.4, 100.0, &cfg, Some(2.0), 1), 1);
+        assert_eq!(desired_sign_with_filters(99.9, 100.0, &cfg, Some(2.0), 1), 0);
+        assert_eq!(desired_sign_with_filters(98.8, 100.0, &cfg, Some(2.0), -1), 1);
     }
 
     #[test]

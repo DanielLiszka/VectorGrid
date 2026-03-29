@@ -215,4 +215,39 @@ describe('history store actions', () => {
     expect(store.savedRunsMeta).toBe('saved runs: 1/2')
     expect(store.statusLine).toBe('Refreshed saved runs.')
   })
+
+  it('uses fuzzy ranking for saved runs while keeping short-query filtering stable', () => {
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl', '1m'],
+      },
+      {
+        ts: '2026-02-24T00:00:00Z',
+        path: 'C:/runs/msft.json',
+        bytes: 1024,
+        strategyKind: 'CompositeCpu',
+        hasValidation: false,
+        reportXlsxPath: '',
+        csvPath: 'C:/data/msft.csv',
+        tags: ['msft', 'swing'],
+      },
+    ]
+
+    store.setSavedRunsSearch('appl')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
+
+    store.setSavedRunsSearch('ms')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/msft.json'])
+
+    store.setSavedRunsSearch('aapl 1m')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
+  })
 })

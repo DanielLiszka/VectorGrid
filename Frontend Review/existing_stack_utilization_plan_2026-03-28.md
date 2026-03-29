@@ -4,7 +4,80 @@ Date: 2026-03-28
 
 Scope: repo-specific implementation plan for getting more objective product value out of technologies that are already installed and already partly integrated in the current app.
 
-Status: open.
+Status: complete for the planned scope.
+
+Current implementation status:
+
+- Phase 1 is complete.
+- Phase 2 is complete.
+- Phase 3 is complete.
+- Phase 4 is complete.
+- Phase 5 is complete.
+- The shipped Phase 1 slices are persisted column visibility for:
+  - `Top Results`
+  - `Validation`
+  - `Meta`
+- Shared infrastructure now lives in:
+  - [usePersistedMatrixColumnState.ts](C:\Rust Projects\ta_desktop_demo\web\src\composables\usePersistedMatrixColumnState.ts)
+  - [useHeadlessMatrixTable.ts](C:\Rust Projects\ta_desktop_demo\web\src\composables\useHeadlessMatrixTable.ts)
+  - [TopWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TopWorkspacePanel.vue)
+  - [ValidationWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\ValidationWorkspacePanel.vue)
+  - [MetaWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.vue)
+- The shipped Phase 2 slice is a shared contextual action menu for secondary saved-artifact actions:
+  - [ContextActionMenu.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\ContextActionMenu.vue)
+  - first rollout in [MetaWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.vue)
+  - browser-verified against the built UI after fixing teleported menu layering so the menu stays above panel chrome and remains pointer-safe
+- The shipped Phase 3 slices are local fuzzy-search improvements that stay subordinate to the global command palette:
+  - primary local-search surface:
+    - [HistoryWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\HistoryWorkspacePanel.vue)
+    - [historyStore.ts](C:\Rust Projects\ta_desktop_demo\web\src\stores\historyStore.ts)
+    - current repo note: short queries stay deterministic while `fuse.js` adds typo tolerance and better ranking for longer operator queries
+  - justified second local-search surface:
+    - [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+    - [perspectiveSearch.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\perspectiveSearch.ts)
+    - current repo note: perspective search stays component-local, keeps the current selection visible, and searches by name plus saved workstation metadata
+  - local-vs-global search distinction is now explicit in the UI:
+    - Saved Runs search filters the library only
+    - saved perspective search stays scoped to the workstation block in Settings
+    - `Ctrl+K` remains the app-wide command/navigation surface
+- Saved perspectives also already use local fuzzy search:
+  - [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+  - [perspectiveSearch.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\perspectiveSearch.ts)
+- The shipped Phase 4 slices are scanability and interaction-polish improvements that stay additive to existing labels and surfaces:
+  - minimal shared icon grammar in [iconography.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\iconography.ts)
+  - compare/pin actions now rendered with icon + label in [TopWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TopWorkspacePanel.vue)
+  - saved-artifact secondary actions now render through the shared menu with icon + label in [MetaWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.vue) and [ContextActionMenu.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\ContextActionMenu.vue)
+  - task-state and diagnostic severity badges now use icon + label in [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue) and [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+  - the animated brand mark now respects reduced-motion posture in [VectorAlphaLogo.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\VectorAlphaLogo.vue) by disabling hover animation when reduced motion is preferred
+  - desktop notifications now route only for backgrounded windows via [desktopProductization.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.ts) and [desktopNotificationPolicy.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\desktopNotificationPolicy.ts)
+- The shipped Phase 5 slices are desktop-plugin usefulness improvements that stay subordinate to the existing task center and settings surfaces:
+  - desktop diagnostics now support level filtering, copyable snapshots, and in-app log clearing in [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+  - desktop notification routing was re-evaluated and kept high-signal only:
+    - important completions and failures remain opt-in
+    - OS notifications are suppressed while the desktop window is visible
+    - policy remains centralized in [desktopNotificationPolicy.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\desktopNotificationPolicy.ts)
+  - window-state recovery was explicitly evaluated and intentionally not shipped:
+    - the current repo exposes persistence readiness and the backing file path in Settings
+    - no credible “user gets trapped by persisted geometry” failure mode has been observed yet
+    - adding a reset affordance now would add product surface area without a demonstrated user need
+- Phase 4 verification is green:
+  - `lint`
+  - `typecheck`
+  - `test`
+  - `build`
+  - `a11y:smoke`
+  - `baseline:ui`
+  - `check:bundle-budget`
+- Phase 5 verification is green:
+  - `lint`
+  - `typecheck`
+  - `test`
+  - `build`
+  - `a11y:smoke`
+  - `baseline:ui`
+  - `check:bundle-budget`
+- Execution-order review remains intentionally deferred because it is the lowest-value table for this feature set.
+- Arbitrary pinned columns remain deferred; Phase 1 proves persisted visibility, restore-defaults, and row-action stability first.
 
 This plan is intentionally separate from:
 
@@ -621,6 +694,7 @@ Acceptance:
 - dense surfaces lose low-value button clutter without losing capability reachability
 - contextual actions remain keyboard reachable
 - the new primitives are shared, not re-invented per panel
+- teleported menu content remains visually above local panel chrome in the built UI, not just in component tests
 
 ## Phase 3: Search / Discovery Expansion
 
@@ -647,6 +721,7 @@ Acceptance:
 - search improves retrieval speed on real data-rich surfaces
 - the app does not create overlapping search boxes that compete with the command palette
 - results remain understandable and stable for short queries and typos
+- the local-search surface explicitly tells the user it is scoped local, not a second global action surface
 
 ## Phase 4: Scanability And Interaction Polish
 
@@ -710,43 +785,218 @@ Acceptance:
 
 ### Phase 1: Dense-Table Power Behaviors
 
-- [ ] Audit current column-state needs across Top, Validation, Meta, and execution orders.
-- [ ] Decide where column visibility controls are objectively useful.
-- [ ] Decide where pinned columns are objectively useful.
-- [ ] Add shared persisted table-state support where it improves repeat review work.
-- [ ] Standardize selected-row summary coupling across dense review surfaces.
-- [ ] Add targeted regression coverage for any new table-state behavior.
+- [x] Audit current column-state needs across Top, Validation, Meta, and execution orders.
+- [x] Decide where column visibility controls are objectively useful.
+- [x] Decide where pinned columns are objectively useful.
+- [x] Add shared persisted table-state support where it improves repeat review work.
+  - shipped slices:
+    - Top Results persisted column visibility + restore-defaults
+    - Validation persisted column visibility + restore-defaults
+    - Meta persisted column visibility + restore-defaults
+  - intentionally deferred:
+    - execution-order review
+- [x] Standardize selected-row summary coupling across dense review surfaces.
+  - current repo note: Top Results remains the only dense review surface with a selected-row summary rail, and the new table posture controls preserve that coupling
+- [x] Add targeted regression coverage for any new table-state behavior.
 
 ### Phase 2: Shared Contextual Action Primitives
 
-- [ ] Inventory duplicated inline action clusters in dense panels.
-- [ ] Define a shared row/item action menu pattern.
-- [ ] Replace at least one high-clutter button cluster with a shared contextual action primitive.
-- [ ] Standardize advanced/disclosure behavior for secondary actions.
-- [ ] Add regression coverage for keyboard access and focus return on the new primitives.
+- [x] Inventory duplicated inline action clusters in dense panels.
+  - first shipped target: repeated saved-artifact action strips in [MetaWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.vue)
+- [x] Define a shared row/item action menu pattern.
+  - shared primitive: [ContextActionMenu.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\ContextActionMenu.vue)
+- [x] Replace at least one high-clutter button cluster with a shared contextual action primitive.
+  - shipped slices:
+    - saved meta artifact secondary actions
+    - saved Stage 5 artifact secondary actions
+    - saved policy-eval artifact secondary actions
+- [x] Standardize advanced/disclosure behavior for secondary actions.
+  - current repo note: `Load` remains inline as the primary action; refresh/open/reveal/delete now live behind the shared contextual menu
+- [x] Add regression coverage for keyboard access and focus return on the new primitives.
+  - focused regression coverage:
+    - [ContextActionMenu.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\ContextActionMenu.test.ts)
+    - [MetaWorkspacePanel.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.test.ts)
+  - built-UI browser verification:
+    - [meta-context-action-menu-2026-03-29.png](C:\Rust Projects\ta_desktop_demo\output\playwright\ui-review\meta-context-action-menu-2026-03-29.png)
 
 ### Phase 3: Search / Discovery Expansion
 
-- [ ] Audit which surfaces have enough vocabulary/history to justify local fuzzy search.
-- [ ] Add `fuse.js`-backed search to the highest-value local surface after the command palette.
-- [ ] Define and document the distinction between global command search and local surface search.
-- [ ] Add regression coverage for short-query, typo, and ranking behavior.
+- [x] Audit which surfaces have enough vocabulary/history to justify local fuzzy search.
+  - chosen first target: Run Library / Saved Runs in [HistoryWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\HistoryWorkspacePanel.vue)
+  - already-shipped secondary target: saved perspectives in [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+- [x] Add `fuse.js`-backed search to the highest-value local surface after the command palette.
+  - shipped slices:
+    - Saved Runs search in [historyStore.ts](C:\Rust Projects\ta_desktop_demo\web\src\stores\historyStore.ts)
+    - saved perspective search in [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue) backed by [perspectiveSearch.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\perspectiveSearch.ts)
+- [x] Define and document the distinction between global command search and local surface search.
+  - shipped slices:
+    - [HistoryWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\HistoryWorkspacePanel.vue) labels Saved Runs search as a local library retrieval surface
+    - [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue) labels saved perspective search as a local workstation retrieval surface
+    - the command palette remains the only global action/navigation search
+- [x] Add regression coverage for short-query, typo, and ranking behavior.
+  - focused regression coverage:
+    - [historyStore.search.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\stores\historyStore.search.test.ts)
+    - [HistoryWorkspacePanel.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\HistoryWorkspacePanel.test.ts)
+    - [perspectiveSearch.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\perspectiveSearch.test.ts)
+    - [SettingsWorkspacePanel.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.test.ts)
+  - built-UI browser verification:
+    - [history-fuzzy-search-2026-03-29.png](C:\Rust Projects\ta_desktop_demo\output\playwright\ui-review\history-fuzzy-search-2026-03-29.png)
+    - [settings-perspective-search-2026-03-29.png](C:\Rust Projects\ta_desktop_demo\output\playwright\ui-review\settings-perspective-search-2026-03-29.png)
 
 ### Phase 4: Scanability And Interaction Polish
 
-- [ ] Define a minimal icon grammar for task state, compare/pin, artifacts, and diagnostics.
-- [ ] Apply that grammar to the highest-value scan surfaces without replacing labels.
-- [ ] Audit current JS-driven interactions for reduced-motion-sensitive behavior.
-- [ ] Add at least one breakpoint/media-query or visibility-aware shell improvement using `@vueuse/core`.
-- [ ] Verify that added polish does not reintroduce visual clutter.
+- [x] Define a minimal icon grammar for task state, compare/pin, artifacts, and diagnostics.
+  - shared utility: [iconography.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\iconography.ts)
+- [x] Apply that grammar to the highest-value scan surfaces without replacing labels.
+  - shipped surfaces:
+    - [TopWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TopWorkspacePanel.vue)
+    - [MetaWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\MetaWorkspacePanel.vue)
+    - [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue)
+    - [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+- [x] Audit current JS-driven interactions for reduced-motion-sensitive behavior.
+  - shipped slice:
+    - [VectorAlphaLogo.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\VectorAlphaLogo.vue) now disables hover-driven animation when reduced motion is preferred
+- [x] Add at least one breakpoint/media-query or visibility-aware shell improvement using `@vueuse/core`.
+  - shipped slices:
+    - [VectorAlphaLogo.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\VectorAlphaLogo.vue) uses `useMediaQuery('(prefers-reduced-motion: reduce)')`
+    - [desktopProductization.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.ts) uses `useDocumentVisibility()` so OS notifications route only while the desktop window is not visible
+- [x] Verify that added polish does not reintroduce visual clutter.
+  - focused regression coverage:
+    - [TaskCenterOverlay.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.test.ts)
+    - [SettingsWorkspacePanel.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.test.ts)
+    - [desktopProductization.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.test.ts)
+    - [desktopNotificationPolicy.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\desktopNotificationPolicy.test.ts)
+  - full verification stack remained green after the slice
+  - browser-side screenshots:
+    - [task-center-phase4-2026-03-29.png](C:\Rust Projects\ta_desktop_demo\output\playwright\ui-review\task-center-phase4-2026-03-29.png)
+    - [settings-notification-copy-2026-03-29.png](C:\Rust Projects\ta_desktop_demo\output\playwright\ui-review\settings-notification-copy-2026-03-29.png)
 
 ### Phase 5: Desktop Plugin Usefulness Pass
 
-- [ ] Audit the current diagnostics surface for missing filtering/export affordances.
-- [ ] Add the highest-value diagnostics affordance on top of the existing log bridge.
-- [ ] Re-evaluate notification routing for current task outcomes and remove any low-signal cases.
-- [ ] Decide whether a window-state reset/recover affordance is warranted.
-- [ ] Add focused regression coverage for any desktop-surface behavior changed in this pass.
+- [x] Audit the current diagnostics surface for missing filtering/export affordances.
+- [x] Add the highest-value diagnostics affordance on top of the existing log bridge.
+  - shipped slices:
+    - desktop log filter (`all`, `warnings and errors`, `errors only`)
+    - copyable diagnostics snapshot
+    - clear-desktop-logs action
+- [x] Re-evaluate notification routing for current task outcomes and remove any low-signal cases.
+  - shipped slices:
+    - [desktopProductization.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.ts) now routes OS notifications only while the desktop window is not visible
+    - [desktopNotificationPolicy.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\desktopNotificationPolicy.ts) remains the single intent-policy gate
+- [x] Decide whether a window-state reset/recover affordance is warranted.
+  - current repo decision:
+    - not warranted yet
+    - keep the current readiness/file-path diagnostics surface
+    - revisit only if real awkward-geometry reports appear
+- [x] Add focused regression coverage for any desktop-surface behavior changed in this pass.
+  - focused regression coverage:
+    - [SettingsWorkspacePanel.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.test.ts)
+    - [desktopProductization.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.test.ts)
+    - [desktopNotificationPolicy.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\utils\desktopNotificationPolicy.test.ts)
+  - browser-side screenshot:
+    - [settings-notification-copy-2026-03-29.png](C:\Rust Projects\ta_desktop_demo\output\playwright\ui-review\settings-notification-copy-2026-03-29.png)
+
+## Optional Visual Goals
+
+These are explicitly optional later-phase goals. They are not required to complete the core existing-stack utilization plan, but they are worth tracking because they could add practical value if implemented carefully.
+
+The standard for any item in this section is:
+
+- it must improve interpretation, trust, orientation, or workflow speed
+- it must not add decorative motion or visual noise for its own sake
+- it must respect reduced-motion posture
+- it must not compete with dense data surfaces, controls, or current analytical charts
+
+### Practical Use Criteria
+
+Any visual or animation work beyond the current SVG plan should meet at least one of these tests:
+
+- helps the user understand state faster
+- helps the user compare or rank candidates faster
+- helps the user interpret robustness, provenance, or risk faster
+- improves confidence in runtime/task status without adding clutter
+
+If it does not clearly pass one of those tests, it should not be prioritized.
+
+### Optional Goal A: Startup Animation
+
+Intent:
+
+- use the animated VectorAlpha logo as part of a brief startup/ready-state moment
+
+Guardrails:
+
+- only while real initialization is occurring
+- should disappear as soon as the app is actually ready
+- target duration should be brief, ideally `1` to `3` seconds
+- must have a reduced-motion-safe behavior
+- must not become a blocking splash screen that delays work
+
+Potential value:
+
+- makes startup feel intentional and polished
+- gives a clear “desktop runtime is booting / ready” signal
+
+### Optional Goal B: Practical Information Graphics
+
+Intent:
+
+- improve how analytical information is presented in compare, review, provenance, and artifact surfaces
+
+High-value candidates:
+
+- mini comparison visuals inside compare cards
+- provenance / confidence graphics attached to selected-result summaries
+- compact report or artifact previews
+- richer task-state and runtime-status visuals where they reduce interpretation time
+
+Guardrails:
+
+- default to compact 2D information graphics first
+- prioritize clarity over novelty
+- avoid replacing tables or current `lightweight-charts` usage where they already work well
+
+### Optional Goal C: Strictly Justified 3D Analytical Views
+
+Intent:
+
+- allow 3D only where the third dimension genuinely explains something that 2D cannot communicate as effectively
+
+Potential justified cases:
+
+- parameter response surfaces
+- robustness landscapes
+- slippage / turnover / objective tradeoff surfaces
+- local stability surfaces over two parameters plus a result metric
+
+Guardrails:
+
+- 3D must be an optional alternate analytical view, not the default
+- every 3D view must have a 2D fallback such as heatmap, contour, or scatter projection
+- exact values must remain inspectable through hover, crosshair, slices, or linked tabular readouts
+- avoid cinematic camera motion, decorative perspective, or unnecessary scene chrome
+
+### Optional Goal D: Quality-First Visual Review Discipline
+
+Intent:
+
+- ensure any future visual work is held to the same evidence-based quality bar as the rest of the frontend
+
+Requirements if these optional goals are pursued:
+
+- add focused visual acceptance criteria before implementation
+- verify reduced-motion handling
+- verify scanability on dense screens
+- verify no regression to bundle discipline or first-paint behavior
+- prefer shipping one narrowly useful visual at a time rather than a large visual redesign
+
+### Optional Checklist
+
+- [ ] Decide whether a startup animation is worth shipping or should remain deferred.
+- [ ] Identify the highest-ROI practical information graphic that is not already covered by the current chart/table stack.
+- [ ] Define strict acceptance criteria before adding any non-SVG motion or visual flourish.
+- [ ] If a 3D analytical view is considered, document the practical justification and the required 2D fallback first.
+- [ ] Verify any future visual enhancement against reduced-motion, bundle impact, and dense-workflow scanability.
 
 ## Out Of Scope For This Plan
 
@@ -760,13 +1010,13 @@ These may still be valid later, but they are not part of this implementation pla
 
 ## Suggested Starting Point
 
-If only one phase is started next, start with Phase 1.
+The planned implementation phases are now complete.
 
-Reason:
+If work continues next, choose from:
 
-- the app is already heavily results/review oriented
-- the current table foundation is real, not speculative
-- better table posture produces immediate operator value without changing backend scope
+- the optional visual goals below
+- the separate desktop-productization plan
+- the SVG asset integration backlog after external asset generation is complete
 
 ## SVG Asset Briefs For External Creation
 

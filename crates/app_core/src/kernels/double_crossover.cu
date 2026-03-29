@@ -2944,6 +2944,7 @@ static __device__ __forceinline__ int desired_sign_with_regime_f32(
     const float* __restrict__ regime_filter,
     int use_regime,
     int use_regime_hybrid,
+    int current_pos,
     int t_sig,
     float regime_range_entry_rel,
     float regime_range_exit_rel)
@@ -2963,7 +2964,23 @@ static __device__ __forceinline__ int desired_sign_with_regime_f32(
         const float denom = fmaxf(1.0f, fabsf(s));
         const float delta = f - s;
         const float entry = regime_range_entry_rel * denom;
-        int range_sign = (delta <= -entry) - (delta >= entry);
+        const float exit = regime_range_exit_rel * denom;
+        int range_sign = 0;
+        if (current_pos > 0) {
+            if (delta >= entry) {
+                range_sign = -1;
+            } else if (delta < -exit) {
+                range_sign = 1;
+            }
+        } else if (current_pos < 0) {
+            if (delta <= -entry) {
+                range_sign = 1;
+            } else if (delta > exit) {
+                range_sign = -1;
+            }
+        } else {
+            range_sign = (delta <= -entry) - (delta >= entry);
+        }
         if (long_only && range_sign < 0) {
             range_sign = 0;
         }
@@ -3022,6 +3039,7 @@ static __device__ __forceinline__ int desired_sign_regime_hybrid_f32(
     float eps,
     unsigned int flags,
     const float* __restrict__ regime_filter,
+    int current_pos,
     int t_sig,
     float regime_range_entry_rel,
     float regime_range_exit_rel)
@@ -3041,7 +3059,23 @@ static __device__ __forceinline__ int desired_sign_regime_hybrid_f32(
         const float denom = fmaxf(1.0f, fabsf(s));
         const float delta = f - s;
         const float entry = regime_range_entry_rel * denom;
-        int range_sign = (delta <= -entry) - (delta >= entry);
+        const float exit = regime_range_exit_rel * denom;
+        int range_sign = 0;
+        if (current_pos > 0) {
+            if (delta >= entry) {
+                range_sign = -1;
+            } else if (delta < -exit) {
+                range_sign = 1;
+            }
+        } else if (current_pos < 0) {
+            if (delta <= -entry) {
+                range_sign = 1;
+            } else if (delta > exit) {
+                range_sign = -1;
+            }
+        } else {
+            range_sign = (delta <= -entry) - (delta >= entry);
+        }
         if (long_only && range_sign < 0) {
             range_sign = 0;
         }
@@ -3063,6 +3097,7 @@ static __device__ __forceinline__ int desired_sign_mode_f32(
     const float* __restrict__ regime_filter,
     int use_regime,
     int use_regime_hybrid,
+    int current_pos,
     int t_sig,
     float regime_range_entry_rel,
     float regime_range_exit_rel)
@@ -3080,6 +3115,7 @@ static __device__ __forceinline__ int desired_sign_mode_f32(
             eps,
             flags,
             regime_filter,
+            current_pos,
             t_sig,
             regime_range_entry_rel,
             regime_range_exit_rel);
@@ -3092,6 +3128,7 @@ static __device__ __forceinline__ int desired_sign_mode_f32(
         regime_filter,
         use_regime,
         use_regime_hybrid,
+        current_pos,
         t_sig,
         regime_range_entry_rel,
         regime_range_exit_rel);
@@ -3629,6 +3666,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     regime_filter,
                     use_regime,
                     use_regime_hybrid,
+                    pos,
                     t_sig,
                     regime_range_entry_rel,
                     regime_range_exit_rel);
@@ -3719,8 +3757,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 }
 
                 if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
+                    const float ret1_t = ld_ro_1d(ret1, (size_t)t);
                     const float step_r =
-                        (pos == 0) ? 0.0f : (float)pos * ld_ro_1d(ret1, (size_t)t);
+                        (pos == 0) ? 0.0f : (float)pos * ret1_t;
                     if (need_stats) {
                         n += 1;
                         const float delta = step_r - mean;
@@ -3785,6 +3824,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     regime_filter,
                     use_regime,
                     use_regime_hybrid,
+                    pos,
                     t_sig,
                     regime_range_entry_rel,
                     regime_range_exit_rel);
@@ -3896,8 +3936,9 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 }
 
                 if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
+                    const float ret1_t = ld_ro_1d(ret1, (size_t)t);
                     const float step_r =
-                        (pos_bar == 0) ? 0.0f : (float)pos_bar * ld_ro_1d(ret1, (size_t)t);
+                        (pos_bar == 0) ? 0.0f : (float)pos_bar * ret1_t;
                     if (need_stats) {
                         n += 1;
                         const float delta = step_r - mean;

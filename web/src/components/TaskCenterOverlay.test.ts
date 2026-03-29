@@ -135,6 +135,8 @@ describe('TaskCenterOverlay', () => {
     )
     expect(toastCard?.getAttribute('aria-label')).toContain('Validation failed.')
     expect(timelineRow?.getAttribute('aria-label')).toContain('Double Ma Validation')
+    expect(document.querySelector('.toastLevel svg')).not.toBeNull()
+    expect(document.querySelector('.eventRow .eventBadge svg')).not.toBeNull()
 
     wrapper.unmount()
   })
@@ -206,6 +208,7 @@ describe('TaskCenterOverlay', () => {
     expect(text).toContain('Recent outcomes')
     expect(text).toContain('Attention')
     expect(text).toContain('Completed')
+    expect(document.querySelector('.taskStatus svg')).not.toBeNull()
 
     const action = Array.from(document.querySelectorAll<HTMLButtonElement>('.relatedBtn')).find((button) =>
       String(button.textContent || '').includes('Open validation'),

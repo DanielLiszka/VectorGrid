@@ -214,4 +214,25 @@ describe("HistoryWorkspacePanel", () => {
     );
     expect(document.activeElement).toBe(savedButtons[0]);
   });
+
+  it("documents that saved-run search is local while command search stays global", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const text = document.body.textContent || "";
+    expect(text).toContain("Search filters the saved-run library only.");
+    expect(text).toContain("Use Ctrl+K for global commands.");
+  });
 });

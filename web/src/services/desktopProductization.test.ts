@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
@@ -20,7 +21,6 @@ const attachLoggerMock = vi.fn(async (callback: (entry: { level: number; message
     loggerCallback = null
   }
 })
-
 vi.mock('../tauri/invoke', () => ({
   tauriRuntimeAvailable: () => true,
 }))
@@ -60,11 +60,20 @@ function makeTrackedTask(partial: Partial<TrackedTask>): TrackedTask {
   }
 }
 
+function setDocumentVisibilityState(state: 'hidden' | 'visible'): void {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    value: state,
+  })
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+
 describe('initializeDesktopProductization', () => {
   beforeEach(() => {
     const pinia = createPinia()
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
+    localStorage.clear()
     loggerCallback = null
     saveWindowStateMock.mockClear()
     sendNotificationMock.mockClear()
@@ -73,6 +82,7 @@ describe('initializeDesktopProductization', () => {
     attachConsoleMock.mockClear()
     attachLoggerMock.mockClear()
     infoMock.mockClear()
+    setDocumentVisibilityState('hidden')
   })
 
   afterEach(() => {
@@ -92,6 +102,7 @@ describe('initializeDesktopProductization', () => {
   })
 
   it('routes important completed tasks to OS notifications when enabled', async () => {
+    setDocumentVisibilityState('hidden')
     await initializeDesktopProductization()
     const settingsStore = useSettingsStore()
     const taskStore = useTaskStore()
@@ -116,6 +127,29 @@ describe('initializeDesktopProductization', () => {
     })
   })
 
+  it('suppresses OS notifications while the desktop surface is visible', async () => {
+    setDocumentVisibilityState('visible')
+    await initializeDesktopProductization()
+    const settingsStore = useSettingsStore()
+    const taskStore = useTaskStore()
+    settingsStore.setSelectField('settingsDesktopNotifications', 'important')
+
+    taskStore.$patch({
+      history: [
+        makeTrackedTask({
+          id: 'task_notify_visible',
+          status: 'success',
+          message: 'Finished with 12 shortlisted candidates.',
+        }),
+      ],
+    })
+
+    await nextTick()
+    await Promise.resolve()
+
+    expect(sendNotificationMock).not.toHaveBeenCalled()
+  })
+
   it('suppresses OS notifications when the preference is off', async () => {
     await initializeDesktopProductization()
     const taskStore = useTaskStore()
@@ -135,4 +169,5 @@ describe('initializeDesktopProductization', () => {
 
     expect(sendNotificationMock).not.toHaveBeenCalled()
   })
+
 })

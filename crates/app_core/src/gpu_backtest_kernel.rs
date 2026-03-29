@@ -744,6 +744,8 @@ struct KernelStrategyParams {
 
 #[inline]
 fn kernel_strategy_params(strategy: &StrategyConfig) -> KernelStrategyParams {
+    // Keep signed net-exposure enabled for every shipped GPU path so the device row layout
+    // continues to match constraint decoding for max_abs_net_exposure.
     let mut flags = STRAT_ENFORCE_FAST_LT_SLOW | STRAT_SIGNED_EXPOSURE;
     if strategy.long_only {
         flags |= STRAT_LONG_ONLY;
@@ -825,6 +827,107 @@ fn fixed_metrics_contract_rows(metrics_count: usize, metrics_stride: usize) -> O
         (METRICS_COUNT, METRICS_COUNT) => Some(METRICS_COUNT),
         (TRADE_METRICS_COUNT, TRADE_METRICS_COUNT) => Some(TRADE_METRICS_COUNT),
         _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FixedContractDispatchKind {
+    None,
+    M17,
+    M22,
+    LockstepM17,
+    LockstepM22,
+}
+
+#[inline]
+fn choose_fixed_contract_dispatch_kind(
+    fixed_metrics_contract: Option<usize>,
+    use_windowed_eval: bool,
+    use_lockstep_time: bool,
+    use_fast_warp_dedup: bool,
+    use_m7: bool,
+    use_lockstep_m7: bool,
+    has_m17: bool,
+    has_m22: bool,
+    has_lockstep_m17: bool,
+    has_lockstep_m22: bool,
+) -> FixedContractDispatchKind {
+    if use_windowed_eval {
+        return FixedContractDispatchKind::None;
+    }
+
+    match fixed_metrics_contract {
+        Some(METRICS_COUNT) => {
+            if use_lockstep_time && !use_lockstep_m7 && has_lockstep_m17 {
+                FixedContractDispatchKind::LockstepM17
+            } else if !use_lockstep_time && !use_fast_warp_dedup && !use_m7 && has_m17 {
+                FixedContractDispatchKind::M17
+            } else {
+                FixedContractDispatchKind::None
+            }
+        }
+        Some(TRADE_METRICS_COUNT) => {
+            if use_lockstep_time && !use_lockstep_m7 && has_lockstep_m22 {
+                FixedContractDispatchKind::LockstepM22
+            } else if !use_lockstep_time && !use_fast_warp_dedup && !use_m7 && has_m22 {
+                FixedContractDispatchKind::M22
+            } else {
+                FixedContractDispatchKind::None
+            }
+        }
+        _ => FixedContractDispatchKind::None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FixedContractKernelFlavor {
+    Base,
+    RegimeOffNoRisk,
+    RegimeOffNoRiskNoComm,
+    RegimeOffNoRiskEps0,
+    RegimeOffNoRiskEps0NoComm,
+    RegimeOnNoRisk,
+    RegimeOnNoRiskEps0NoComm,
+    RegimeHybridNoRisk,
+    RegimeHybridNoRiskEps0NoComm,
+}
+
+#[inline]
+fn choose_fixed_contract_kernel_flavor(
+    no_risk_mode: bool,
+    use_regime: bool,
+    use_regime_hybrid: bool,
+    zero_commission_mode: bool,
+    eps_zero_mode: bool,
+) -> FixedContractKernelFlavor {
+    if !no_risk_mode {
+        return FixedContractKernelFlavor::Base;
+    }
+    if use_regime_hybrid {
+        return if zero_commission_mode && eps_zero_mode {
+            FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm
+        } else {
+            FixedContractKernelFlavor::RegimeHybridNoRisk
+        };
+    }
+    if use_regime {
+        return if zero_commission_mode && eps_zero_mode {
+            FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm
+        } else {
+            FixedContractKernelFlavor::RegimeOnNoRisk
+        };
+    }
+    if zero_commission_mode {
+        return if eps_zero_mode {
+            FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm
+        } else {
+            FixedContractKernelFlavor::RegimeOffNoRiskNoComm
+        };
+    }
+    if eps_zero_mode {
+        FixedContractKernelFlavor::RegimeOffNoRiskEps0
+    } else {
+        FixedContractKernelFlavor::RegimeOffNoRisk
     }
 }
 
@@ -10351,31 +10454,29 @@ fn optimize_double_ma_gpu_kernel_impl(
                             );
                         let use_lockstep_m10_product = use_lockstep_m7
                             && fixed_metrics_contract == Some(PRODUCT_REDUCED_METRICS_COUNT);
-                        let use_lockstep_m17 = use_lockstep_time
-                            && !use_lockstep_m7
-                            && fixed_metrics_contract == Some(METRICS_COUNT)
-                            && backtest_lockstep_m17.is_some();
-                        let use_lockstep_m22 = use_lockstep_time
-                            && !use_lockstep_m7
-                            && fixed_metrics_contract == Some(TRADE_METRICS_COUNT)
-                            && backtest_lockstep_m22.is_some();
                         let use_fast_warp_dedup = !use_windowed_eval
                             && !use_lockstep_time
                             && fast_warp_dedup_enabled
                             && launch_pairs >= fast_warp_dedup_min_pairs
                             && backtest_fast_warp.is_some();
-                        let use_m17 = !use_windowed_eval
-                            && !use_lockstep_time
-                            && !use_fast_warp_dedup
-                            && !use_m7
-                            && fixed_metrics_contract == Some(METRICS_COUNT)
-                            && backtest_m17.is_some();
-                        let use_m22 = !use_windowed_eval
-                            && !use_lockstep_time
-                            && !use_fast_warp_dedup
-                            && !use_m7
-                            && fixed_metrics_contract == Some(TRADE_METRICS_COUNT)
-                            && backtest_m22.is_some();
+                        let fixed_contract_dispatch = choose_fixed_contract_dispatch_kind(
+                            fixed_metrics_contract,
+                            use_windowed_eval,
+                            use_lockstep_time,
+                            use_fast_warp_dedup,
+                            use_m7,
+                            use_lockstep_m7,
+                            backtest_m17.is_some(),
+                            backtest_m22.is_some(),
+                            backtest_lockstep_m17.is_some(),
+                            backtest_lockstep_m22.is_some(),
+                        );
+                        let use_lockstep_m17 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::LockstepM17;
+                        let use_lockstep_m22 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::LockstepM22;
+                        let use_m17 = fixed_contract_dispatch == FixedContractDispatchKind::M17;
+                        let use_m22 = fixed_contract_dispatch == FixedContractDispatchKind::M22;
                         let launch_caps = if use_windowed_eval {
                             backtest_launch_caps
                         } else if use_lockstep_m7 {
@@ -10455,6 +10556,13 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 )
                             );
                         }
+                        let fixed_contract_flavor = choose_fixed_contract_kernel_flavor(
+                            no_risk_mode,
+                            use_regime_i != 0,
+                            use_regime_hybrid_i != 0,
+                            zero_commission_mode,
+                            eps_zero_mode,
+                        );
                         let backtest_fn = if use_windowed_eval {
                             &backtest_windowed
                         } else if use_lockstep_m7 {
@@ -10576,130 +10684,126 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     .expect("checked lockstep m7 kernel availability")
                             }
                         } else if use_lockstep_m17 {
-                            if no_risk_mode {
-                                if use_regime_hybrid_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_lockstep_m17_regime_hybrid_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m17_regime_hybrid_norisk.as_ref())
-                                            .or(backtest_lockstep_m17.as_ref())
-                                            .expect("checked lockstep m17 kernel availability")
-                                    } else {
-                                        backtest_lockstep_m17_regime_hybrid_norisk
-                                            .as_ref()
-                                            .or(backtest_lockstep_m17.as_ref())
-                                            .expect("checked lockstep m17 kernel availability")
-                                    }
-                                } else if use_regime_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_lockstep_m17_regime_on_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m17_regime_on_norisk.as_ref())
-                                            .or(backtest_lockstep_m17.as_ref())
-                                            .expect("checked lockstep m17 kernel availability")
-                                    } else {
-                                        backtest_lockstep_m17_regime_on_norisk
-                                            .as_ref()
-                                            .or(backtest_lockstep_m17.as_ref())
-                                            .expect("checked lockstep m17 kernel availability")
-                                    }
-                                } else if zero_commission_mode {
-                                    if eps_zero_mode {
-                                        backtest_lockstep_m17_regime_off_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m17_regime_off_norisk_eps0
-                                                .as_ref())
-                                            .or(backtest_lockstep_m17_regime_off_norisk_nocomm
-                                                .as_ref())
-                                            .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
-                                            .or(backtest_lockstep_m17.as_ref())
-                                            .expect("checked lockstep m17 kernel availability")
-                                    } else {
-                                        backtest_lockstep_m17_regime_off_norisk_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
-                                            .or(backtest_lockstep_m17.as_ref())
-                                            .expect("checked lockstep m17 kernel availability")
-                                    }
-                                } else if eps_zero_mode {
-                                    backtest_lockstep_m17_regime_off_norisk_eps0
-                                        .as_ref()
-                                        .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
-                                        .or(backtest_lockstep_m17.as_ref())
-                                        .expect("checked lockstep m17 kernel availability")
-                                } else {
+                            match fixed_contract_flavor {
+                                FixedContractKernelFlavor::Base => backtest_lockstep_m17
+                                    .as_ref()
+                                    .expect("checked lockstep m17 kernel availability"),
+                                FixedContractKernelFlavor::RegimeOffNoRisk => {
                                     backtest_lockstep_m17_regime_off_norisk
                                         .as_ref()
                                         .or(backtest_lockstep_m17.as_ref())
                                         .expect("checked lockstep m17 kernel availability")
                                 }
-                            } else {
-                                backtest_lockstep_m17
-                                    .as_ref()
-                                    .expect("checked lockstep m17 kernel availability")
+                                FixedContractKernelFlavor::RegimeOffNoRiskNoComm => {
+                                    backtest_lockstep_m17_regime_off_norisk_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0 => {
+                                    backtest_lockstep_m17_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                    backtest_lockstep_m17_regime_off_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17_regime_off_norisk_eps0.as_ref())
+                                        .or(backtest_lockstep_m17_regime_off_norisk_nocomm.as_ref())
+                                        .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                    backtest_lockstep_m17_regime_on_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                    backtest_lockstep_m17_regime_on_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17_regime_on_norisk.as_ref())
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                    backtest_lockstep_m17_regime_hybrid_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                    backtest_lockstep_m17_regime_hybrid_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17_regime_hybrid_norisk.as_ref())
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
                             }
                         } else if use_lockstep_m22 {
-                            if no_risk_mode {
-                                if use_regime_hybrid_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_lockstep_m22_regime_hybrid_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m22_regime_hybrid_norisk.as_ref())
-                                            .or(backtest_lockstep_m22.as_ref())
-                                            .expect("checked lockstep m22 kernel availability")
-                                    } else {
-                                        backtest_lockstep_m22_regime_hybrid_norisk
-                                            .as_ref()
-                                            .or(backtest_lockstep_m22.as_ref())
-                                            .expect("checked lockstep m22 kernel availability")
-                                    }
-                                } else if use_regime_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_lockstep_m22_regime_on_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m22_regime_on_norisk.as_ref())
-                                            .or(backtest_lockstep_m22.as_ref())
-                                            .expect("checked lockstep m22 kernel availability")
-                                    } else {
-                                        backtest_lockstep_m22_regime_on_norisk
-                                            .as_ref()
-                                            .or(backtest_lockstep_m22.as_ref())
-                                            .expect("checked lockstep m22 kernel availability")
-                                    }
-                                } else if zero_commission_mode {
-                                    if eps_zero_mode {
-                                        backtest_lockstep_m22_regime_off_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m22_regime_off_norisk_eps0
-                                                .as_ref())
-                                            .or(backtest_lockstep_m22_regime_off_norisk_nocomm
-                                                .as_ref())
-                                            .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
-                                            .or(backtest_lockstep_m22.as_ref())
-                                            .expect("checked lockstep m22 kernel availability")
-                                    } else {
-                                        backtest_lockstep_m22_regime_off_norisk_nocomm
-                                            .as_ref()
-                                            .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
-                                            .or(backtest_lockstep_m22.as_ref())
-                                            .expect("checked lockstep m22 kernel availability")
-                                    }
-                                } else if eps_zero_mode {
-                                    backtest_lockstep_m22_regime_off_norisk_eps0
-                                        .as_ref()
-                                        .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
-                                        .or(backtest_lockstep_m22.as_ref())
-                                        .expect("checked lockstep m22 kernel availability")
-                                } else {
+                            match fixed_contract_flavor {
+                                FixedContractKernelFlavor::Base => backtest_lockstep_m22
+                                    .as_ref()
+                                    .expect("checked lockstep m22 kernel availability"),
+                                FixedContractKernelFlavor::RegimeOffNoRisk => {
                                     backtest_lockstep_m22_regime_off_norisk
                                         .as_ref()
                                         .or(backtest_lockstep_m22.as_ref())
                                         .expect("checked lockstep m22 kernel availability")
                                 }
-                            } else {
-                                backtest_lockstep_m22
-                                    .as_ref()
-                                    .expect("checked lockstep m22 kernel availability")
+                                FixedContractKernelFlavor::RegimeOffNoRiskNoComm => {
+                                    backtest_lockstep_m22_regime_off_norisk_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0 => {
+                                    backtest_lockstep_m22_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                    backtest_lockstep_m22_regime_off_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22_regime_off_norisk_eps0.as_ref())
+                                        .or(backtest_lockstep_m22_regime_off_norisk_nocomm.as_ref())
+                                        .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                    backtest_lockstep_m22_regime_on_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                    backtest_lockstep_m22_regime_on_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22_regime_on_norisk.as_ref())
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                    backtest_lockstep_m22_regime_hybrid_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                    backtest_lockstep_m22_regime_hybrid_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22_regime_hybrid_norisk.as_ref())
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
                             }
                         } else if use_lockstep_time {
                             backtest_lockstep
@@ -10710,126 +10814,126 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 .as_ref()
                                 .expect("checked fast dedup kernel availability")
                         } else if use_m17 {
-                            if no_risk_mode {
-                                if use_regime_hybrid_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_m17_regime_hybrid_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_m17_regime_hybrid_norisk.as_ref())
-                                            .or(backtest_m17.as_ref())
-                                            .expect("checked m17 kernel availability")
-                                    } else {
-                                        backtest_m17_regime_hybrid_norisk
-                                            .as_ref()
-                                            .or(backtest_m17.as_ref())
-                                            .expect("checked m17 kernel availability")
-                                    }
-                                } else if use_regime_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_m17_regime_on_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_m17_regime_on_norisk.as_ref())
-                                            .or(backtest_m17.as_ref())
-                                            .expect("checked m17 kernel availability")
-                                    } else {
-                                        backtest_m17_regime_on_norisk
-                                            .as_ref()
-                                            .or(backtest_m17.as_ref())
-                                            .expect("checked m17 kernel availability")
-                                    }
-                                } else if zero_commission_mode {
-                                    if eps_zero_mode {
-                                        backtest_m17_regime_off_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_m17_regime_off_norisk_eps0.as_ref())
-                                            .or(backtest_m17_regime_off_norisk_nocomm.as_ref())
-                                            .or(backtest_m17_regime_off_norisk.as_ref())
-                                            .or(backtest_m17.as_ref())
-                                            .expect("checked m17 kernel availability")
-                                    } else {
-                                        backtest_m17_regime_off_norisk_nocomm
-                                            .as_ref()
-                                            .or(backtest_m17_regime_off_norisk.as_ref())
-                                            .or(backtest_m17.as_ref())
-                                            .expect("checked m17 kernel availability")
-                                    }
-                                } else if eps_zero_mode {
-                                    backtest_m17_regime_off_norisk_eps0
-                                        .as_ref()
-                                        .or(backtest_m17_regime_off_norisk.as_ref())
-                                        .or(backtest_m17.as_ref())
-                                        .expect("checked m17 kernel availability")
-                                } else {
+                            match fixed_contract_flavor {
+                                FixedContractKernelFlavor::Base => backtest_m17
+                                    .as_ref()
+                                    .expect("checked m17 kernel availability"),
+                                FixedContractKernelFlavor::RegimeOffNoRisk => {
                                     backtest_m17_regime_off_norisk
                                         .as_ref()
                                         .or(backtest_m17.as_ref())
                                         .expect("checked m17 kernel availability")
                                 }
-                            } else {
-                                backtest_m17
-                                    .as_ref()
-                                    .expect("checked m17 kernel availability")
+                                FixedContractKernelFlavor::RegimeOffNoRiskNoComm => {
+                                    backtest_m17_regime_off_norisk_nocomm
+                                        .as_ref()
+                                        .or(backtest_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0 => {
+                                    backtest_m17_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                    backtest_m17_regime_off_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_m17_regime_off_norisk_eps0.as_ref())
+                                        .or(backtest_m17_regime_off_norisk_nocomm.as_ref())
+                                        .or(backtest_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                    backtest_m17_regime_on_norisk
+                                        .as_ref()
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                    backtest_m17_regime_on_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_m17_regime_on_norisk.as_ref())
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                    backtest_m17_regime_hybrid_norisk
+                                        .as_ref()
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                    backtest_m17_regime_hybrid_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_m17_regime_hybrid_norisk.as_ref())
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
                             }
                         } else if use_m22 {
-                            if no_risk_mode {
-                                if use_regime_hybrid_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_m22_regime_hybrid_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_m22_regime_hybrid_norisk.as_ref())
-                                            .or(backtest_m22.as_ref())
-                                            .expect("checked m22 kernel availability")
-                                    } else {
-                                        backtest_m22_regime_hybrid_norisk
-                                            .as_ref()
-                                            .or(backtest_m22.as_ref())
-                                            .expect("checked m22 kernel availability")
-                                    }
-                                } else if use_regime_i != 0 {
-                                    if zero_commission_mode && eps_zero_mode {
-                                        backtest_m22_regime_on_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_m22_regime_on_norisk.as_ref())
-                                            .or(backtest_m22.as_ref())
-                                            .expect("checked m22 kernel availability")
-                                    } else {
-                                        backtest_m22_regime_on_norisk
-                                            .as_ref()
-                                            .or(backtest_m22.as_ref())
-                                            .expect("checked m22 kernel availability")
-                                    }
-                                } else if zero_commission_mode {
-                                    if eps_zero_mode {
-                                        backtest_m22_regime_off_norisk_eps0_nocomm
-                                            .as_ref()
-                                            .or(backtest_m22_regime_off_norisk_eps0.as_ref())
-                                            .or(backtest_m22_regime_off_norisk_nocomm.as_ref())
-                                            .or(backtest_m22_regime_off_norisk.as_ref())
-                                            .or(backtest_m22.as_ref())
-                                            .expect("checked m22 kernel availability")
-                                    } else {
-                                        backtest_m22_regime_off_norisk_nocomm
-                                            .as_ref()
-                                            .or(backtest_m22_regime_off_norisk.as_ref())
-                                            .or(backtest_m22.as_ref())
-                                            .expect("checked m22 kernel availability")
-                                    }
-                                } else if eps_zero_mode {
-                                    backtest_m22_regime_off_norisk_eps0
-                                        .as_ref()
-                                        .or(backtest_m22_regime_off_norisk.as_ref())
-                                        .or(backtest_m22.as_ref())
-                                        .expect("checked m22 kernel availability")
-                                } else {
+                            match fixed_contract_flavor {
+                                FixedContractKernelFlavor::Base => backtest_m22
+                                    .as_ref()
+                                    .expect("checked m22 kernel availability"),
+                                FixedContractKernelFlavor::RegimeOffNoRisk => {
                                     backtest_m22_regime_off_norisk
                                         .as_ref()
                                         .or(backtest_m22.as_ref())
                                         .expect("checked m22 kernel availability")
                                 }
-                            } else {
-                                backtest_m22
-                                    .as_ref()
-                                    .expect("checked m22 kernel availability")
+                                FixedContractKernelFlavor::RegimeOffNoRiskNoComm => {
+                                    backtest_m22_regime_off_norisk_nocomm
+                                        .as_ref()
+                                        .or(backtest_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0 => {
+                                    backtest_m22_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                    backtest_m22_regime_off_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_m22_regime_off_norisk_eps0.as_ref())
+                                        .or(backtest_m22_regime_off_norisk_nocomm.as_ref())
+                                        .or(backtest_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                    backtest_m22_regime_on_norisk
+                                        .as_ref()
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                    backtest_m22_regime_on_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_m22_regime_on_norisk.as_ref())
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                    backtest_m22_regime_hybrid_norisk
+                                        .as_ref()
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                                FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                    backtest_m22_regime_hybrid_norisk_eps0_nocomm
+                                        .as_ref()
+                                        .or(backtest_m22_regime_hybrid_norisk.as_ref())
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
                             }
                         } else if use_m7 {
                             backtest_m7
@@ -12384,22 +12488,25 @@ fn optimize_double_ma_gpu_kernel_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        calmar_ratio, can_decode_current_gpu_product_metrics_without_recompute,
+        build_device_constraint_args, build_valid_pair_index_map_i32, calmar_ratio,
+        can_decode_current_gpu_product_metrics_without_recompute,
+        choose_fixed_contract_dispatch_kind, choose_fixed_contract_kernel_flavor,
         compute_shortlist_slice_benchmark_relative_summary, decode_tm_flex_metrics_row,
         effective_sample_lcb_10_pair_score, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
         fixed_metrics_contract_rows, install_effective_sample_score_context,
         kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
         kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
         kernel_shortlist_slice_benchmark, kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
-        kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
+        kernel_should_use_lockstep_time, kernel_should_use_m7_specialize, kernel_strategy_params,
         max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
         rerank_shortlist_by_union_mode, search_metrics_count_for_optimization,
         search_metrics_count_for_optimization_with_contract, search_rows_use_log_space,
         shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
         upload_double_ma_dynamic_program_batch, EffectiveSampleScoreContext,
-        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
-        TRADE_METRICS_COUNT,
+        FixedContractDispatchKind, FixedContractKernelFlavor, ShortlistConfidenceMode,
+        ShortlistSliceMode, STRAT_SIGNED_EXPOSURE, METRICS_COUNT,
+        PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
     };
     use crate::composite_validate::SpaBenchmarkKind;
     use crate::double_ma::{
@@ -13821,6 +13928,111 @@ mod tests {
     }
 
     #[test]
+    fn fixed_contract_dispatch_selects_specialized_routes_when_symbols_are_present() {
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(METRICS_COUNT),
+                false,
+                true,
+                false,
+                false,
+                false,
+                true,
+                true,
+                true,
+                true,
+            ),
+            FixedContractDispatchKind::LockstepM17
+        );
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(TRADE_METRICS_COUNT),
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                true,
+                true,
+                true,
+            ),
+            FixedContractDispatchKind::M22
+        );
+    }
+
+    #[test]
+    fn fixed_contract_dispatch_falls_back_when_matching_symbol_is_unavailable() {
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(METRICS_COUNT),
+                false,
+                true,
+                false,
+                false,
+                false,
+                true,
+                true,
+                false,
+                true,
+            ),
+            FixedContractDispatchKind::None
+        );
+        assert_eq!(
+            choose_fixed_contract_dispatch_kind(
+                Some(TRADE_METRICS_COUNT),
+                false,
+                false,
+                false,
+                false,
+                false,
+                true,
+                false,
+                true,
+                false,
+            ),
+            FixedContractDispatchKind::None
+        );
+    }
+
+    #[test]
+    fn fixed_contract_kernel_flavor_covers_full_row_regime_variants() {
+        assert_eq!(
+            choose_fixed_contract_kernel_flavor(true, false, false, false, false),
+            FixedContractKernelFlavor::RegimeOffNoRisk
+        );
+        assert_eq!(
+            choose_fixed_contract_kernel_flavor(true, false, false, true, true),
+            FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm
+        );
+        assert_eq!(
+            choose_fixed_contract_kernel_flavor(true, true, false, true, true),
+            FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm
+        );
+        assert_eq!(
+            choose_fixed_contract_kernel_flavor(true, false, true, false, false),
+            FixedContractKernelFlavor::RegimeHybridNoRisk
+        );
+        assert_eq!(
+            choose_fixed_contract_kernel_flavor(false, true, true, true, true),
+            FixedContractKernelFlavor::Base
+        );
+    }
+
+    #[test]
+    fn kernel_strategy_params_always_set_signed_exposure_flag() {
+        let base = kernel_strategy_params(&StrategyConfig::default());
+        assert_ne!(base.flags & STRAT_SIGNED_EXPOSURE, 0);
+
+        let mut variant = StrategyConfig::default();
+        variant.long_only = true;
+        variant.allow_flip = false;
+        variant.trade_on_next_bar = true;
+        let variant = kernel_strategy_params(&variant);
+        assert_ne!(variant.flags & STRAT_SIGNED_EXPOSURE, 0);
+    }
+
+    #[test]
     fn compact_valid_pair_output_stays_enabled_with_full_metrics_rows() {
         assert!(should_use_compact_valid_pair_output(false, false, false, 3));
         assert!(should_use_compact_valid_pair_output(true, false, false, 3));
@@ -13832,6 +14044,26 @@ mod tests {
             false,
             METRICS_COUNT
         ));
+    }
+
+    #[test]
+    fn build_valid_pair_index_map_preserves_dense_pf_major_order() {
+        let fast = [5u16, 10u16];
+        let slow = [6u16, 10u16, 12u16];
+
+        let dense_pairs = build_valid_pair_index_map_i32(&fast, &slow).expect("pair map");
+        assert_eq!(dense_pairs, vec![0, 1, 2, 5]);
+
+        let visited_pairs: Vec<(u16, u16)> = dense_pairs
+            .iter()
+            .map(|&dense| {
+                let dense = usize::try_from(dense).expect("non-negative dense pair index");
+                let fi = dense / slow.len();
+                let sj = dense % slow.len();
+                (fast[fi], slow[sj])
+            })
+            .collect();
+        assert_eq!(visited_pairs, vec![(5, 6), (5, 10), (5, 12), (10, 12)]);
     }
 
     #[test]
@@ -14027,6 +14259,31 @@ mod tests {
         assert!((search - expected).abs() < 1e-6);
 
         assert!(max_drawdown_constraint_to_search_space(1.0, 3).is_infinite());
+    }
+
+    #[test]
+    fn device_constraint_args_keep_raw_max_drawdown_for_full_metric_contracts() {
+        let constraints = DoubleMaConstraints {
+            max_drawdown: Some(0.25),
+            ..Default::default()
+        };
+
+        let reduced = build_device_constraint_args(
+            Some(&constraints),
+            PRODUCT_REDUCED_METRICS_COUNT,
+        );
+        let full17 = build_device_constraint_args(Some(&constraints), METRICS_COUNT);
+        let trade22 = build_device_constraint_args(Some(&constraints), TRADE_METRICS_COUNT);
+
+        let expected_reduced = (-(1.0f64 - 0.25).ln()) as f32;
+        assert_eq!(reduced.use_max_dd, 1);
+        assert!((reduced.max_dd - expected_reduced).abs() < 1e-6);
+
+        assert_eq!(full17.use_max_dd, 1);
+        assert!((full17.max_dd - 0.25).abs() < 1e-6);
+
+        assert_eq!(trade22.use_max_dd, 1);
+        assert!((trade22.max_dd - 0.25).abs() < 1e-6);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { computed, type Ref } from "vue";
+import { computed, watch, type Ref } from "vue";
 import {
   getCoreRowModel,
   useVueTable,
@@ -38,32 +38,55 @@ export interface MatrixColumnMeta {
   sort: "" | "asc" | "desc";
 }
 
+export interface ResolvedMatrixColumnMeta extends MatrixColumnMeta {
+  columnIndex: number;
+}
+
+export interface HeadlessMatrixTableOptions {
+  columnVisibility?: Ref<Record<string, boolean>>;
+}
+
 function fallbackCell(): MatrixCellPayload {
   return { text: "", className: "", title: "" };
+}
+
+export function resolveMatrixColumnMeta(
+  column: MatrixColumnLike,
+  columnIndex: number,
+): ResolvedMatrixColumnMeta {
+  const columnKey =
+    String(column.key || "").trim() || `col_${columnIndex}`;
+  const columnLabel =
+    String(column.label || "").trim() || `Column ${columnIndex + 1}`;
+  const sort =
+    column.sort === "asc" || column.sort === "desc" ? column.sort : "";
+
+  return {
+    alignLeft: !!column.alignLeft,
+    columnKey,
+    columnLabel,
+    columnIndex,
+    sort,
+  };
 }
 
 export function useHeadlessMatrixTable<
   TColumn extends MatrixColumnLike,
   TRow extends MatrixRowLike,
->(columns: Ref<TColumn[]>, rows: Ref<TRow[]>) {
+>(
+  columns: Ref<TColumn[]>,
+  rows: Ref<TRow[]>,
+  options?: HeadlessMatrixTableOptions,
+) {
   const columnDefs = computed<ColumnDef<TRow, MatrixCellPayload>[]>(() =>
     columns.value.map((column, columnIndex) => {
-      const columnKey =
-        String(column.key || "").trim() || `col_${columnIndex}`;
-      const columnLabel =
-        String(column.label || "").trim() || `Column ${columnIndex + 1}`;
-      const sort = column.sort === "asc" || column.sort === "desc" ? column.sort : "";
+      const columnMeta = resolveMatrixColumnMeta(column, columnIndex);
 
       return {
-        id: columnKey,
-        header: columnLabel,
+        id: columnMeta.columnKey,
+        header: columnMeta.columnLabel,
         accessorFn: (row) => row.cells[columnIndex] ?? fallbackCell(),
-        meta: {
-          alignLeft: !!column.alignLeft,
-          columnKey,
-          columnLabel,
-          sort,
-        } satisfies MatrixColumnMeta,
+        meta: columnMeta satisfies MatrixColumnMeta,
         cell: (context: CellContext<TRow, MatrixCellPayload>) =>
           context.getValue() ?? fallbackCell(),
       } satisfies ColumnDef<TRow, MatrixCellPayload>;
@@ -77,6 +100,11 @@ export function useHeadlessMatrixTable<
     get columns() {
       return columnDefs.value;
     },
+    get state() {
+      return {
+        columnVisibility: options?.columnVisibility?.value ?? {},
+      };
+    },
     getCoreRowModel: getCoreRowModel(),
     manualSorting: true,
     getRowId: (row, index) => {
@@ -87,10 +115,22 @@ export function useHeadlessMatrixTable<
 
   const headerGroups = computed(() => table.getHeaderGroups());
   const rowModelRows = computed(() => table.getRowModel().rows);
+  const visibleLeafColumns = computed(() => table.getVisibleLeafColumns());
+
+  if (options?.columnVisibility) {
+    watch(
+      options.columnVisibility,
+      (nextVisibility) => {
+        table.setColumnVisibility(nextVisibility);
+      },
+      { immediate: true, deep: true },
+    );
+  }
 
   return {
     table,
     headerGroups,
     rowModelRows,
+    visibleLeafColumns,
   };
 }

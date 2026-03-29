@@ -6,13 +6,17 @@ import {
   useHeadlessMatrixTable,
   type MatrixColumnMeta,
 } from '../composables/useHeadlessMatrixTable'
+import { usePersistedMatrixColumnState } from '../composables/usePersistedMatrixColumnState'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import ContextHelpTip from './ContextHelpTip.vue'
+import ContextActionMenu from './ContextActionMenu.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { META_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
+import { artifactActionIcon, type AppIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface OptionItem {
@@ -42,6 +46,15 @@ interface BatchDatasetItem {
   meta: string
   checked: boolean
   disabled: boolean
+}
+
+interface ContextActionMenuItem {
+  key: string
+  label: string
+  icon?: AppIcon
+  disabled: boolean
+  destructive?: boolean
+  separatorBefore?: boolean
 }
 
 const aggregateTabItems = [
@@ -228,9 +241,20 @@ const compareTabActive = computed(() => activeAggregateTab.value === 'compare')
 const showMetaTooling = computed(() => metaStage.value !== 'no_data')
 const renderedColumns = computed<MetaColumn[]>(() => metaTableColumns.value as MetaColumn[])
 const renderedRows = computed<MetaRow[]>(() => metaTableRows.value as MetaRow[])
-const { headerGroups, rowModelRows } = useHeadlessMatrixTable(
+const {
+  columnOptions,
+  columnVisibility,
+  visibleCount: visibleColumnCount,
+  hiddenCount: hiddenColumnCount,
+  canRestoreDefaults,
+  toggleColumnVisibility,
+  restoreDefaultColumns,
+  canHideColumn,
+} = usePersistedMatrixColumnState(renderedColumns, META_RESULTS_TABLE_STATE_KEY)
+const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
   renderedColumns,
   renderedRows,
+  { columnVisibility },
 )
 const renderedBatchDatasets = computed<BatchDatasetItem[]>(() => batchDatasets.value as BatchDatasetItem[])
 const {
@@ -261,6 +285,15 @@ const metaSummaryChips = computed(() => {
     String(aggregateSummarySavedRuns.value || '').trim() ? `Runs ${aggregateSummarySavedRuns.value}` : '',
     String(aggregateSummarySavedMeta.value || '').trim() ? `Meta ${aggregateSummarySavedMeta.value}` : '',
   ].filter((chip) => String(chip || '').trim().length > 0)
+})
+const columnVisibilitySummary = computed(
+  () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
+)
+const columnVisibilityHint = computed(() => {
+  if (hiddenColumnCount.value > 0) {
+    return `${hiddenColumnCount.value} hidden columns. Restore defaults to recover the full meta review table.`
+  }
+  return 'Hide lower-signal grouping columns when you want a tighter meta selection review.'
 })
 
 const strategyOptions = computed<OptionItem[]>(() => {
@@ -479,6 +512,92 @@ function runAction(action: () => void): void {
   action()
 }
 
+const savedMetaSecondaryActions = computed<ContextActionMenuItem[]>(() => [
+  { key: 'refresh', label: 'Refresh', icon: artifactActionIcon('refresh'), disabled: !canRefreshMetaSaved.value },
+  { key: 'report', label: 'Open report', icon: artifactActionIcon('report'), disabled: !canOpenMetaSavedReport.value },
+  { key: 'reveal', label: 'Reveal file', icon: artifactActionIcon('reveal'), disabled: !canRevealMetaSaved.value },
+  {
+    key: 'delete',
+    label: 'Delete',
+    icon: artifactActionIcon('delete'),
+    disabled: !canDeleteMetaSaved.value,
+    destructive: true,
+    separatorBefore: true,
+  },
+])
+
+const savedStage5SecondaryActions = computed<ContextActionMenuItem[]>(() => [
+  { key: 'refresh', label: 'Refresh', icon: artifactActionIcon('refresh'), disabled: !canRefreshStage4Saved.value },
+  { key: 'reveal', label: 'Reveal file', icon: artifactActionIcon('reveal'), disabled: !canRevealStage4Saved.value },
+  {
+    key: 'delete',
+    label: 'Delete',
+    icon: artifactActionIcon('delete'),
+    disabled: !canDeleteStage4Saved.value,
+    destructive: true,
+    separatorBefore: true,
+  },
+])
+
+const savedPolicyEvalSecondaryActions = computed<ContextActionMenuItem[]>(() => [
+  { key: 'refresh', label: 'Refresh', icon: artifactActionIcon('refresh'), disabled: !canRefreshPolicyEvalSaved.value },
+  { key: 'reveal', label: 'Reveal file', icon: artifactActionIcon('reveal'), disabled: !canRevealPolicyEvalSaved.value },
+  {
+    key: 'delete',
+    label: 'Delete',
+    icon: artifactActionIcon('delete'),
+    disabled: !canDeletePolicyEvalSaved.value,
+    destructive: true,
+    separatorBefore: true,
+  },
+])
+
+function onSavedMetaActionSelect(actionKey: string): void {
+  if (actionKey === 'refresh') {
+    runAction(() => analysisStore.refreshSaved())
+    return
+  }
+  if (actionKey === 'report') {
+    runAction(() => analysisStore.openSavedReport())
+    return
+  }
+  if (actionKey === 'reveal') {
+    runAction(() => analysisStore.revealSaved())
+    return
+  }
+  if (actionKey === 'delete') {
+    runAction(() => analysisStore.deleteSaved())
+  }
+}
+
+function onSavedStage5ActionSelect(actionKey: string): void {
+  if (actionKey === 'refresh') {
+    runAction(() => analysisStore.refreshStage4Saved())
+    return
+  }
+  if (actionKey === 'reveal') {
+    runAction(() => analysisStore.revealStage4Saved())
+    return
+  }
+  if (actionKey === 'delete') {
+    runAction(() => analysisStore.deleteStage4Saved())
+  }
+}
+
+function onSavedPolicyEvalActionSelect(actionKey: string): void {
+  if (actionKey === 'refresh') {
+    runAction(() => analysisStore.refreshPolicyEvalSaved())
+    return
+  }
+  if (actionKey === 'reveal') {
+    runAction(() => analysisStore.revealPolicyEvalSaved())
+    return
+  }
+  if (actionKey === 'delete') {
+    runAction(() => analysisStore.deletePolicyEvalSaved())
+  }
+}
+
 function aggregateTabId(key: string): string {
   return `meta_aggregate_tab_${key}`
 }
@@ -503,6 +622,10 @@ function headerMeta(header: Header<MetaRow, unknown>): MatrixColumnMeta {
 
 function metaCellPayload(cell: Cell<MetaRow, unknown>): MetaCell {
   return cell.getValue() as MetaCell
+}
+
+function metaColumnToggleId(columnKey: string): string {
+  return `metaColumnToggle_${String(columnKey || '').replace(/[^a-zA-Z0-9_-]+/g, '_')}`
 }
 
 function moveAggregateTabFocus(event: KeyboardEvent): void {
@@ -823,12 +946,13 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div class="actions">
-          <button type="button" :disabled="!canRefreshMetaSaved" @click="runAction(() => analysisStore.refreshSaved())">Refresh</button>
+        <div class="actions savedArtifactActions">
           <button type="button" :disabled="!canLoadMetaSaved" @click="runAction(() => analysisStore.loadSaved())">Load</button>
-          <button type="button" :disabled="!canOpenMetaSavedReport" @click="runAction(() => analysisStore.openSavedReport())">Open report</button>
-          <button type="button" :disabled="!canRevealMetaSaved" @click="runAction(() => analysisStore.revealSaved())">Reveal file</button>
-          <button type="button" :disabled="!canDeleteMetaSaved" @click="runAction(() => analysisStore.deleteSaved())">Delete</button>
+          <ContextActionMenu
+            aria-label="Saved meta artifact actions"
+            :items="savedMetaSecondaryActions"
+            @select="onSavedMetaActionSelect"
+          />
         </div>
         <div class="metaLine mono">{{ metaSavedMeta }}</div>
       </section>
@@ -885,11 +1009,13 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div class="actions">
-          <button type="button" :disabled="!canRefreshStage4Saved" @click="runAction(() => analysisStore.refreshStage4Saved())">Refresh</button>
+        <div class="actions savedArtifactActions">
           <button type="button" :disabled="!canLoadStage4Saved" @click="runAction(() => analysisStore.loadStage4Saved())">Load</button>
-          <button type="button" :disabled="!canRevealStage4Saved" @click="runAction(() => analysisStore.revealStage4Saved())">Reveal file</button>
-          <button type="button" :disabled="!canDeleteStage4Saved" @click="runAction(() => analysisStore.deleteStage4Saved())">Delete</button>
+          <ContextActionMenu
+            aria-label="Saved Stage 5 artifact actions"
+            :items="savedStage5SecondaryActions"
+            @select="onSavedStage5ActionSelect"
+          />
         </div>
         <div class="metaLine mono">{{ stage4SavedMeta }}</div>
       </section>
@@ -946,11 +1072,13 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div class="actions">
-          <button type="button" :disabled="!canRefreshPolicyEvalSaved" @click="runAction(() => analysisStore.refreshPolicyEvalSaved())">Refresh</button>
+        <div class="actions savedArtifactActions">
           <button type="button" :disabled="!canLoadPolicyEvalSaved" @click="runAction(() => analysisStore.loadPolicyEvalSaved())">Load</button>
-          <button type="button" :disabled="!canRevealPolicyEvalSaved" @click="runAction(() => analysisStore.revealPolicyEvalSaved())">Reveal file</button>
-          <button type="button" :disabled="!canDeletePolicyEvalSaved" @click="runAction(() => analysisStore.deletePolicyEvalSaved())">Delete</button>
+          <ContextActionMenu
+            aria-label="Saved policy evaluation artifact actions"
+            :items="savedPolicyEvalSecondaryActions"
+            @select="onSavedPolicyEvalActionSelect"
+          />
         </div>
         <div class="metaLine mono">{{ policyEvalSavedMeta }}</div>
       </section>
@@ -1453,9 +1581,41 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="metaLine mono" role="status" aria-live="polite">{{ metaMeta }}</div>
+        <details v-if="renderedColumns.length > 0" class="columnDetails">
+          <summary class="columnDetailsSummary">
+            <span>Visible columns</span>
+            <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+          </summary>
+          <div class="columnDetailsBody">
+            <div class="panelMuted">{{ columnVisibilityHint }}</div>
+            <div class="columnToggleGrid" role="group" aria-label="Visible meta result columns">
+              <label
+                v-for="column in columnOptions"
+                :key="column.key"
+                class="columnToggle"
+                :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                :for="metaColumnToggleId(column.key)"
+              >
+                <input
+                  :id="metaColumnToggleId(column.key)"
+                  type="checkbox"
+                  :checked="column.visible"
+                  :disabled="!canHideColumn(column.key) && column.visible"
+                  @change="toggleColumnVisibility(column.key)"
+                />
+                <span>{{ column.label }}</span>
+              </label>
+            </div>
+            <div class="actions columnDetailsActions">
+              <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                Restore defaults
+              </button>
+            </div>
+          </div>
+        </details>
         <div
           ref="tableScrollElementRef"
-          class="tableWrap"
+          class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
           tabindex="0"
           aria-label="Meta analysis results table"
         >
@@ -1477,21 +1637,20 @@ onBeforeUnmount(() => {
             </thead>
             <tbody>
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
+                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
               <tr v-for="virtualRow in virtualRows" :key="virtualRow.row.id">
                 <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
                   <td
                     :class="metaCellPayload(cell).className"
                     :title="metaCellPayload(cell).title || undefined"
-                    :colspan="virtualRow.row.getVisibleCells().length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                   >
                     {{ metaCellPayload(cell).text }}
                   </td>
                 </template>
               </tr>
               <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
+                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
               </tr>
             </tbody>
           </table>
@@ -1660,6 +1819,62 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
+.columnDetails {
+  margin-top: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-sunken);
+}
+
+.columnDetailsSummary {
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  padding: calc(var(--density-pane-y) - 0.12rem) calc(var(--density-pane-x) - 0.02rem);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.columnDetailsSummary::-webkit-details-marker {
+  display: none;
+}
+
+.columnDetailsBody {
+  border-top: 1px solid var(--border);
+  padding: calc(var(--density-pane-y) - 0.05rem) calc(var(--density-pane-x) - 0.02rem);
+  display: grid;
+  gap: 0.65rem;
+}
+
+.columnToggleGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+}
+
+.columnToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.76rem;
+}
+
+.columnToggle.disabled {
+  opacity: 0.62;
+}
+
+.columnToggle input {
+  margin: 0;
+}
+
+.columnDetailsActions {
+  margin-top: 0;
+}
+
 .metaTableVue {
   width: 100%;
   border-collapse: collapse;
@@ -1762,6 +1977,10 @@ onBeforeUnmount(() => {
   .gridThree {
     grid-template-columns: 1fr 1fr;
   }
+
+  .columnToggleGrid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 740px) {
@@ -1769,6 +1988,10 @@ onBeforeUnmount(() => {
   .gridFive,
   .gridFour,
   .gridThree {
+    grid-template-columns: 1fr;
+  }
+
+  .columnToggleGrid {
     grid-template-columns: 1fr;
   }
 }

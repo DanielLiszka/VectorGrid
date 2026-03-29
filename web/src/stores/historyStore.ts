@@ -1,3 +1,5 @@
+import Fuse from "fuse.js";
+import type { IFuseOptions } from "fuse.js";
 import { defineStore } from "pinia";
 import { markRaw } from "vue";
 import {
@@ -29,6 +31,35 @@ export interface HistoryOption {
 }
 
 type HistorySavedRunEntry = HistorySavedRunSummary;
+
+interface SavedRunSearchRecord {
+  entry: HistorySavedRunEntry;
+  index: number;
+  ts: string;
+  strategyKind: string;
+  csvPath: string;
+  csvBasename: string;
+  artifactPath: string;
+  artifactBasename: string;
+  tags: string[];
+  searchText: string;
+}
+
+const SAVED_RUN_FUSE_OPTIONS: IFuseOptions<SavedRunSearchRecord> = {
+  includeScore: true,
+  ignoreLocation: true,
+  shouldSort: true,
+  threshold: 0.34,
+  minMatchCharLength: 2,
+  keys: [
+    { name: "ts", weight: 0.25 },
+    { name: "strategyKind", weight: 0.22 },
+    { name: "csvBasename", weight: 0.2 },
+    { name: "artifactBasename", weight: 0.16 },
+    { name: "tags", weight: 0.12 },
+    { name: "csvPath", weight: 0.05 },
+  ],
+};
 
 function normalizeText(value: unknown): string {
   return String(value || "").trim();
@@ -77,6 +108,10 @@ function formatBytesCompact(bytes: number): string {
   return formatUiBinaryBytes(bytes);
 }
 
+function normalizeSearchText(value: unknown): string {
+  return normalizeText(value).toLowerCase();
+}
+
 function runtimeRunning(): boolean {
   if (typeof document === "undefined") return false;
   const root = document.documentElement as HTMLElement | undefined;
@@ -101,15 +136,77 @@ function filterSavedRunsEntries(
 ): HistorySavedRunEntry[] {
   const tokens = filterTokens(search);
   if (!tokens.length) return entries;
-  const out: HistorySavedRunEntry[] = [];
-  for (const entry of entries) {
-    const hay =
-      `${entry.ts} ${entry.strategyKind} ${entry.csvPath} ${entry.tags.join(" ")}`
-        .trim()
-        .toLowerCase();
-    if (tokens.every((token) => hay.includes(token))) out.push(entry);
+  const records: SavedRunSearchRecord[] = entries.map((entry, index) => {
+    const ts = normalizeSearchText(entry.ts);
+    const strategyKind = normalizeSearchText(entry.strategyKind);
+    const csvPath = normalizeSearchText(entry.csvPath);
+    const csvBasename = normalizeSearchText(fileBasename(entry.csvPath));
+    const artifactPath = normalizeSearchText(entry.path);
+    const artifactBasename = normalizeSearchText(fileBasename(entry.path));
+    const tags = entry.tags.map((tag) => normalizeSearchText(tag)).filter((tag) => tag.length > 0);
+    const searchText = [ts, strategyKind, csvPath, csvBasename, artifactPath, artifactBasename, ...tags]
+      .filter((part) => part.length > 0)
+      .join(" ");
+    return {
+      entry,
+      index,
+      ts,
+      strategyKind,
+      csvPath,
+      csvBasename,
+      artifactPath,
+      artifactBasename,
+      tags,
+      searchText,
+    };
+  });
+
+  const shortQueryMatches = (): HistorySavedRunEntry[] => {
+    const scored = records
+      .map((record) => {
+        let totalScore = 0;
+        for (const token of tokens) {
+          const fields = [
+            record.ts,
+            record.strategyKind,
+            record.csvBasename,
+            record.artifactBasename,
+            ...record.tags,
+          ];
+          let tokenScore = -1;
+          for (const field of fields) {
+            if (!field) continue;
+            if (field === token) tokenScore = Math.max(tokenScore, 9);
+            else if (field.startsWith(token)) tokenScore = Math.max(tokenScore, 7);
+            else if (field.includes(token)) tokenScore = Math.max(tokenScore, 4);
+          }
+          if (tokenScore < 0) return null;
+          totalScore += tokenScore;
+        }
+        return { record, totalScore };
+      })
+      .filter((row): row is { record: SavedRunSearchRecord; totalScore: number } => row !== null)
+      .sort((left, right) => {
+        if (right.totalScore !== left.totalScore) return right.totalScore - left.totalScore;
+        return left.record.index - right.record.index;
+      });
+    return scored.map((row) => row.record.entry);
+  };
+
+  if (tokens.every((token) => token.length < 3)) {
+    return shortQueryMatches();
   }
-  return out;
+
+  const fuse = new Fuse(records, SAVED_RUN_FUSE_OPTIONS);
+  const query = normalizeSearchText(search);
+  const results = fuse.search(query);
+  if (!results.length) return shortQueryMatches();
+
+  const strictTokenMatches = results.filter(({ item }) =>
+    tokens.length <= 1 || tokens.every((token) => item.searchText.includes(token)),
+  );
+  const ranked = strictTokenMatches.length > 0 ? strictTokenMatches : results;
+  return ranked.map(({ item }) => item.entry);
 }
 
 interface HistoryState {

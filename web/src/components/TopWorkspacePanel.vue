@@ -6,12 +6,15 @@ import {
   useHeadlessMatrixTable,
   type MatrixColumnMeta,
 } from '../composables/useHeadlessMatrixTable'
+import { usePersistedMatrixColumnState } from '../composables/usePersistedMatrixColumnState'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { TOP_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
+import { compareActionIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 interface TopColumn {
@@ -36,6 +39,10 @@ interface TopRow {
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
 const { topStage } = useUiReadiness()
+const pinCompareIcon = compareActionIcon('pin')
+const clearCompareIcon = compareActionIcon('clear')
+const replaceCompareIcon = compareActionIcon('replace')
+const removeCompareIcon = compareActionIcon('remove')
 const {
   bestKicker,
   bestStats,
@@ -73,9 +80,21 @@ const minExposureDraft = ref('')
 const visible = computed(() => String(resultsTab.value || '').trim() === 'top')
 const renderedColumns = computed<TopColumn[]>(() => topColumns.value as TopColumn[])
 const renderedRows = computed<TopRow[]>(() => topTableRows.value as TopRow[])
-const { headerGroups, rowModelRows } = useHeadlessMatrixTable(
+const {
+  columnOptions,
+  columnVisibility,
+  visibleCount: visibleColumnCount,
+  hiddenCount: hiddenColumnCount,
+  canRestoreDefaults,
+  leadVisibleColumnKey,
+  toggleColumnVisibility,
+  restoreDefaultColumns,
+  canHideColumn,
+} = usePersistedMatrixColumnState(renderedColumns, TOP_RESULTS_TABLE_STATE_KEY)
+const { headerGroups, rowModelRows, visibleLeafColumns } = useHeadlessMatrixTable(
   renderedColumns,
   renderedRows,
+  { columnVisibility },
 )
 const hasTopResults = computed(() => Number(topRows.value || 0) > 0)
 const topDisabledForRun = computed(() => String(topFilterMeta.value || '').toLowerCase().includes('top k disabled'))
@@ -129,6 +148,15 @@ const topSummaryChips = computed(() => {
     filtersActive.value ? 'Filters active' : 'All rows',
     topDisabledForRun.value ? 'Top-k disabled' : '',
   ].filter((chip) => String(chip || '').trim().length > 0)
+})
+const columnVisibilitySummary = computed(
+  () => `Columns ${visibleColumnCount.value}/${renderedColumns.value.length}`,
+)
+const columnVisibilityHint = computed(() => {
+  if (hiddenColumnCount.value > 0) {
+    return `${hiddenColumnCount.value} hidden columns. Restore defaults to return to the full shortlist layout.`
+  }
+  return 'Hide lower-signal metrics to keep the shortlist focused without changing the selected candidate context.'
 })
 const selectedTopIndex = computed(() => renderedRows.value.findIndex((row) => row.selected))
 const fallbackSelectedTopTitle = computed(() => {
@@ -257,6 +285,10 @@ function rowPinned(rowId: string | undefined): boolean {
 
 function pinCellLabel(rowId: string | undefined): string {
   return rowPinned(rowId) ? 'Pinned' : 'Pin'
+}
+
+function topColumnToggleId(columnKey: string): string {
+  return `topColumnToggle_${String(columnKey || '').replace(/[^a-zA-Z0-9_-]+/g, '_')}`
 }
 
 watch(
@@ -495,13 +527,51 @@ onBeforeUnmount(() => {
           </div>
           <div class="panelMuted">{{ displayedSelectedTopDecisionNote }}</div>
           <div class="actions stickySelectionActions">
-            <button type="button" :disabled="!canPinSelectedTopCandidate" @click="analysisStore.pinSelectedTopRow()">Pin current candidate</button>
-            <button type="button" :disabled="pinnedTopCandidates.length === 0" @click="analysisStore.clearPinnedTopCandidates()">Clear compare</button>
+            <button type="button" :disabled="!canPinSelectedTopCandidate" @click="analysisStore.pinSelectedTopRow()">
+              <component :is="pinCompareIcon" class="actionIcon" aria-hidden="true" />
+              <span>Pin current candidate</span>
+            </button>
+            <button type="button" :disabled="pinnedTopCandidates.length === 0" @click="analysisStore.clearPinnedTopCandidates()">
+              <component :is="clearCompareIcon" class="actionIcon" aria-hidden="true" />
+              <span>Clear compare</span>
+            </button>
           </div>
         </div>
         <div v-if="displayedTopStaleCues.length > 0" class="staleCueStack">
           <div v-for="cue in displayedTopStaleCues" :key="cue" class="panelAdvisory surfaceWarning mono">{{ cue }}</div>
         </div>
+        <details v-if="topStage === 'ready' && renderedColumns.length > 0" class="columnDetails">
+          <summary class="columnDetailsSummary">
+            <span>Visible columns</span>
+            <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+          </summary>
+          <div class="columnDetailsBody">
+            <div class="panelMuted">{{ columnVisibilityHint }}</div>
+            <div class="columnToggleGrid" role="group" aria-label="Visible top result columns">
+              <label
+                v-for="column in columnOptions"
+                :key="column.key"
+                class="columnToggle"
+                :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                :for="topColumnToggleId(column.key)"
+              >
+                <input
+                  :id="topColumnToggleId(column.key)"
+                  type="checkbox"
+                  :checked="column.visible"
+                  :disabled="!canHideColumn(column.key) && column.visible"
+                  @change="toggleColumnVisibility(column.key)"
+                />
+                <span>{{ column.label }}</span>
+              </label>
+            </div>
+            <div class="actions columnDetailsActions">
+              <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                Restore defaults
+              </button>
+            </div>
+          </div>
+        </details>
         <section v-if="pinnedTopCandidates.length > 0" class="compareTray surfaceSunken">
           <div class="panelSectionHeader">
             <div class="panelHeadCopy">
@@ -530,9 +600,13 @@ onBeforeUnmount(() => {
               <div v-if="candidate.staleReason" class="panelAdvisory surfaceWarning mono">{{ candidate.staleReason }}</div>
               <div class="actions">
                 <button type="button" :disabled="!canReplaceWithCurrent" @click="analysisStore.replacePinnedTopCandidate(candidate.id)">
-                  Replace with current
+                  <component :is="replaceCompareIcon" class="actionIcon" aria-hidden="true" />
+                  <span>Replace with current</span>
                 </button>
-                <button type="button" @click="analysisStore.unpinTopCandidate(candidate.id)">Remove</button>
+                <button type="button" @click="analysisStore.unpinTopCandidate(candidate.id)">
+                  <component :is="removeCompareIcon" class="actionIcon" aria-hidden="true" />
+                  <span>Remove</span>
+                </button>
               </div>
             </article>
           </div>
@@ -583,7 +657,7 @@ onBeforeUnmount(() => {
             </thead>
             <tbody role="rowgroup">
               <tr v-if="virtualTopSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
+                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualTopSpacerPx}px` }"></td>
               </tr>
               <tr
                 v-for="virtualRow in virtualRows"
@@ -596,17 +670,20 @@ onBeforeUnmount(() => {
                 @click="clickTopRow(virtualRow.row.index)"
                 @keydown="onTopRowKeydown(virtualRow.row.index, $event)"
               >
-                <template v-for="cell in virtualRow.row.getVisibleCells()" :key="cell.id">
+                <template v-for="(cell, visibleCellIndex) in virtualRow.row.getVisibleCells()" :key="cell.id">
                   <td
-                    :class="topCellPayload(cell).className"
+                    :class="[
+                      topCellPayload(cell).className,
+                      { leadVisibleColumn: cell.column.id === leadVisibleColumnKey },
+                    ]"
+                    :data-column-key="String((cell.column.columnDef.meta as MatrixColumnMeta)?.columnKey || '')"
                     :title="topCellPayload(cell).title || undefined"
-                    :colspan="virtualRow.row.getVisibleCells().length === 1 && renderedColumns.length > 1 ? renderedColumns.length : undefined"
                     role="gridcell"
                   >
                     <div class="topCellContent">
                       <span>{{ topCellPayload(cell).text }}</span>
                       <button
-                        v-if="cell.column.getIndex() === 0"
+                        v-if="visibleCellIndex === 0"
                         type="button"
                         class="pinCellBtn"
                         :aria-label="`${pinCellLabel(virtualRow.row.original.rowId)} candidate ${virtualRow.row.index + 1}`"
@@ -620,7 +697,7 @@ onBeforeUnmount(() => {
                 </template>
               </tr>
               <tr v-if="virtualBottomSpacerPx > 0" class="spacerRow" aria-hidden="true">
-                <td :colspan="Math.max(1, renderedColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
+                <td :colspan="Math.max(1, visibleLeafColumns.length)" :style="{ height: `${virtualBottomSpacerPx}px` }"></td>
               </tr>
             </tbody>
           </table>
@@ -669,10 +746,75 @@ onBeforeUnmount(() => {
 .actions button {
   padding: calc(var(--density-control-y) - 0.13rem) calc(var(--density-control-x) - 0.15rem);
   font-size: 0.76rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+}
+
+.actionIcon {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
 }
 
 .tableWrap {
   overflow: auto;
+}
+
+.columnDetails {
+  margin-bottom: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-sunken);
+}
+
+.columnDetailsSummary {
+  list-style: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  padding: calc(var(--density-pane-y) - 0.12rem) calc(var(--density-pane-x) - 0.02rem);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.columnDetailsSummary::-webkit-details-marker {
+  display: none;
+}
+
+.columnDetailsBody {
+  border-top: 1px solid var(--border);
+  padding: calc(var(--density-pane-y) - 0.05rem) calc(var(--density-pane-x) - 0.02rem);
+  display: grid;
+  gap: 0.65rem;
+}
+
+.columnToggleGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+}
+
+.columnToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.76rem;
+}
+
+.columnToggle.disabled {
+  opacity: 0.62;
+}
+
+.columnToggle input {
+  margin: 0;
+}
+
+.columnDetailsActions {
+  margin-top: 0;
 }
 
 .topEmptyState {
@@ -703,6 +845,11 @@ onBeforeUnmount(() => {
 .topTableVue th.left,
 .topTableVue td.left {
   text-align: left;
+}
+
+.topTableVue td.leadVisibleColumn {
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--surface-overlay) 82%, transparent), transparent 92%);
 }
 
 .topTableVue tbody tr {
@@ -836,6 +983,10 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr 1fr;
   }
 
+  .columnToggleGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .compareTrayGrid {
     grid-template-columns: 1fr 1fr;
   }
@@ -843,6 +994,10 @@ onBeforeUnmount(() => {
 
 @media (max-width: 680px) {
   .gridFive {
+    grid-template-columns: 1fr;
+  }
+
+  .columnToggleGrid {
     grid-template-columns: 1fr;
   }
 
