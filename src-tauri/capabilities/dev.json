@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dev-window",
+  "description": "Reserved diagnostic capability for future dev-only or inspection windows.",
+  "windows": ["dev-*"],
+  "permissions": [
+    "core:default",
+    "log:default"
+  ]
+}

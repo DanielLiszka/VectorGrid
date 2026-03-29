@@ -6,11 +6,24 @@ pub mod settings;
 pub mod state;
 
 use commands::*;
+use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_window_state::{StateFlags, WindowExt};
 use state::AppState;
 use state::BackgroundTaskState;
 
 pub fn run_tauri() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: None }),
+                    Target::new(TargetKind::Webview),
+                ])
+                .build(),
+        )
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState::default())
         .manage(BackgroundTaskState::default())
         .setup(|app| {
@@ -20,9 +33,20 @@ pub fn run_tauri() {
 
             let data_dir = std::env::temp_dir().join("vectorgrid").join("webview2");
 
-            tauri::WebviewWindowBuilder::from_config(app.handle(), &window_cfg)?
+            let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &window_cfg)?
                 .data_directory(data_dir)
                 .build()?;
+
+            if let Err(error) = window.restore_state(StateFlags::all()) {
+                log::warn!("failed to restore main window state: {error}");
+            }
+
+            if let Err(error) = window.show() {
+                log::error!("failed to show main window: {error}");
+                return Err(error.into());
+            }
+
+            log::info!("main window initialized");
 
             Ok(())
         })

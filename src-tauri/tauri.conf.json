@@ -10,15 +10,23 @@
     "devUrl": "http://127.0.0.1:1420"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "macOSPrivateApi": true,
+    "security": {
+      "capabilities": ["main-window"],
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'",
+      "devCsp": "default-src 'self' http://localhost:* http://127.0.0.1:* ipc: http://ipc.localhost https://ipc.localhost; connect-src 'self' http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' data: blob: http://localhost:* http://127.0.0.1:*; style-src 'self' 'unsafe-inline' http://localhost:* http://127.0.0.1:*; font-src 'self' data: http://localhost:* http://127.0.0.1:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
+    },
     "windows": [
       {
+        "label": "main",
         "title": "VectorGrid",
         "create": false,
         "width": 1280,
         "height": 720,
-        "transparent": true
+        "decorations": false,
+        "transparent": false,
+        "visible": false
       }
     ]
   }
