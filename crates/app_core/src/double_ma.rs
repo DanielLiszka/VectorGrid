@@ -5162,6 +5162,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             fast_alma_sigma,
                             slow_alma_offset,
                             slow_alma_sigma,
+                            requested_trade_metrics,
+                            requested_metric_contract,
                             constraints,
                             export_all_csv_path,
                             total_pairs,
@@ -5209,6 +5211,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             fast_alma_sigma,
                             slow_alma_offset,
                             slow_alma_sigma,
+                            requested_trade_metrics,
+                            requested_metric_contract,
                             constraints,
                             export_all_csv_path,
                             total_pairs,
@@ -5256,6 +5260,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             fast_alma_sigma,
                             slow_alma_offset,
                             slow_alma_sigma,
+                            requested_trade_metrics,
+                            requested_metric_contract,
                             constraints,
                             export_all_csv_path,
                             total_pairs,
@@ -5303,6 +5309,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             fast_alma_sigma,
                             slow_alma_offset,
                             slow_alma_sigma,
+                            requested_trade_metrics,
+                            requested_metric_contract,
                             constraints,
                             export_all_csv_path,
                             total_pairs,
@@ -5350,6 +5358,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                             fast_alma_sigma,
                             slow_alma_offset,
                             slow_alma_sigma,
+                            requested_trade_metrics,
+                            requested_metric_contract,
                             constraints,
                             export_all_csv_path,
                             total_pairs,
@@ -5400,6 +5410,8 @@ pub fn run_double_ma_optimization_blocking_with_candles(
                         fast_alma_sigma,
                         slow_alma_offset,
                         slow_alma_sigma,
+                        requested_trade_metrics,
+                        requested_metric_contract,
                         constraints,
                         export_all_csv_path,
                         total_pairs,
@@ -11930,6 +11942,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    false,
+                    None,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -11975,6 +11989,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    false,
+                    None,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12021,6 +12037,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    false,
+                    None,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12067,6 +12085,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    false,
+                    None,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12113,6 +12133,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
+                    false,
+                    None,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12154,6 +12176,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                 fast_alma_sigma,
                 slow_alma_offset,
                 slow_alma_sigma,
+                false,
+                None,
                 fast_precomputed_host.as_deref(),
                 fast_precomputed_cols,
                 slow_precomputed_host.as_deref(),
@@ -13172,6 +13196,29 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn exact_gpu_kernel_config(
+    device_id: u32,
+    strategy: &StrategyConfig,
+    fast_alma_offset: f64,
+    fast_alma_sigma: f64,
+    slow_alma_offset: f64,
+    slow_alma_sigma: f64,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
+) -> crate::gpu_backtest_kernel::KernelConfig {
+    crate::gpu_backtest_kernel::KernelConfig {
+        device_id,
+        fast_alma_offset,
+        fast_alma_sigma,
+        slow_alma_offset,
+        slow_alma_sigma,
+        hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
+        include_trade_metrics,
+        metric_contract,
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn optimize_double_ma_gpu_kernel_tiled(
     candles: &vector_ta::utilities::data_loader::Candles,
     device_id: u32,
@@ -13197,6 +13244,8 @@ fn optimize_double_ma_gpu_kernel_tiled(
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
     constraints: Option<&DoubleMaConstraints>,
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
@@ -13229,6 +13278,8 @@ fn optimize_double_ma_gpu_kernel_tiled(
         fast_alma_sigma,
         slow_alma_offset,
         slow_alma_sigma,
+        include_trade_metrics,
+        metric_contract,
         None,
         None,
         None,
@@ -13269,6 +13320,8 @@ fn optimize_double_ma_gpu_kernel_tiled_with_device_regime(
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
     constraints: Option<&DoubleMaConstraints>,
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
@@ -13303,16 +13356,16 @@ fn optimize_double_ma_gpu_kernel_tiled_with_device_regime(
         shortlist_slice_benchmark,
         top_k,
         include_all,
-        crate::gpu_backtest_kernel::KernelConfig {
+        exact_gpu_kernel_config(
             device_id,
+            strategy,
             fast_alma_offset,
             fast_alma_sigma,
             slow_alma_offset,
             slow_alma_sigma,
-            hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
-            include_trade_metrics: false,
-            metric_contract: None,
-        },
+            include_trade_metrics,
+            metric_contract,
+        ),
         None,
         None,
         constraints,
@@ -13352,6 +13405,8 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
     fast_precomputed_values: Option<&[f32]>,
     fast_precomputed_cols: Option<usize>,
     slow_precomputed_values: Option<&[f32]>,
@@ -13407,16 +13462,16 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
         shortlist_slice_benchmark,
         top_k,
         include_all,
-        crate::gpu_backtest_kernel::KernelConfig {
+        exact_gpu_kernel_config(
             device_id,
+            strategy,
             fast_alma_offset,
             fast_alma_sigma,
             slow_alma_offset,
             slow_alma_sigma,
-            hurdle_tau: strategy.hurdle_tau.unwrap_or(0.0),
-            include_trade_metrics: false,
-            metric_contract: None,
-        },
+            include_trade_metrics,
+            metric_contract,
+        ),
         fast_precomputed.as_ref(),
         slow_precomputed.as_ref(),
         constraints,
@@ -17186,6 +17241,8 @@ mod tests {
             6.0,
             0.85,
             6.0,
+            false,
+            None,
             Some(fast_mat.as_slice()),
             Some(fast_cols),
             None,
@@ -18462,6 +18519,24 @@ mod tests {
                 .collect();
             assert_eq!(key_a, key_b, "top-k key mismatch for {label}");
         }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn exact_gpu_kernel_config_preserves_metric_contract_request() {
+        let cfg = exact_gpu_kernel_config(
+            3,
+            &StrategyConfig::default(),
+            0.85,
+            6.0,
+            0.9,
+            5.5,
+            true,
+            Some(DoubleMaMetricContract::Trade22),
+        );
+        assert_eq!(cfg.device_id, 3);
+        assert!(cfg.include_trade_metrics);
+        assert_eq!(cfg.metric_contract, Some(DoubleMaMetricContract::Trade22));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

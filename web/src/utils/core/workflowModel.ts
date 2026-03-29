@@ -88,34 +88,34 @@ export const TAB_LABELS = {
   },
 } as const
 
-export function normalizeWorkflowTab(value: unknown): string {
+export function normalizeWorkflowTab(value: unknown): WorkflowTab | '' {
   const normalized = String(value || '').trim().toLowerCase()
-  return WORKFLOW_TAB_SET.has(normalized) ? normalized : ''
+  return WORKFLOW_TAB_SET.has(normalized) ? (normalized as WorkflowTab) : ''
 }
 
-export function normalizeWorkspaceTab(value: unknown): string {
+export function normalizeWorkspaceTab(value: unknown): WorkspaceTab | '' {
   const normalized = String(value || '').trim().toLowerCase()
-  return WORKSPACE_TAB_SET.has(normalized) ? normalized : ''
+  return WORKSPACE_TAB_SET.has(normalized) ? (normalized as WorkspaceTab) : ''
 }
 
-export function normalizeWorkflowStep(value: unknown): string {
+export function normalizeWorkflowStep(value: unknown): WorkflowStep | '' {
   const normalized = String(value || '').trim().toLowerCase()
-  return WORKFLOW_STEP_SET.has(normalized) ? normalized : ''
+  return WORKFLOW_STEP_SET.has(normalized) ? (normalized as WorkflowStep) : ''
 }
 
-export function normalizeAggregateTab(value: unknown): string {
+export function normalizeAggregateTab(value: unknown): AggregateTab | '' {
   const normalized = String(value || '').trim().toLowerCase()
-  return AGGREGATE_TAB_SET.has(normalized) ? normalized : ''
+  return AGGREGATE_TAB_SET.has(normalized) ? (normalized as AggregateTab) : ''
 }
 
-export function normalizeControlsTab(value: unknown): string {
+export function normalizeControlsTab(value: unknown): ControlsTab | '' {
   const normalized = String(value || '').trim().toLowerCase()
-  return CONTROLS_TAB_SET.has(normalized) ? normalized : ''
+  return CONTROLS_TAB_SET.has(normalized) ? (normalized as ControlsTab) : ''
 }
 
-export function normalizeResultsTab(value: unknown): string {
+export function normalizeResultsTab(value: unknown): ResultsTab | '' {
   const normalized = String(value || '').trim().toLowerCase()
-  return RESULTS_TAB_SET.has(normalized) ? normalized : ''
+  return RESULTS_TAB_SET.has(normalized) ? (normalized as ResultsTab) : ''
 }
 
 export function workflowStepFromWorkflow(workflow: unknown): string {

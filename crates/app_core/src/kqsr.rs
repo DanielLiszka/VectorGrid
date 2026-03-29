@@ -636,7 +636,7 @@ pub fn compute_kqsr_fast_signals(
         srsi_d.as_slice(),
         ift_rsi.as_slice(),
     ])
-        .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
+    .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
 
     Ok(KqsrFastSignals {
         j,
@@ -751,7 +751,7 @@ pub fn compute_kqsr_slow_signals(
         prb_upper.as_slice(),
         prb_lower.as_slice(),
     ])
-        .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
+    .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
 
     Ok(KqsrSlowSignals {
         qqe_fast,
@@ -869,7 +869,7 @@ pub fn compute_kqsr_fast_signals_f32(
         srsi_d.as_slice(),
         ift_rsi.as_slice(),
     ])
-        .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
+    .ok_or_else(|| "KQSR fast signals are all non-finite".to_string())?;
 
     Ok(KqsrFastSignalsF32 {
         j,
@@ -981,7 +981,7 @@ pub fn compute_kqsr_slow_signals_f32(
         prb_upper.as_slice(),
         prb_lower.as_slice(),
     ])
-        .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
+    .ok_or_else(|| "KQSR slow signals are all non-finite".to_string())?;
 
     Ok(KqsrSlowSignalsF32 {
         qqe_fast,

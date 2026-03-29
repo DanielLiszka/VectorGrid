@@ -2,6 +2,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use serde_json::json;
+use ta_app_core::double_ma::DoubleMaMetricContract;
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
     trend_quality_strategy_for_kernel,
@@ -119,6 +120,20 @@ fn parse_heatmap_bins() -> Result<u16, String> {
         .map_err(|e| format!("invalid --heatmap-bins '{}': {e}", raw.trim()))
 }
 
+fn parse_metric_contract() -> Result<Option<DoubleMaMetricContract>, String> {
+    let Some(raw) = parse_arg_value("--metric-contract") else {
+        return Ok(None);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "auto" | "none" => Ok(None),
+        "full17" | "full_17" | "full-17" => Ok(Some(DoubleMaMetricContract::Full17)),
+        "trade22" | "trade_22" | "trade-22" => Ok(Some(DoubleMaMetricContract::Trade22)),
+        other => Err(format!(
+            "unsupported --metric-contract '{other}' (expected: auto|full17|trade22)"
+        )),
+    }
+}
+
 fn parse_objective_kind() -> Result<ObjectiveKind, String> {
     let raw = parse_arg_value("--objective").unwrap_or_else(|| "sharpe".to_string());
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -178,6 +193,14 @@ fn parse_toggle_mode_alias(
 
 fn parse_emit_json() -> bool {
     std::env::args().skip(1).any(|arg| arg == "--emit-json")
+}
+
+fn metric_contract_label(metric_contract: Option<DoubleMaMetricContract>) -> &'static str {
+    match metric_contract {
+        Some(DoubleMaMetricContract::Full17) => "full17",
+        Some(DoubleMaMetricContract::Trade22) => "trade22",
+        None => "auto",
+    }
 }
 
 fn parse_candle_shape() -> Result<CandleShape, String> {
@@ -436,10 +459,19 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let metric_contract = parse_metric_contract().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
     let objective = parse_objective_kind().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
     });
+    let include_trade_metrics_mode = parse_toggle_mode("--include-trade-metrics", "inherit")
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(2);
+        });
     let dynamic_enabled = parse_dynamic_mode().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2);
@@ -486,6 +518,21 @@ fn main() {
     let candles = candles_for_run(strategy_kind, candle_shape, 200_000);
     let (fast_range, slow_range) = workload_ranges(workload_kind);
     let cancel = AtomicBool::new(false);
+    let include_trade_metrics = match include_trade_metrics_mode {
+        ToggleMode::On => true,
+        ToggleMode::Off => false,
+        ToggleMode::Inherit => matches!(metric_contract, Some(DoubleMaMetricContract::Trade22)),
+    };
+    if matches!(metric_contract, Some(DoubleMaMetricContract::Full17)) && include_trade_metrics {
+        eprintln!("--metric-contract full17 cannot be combined with --include-trade-metrics on");
+        std::process::exit(2);
+    }
+    if matches!(metric_contract, Some(DoubleMaMetricContract::Trade22)) && !include_trade_metrics {
+        eprintln!(
+            "--metric-contract trade22 requires trade metrics; omit --include-trade-metrics or set it to on"
+        );
+        std::process::exit(2);
+    }
 
     let req = DoubleMaRequest {
         backend: backend_for_strategy(strategy_kind, adx_mode, device_id),
@@ -520,8 +567,8 @@ fn main() {
         dynamic_strategy_ir: None,
         gpu_execution: Default::default(),
         persist_followup_cache: false,
-        include_trade_metrics: false,
-        metric_contract: None,
+        include_trade_metrics,
+        metric_contract,
 
         hurdle_tau: None,
     };
@@ -558,6 +605,8 @@ fn main() {
                 "runtime_ms": res.runtime_ms,
                 "wall_ms": wall_ms,
                 "objective": format!("{:?}", objective),
+                "metric_contract": metric_contract_label(metric_contract),
+                "include_trade_metrics": include_trade_metrics,
                 "fast_ma": &fast_ma_type,
                 "slow_ma": &slow_ma_type,
                 "heatmap_bins": heatmap_bins,
@@ -591,7 +640,7 @@ fn main() {
             continue;
         }
         println!(
-            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={:?} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
+            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={:?} metric_contract={} include_trade_metrics={} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
             if is_warmup { "warmup" } else { "measure" },
             iter_index,
             fast_ma_type,
@@ -599,6 +648,8 @@ fn main() {
             res.backend_used,
             res.backend_route.as_deref().unwrap_or("<none>"),
             objective,
+            metric_contract_label(metric_contract),
+            include_trade_metrics,
             res.runtime_ms,
             wall_ms,
             heatmap_bins,

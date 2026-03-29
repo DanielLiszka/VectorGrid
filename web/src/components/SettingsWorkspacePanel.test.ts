@@ -2,11 +2,17 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsWorkspacePanel from './SettingsWorkspacePanel.vue'
+import * as desktopProductization from '../services/desktopProductization'
 import { useRuntimeStore } from '../stores/runtimeStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+
+vi.mock('../services/desktopProductization', () => ({
+  requestDesktopNotificationPermission: vi.fn(async () => undefined),
+}))
 
 describe('SettingsWorkspacePanel', () => {
   beforeEach(() => {
@@ -28,6 +34,9 @@ describe('SettingsWorkspacePanel', () => {
 
     const runtimeStore = useRuntimeStore(pinia)
     runtimeStore.markError(new Error('Renderer boot failed'))
+    runtimeStore.setDesktopNotificationPermission('default')
+    runtimeStore.setDesktopWindowState('vectorgrid-window-state.json', true)
+    runtimeStore.pushDesktopLog('info', 'Desktop runtime bridge ready.')
 
     const taskStore = useTaskStore(pinia)
     taskStore.$patch({
@@ -101,6 +110,9 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Phase changed: Evaluate')
     expect(text).toContain('Optimization failed.')
     expect(text).toContain('Error')
+    expect(text).toContain('Desktop logs')
+    expect(text).toContain('Desktop runtime bridge ready.')
+    expect(text).toContain('Window geometry persists to vectorgrid-window-state.json.')
   })
 
   it('opens the shared task center from diagnostics actions', async () => {
@@ -148,5 +160,36 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Density')
     expect(text).toContain('Top Results Triage')
     expect(text).toContain('Save current to selected')
+  })
+
+  it('renders desktop-notification controls and requests permission on demand', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setSelectField('settingsDesktopNotifications', 'failures')
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Desktop notifications')
+    expect(text).toContain('Failures and cancellations')
+
+    const requestButton = Array.from(document.querySelectorAll('button')).find((button) =>
+      String(button.textContent || '').includes('Request OS notification permission'),
+    ) as HTMLButtonElement | undefined
+
+    expect(requestButton).toBeTruthy()
+    requestButton?.click()
+    await nextTick()
+
+    expect(desktopProductization.requestDesktopNotificationPermission).toHaveBeenCalledTimes(1)
   })
 })

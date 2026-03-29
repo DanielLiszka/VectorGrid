@@ -94,6 +94,7 @@ function toggleDock(): void {
       :id="dockPanelId"
       ref="floatingRef"
       class="analysisDock"
+      aria-label="Analysis context dock"
       :style="floatingStyles"
     >
       <header class="dockHeader">

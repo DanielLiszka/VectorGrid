@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import './styles/app.css'
 import { applyRecommendedOptimizationDefaults } from './services/recommendedOptimizationDefaults'
+import { initializeDesktopProductization } from './services/desktopProductization'
 import { applySettingsBootstrapFromStorage } from './services/settingsBootstrap'
 import { applyWorkflowBootstrapFromStorage } from './services/workflowBootstrap'
 import { bindRuntimePinia } from './stores/runtimePinia'
@@ -19,6 +20,7 @@ if (root) {
   applySettingsBootstrapFromStorage()
   applyWorkflowBootstrapFromStorage()
   applyRecommendedOptimizationDefaults()
+  void initializeDesktopProductization()
   app.mount(root)
 }
 

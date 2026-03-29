@@ -114,6 +114,8 @@ async function main() {
   const context = await browser.newContext({ viewport: { width: 1720, height: 1080 } })
   await context.addInitScript(() => {
     const handlers = {}
+    const callbacks = {}
+    let nextCallbackId = 1
     const listen = async (event, cb) => {
       if (!handlers[event]) handlers[event] = []
       handlers[event].push(cb)
@@ -122,6 +124,24 @@ async function main() {
       }
     }
     const invoke = async () => null
+    const transformCallback = (cb) => {
+      const id = nextCallbackId++
+      callbacks[id] = cb
+      return id
+    }
+    const unregisterCallback = (id) => {
+      delete callbacks[id]
+    }
+    window.isTauri = true
+    window.__TAURI_INTERNALS__ = {
+      invoke,
+      transformCallback,
+      unregisterCallback,
+      convertFileSrc: (path) => path,
+    }
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+      unregisterListener: () => {},
+    }
     window.__TAURI__ = window.__TAURI__ || {}
     window.__TAURI__.event = { listen }
     window.__TAURI__.core = { invoke }

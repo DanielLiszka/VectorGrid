@@ -157,7 +157,9 @@ References:
 - `web/src/components/TaskCenterOverlay.vue:267`
 - `web/src/components/AnalysisContextDock.vue:95`
 - `web/src/components/ValidationContextDock.vue:68`
-- `web/src/components/ExecutionContextDock.vue:66`
+- `web/src/components/ExecutionWorkspacePanel.vue`
+
+Note: the redundant `ExecutionContextDock.vue` and `SettingsContextDock.vue` overlays were later removed from the shipped shell once their duplicated capability surface was consolidated into the main Settings and Execution panels.
 
 Impact:
 

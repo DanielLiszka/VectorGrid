@@ -23,8 +23,13 @@ Do not treat this as the full implementation spec. Use it together with:
 - `web/README.md` for frontend runtime notes
 - `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
 - `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
-- `Frontend Review/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan and open checklist
+- `Frontend Review/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan, completed phases, and open checklist
+- `Frontend Review/desktop_capability_inventory_2026-03-28.md` for the current desktop capability/window-label inventory
+- `Frontend Review/desktop_plugin_inventory_2026-03-28.md` for the adopted/deferred desktop plugin record
+- `Frontend Review/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase
 - `Frontend Review/workstation_behavior_plan_2026-03-28.md` for the completed workstation UX implementation record (perspectives, compare workflows, provenance, stale-state cues, density, bundle discipline)
+- `Frontend Review/existing_stack_utilization_plan_2026-03-28.md` for the current open plan to get more product value out of the stack already installed in `web/package.json` and the adopted desktop plugins
+- `Frontend Review/svg_generation_prompts_2026-03-28.md` for the paste-ready GPT-5.4 Pro prompts used to generate the proposed custom SVG asset set
 
 ## How To Use This Map
 
@@ -67,6 +72,8 @@ Open these first before broad search:
 - `web/README.md`
 - `.github/workflows/ci.yml`
 - `src-tauri/src/lib.rs`
+- `src-tauri/tauri.conf.json`
+- `src-tauri/capabilities/main.json`
 - `src-tauri/src/commands.rs`
 - `src-tauri/src/state.rs`
 - `src-tauri/src/settings.rs`
@@ -75,7 +82,10 @@ Open these first before broad search:
 - `crates/strategies/src/lib.rs`
 - `crates/optimizer/src/lib.rs`
 - `web/src/App.vue`
+- `web/src/components/DesktopTitlebar.vue`
 - `web/src/components/VueWorkspaceShell.vue`
+- `web/src/services/desktopProductization.ts`
+- `web/src/preflight.ts`
 - `web/src/utils/strategyOptimizationCapabilities.ts`
 - `web/src/strategies/compositeProfileGpuPolicy.ts`
 
@@ -170,6 +180,8 @@ These crates are smaller than `app_core`, but they are part of the real executio
 
 - `web/package.json`
   - Node toolchain requirements, frontend scripts, generated-command checks, parity scripts, and request-builder benchmark entrypoints
+- `web/scripts/check-a11y-smoke.mjs`
+  - Playwright + axe smoke coverage for the shipped desktop shell surfaces
 - `src-tauri/tauri.conf.json`
   - current Tauri app config and the main build handoff
   - `beforeDevCommand`: `npm --prefix ./web run dev -- --host 127.0.0.1 --port 1420`
@@ -177,7 +189,8 @@ These crates are smaller than `app_core`, but they are part of the real executio
   - `frontendDist`: `../web/dist`
   - `devUrl`: `http://127.0.0.1:1420`
 - `tauri.conf.json`
-  - second Tauri config file still present at repo root; useful when investigating config drift or older packaging assumptions
+  - compatibility mirror of the canonical `src-tauri/tauri.conf.json`
+  - keep it aligned via `scripts/check_tauri_config_sync.mjs`
 - `RELEASE.md`
   - Windows build variants, `cargo tauri build`, PTX packaging notes, and compatibility/release validation commands
 
@@ -568,6 +581,7 @@ If you are debugging navigation, visible panels, or why a tab is allowed or hidd
 
 `web/src/App.vue` does more than route lazy panels. It also mounts the cross-cutting app surfaces:
 
+- `web/src/components/DesktopTitlebar.vue`
 - `web/src/components/CommandPaletteOverlay.vue`
 - `web/src/components/GlobalShortcutBridge.vue`
 - `web/src/components/AppRuntimeBanner.vue`
@@ -731,13 +745,10 @@ Important current-state note:
 
 The shell also has workflow-local quick-action surfaces:
 
-- `web/src/components/DataContextDock.vue`
 - `web/src/components/OptimizeContextDock.vue`
 - `web/src/components/ValidationContextDock.vue`
 - `web/src/components/AnalysisContextDock.vue`
-- `web/src/components/ExecutionContextDock.vue`
 - `web/src/components/HistoryContextDock.vue`
-- `web/src/components/SettingsContextDock.vue`
 
 For command-palette and quick-action behavior, start with:
 
@@ -1267,7 +1278,7 @@ Verification in this repo is layered:
 | Area | Commands |
 | --- | --- |
 | broad backend confidence | `cargo test --workspace`, `cargo test -p ta_app_core` |
-| frontend confidence | `npm --prefix web run test`, `npm --prefix web run typecheck`, `npm --prefix web run lint`, `npm --prefix web run parity` |
+| frontend confidence | `npm --prefix web run test`, `npm --prefix web run typecheck`, `npm --prefix web run lint`, `npm --prefix web run parity`, `npm --prefix web run a11y:smoke` |
 | artifact/report shape | `npm --prefix web run parity:outputs` |
 | workflow regression | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate` |
 | CPU perf-sensitive backend change | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` |

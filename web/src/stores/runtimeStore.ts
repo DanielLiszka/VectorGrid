@@ -1,6 +1,15 @@
 import { defineStore } from 'pinia'
 
 export type LegacyBootPhase = 'idle' | 'booting' | 'ready' | 'error'
+export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
+export type DesktopNotificationPermission = 'unknown' | 'default' | 'granted' | 'denied' | 'unsupported'
+
+export interface RuntimeLogEntry {
+  id: string
+  atUnixMs: number
+  level: RuntimeLogLevel
+  message: string
+}
 
 interface RuntimeState {
   legacyMounted: boolean
@@ -10,7 +19,14 @@ interface RuntimeState {
   bootReadyAt: number | null
   bootError: string | null
   bootErrorDetail: string | null
+  desktopLogs: RuntimeLogEntry[]
+  desktopLogConsoleAttached: boolean
+  desktopWindowStateFile: string
+  desktopWindowStateReady: boolean
+  desktopNotificationPermission: DesktopNotificationPermission
 }
+
+const MAX_DESKTOP_LOGS = 24
 
 export const useRuntimeStore = defineStore('runtime', {
   state: (): RuntimeState => ({
@@ -21,6 +37,11 @@ export const useRuntimeStore = defineStore('runtime', {
     bootReadyAt: null,
     bootError: null,
     bootErrorDetail: null,
+    desktopLogs: [],
+    desktopLogConsoleAttached: false,
+    desktopWindowStateFile: '',
+    desktopWindowStateReady: false,
+    desktopNotificationPermission: 'unknown',
   }),
 
   getters: {
@@ -80,6 +101,37 @@ export const useRuntimeStore = defineStore('runtime', {
         }
       })()
       this.bootErrorDetail = String(raw || '').trim() || null
+    },
+
+    pushDesktopLog(level: RuntimeLogLevel, message: string): void {
+      const text = String(message || '').trim()
+      if (!text) return
+      this.desktopLogs.unshift({
+        id: `runtime_log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        atUnixMs: Date.now(),
+        level,
+        message: text,
+      })
+      if (this.desktopLogs.length > MAX_DESKTOP_LOGS) {
+        this.desktopLogs.splice(MAX_DESKTOP_LOGS)
+      }
+    },
+
+    clearDesktopLogs(): void {
+      this.desktopLogs = []
+    },
+
+    setDesktopLogConsoleAttached(attached: boolean): void {
+      this.desktopLogConsoleAttached = !!attached
+    },
+
+    setDesktopWindowState(file: string, ready: boolean): void {
+      this.desktopWindowStateFile = String(file || '').trim()
+      this.desktopWindowStateReady = !!ready
+    },
+
+    setDesktopNotificationPermission(permission: DesktopNotificationPermission): void {
+      this.desktopNotificationPermission = permission
     },
   },
 })

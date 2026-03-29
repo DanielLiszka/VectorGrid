@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 ta_strategies = { path = "../strategies" }
-vector-ta = "0.2.8"
+vector-ta = "0.2.4"
 rayon = "1.10.0"
 rand = "0.8.5"
 rand_distr = "0.4.3"

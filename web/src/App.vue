@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, reactive, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import DesktopTitlebar from './components/DesktopTitlebar.vue'
 import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
 import RunFooterPanel from './components/RunFooterPanel.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
@@ -11,10 +12,8 @@ const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/A
 const AnalysisContextDock = defineAsyncComponent(() => import('./components/AnalysisContextDock.vue'))
 const CommandPaletteOverlay = defineAsyncComponent(() => import('./components/CommandPaletteOverlay.vue'))
 const DataWorkspacePanel = defineAsyncComponent(() => import('./components/DataWorkspacePanel.vue'))
-const DataContextDock = defineAsyncComponent(() => import('./components/DataContextDock.vue'))
 const DebugWorkspacePanel = defineAsyncComponent(() => import('./components/DebugWorkspacePanel.vue'))
 const DrillWorkspacePanel = defineAsyncComponent(() => import('./components/DrillWorkspacePanel.vue'))
-const ExecutionContextDock = defineAsyncComponent(() => import('./components/ExecutionContextDock.vue'))
 const ExecutionWorkspacePanel = defineAsyncComponent(() => import('./components/ExecutionWorkspacePanel.vue'))
 const HeatmapWorkspacePanel = defineAsyncComponent(() => import('./components/HeatmapWorkspacePanel.vue'))
 const HistoryWorkspacePanel = defineAsyncComponent(() => import('./components/HistoryWorkspacePanel.vue'))
@@ -24,7 +23,6 @@ const OptimizeContextDock = defineAsyncComponent(() => import('./components/Opti
 const OptimizeWorkspacePanel = defineAsyncComponent(() => import('./components/OptimizeWorkspacePanel.vue'))
 const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
 const ParetoWorkspacePanel = defineAsyncComponent(() => import('./components/ParetoWorkspacePanel.vue'))
-const SettingsContextDock = defineAsyncComponent(() => import('./components/SettingsContextDock.vue'))
 const SettingsWorkspacePanel = defineAsyncComponent(() => import('./components/SettingsWorkspacePanel.vue'))
 const StrategyWorkspacePanel = defineAsyncComponent(() => import('./components/StrategyWorkspacePanel.vue'))
 const TaskCenterOverlay = defineAsyncComponent(() => import('./components/TaskCenterOverlay.vue'))
@@ -47,7 +45,6 @@ const analysisDockActive = computed(() => {
   const wf = String(workflow.value || '').trim()
   return ws === 'aggregate' || wf === 'optimize' || wf === 'validate' || wf === 'analyze'
 })
-const dataDockActive = computed(() => workflowWorkspaceActive.value && activeControlsTab.value === 'data')
 const optimizeDockActive = computed(() => workflowWorkspaceActive.value && activeControlsTab.value === 'opt')
 const validationDockActive = computed(() => workflowWorkspaceActive.value && activeResultsTab.value === 'validate')
 const historyPanelActive = computed(() => {
@@ -104,6 +101,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
 </script>
 
 <template>
+  <DesktopTitlebar />
   <VueWorkspaceShell />
   <CommandPaletteOverlay />
   <GlobalShortcutBridge />
@@ -111,11 +109,9 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <TaskCenterOverlay />
   <AnalysisContextDock v-if="analysisDockActive" />
   <AdvancedWorkspacePanel v-if="advancedPanelActive" />
-  <DataContextDock v-if="dataDockActive" />
   <DataWorkspacePanel v-if="mountedPanels.data" />
   <DebugWorkspacePanel v-if="debugPanelActive" />
   <DrillWorkspacePanel v-if="drillPanelActive" />
-  <ExecutionContextDock v-if="settingsWorkspaceActive" />
   <ExecutionWorkspacePanel v-if="settingsWorkspaceActive" />
   <HeatmapWorkspacePanel v-if="heatmapPanelActive" />
   <HistoryContextDock v-if="historyPanelActive" />
@@ -126,7 +122,6 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <ParetoWorkspacePanel v-if="paretoPanelActive" />
   <OptimizeWorkspacePanel v-if="mountedPanels.optimize" />
   <RunFooterPanel />
-  <SettingsContextDock v-if="settingsWorkspaceActive" />
   <SettingsWorkspacePanel v-if="settingsWorkspaceActive" />
   <StrategyWorkspacePanel v-if="strategyPanelActive" />
   <TopWorkspacePanel v-if="topPanelActive" />

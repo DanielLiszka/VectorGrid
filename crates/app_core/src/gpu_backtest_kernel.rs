@@ -817,6 +817,18 @@ fn search_rows_use_log_space(metrics_count: usize) -> bool {
 }
 
 #[inline]
+fn fixed_metrics_contract_rows(metrics_count: usize, metrics_stride: usize) -> Option<usize> {
+    match (metrics_count, metrics_stride) {
+        (PRODUCT_REDUCED_METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT) => {
+            Some(PRODUCT_REDUCED_METRICS_COUNT)
+        }
+        (METRICS_COUNT, METRICS_COUNT) => Some(METRICS_COUNT),
+        (TRADE_METRICS_COUNT, TRADE_METRICS_COUNT) => Some(TRADE_METRICS_COUNT),
+        _ => None,
+    }
+}
+
+#[inline]
 fn search_log_pnl_to_pnl(log_pnl: f64) -> f64 {
     log_pnl.exp_m1()
 }
@@ -1414,8 +1426,12 @@ enum CachedKernelKey {
     TransposeRowToTm,
     DoubleCrossBacktest,
     DoubleCrossBacktestM7,
+    DoubleCrossBacktestM17,
+    DoubleCrossBacktestM22,
     DoubleCrossBacktestLockstep,
     DoubleCrossBacktestLockstepM7,
+    DoubleCrossBacktestLockstepM17,
+    DoubleCrossBacktestLockstepM22,
     DoubleCrossBacktestFastWarpDedup,
     FillF32,
     FillI32,
@@ -7012,11 +7028,73 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
         .ok();
+    let backtest_m17 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17")
+        .ok();
+    let backtest_m17_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk")
+        .ok();
+    let backtest_m17_regime_off_norisk_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk_nocomm")
+        .ok();
+    let backtest_m17_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk_eps0")
+        .ok();
+    let backtest_m17_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m17_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_on_norisk")
+        .ok();
+    let backtest_m17_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m17_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_hybrid_norisk")
+        .ok();
+    let backtest_m17_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_hybrid_norisk_eps0_nocomm")
+        .ok();
     let backtest_lockstep = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
         .ok();
     let backtest_lockstep_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
+        .ok();
+    let backtest_lockstep_m17 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17")
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m17_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_on_norisk")
+        .ok();
+    let backtest_lockstep_m17_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_on_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m17_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_hybrid_norisk")
+        .ok();
+    let backtest_lockstep_m17_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_hybrid_norisk_eps0_nocomm",
+        )
         .ok();
     let backtest_lockstep_m7_regime_off = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off")
@@ -7055,12 +7133,18 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest_m7_launch_caps = backtest_m7
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM7, f));
+    let backtest_m17_launch_caps = backtest_m17
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM17, f));
     let backtest_lockstep_launch_caps = backtest_lockstep
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
     let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM7, f));
+    let backtest_lockstep_m17_launch_caps = backtest_lockstep_m17
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM17, f));
     let backtest_fast_launch_caps = backtest_fast_warp
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestFastWarpDedup, f));
@@ -7671,7 +7755,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             backtest_m7.is_some(),
                         );
                         let use_m7 = force_low_pair_m7
-                            || (!use_windowed_eval
+                            || (!backtest_m17.is_some()
+                                && !use_windowed_eval
                                 && kernel_should_use_m7_specialize(
                                     launch_pairs,
                                     n,
@@ -7682,6 +7767,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 ));
                         let use_lockstep_m7 = use_lockstep_time
                             && !is_multi_tile_workload
+                            && !backtest_lockstep_m17.is_some()
                             && kernel_should_use_m7_specialize(
                                 launch_pairs,
                                 n,
@@ -7690,21 +7776,35 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 METRICS_COUNT,
                                 backtest_lockstep_m7.is_some(),
                             );
+                        let use_lockstep_m17 = use_lockstep_time
+                            && !use_lockstep_m7
+                            && backtest_lockstep_m17.is_some();
                         let use_fast_warp_dedup = !use_windowed_eval
                             && !use_lockstep_time
                             && fast_warp_dedup_enabled
                             && launch_pairs >= fast_warp_dedup_min_pairs
                             && backtest_fast_warp.is_some();
+                        let use_m17 = !use_windowed_eval
+                            && !use_lockstep_time
+                            && !use_fast_warp_dedup
+                            && !use_m7
+                            && backtest_m17.is_some();
                         let launch_caps = if use_windowed_eval {
                             backtest_launch_caps
                         } else if use_lockstep_m7 {
                             backtest_lockstep_m7_launch_caps
                                 .or(backtest_lockstep_launch_caps)
                                 .unwrap_or(backtest_launch_caps)
+                        } else if use_lockstep_m17 {
+                            backtest_lockstep_m17_launch_caps
+                                .or(backtest_lockstep_launch_caps)
+                                .unwrap_or(backtest_launch_caps)
                         } else if use_lockstep_time {
                             backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
                         } else if use_fast_warp_dedup {
                             backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_m17 {
+                            backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
                         } else if use_m7 {
                             backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
                         } else {
@@ -7716,6 +7816,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             launch_caps,
                         );
                         let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
+                        let zero_commission_mode = commission <= 0.0f32;
                         let eps_zero_mode = eps_rel <= 0.0f32;
                         let backtest_fn = if use_windowed_eval {
                             &backtest_windowed
@@ -7784,6 +7885,69 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                     .as_ref()
                                     .expect("checked lockstep m7 kernel availability")
                             }
+                        } else if use_lockstep_m17 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m17_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m17_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m17_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_on_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m17_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_lockstep_m17_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_off_norisk_eps0
+                                                .as_ref())
+                                            .or(backtest_lockstep_m17_regime_off_norisk_nocomm
+                                                .as_ref())
+                                            .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m17_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_lockstep_m17_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                } else {
+                                    backtest_lockstep_m17_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                            } else {
+                                backtest_lockstep_m17
+                                    .as_ref()
+                                    .expect("checked lockstep m17 kernel availability")
+                            }
                         } else if use_lockstep_time {
                             backtest_lockstep
                                 .as_ref()
@@ -7792,6 +7956,67 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             backtest_fast_warp
                                 .as_ref()
                                 .expect("checked fast dedup kernel availability")
+                        } else if use_m17 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m17_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    } else {
+                                        backtest_m17_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m17_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_on_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    } else {
+                                        backtest_m17_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_m17_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_off_norisk_eps0.as_ref())
+                                            .or(backtest_m17_regime_off_norisk_nocomm.as_ref())
+                                            .or(backtest_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    } else {
+                                        backtest_m17_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_m17_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                } else {
+                                    backtest_m17_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                            } else {
+                                backtest_m17
+                                    .as_ref()
+                                    .expect("checked m17 kernel availability")
+                            }
                         } else if use_m7 {
                             backtest_m7
                                 .as_ref()
@@ -8971,11 +9196,135 @@ fn optimize_double_ma_gpu_kernel_impl(
     let backtest_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m7")
         .ok();
+    let backtest_m17 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17")
+        .ok();
+    let backtest_m22 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22")
+        .ok();
+    let backtest_m17_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk")
+        .ok();
+    let backtest_m17_regime_off_norisk_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk_nocomm")
+        .ok();
+    let backtest_m17_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk_eps0")
+        .ok();
+    let backtest_m17_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_off_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m17_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_on_norisk")
+        .ok();
+    let backtest_m17_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m17_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_hybrid_norisk")
+        .ok();
+    let backtest_m17_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m17_regime_hybrid_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m22_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk")
+        .ok();
+    let backtest_m22_regime_off_norisk_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk_nocomm")
+        .ok();
+    let backtest_m22_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk_eps0")
+        .ok();
+    let backtest_m22_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m22_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_on_norisk")
+        .ok();
+    let backtest_m22_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m22_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_hybrid_norisk")
+        .ok();
+    let backtest_m22_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_hybrid_norisk_eps0_nocomm")
+        .ok();
     let backtest_lockstep = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
         .ok();
     let backtest_lockstep_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
+        .ok();
+    let backtest_lockstep_m17 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17")
+        .ok();
+    let backtest_lockstep_m22 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22")
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m17_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m17_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_on_norisk")
+        .ok();
+    let backtest_lockstep_m17_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_on_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m17_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_hybrid_norisk")
+        .ok();
+    let backtest_lockstep_m17_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_hybrid_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m22_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_on_norisk")
+        .ok();
+    let backtest_lockstep_m22_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_on_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m22_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_hybrid_norisk")
+        .ok();
+    let backtest_lockstep_m22_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_hybrid_norisk_eps0_nocomm",
+        )
         .ok();
     let backtest_lockstep_m7_regime_off = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off")
@@ -9058,12 +9407,24 @@ fn optimize_double_ma_gpu_kernel_impl(
     let backtest_m7_launch_caps = backtest_m7
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM7, f));
+    let backtest_m17_launch_caps = backtest_m17
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM17, f));
+    let backtest_m22_launch_caps = backtest_m22
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM22, f));
     let backtest_lockstep_launch_caps = backtest_lockstep
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
     let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM7, f));
+    let backtest_lockstep_m17_launch_caps = backtest_lockstep_m17
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM17, f));
+    let backtest_lockstep_m22_launch_caps = backtest_lockstep_m22
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM22, f));
     let backtest_fast_launch_caps = backtest_fast_warp
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestFastWarpDedup, f));
@@ -9946,6 +10307,19 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
                         let zero_commission_mode = commission <= 0.0f32;
                         let eps_zero_mode = eps_rel <= 0.0f32;
+                        let fixed_metrics_contract =
+                            fixed_metrics_contract_rows(metrics_count, tile_metrics_stride);
+                        let prefer_full_metric_specialization = match fixed_metrics_contract {
+                            Some(METRICS_COUNT) => backtest_m17.is_some(),
+                            Some(TRADE_METRICS_COUNT) => backtest_m22.is_some(),
+                            _ => false,
+                        };
+                        let prefer_full_metric_lockstep_specialization =
+                            match fixed_metrics_contract {
+                                Some(METRICS_COUNT) => backtest_lockstep_m17.is_some(),
+                                Some(TRADE_METRICS_COUNT) => backtest_lockstep_m22.is_some(),
+                                _ => false,
+                            };
 
                         let use_lockstep_time = !use_windowed_eval
                             && kernel_should_use_lockstep_time(
@@ -9955,6 +10329,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 backtest_lockstep.is_some(),
                             );
                         let use_m7 = !use_windowed_eval
+                            && !prefer_full_metric_specialization
                             && kernel_should_use_m7_specialize(
                                 launch_pairs,
                                 n,
@@ -9965,6 +10340,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             );
                         let use_lockstep_m7 = use_lockstep_time
                             && !is_multi_tile_workload
+                            && !prefer_full_metric_lockstep_specialization
                             && kernel_should_use_m7_specialize(
                                 launch_pairs,
                                 n,
@@ -9974,23 +10350,54 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 backtest_lockstep_m7.is_some(),
                             );
                         let use_lockstep_m10_product = use_lockstep_m7
-                            && metrics_count == PRODUCT_REDUCED_METRICS_COUNT
-                            && tile_metrics_stride == PRODUCT_REDUCED_METRICS_COUNT;
+                            && fixed_metrics_contract == Some(PRODUCT_REDUCED_METRICS_COUNT);
+                        let use_lockstep_m17 = use_lockstep_time
+                            && !use_lockstep_m7
+                            && fixed_metrics_contract == Some(METRICS_COUNT)
+                            && backtest_lockstep_m17.is_some();
+                        let use_lockstep_m22 = use_lockstep_time
+                            && !use_lockstep_m7
+                            && fixed_metrics_contract == Some(TRADE_METRICS_COUNT)
+                            && backtest_lockstep_m22.is_some();
                         let use_fast_warp_dedup = !use_windowed_eval
                             && !use_lockstep_time
                             && fast_warp_dedup_enabled
                             && launch_pairs >= fast_warp_dedup_min_pairs
                             && backtest_fast_warp.is_some();
+                        let use_m17 = !use_windowed_eval
+                            && !use_lockstep_time
+                            && !use_fast_warp_dedup
+                            && !use_m7
+                            && fixed_metrics_contract == Some(METRICS_COUNT)
+                            && backtest_m17.is_some();
+                        let use_m22 = !use_windowed_eval
+                            && !use_lockstep_time
+                            && !use_fast_warp_dedup
+                            && !use_m7
+                            && fixed_metrics_contract == Some(TRADE_METRICS_COUNT)
+                            && backtest_m22.is_some();
                         let launch_caps = if use_windowed_eval {
                             backtest_launch_caps
                         } else if use_lockstep_m7 {
                             backtest_lockstep_m7_launch_caps
                                 .or(backtest_lockstep_launch_caps)
                                 .unwrap_or(backtest_launch_caps)
+                        } else if use_lockstep_m17 {
+                            backtest_lockstep_m17_launch_caps
+                                .or(backtest_lockstep_launch_caps)
+                                .unwrap_or(backtest_launch_caps)
+                        } else if use_lockstep_m22 {
+                            backtest_lockstep_m22_launch_caps
+                                .or(backtest_lockstep_launch_caps)
+                                .unwrap_or(backtest_launch_caps)
                         } else if use_lockstep_time {
                             backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
                         } else if use_fast_warp_dedup {
                             backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_m17 {
+                            backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
+                        } else if use_m22 {
+                            backtest_m22_launch_caps.unwrap_or(backtest_launch_caps)
                         } else if use_m7 {
                             backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
                         } else {
@@ -10005,10 +10412,18 @@ fn optimize_double_ma_gpu_kernel_impl(
                             "windowed"
                         } else if use_lockstep_m7 {
                             "lockstep_m7"
+                        } else if use_lockstep_m17 {
+                            "lockstep_m17"
+                        } else if use_lockstep_m22 {
+                            "lockstep_m22"
                         } else if use_lockstep_time {
                             "lockstep_time"
                         } else if use_fast_warp_dedup {
                             "fast_warp_dedup"
+                        } else if use_m17 {
+                            "m17"
+                        } else if use_m22 {
+                            "m22"
                         } else if use_m7 {
                             "m7"
                         } else {
@@ -10016,7 +10431,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                         };
                         if kernel_log_dispatch_enabled() {
                             eprintln!(
-                                "VECTORBT_KERNEL_DISPATCH: pair={}/{} launch_pairs={} fast_path={} multi_tile={} dispatch={} use_m7={} use_lockstep_time={} use_lockstep_m7={} use_lockstep_m10_product={} use_fast_warp={} metrics_count={} tile_metrics_stride={} decode_without_recompute={}",
+                                "VECTORBT_KERNEL_DISPATCH: pair={}/{} launch_pairs={} fast_path={} multi_tile={} dispatch={} use_m7={} use_m17={} use_m22={} use_lockstep_time={} use_lockstep_m7={} use_lockstep_m17={} use_lockstep_m22={} use_lockstep_m10_product={} use_fast_warp={} metrics_count={} tile_metrics_stride={} fixed_metrics_contract={:?} decode_without_recompute={}",
                                 fast_ma,
                                 slow_ma,
                                 launch_pairs,
@@ -10024,12 +10439,17 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 is_multi_tile_workload,
                                 dispatch_label,
                                 use_m7,
+                                use_m17,
+                                use_m22,
                                 use_lockstep_time,
                                 use_lockstep_m7,
+                                use_lockstep_m17,
+                                use_lockstep_m22,
                                 use_lockstep_m10_product,
                                 use_fast_warp_dedup,
                                 metrics_count,
                                 tile_metrics_stride,
+                                fixed_metrics_contract,
                                 can_decode_current_gpu_product_metrics_without_recompute(
                                     metrics_count
                                 )
@@ -10155,6 +10575,132 @@ fn optimize_double_ma_gpu_kernel_impl(
                                     .as_ref()
                                     .expect("checked lockstep m7 kernel availability")
                             }
+                        } else if use_lockstep_m17 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m17_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m17_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m17_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_on_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m17_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_lockstep_m17_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_off_norisk_eps0
+                                                .as_ref())
+                                            .or(backtest_lockstep_m17_regime_off_norisk_nocomm
+                                                .as_ref())
+                                            .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m17_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m17.as_ref())
+                                            .expect("checked lockstep m17 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_lockstep_m17_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                } else {
+                                    backtest_lockstep_m17_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m17.as_ref())
+                                        .expect("checked lockstep m17 kernel availability")
+                                }
+                            } else {
+                                backtest_lockstep_m17
+                                    .as_ref()
+                                    .expect("checked lockstep m17 kernel availability")
+                            }
+                        } else if use_lockstep_m22 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m22_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m22_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m22_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_on_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m22_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_lockstep_m22_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_off_norisk_eps0
+                                                .as_ref())
+                                            .or(backtest_lockstep_m22_regime_off_norisk_nocomm
+                                                .as_ref())
+                                            .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m22_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_lockstep_m22_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                } else {
+                                    backtest_lockstep_m22_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                            } else {
+                                backtest_lockstep_m22
+                                    .as_ref()
+                                    .expect("checked lockstep m22 kernel availability")
+                            }
                         } else if use_lockstep_time {
                             backtest_lockstep
                                 .as_ref()
@@ -10163,6 +10709,128 @@ fn optimize_double_ma_gpu_kernel_impl(
                             backtest_fast_warp
                                 .as_ref()
                                 .expect("checked fast dedup kernel availability")
+                        } else if use_m17 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m17_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    } else {
+                                        backtest_m17_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m17_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_on_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    } else {
+                                        backtest_m17_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_m17_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_off_norisk_eps0.as_ref())
+                                            .or(backtest_m17_regime_off_norisk_nocomm.as_ref())
+                                            .or(backtest_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    } else {
+                                        backtest_m17_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_m17_regime_off_norisk.as_ref())
+                                            .or(backtest_m17.as_ref())
+                                            .expect("checked m17 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_m17_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_m17_regime_off_norisk.as_ref())
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                } else {
+                                    backtest_m17_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_m17.as_ref())
+                                        .expect("checked m17 kernel availability")
+                                }
+                            } else {
+                                backtest_m17
+                                    .as_ref()
+                                    .expect("checked m17 kernel availability")
+                            }
+                        } else if use_m22 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m22_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    } else {
+                                        backtest_m22_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m22_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_on_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    } else {
+                                        backtest_m22_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_m22_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_off_norisk_eps0.as_ref())
+                                            .or(backtest_m22_regime_off_norisk_nocomm.as_ref())
+                                            .or(backtest_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    } else {
+                                        backtest_m22_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_m22_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                } else {
+                                    backtest_m22_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                            } else {
+                                backtest_m22
+                                    .as_ref()
+                                    .expect("checked m22 kernel availability")
+                            }
                         } else if use_m7 {
                             backtest_m7
                                 .as_ref()
@@ -11716,21 +12384,22 @@ fn optimize_double_ma_gpu_kernel_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        can_decode_current_gpu_product_metrics_without_recompute,
+        calmar_ratio, can_decode_current_gpu_product_metrics_without_recompute,
         compute_shortlist_slice_benchmark_relative_summary, decode_tm_flex_metrics_row,
         effective_sample_lcb_10_pair_score, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
-        install_effective_sample_score_context, kernel_async_alloc_enabled,
-        kernel_effective_pair_bars, kernel_extra_shortlist_objectives, kernel_pinned_d2h_enabled,
-        kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
+        fixed_metrics_contract_rows, install_effective_sample_score_context,
+        kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
+        kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
         kernel_shortlist_slice_benchmark, kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
         kernel_should_use_lockstep_time, kernel_should_use_m7_specialize,
         max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
         rerank_shortlist_by_union_mode, search_metrics_count_for_optimization,
-        search_metrics_count_for_optimization_with_contract, shortlist_candidate_track_record_bars,
-        shortlist_slice_ranges, should_force_low_pair_m7_recompute,
-        should_use_compact_valid_pair_output, upload_double_ma_dynamic_program_batch,
-        EffectiveSampleScoreContext, ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT,
-        PRODUCT_REDUCED_METRICS_COUNT, TRADE_METRICS_COUNT,
+        search_metrics_count_for_optimization_with_contract, search_rows_use_log_space,
+        shortlist_candidate_track_record_bars, shortlist_slice_ranges,
+        should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
+        upload_double_ma_dynamic_program_batch, EffectiveSampleScoreContext,
+        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
+        TRADE_METRICS_COUNT,
     };
     use crate::composite_validate::SpaBenchmarkKind;
     use crate::double_ma::{
@@ -13121,6 +13790,37 @@ mod tests {
     }
 
     #[test]
+    fn fixed_metrics_contract_rows_require_matching_metric_stride() {
+        assert_eq!(
+            fixed_metrics_contract_rows(
+                PRODUCT_REDUCED_METRICS_COUNT,
+                PRODUCT_REDUCED_METRICS_COUNT
+            ),
+            Some(PRODUCT_REDUCED_METRICS_COUNT)
+        );
+        assert_eq!(
+            fixed_metrics_contract_rows(METRICS_COUNT, METRICS_COUNT),
+            Some(METRICS_COUNT)
+        );
+        assert_eq!(
+            fixed_metrics_contract_rows(TRADE_METRICS_COUNT, TRADE_METRICS_COUNT),
+            Some(TRADE_METRICS_COUNT)
+        );
+        assert_eq!(
+            fixed_metrics_contract_rows(METRICS_COUNT, TRADE_METRICS_COUNT),
+            None
+        );
+        assert_eq!(
+            fixed_metrics_contract_rows(TRADE_METRICS_COUNT, METRICS_COUNT),
+            None
+        );
+        assert_eq!(
+            fixed_metrics_contract_rows(PRODUCT_REDUCED_METRICS_COUNT, METRICS_COUNT),
+            None
+        );
+    }
+
+    #[test]
     fn compact_valid_pair_output_stays_enabled_with_full_metrics_rows() {
         assert!(should_use_compact_valid_pair_output(false, false, false, 3));
         assert!(should_use_compact_valid_pair_output(true, false, false, 3));
@@ -13150,6 +13850,49 @@ mod tests {
         assert!((metrics.pnl - pnl).abs() < 1e-6);
         assert_eq!(metrics.trades, 12);
         assert!((metrics.max_dd - max_dd).abs() < 1e-6);
+    }
+
+    #[test]
+    fn search_rows_use_log_space_keeps_fifteen_and_sixteen_in_search_contract() {
+        assert!(search_rows_use_log_space(15));
+        assert!(search_rows_use_log_space(16));
+        assert!(!search_rows_use_log_space(METRICS_COUNT));
+        assert!(!search_rows_use_log_space(TRADE_METRICS_COUNT));
+    }
+
+    #[test]
+    fn decode_fifteen_and_sixteen_metric_rows_restore_calmar_from_log_space() {
+        let pnl = 0.18f64;
+        let max_dd = 0.30f64;
+        let expected_calmar = calmar_ratio(pnl, max_dd);
+        let base_row = vec![
+            pnl.ln_1p() as f32,
+            9.0f32,
+            (-(1.0 - max_dd).ln()) as f32,
+            0.05f32,
+            0.02f32,
+            0.45f32,
+            0.12f32,
+            0.02f32,
+            0.04f32,
+            3.5f32,
+            0.20f32,
+            0.07f32,
+            0.06f32,
+            -0.03f32,
+            1.20f32,
+            0.40f32,
+        ];
+
+        let metrics_15 = decode_tm_flex_metrics_row(&base_row, 0, 15, 0.0);
+        assert!((metrics_15.pnl - pnl).abs() < 1e-6);
+        assert!((metrics_15.max_dd - max_dd).abs() < 1e-6);
+        assert!((metrics_15.calmar - expected_calmar).abs() < 1e-6);
+
+        let metrics_16 = decode_tm_flex_metrics_row(&base_row, 0, 16, 0.0);
+        assert!((metrics_16.pnl - pnl).abs() < 1e-6);
+        assert!((metrics_16.max_dd - max_dd).abs() < 1e-6);
+        assert!((metrics_16.calmar - expected_calmar).abs() < 1e-6);
     }
 
     #[test]

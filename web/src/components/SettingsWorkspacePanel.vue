@@ -5,6 +5,7 @@ import { useStorage } from '@vueuse/core'
 import { useShellMount } from '../composables/useShellMount'
 import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import { requestDesktopNotificationPermission } from '../services/desktopProductization'
 import { useDataStore } from '../stores/dataStore'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -25,6 +26,7 @@ import {
   taskLifecycleTone,
 } from '../utils/statusPresentation'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import VectorAlphaLogo from './VectorAlphaLogo.vue'
 
 const settingsStore = useSettingsStore()
 const dataStore = useDataStore()
@@ -40,6 +42,7 @@ const {
   selectedPerspectiveId,
   workflowAdvanced,
   controlsCollapsed,
+  desktopNotificationMode,
   marketDataDir,
   moveExisting,
   marketDataDirHint,
@@ -57,7 +60,18 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(settingsStore)
 const { updatedAtUnixMs: dataUpdatedAtUnixMs } = storeToRefs(dataStore)
-const { bootElapsedMs, bootError, bootErrorDetail, bootPhase, bootStage } = storeToRefs(runtimeStore)
+const {
+  bootElapsedMs,
+  bootError,
+  bootErrorDetail,
+  bootPhase,
+  bootStage,
+  desktopLogs,
+  desktopLogConsoleAttached,
+  desktopNotificationPermission,
+  desktopWindowStateFile,
+  desktopWindowStateReady,
+} = storeToRefs(runtimeStore)
 const { timeline, toasts } = storeToRefs(taskStore)
 const { workspace } = storeToRefs(workflowStore)
 const taskCenterOpen = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
@@ -79,6 +93,7 @@ const themeDraft = ref('system')
 const effectDraft = ref('none')
 const helpModeDraft = ref('full')
 const densityModeDraft = ref('standard')
+const desktopNotificationModeDraft = ref('off')
 const marketDataDirDraft = ref('')
 const perspectiveNameDraft = ref('')
 
@@ -88,6 +103,7 @@ const settingsSummaryChips = computed(() => [
   `Effect ${String(effectDraft.value || 'none').trim() || 'none'}`,
   `Help ${String(helpModeDraft.value || 'full').trim() || 'full'}`,
   `Density ${String(densityModeDraft.value || 'standard').trim() || 'standard'}`,
+  `Desktop alerts ${String(desktopNotificationModeDraft.value || 'off').trim() || 'off'}`,
   workflowAdvanced.value ? 'Advanced controls on' : 'Advanced controls off',
   controlsCollapsed.value ? 'Controls collapsed first' : 'Controls expanded first',
   marketDataDirDraft.value.trim().length > 0 ? 'Custom data folder' : 'Default data folder',
@@ -112,6 +128,7 @@ const diagnosticsSummaryChips = computed(() => [
   `Task center ${centerStatusLabel.value}`,
   `${activeTaskCount.value} active`,
   progressLabel.value,
+  desktopLogs.value.length ? `${desktopLogs.value.length} desktop logs` : 'No desktop logs',
 ])
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
@@ -132,6 +149,7 @@ const runtimeDetail = computed(() => {
 const runtimeErrorBody = computed(() => String(bootErrorDetail.value || '').trim())
 const recentTimeline = computed(() => timeline.value.slice(0, 6))
 const recentAlerts = computed(() => toasts.value.slice(0, 4))
+const recentDesktopLogs = computed(() => desktopLogs.value.slice(0, 6))
 const latestTaskLabel = computed(() => {
   return describeLatestTaskOutcome(latestTask.value)
 })
@@ -168,6 +186,26 @@ const taskCompletedLine = computed(() => {
   if (!completed) return 'No recently completed tasks.'
   return `${completed.label} completed.`
 })
+const desktopNotificationPermissionLabel = computed(() => {
+  if (desktopNotificationPermission.value === 'granted') return 'Granted'
+  if (desktopNotificationPermission.value === 'denied') return 'Denied'
+  if (desktopNotificationPermission.value === 'unsupported') return 'Unavailable'
+  if (desktopNotificationPermission.value === 'default') return 'Not granted'
+  return 'Unknown'
+})
+const canRequestDesktopNotifications = computed(() => {
+  return desktopNotificationPermission.value !== 'granted' && desktopNotificationPermission.value !== 'unsupported'
+})
+const desktopWindowStateStamp = computed(() => {
+  return desktopWindowStateReady.value ? 'State ready' : 'State unavailable'
+})
+const desktopWindowStateDetail = computed(() => {
+  if (!desktopWindowStateReady.value) {
+    return 'Window state persistence is not available in the current desktop runtime.'
+  }
+  const file = String(desktopWindowStateFile.value || '').trim()
+  return file ? `Window geometry persists to ${file}.` : 'Window geometry persists between launches.'
+})
 
 function diagnosticsLevelTone(level: string | null | undefined): string {
   return taskLevelTone(level)
@@ -193,20 +231,30 @@ function diagnosticsAlertSummary(index: number): string {
   return describeTaskToast(recentAlerts.value[index] ?? null)
 }
 
+function diagnosticsDesktopLogSummary(index: number): string {
+  const entry = recentDesktopLogs.value[index]
+  if (!entry) return 'No desktop log entry.'
+  return `${String(entry.level || 'info').toUpperCase()} · ${String(entry.message || '').trim()}`
+}
+
 watch(
   () => [
     String(theme.value || 'system').trim() || 'system',
     String(effect.value || 'none').trim() || 'none',
     String(helpMode.value || 'full').trim() || 'full',
     String(densityMode.value || 'standard').trim() || 'standard',
+    String(desktopNotificationMode.value || 'off').trim() || 'off',
     String(marketDataDir.value || ''),
     String(selectedPerspectiveId.value || ''),
   ] as const,
-  ([nextTheme, nextEffect, nextHelpMode, nextDensityMode, nextMarketDataDir, nextPerspectiveId]) => {
+  ([nextTheme, nextEffect, nextHelpMode, nextDensityMode, nextDesktopNotificationMode, nextMarketDataDir, nextPerspectiveId]) => {
     if (themeDraft.value !== nextTheme) themeDraft.value = nextTheme
     if (effectDraft.value !== nextEffect) effectDraft.value = nextEffect
     if (helpModeDraft.value !== nextHelpMode) helpModeDraft.value = nextHelpMode
     if (densityModeDraft.value !== nextDensityMode) densityModeDraft.value = nextDensityMode
+    if (desktopNotificationModeDraft.value !== nextDesktopNotificationMode) {
+      desktopNotificationModeDraft.value = nextDesktopNotificationMode
+    }
     if (marketDataDirDraft.value !== nextMarketDataDir) marketDataDirDraft.value = nextMarketDataDir
     if (perspectiveNameDraft.value !== (selectedPerspective.value?.name || '') && nextPerspectiveId) {
       perspectiveNameDraft.value = selectedPerspective.value?.name || ''
@@ -283,6 +331,10 @@ function deleteSelectedPerspective(): void {
   perspectiveNameDraft.value = selectedPerspective.value?.name || ''
 }
 
+async function requestDesktopNotifications(): Promise<void> {
+  await requestDesktopNotificationPermission()
+}
+
 const { queueInputValue, commitInputValue, flushQueuedInputValuesNow } = useQueuedInputWriter(setInputValue)
 
 onMounted(async () => {
@@ -316,7 +368,16 @@ onBeforeUnmount(() => {
             Review appearance, storage paths, and local utility shortcuts without leaving the desktop workflow.
           </div>
         </div>
-        <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
+        <div class="settingsHeaderMeta">
+          <div class="panelMeta mono panelNumeric">{{ stamp }}</div>
+          <div class="settingsBrandCard" aria-label="VectorAlpha brand mark">
+            <VectorAlphaLogo class="settingsBrandLogo" decorative hover-animate :size="30" />
+            <div class="settingsBrandCopy">
+              <div class="settingsBrandLabel">VectorAlpha</div>
+              <div class="settingsBrandDetail">Desktop runtime</div>
+            </div>
+          </div>
+        </div>
       </header>
       <div class="panelSummaryChips" aria-label="Settings summary">
         <span v-for="chip in settingsSummaryChips" :key="`settings_summary_${chip}`" class="panelSummaryChip mono">
@@ -391,6 +452,30 @@ onBeforeUnmount(() => {
             <div class="panelMuted">
               Apply a consistent row, chip, and spacing density across the shell instead of relying on per-panel compaction.
             </div>
+          </div>
+          <div class="rowSingle">
+            <label for="vueSettingsDesktopNotifications">Desktop notifications</label>
+            <select
+              id="vueSettingsDesktopNotifications"
+              :value="desktopNotificationModeDraft"
+              @change="
+                desktopNotificationModeDraft = String(($event.target as HTMLSelectElement).value || 'off');
+                setSelectValue('settingsDesktopNotifications', desktopNotificationModeDraft)
+              "
+            >
+              <option value="off">Off</option>
+              <option value="failures">Failures and cancellations</option>
+              <option value="important">Important completions and failures</option>
+            </select>
+            <div class="panelMuted">
+              OS notifications complement the in-app task center. Keep them focused on high-signal outcomes so background work is visible without routine spam.
+            </div>
+            <div class="actions">
+              <button type="button" :disabled="!canRequestDesktopNotifications" @click="requestDesktopNotifications">
+                Request OS notification permission
+              </button>
+            </div>
+            <div class="panelMuted">Permission: {{ desktopNotificationPermissionLabel }}</div>
           </div>
           <div class="checks">
             <label>
@@ -588,6 +673,18 @@ onBeforeUnmount(() => {
 
             <section class="diagnosticsCard">
               <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Native desktop</div>
+                <div class="mono diagnosticsStamp">{{ desktopWindowStateStamp }}</div>
+              </header>
+              <div class="diagnosticsPrimary">{{ desktopWindowStateDetail }}</div>
+              <div class="panelMuted">Notifications: {{ desktopNotificationPermissionLabel }}</div>
+              <div class="panelMuted">
+                {{ desktopLogConsoleAttached ? 'Desktop log mirror is attached to the browser console in dev.' : 'Desktop log output stays buffered in-app outside dev console mirroring.' }}
+              </div>
+            </section>
+
+            <section class="diagnosticsCard">
+              <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Task posture</div>
                 <div class="mono diagnosticsStamp">{{ centerStatusLabel }}</div>
               </header>
@@ -621,6 +718,44 @@ onBeforeUnmount(() => {
               <div class="panelMuted">
                 {{ taskCompletedLine }}
               </div>
+            </section>
+
+            <section class="diagnosticsCard">
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Desktop log bridge</div>
+                <div class="mono diagnosticsStamp">{{ desktopLogConsoleAttached ? 'Console attached' : 'Buffered only' }}</div>
+              </header>
+              <div class="diagnosticsPrimary">
+                {{ recentDesktopLogs.length > 0 ? recentDesktopLogs[0]?.message : 'No desktop log entries yet.' }}
+              </div>
+              <div class="panelMuted">
+                Runtime log targets stream into the app diagnostics surface, and the browser console mirrors them only in dev.
+              </div>
+            </section>
+
+            <section class="diagnosticsCard diagnosticsCardWide">
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Desktop logs</div>
+                <div class="mono diagnosticsStamp">{{ recentDesktopLogs.length }} items</div>
+              </header>
+              <div v-if="recentDesktopLogs.length === 0" class="panelMuted">No desktop log entries yet.</div>
+              <ul v-else class="diagnosticsList">
+                <li
+                  v-for="(entry, index) in recentDesktopLogs"
+                  :key="entry.id"
+                  class="diagnosticsEntry"
+                  :aria-label="diagnosticsDesktopLogSummary(index)"
+                >
+                  <div class="diagnosticsEntryMeta">
+                    <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
+                    <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">{{ diagnosticsLevelLabel(entry.level) }}</span>
+                  </div>
+                  <div class="diagnosticsEntryBody">
+                    <strong>Desktop runtime</strong>
+                    <span>{{ entry.message }}</span>
+                  </div>
+                </li>
+              </ul>
             </section>
 
             <section class="diagnosticsCard diagnosticsCardWide">
@@ -693,6 +828,51 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: flex-start;
   gap: 0.75rem;
+}
+
+.settingsHeaderMeta {
+  display: grid;
+  justify-items: end;
+  gap: 0.42rem;
+  flex: 0 0 auto;
+}
+
+.settingsBrandCard {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.52rem;
+  padding: 0.34rem 0.56rem;
+  border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-inline) 86%, var(--panel-footer));
+  box-shadow: var(--shadow-inline);
+  color: var(--muted-strong);
+}
+
+.settingsBrandCard:hover {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 48%, var(--border));
+  background: color-mix(in oklab, var(--surface-focus) 88%, var(--panel-footer));
+}
+
+.settingsBrandLogo {
+  filter: drop-shadow(0 3px 10px color-mix(in srgb, var(--accent-soft) 30%, transparent));
+}
+
+.settingsBrandCopy {
+  display: grid;
+  gap: 0.02rem;
+}
+
+.settingsBrandLabel {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.settingsBrandDetail {
+  font-size: 0.66rem;
+  color: var(--muted);
 }
 
 .grid {
@@ -892,6 +1072,15 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1040px) {
+  .head {
+    flex-direction: column;
+  }
+
+  .settingsHeaderMeta {
+    width: 100%;
+    justify-items: start;
+  }
+
   .grid {
     grid-template-columns: 1fr;
   }

@@ -41,7 +41,7 @@ function runValidationAction(): void {
 </script>
 
 <template>
-  <aside class="optDock">
+  <aside class="optDock" aria-label="Optimize context dock">
     <header class="dockHeader">
       <h2 class="title" style="margin: 0;">Optimize Context</h2>
       <div class="stamp">{{ stamp }}</div>

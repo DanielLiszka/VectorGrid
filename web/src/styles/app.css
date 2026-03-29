@@ -3,6 +3,7 @@
   --radius-card: 14px;
   --radius-control: 10px;
   --controls-w: 420px;
+  --desktop-titlebar-h: 52px;
   --text-xs: 0.76rem;
   --text-sm: 0.82rem;
   --text-md: 0.86rem;
@@ -64,6 +65,8 @@ html[data-theme="light"] {
   --text: #0f172a;
   --accent: #0284c7;
   --accent-hover: #0369a1;
+  --accent-strong: #0369a1;
+  --accent-strong-hover: #075985;
   --accent-soft: rgba(2, 132, 199, 0.12);
   --accent-soft-2: rgba(2, 132, 199, 0.18);
   --border: #d8e1ec;
@@ -128,6 +131,8 @@ html[data-theme="dark"] {
   --text: #e5e7eb;
   --accent: #0ea5e9;
   --accent-hover: #38bdf8;
+  --accent-strong: #0369a1;
+  --accent-strong-hover: #075985;
   --accent-soft: rgba(14, 165, 233, 0.16);
   --accent-soft-2: rgba(14, 165, 233, 0.22);
   --border: #394b63;
@@ -1183,8 +1188,8 @@ button {
 }
 
 button.primary {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
   color: var(--on-accent);
 }
 
@@ -1203,8 +1208,8 @@ button:active:not(:disabled) {
 }
 
 button.primary:hover:not(:disabled) {
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
+  border-color: var(--accent-strong-hover);
+  background: var(--accent-strong-hover);
 }
 
 button.danger-btn:hover:not(:disabled) {
@@ -1431,6 +1436,10 @@ button:disabled {
 }
 
 @media (max-width: 760px) {
+  :root {
+    --desktop-titlebar-h: 48px;
+  }
+
   .bestGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

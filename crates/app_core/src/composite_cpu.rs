@@ -80,8 +80,8 @@ use crate::indicator_catalog::{
 };
 use crate::kqsr::{
     build_kqsr_desired_positions, clear_kqsr_route_diagnostics, compute_kqsr_signals,
-    compute_kqsr_start_t, resolve_kqsr_periods, take_kqsr_route_diagnostics,
-    validate_kqsr_params, KqsrStrategyParams,
+    compute_kqsr_start_t, resolve_kqsr_periods, take_kqsr_route_diagnostics, validate_kqsr_params,
+    KqsrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kqsr::{compute_kqsr_fast_signals_f32, compute_kqsr_slow_signals_f32};
@@ -91,17 +91,17 @@ use crate::kqsr_gpu_kernel::{
 };
 use crate::kvdf::{
     build_kvdf_desired_positions, clear_kvdf_route_diagnostics, compute_kvdf_signals,
-    compute_kvdf_start_t, resolve_kvdf_periods, take_kvdf_route_diagnostics,
-    validate_kvdf_params, KvdfStrategyParams,
-};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::kvdf_gpu_kernel::{
-    eval_kvdf_metrics_gpu_kernel_device_rows, KvdfGpuComboBatch, KvdfGpuDeviceSignalMatrices,
+    compute_kvdf_start_t, resolve_kvdf_periods, take_kvdf_route_diagnostics, validate_kvdf_params,
+    KvdfStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kvdf::{
     compute_kvdf_dti_signal_f32, compute_kvdf_fast_signals_f32, compute_kvdf_shared_signals_f32,
     compute_kvdf_slow_signals_f32,
+};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::kvdf_gpu_kernel::{
+    eval_kvdf_metrics_gpu_kernel_device_rows, KvdfGpuComboBatch, KvdfGpuDeviceSignalMatrices,
 };
 use crate::matrix_index::DoubleMaFastLtSlowIndex;
 use crate::mkcs::{
@@ -135,8 +135,8 @@ use crate::rocb_gpu_kernel::{
 use crate::strategy_ir::StrategyProfileKind;
 use crate::vcc::{
     build_vcc_desired_positions, clear_vcc_route_diagnostics, compute_vcc_fast_signals,
-    compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods, take_vcc_route_diagnostics,
-    validate_vcc_params, VccStrategyParams,
+    compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods,
+    take_vcc_route_diagnostics, validate_vcc_params, VccStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::{
@@ -148,8 +148,8 @@ use crate::vcc_gpu_kernel::{
 };
 use crate::vcet::{
     build_vcet_desired_positions, clear_vcet_route_diagnostics, compute_vcet_chandelier_signals,
-    compute_vcet_start_t, compute_vcet_vidya_signals, resolve_vcet_periods, take_vcet_route_diagnostics,
-    validate_vcet_params, VcetStrategyParams,
+    compute_vcet_start_t, compute_vcet_vidya_signals, resolve_vcet_periods,
+    take_vcet_route_diagnostics, validate_vcet_params, VcetStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet::{
@@ -162,8 +162,8 @@ use crate::vcet_gpu_kernel::{
 };
 use crate::vemr::{
     build_vemr_desired_positions, clear_vemr_route_diagnostics, compute_vemr_fast_signals,
-    compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods, take_vemr_route_diagnostics,
-    validate_vemr_params, VemrStrategyParams,
+    compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods,
+    take_vemr_route_diagnostics, validate_vemr_params, VemrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vemr::{
@@ -1087,9 +1087,7 @@ fn clear_strategy_route_diagnostics_for_request(req: &CompositeCpuRequest) {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn take_strategy_route_diagnostics_for_request(
-    req: &CompositeCpuRequest,
-) -> Option<Vec<String>> {
+fn take_strategy_route_diagnostics_for_request(req: &CompositeCpuRequest) -> Option<Vec<String>> {
     if req.asr.is_some() {
         take_asr_route_diagnostics()
     } else if req.vcc.is_some() {
@@ -2330,7 +2328,8 @@ fn run_vcc_optimization(
                         } else if !matches!(req.backend, Backend::GpuKernel { .. }) {
                             gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
                         }
-                        gpu_res.route_diagnostics = take_strategy_route_diagnostics_for_request(&req);
+                        gpu_res.route_diagnostics =
+                            take_strategy_route_diagnostics_for_request(&req);
                         return Ok(gpu_res);
                     }
                     Err(err) => {
@@ -3082,7 +3081,8 @@ fn run_vemr_optimization(
                         } else if !matches!(req.backend, Backend::GpuKernel { .. }) {
                             gpu_res.backend_route = Some(format!("{backend_label}->GpuKernel"));
                         }
-                        gpu_res.route_diagnostics = take_strategy_route_diagnostics_for_request(&req);
+                        gpu_res.route_diagnostics =
+                            take_strategy_route_diagnostics_for_request(&req);
                         return Ok(gpu_res);
                     }
                     Err(err) => {
@@ -13957,13 +13957,14 @@ mod tests {
         );
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.backend_fallback_reason.is_none());
-        let route_diagnostics = gpu_res.route_diagnostics.clone().unwrap_or_default();
         assert!(
-            route_diagnostics.iter().any(|entry| {
-                entry.contains("ASR EMA z-score CUDA path used host-composed EMA/SMA sweep staging before device upload")
-            }),
-            "expected ASR EMA route diagnostic, got {:?}",
-            route_diagnostics
+            gpu_res
+                .route_diagnostics
+                .as_ref()
+                .map(|entries| entries.is_empty())
+                .unwrap_or(true),
+            "did not expect ASR EMA direct CUDA path diagnostics, got {:?}",
+            gpu_res.route_diagnostics
         );
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
         assert_eq!(
@@ -16103,8 +16104,9 @@ mod tests {
         let route_diagnostics = res.route_diagnostics.unwrap_or_default();
         assert!(
             route_diagnostics.iter().any(|entry| {
-                entry.contains("VCET VIDYA device-output CUDA path fell back to host-staged CUDA upload")
-                    && entry.contains("forced test fallback")
+                entry.contains(
+                    "VCET VIDYA device-output CUDA path fell back to host-staged CUDA upload",
+                ) && entry.contains("forced test fallback")
             }),
             "expected VCET host-stage diagnostic, got {:?}",
             route_diagnostics
@@ -16701,5 +16703,3 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("only one"));
     }
 }
-
-

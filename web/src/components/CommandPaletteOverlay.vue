@@ -506,6 +506,7 @@ function onKeydown(event: KeyboardEvent): void {
           :aria-controls="commandListId"
           :aria-activedescendant="selectedCommandId"
           :aria-describedby="searchSummaryId"
+          aria-label="Command search"
           :value="query"
           placeholder="Type a command…"
           @input="commandPaletteStore.setQuery(String(($event.target as HTMLInputElement).value || ''))"

@@ -13,6 +13,10 @@ param(
   [string]$RunnerAdxMode = "off",
   [ValidateSet("small", "medium", "large", "xlarge")]
   [string]$RunnerWorkload = "xlarge",
+  [ValidateSet("auto", "full17", "trade22")]
+  [string]$RunnerMetricContract = "auto",
+  [ValidateSet("inherit", "off", "on")]
+  [string]$RunnerIncludeTradeMetrics = "inherit",
   [int]$RunnerIterations = 1,
   [int]$RunnerWarmupIterations = 0,
   [int]$RunnerHeatmapBins = 64,
@@ -268,6 +272,12 @@ if ($Target -eq "runner") {
     "--dynamic-mode", $DynamicStrategyMode,
     "--cuda-graphs", $CudaGraphsMode
   )
+  if ($RunnerMetricContract -ne "auto") {
+    $nsysArgs += @("--metric-contract", $RunnerMetricContract)
+  }
+  if ($RunnerIncludeTradeMetrics -ne "inherit") {
+    $nsysArgs += @("--include-trade-metrics", $RunnerIncludeTradeMetrics)
+  }
 } else {
   $nsysArgs += @(
     $targetExePathForNsys,

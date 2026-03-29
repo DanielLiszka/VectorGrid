@@ -55,8 +55,8 @@ use crate::double_ma_validate::{
 use crate::iterative_sim::{IterativeMetricsDelta, IterativeSimConfig, ValidationEngine};
 use crate::kqsr::{
     build_kqsr_desired_positions, clear_kqsr_route_diagnostics, compute_kqsr_signals,
-    compute_kqsr_start_t, resolve_kqsr_periods, take_kqsr_route_diagnostics,
-    validate_kqsr_params, KqsrSignals, KqsrStrategyParams,
+    compute_kqsr_start_t, resolve_kqsr_periods, take_kqsr_route_diagnostics, validate_kqsr_params,
+    KqsrSignals, KqsrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kqsr::{compute_kqsr_fast_signals_f32, compute_kqsr_slow_signals_f32};
@@ -66,8 +66,8 @@ use crate::kqsr_gpu_kernel::{
 };
 use crate::kvdf::{
     build_kvdf_desired_positions, clear_kvdf_route_diagnostics, compute_kvdf_signals,
-    compute_kvdf_start_t, resolve_kvdf_periods, take_kvdf_route_diagnostics,
-    validate_kvdf_params, KvdfSignals, KvdfStrategyParams,
+    compute_kvdf_start_t, resolve_kvdf_periods, take_kvdf_route_diagnostics, validate_kvdf_params,
+    KvdfSignals, KvdfStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::kvdf::{
@@ -113,8 +113,9 @@ use crate::validation_pipeline::{
 use crate::vcc::vcc_momentum_roundtrip_parity;
 use crate::vcc::{
     build_vcc_desired_positions, clear_vcc_route_diagnostics, compute_vcc_fast_signals,
-    compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods, take_vcc_route_diagnostics,
-    validate_vcc_params, VccFastSignals, VccStrategyParams, VccTrendSignals,
+    compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods,
+    take_vcc_route_diagnostics, validate_vcc_params, VccFastSignals, VccStrategyParams,
+    VccTrendSignals,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcc::{
@@ -128,8 +129,9 @@ use crate::vcc_gpu_kernel::{
 };
 use crate::vcet::{
     build_vcet_desired_positions, clear_vcet_route_diagnostics, compute_vcet_chandelier_signals,
-    compute_vcet_start_t, compute_vcet_vidya_signals, resolve_vcet_periods, take_vcet_route_diagnostics,
-    validate_vcet_params, VcetChandelierSignals, VcetStrategyParams, VcetVidyaSignals,
+    compute_vcet_start_t, compute_vcet_vidya_signals, resolve_vcet_periods,
+    take_vcet_route_diagnostics, validate_vcet_params, VcetChandelierSignals, VcetStrategyParams,
+    VcetVidyaSignals,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vcet::{
@@ -143,8 +145,9 @@ use crate::vcet_gpu_kernel::{
 };
 use crate::vemr::{
     build_vemr_desired_positions, clear_vemr_route_diagnostics, compute_vemr_fast_signals,
-    compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods, take_vemr_route_diagnostics,
-    validate_vemr_params, VemrFastSignals, VemrRiskSignals, VemrStrategyParams,
+    compute_vemr_risk_signals, compute_vemr_start_t, resolve_vemr_periods,
+    take_vemr_route_diagnostics, validate_vemr_params, VemrFastSignals, VemrRiskSignals,
+    VemrStrategyParams,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::vemr::{
@@ -18009,13 +18012,14 @@ mod tests {
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.backend_fallback_reason.is_none());
-        let route_diagnostics = gpu_res.route_diagnostics.clone().unwrap_or_default();
         assert!(
-            route_diagnostics.iter().any(|entry| {
-                entry.contains("ASR EMA z-score CUDA path used host-composed EMA/SMA sweep staging before device upload")
-            }),
-            "expected ASR EMA validation route diagnostic, got {:?}",
-            route_diagnostics
+            gpu_res
+                .route_diagnostics
+                .as_ref()
+                .map(|entries| entries.is_empty())
+                .unwrap_or(true),
+            "did not expect ASR EMA direct CUDA validation diagnostics, got {:?}",
+            gpu_res.route_diagnostics
         );
         assert_eq!(cpu_res.candidates.len(), gpu_res.candidates.len());
 

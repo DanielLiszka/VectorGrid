@@ -346,9 +346,10 @@ fn mkcs_indicator_ids() -> Result<&'static MkcsIndicatorIds, String> {
         let stddev_descriptor = find_dynamic_indicator_descriptor("stddev").ok_or_else(|| {
             "MKCS indicator 'stddev' is not registered for dynamic dispatch".to_string()
         })?;
-        let donchian_descriptor = find_dynamic_indicator_descriptor("donchian").ok_or_else(|| {
-            "MKCS indicator 'donchian' is not registered for dynamic dispatch".to_string()
-        })?;
+        let donchian_descriptor =
+            find_dynamic_indicator_descriptor("donchian").ok_or_else(|| {
+                "MKCS indicator 'donchian' is not registered for dynamic dispatch".to_string()
+            })?;
         Ok(MkcsIndicatorIds {
             stddev_period_key: resolve_param_key("stddev", &["period", "length", "timeperiod"])?,
             stddev_output: resolve_output_id("stddev", &["value", "stddev", "stdev"])?,

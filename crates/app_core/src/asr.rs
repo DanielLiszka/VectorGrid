@@ -21,8 +21,6 @@ use crate::dynamic_indicator_adapter::{
     DynamicIndicatorCudaSeries, PreparedCudaIndicatorInputs,
 };
 #[cfg(feature = "cuda")]
-use vector_ta::cuda::moving_averages::{CudaEma, CudaSma};
-#[cfg(feature = "cuda")]
 use vector_ta::cuda::{
     er_wrapper::DeviceArrayF32Er, CudaEr, CudaKaufmanstop, CudaLinearregAngle, CudaSqueezeMomentum,
     CudaTtmSqueeze, CudaZscore, DeviceArrayF32,
@@ -31,11 +29,8 @@ use vector_ta::cuda::{
 use vector_ta::indicators::dispatch::DeviceMatrixF32;
 #[cfg(feature = "cuda")]
 use vector_ta::indicators::{
-    er::ErBatchRange,
-    linearreg_angle::Linearreg_angleBatchRange,
-    moving_averages::{ema::EmaBatchRange, sma::SmaBatchRange},
-    squeeze_momentum::SqueezeMomentumBatchRange,
-    ttm_squeeze::TtmSqueezeBatchRange,
+    er::ErBatchRange, linearreg_angle::Linearreg_angleBatchRange,
+    squeeze_momentum::SqueezeMomentumBatchRange, ttm_squeeze::TtmSqueezeBatchRange,
     zscore::ZscoreBatchRange,
 };
 
@@ -440,17 +435,6 @@ thread_local! {
 }
 
 #[cfg(feature = "cuda")]
-fn record_asr_route_diagnostic(message: String) {
-    ASR_ROUTE_DIAGNOSTICS.with(|cell| {
-        let mut diagnostics = cell.borrow_mut();
-        if diagnostics.iter().any(|entry| entry == &message) {
-            return;
-        }
-        diagnostics.push(message);
-    });
-}
-
-#[cfg(feature = "cuda")]
 pub(crate) fn clear_asr_route_diagnostics() {
     ASR_ROUTE_DIAGNOSTICS.with(|cell| cell.borrow_mut().clear());
 }
@@ -815,122 +799,6 @@ fn asr_zscore_direct_ma_type_supported(ma_type: &str) -> bool {
 }
 
 #[cfg(feature = "cuda")]
-fn asr_period_sweep_rows(start: u16, end: u16, step: u16) -> usize {
-    usize::from(
-        end.saturating_sub(start)
-            .saturating_div(step)
-            .saturating_add(1),
-    )
-}
-
-#[cfg(feature = "cuda")]
-fn compute_asr_zscore_sweep_cuda_ema_composed(
-    prepared_inputs: &PreparedCudaIndicatorInputs,
-    cfg: &AsrStrategyParams,
-    period_start: u16,
-    period_end: u16,
-    period_step: u16,
-    device_id: u32,
-) -> Result<AsrPeriodSweepDevice, String> {
-    record_asr_route_diagnostic(
-        "ASR EMA z-score CUDA path used host-composed EMA/SMA sweep staging before device upload"
-            .to_string(),
-    );
-    let runtime_device_id = prepared_inputs.runtime().device_id();
-    if runtime_device_id != device_id {
-        return Err(format!(
-            "ASR zscore EMA CUDA device mismatch: prepared={} requested={}",
-            runtime_device_id, device_id
-        ));
-    }
-
-    let start = period_start.max(1);
-    let end = period_end.max(start);
-    let step = period_step.max(1);
-    let rows = asr_period_sweep_rows(start, end, step);
-    let cols = prepared_inputs.len();
-    let period_range = (usize::from(start), usize::from(end), usize::from(step));
-    let ema_sweep = EmaBatchRange {
-        period: period_range,
-    };
-    let sma_sweep = SmaBatchRange {
-        period: period_range,
-    };
-
-    let mut ema_host = vec![f32::NAN; rows.saturating_mul(cols)];
-    let mut sma_host = vec![f32::NAN; rows.saturating_mul(cols)];
-    let mut sma_sq_host = vec![f32::NAN; rows.saturating_mul(cols)];
-
-    let ema_cuda = CudaEma::new(device_id as usize).map_err(|e| e.to_string())?;
-    ema_cuda
-        .ema_batch_into_host_f32(
-            prepared_inputs.source(),
-            &ema_sweep,
-            ema_host.as_mut_slice(),
-        )
-        .map_err(|e| e.to_string())?;
-
-    let sma_cuda = CudaSma::new(device_id as usize).map_err(|e| e.to_string())?;
-    sma_cuda
-        .sma_batch_into_host_f32(
-            prepared_inputs.source(),
-            &sma_sweep,
-            sma_host.as_mut_slice(),
-        )
-        .map_err(|e| e.to_string())?;
-
-    let squared_source = prepared_inputs
-        .source()
-        .iter()
-        .map(|&value| value * value)
-        .collect::<Vec<_>>();
-    sma_cuda
-        .sma_batch_into_host_f32(&squared_source, &sma_sweep, sma_sq_host.as_mut_slice())
-        .map_err(|e| e.to_string())?;
-
-    let prices = prepared_inputs.source();
-    let nbdev = cfg.z_nbdev as f32;
-    let mut out_host = vec![f32::NAN; rows.saturating_mul(cols)];
-    for row in 0..rows {
-        let row_offset = row.saturating_mul(cols);
-        for col in 0..cols {
-            let idx = row_offset + col;
-            let price = prices[col];
-            let ema = ema_host[idx];
-            let ex = sma_host[idx];
-            let ex2 = sma_sq_host[idx];
-
-            if !price.is_finite() || !ema.is_finite() || !ex.is_finite() || !ex2.is_finite() {
-                continue;
-            }
-
-            let mse = (ex2 - 2.0 * ema * ex + ema * ema).max(0.0);
-            let sd = mse.sqrt() * nbdev;
-            if sd != 0.0 && sd.is_finite() {
-                out_host[idx] = (price - ema) / sd;
-            }
-        }
-    }
-
-    let matrix = DeviceArrayF32 {
-        buf: prepared_inputs
-            .runtime()
-            .upload_f32(out_host.as_slice())
-            .map_err(|e| e.to_string())?
-            .into_buffer(),
-        rows,
-        cols,
-    };
-
-    Ok(AsrPeriodSweepDevice {
-        matrix: AsrOwnedDeviceMatrix::from_raw(matrix),
-        period_start: start,
-        period_end: end,
-        period_step: step,
-    })
-}
-
-#[cfg(feature = "cuda")]
 fn compute_asr_er_sweep_cuda_direct(
     prepared_inputs: &PreparedCudaIndicatorInputs,
     period_start: u16,
@@ -973,17 +841,6 @@ fn compute_asr_zscore_sweep_cuda_direct(
     period_step: u16,
     device_id: u32,
 ) -> Result<AsrPeriodSweepDevice, String> {
-    if cfg.z_ma_type.eq_ignore_ascii_case("ema") {
-        return compute_asr_zscore_sweep_cuda_ema_composed(
-            prepared_inputs,
-            cfg,
-            period_start,
-            period_end,
-            period_step,
-            device_id,
-        );
-    }
-
     let start = period_start.max(1);
     let end = period_end.max(start);
     let step = period_step.max(1);

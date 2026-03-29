@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import {
   CONTROLS_COLLAPSED_KEY,
+  DESKTOP_NOTIFICATION_MODE_KEY,
   DENSITY_MODE_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
@@ -23,9 +24,11 @@ const THEME_KEYS = new Set(['light', 'dark', 'system'])
 const EFFECT_KEYS = new Set(['none', 'mica', 'acrylic', 'vibrancy'])
 const HELP_MODE_KEYS = new Set(['full', 'concise', 'off'])
 const DENSITY_MODE_KEYS = new Set(['comfortable', 'standard', 'dense'])
+const DESKTOP_NOTIFICATION_MODE_KEYS = new Set(['off', 'failures', 'important'])
 
 export type HelpMode = 'full' | 'concise' | 'off'
 export type DensityMode = 'comfortable' | 'standard' | 'dense'
+export type DesktopNotificationMode = 'off' | 'failures' | 'important'
 
 export interface WorkstationPerspectiveSnapshot {
   workspace: string
@@ -65,6 +68,12 @@ function normalizeDensityMode(value: unknown): DensityMode {
   const next = String(value ?? '').trim().toLowerCase()
   if (DENSITY_MODE_KEYS.has(next)) return next as DensityMode
   return 'standard'
+}
+
+function normalizeDesktopNotificationMode(value: unknown): DesktopNotificationMode {
+  const next = String(value ?? '').trim().toLowerCase()
+  if (DESKTOP_NOTIFICATION_MODE_KEYS.has(next)) return next as DesktopNotificationMode
+  return 'off'
 }
 
 function normalizeSplitFraction(value: unknown): number {
@@ -117,6 +126,14 @@ function persistDensityMode(mode: DensityMode): void {
     return
   }
   writeStorageString(DENSITY_MODE_KEY, mode)
+}
+
+function persistDesktopNotificationMode(mode: DesktopNotificationMode): void {
+  if (mode === 'off') {
+    removeStorageKey(DESKTOP_NOTIFICATION_MODE_KEY)
+    return
+  }
+  writeStorageString(DESKTOP_NOTIFICATION_MODE_KEY, mode)
 }
 
 function persistPerspectives(perspectives: WorkstationPerspective[]): void {
@@ -304,6 +321,7 @@ interface SettingsState {
   effect: string
   helpMode: HelpMode
   densityMode: DensityMode
+  desktopNotificationMode: DesktopNotificationMode
   workflowAdvanced: boolean
   controlsCollapsed: boolean
   perspectives: WorkstationPerspective[]
@@ -332,6 +350,7 @@ export const useSettingsStore = defineStore('settings', {
     effect: 'none',
     helpMode: 'full',
     densityMode: normalizeDensityMode(readStorageString(DENSITY_MODE_KEY, '')),
+    desktopNotificationMode: normalizeDesktopNotificationMode(readStorageString(DESKTOP_NOTIFICATION_MODE_KEY, '')),
     workflowAdvanced: false,
     controlsCollapsed: false,
     perspectives: readStoredPerspectives(),
@@ -365,6 +384,9 @@ export const useSettingsStore = defineStore('settings', {
       this.effect = String(snapshot.effect ?? this.effect ?? 'none').trim() || 'none'
       this.helpMode = normalizeHelpMode(snapshot.helpMode ?? this.helpMode ?? 'full')
       this.densityMode = normalizeDensityMode(snapshot.densityMode ?? this.densityMode ?? 'standard')
+      this.desktopNotificationMode = normalizeDesktopNotificationMode(
+        snapshot.desktopNotificationMode ?? this.desktopNotificationMode ?? 'off',
+      )
       this.workflowAdvanced = Boolean(snapshot.workflowAdvanced ?? this.workflowAdvanced)
       this.controlsCollapsed = Boolean(snapshot.controlsCollapsed ?? this.controlsCollapsed)
       this.perspectives = Array.isArray(snapshot.perspectives) ? snapshot.perspectives : this.perspectives
@@ -422,6 +444,11 @@ export const useSettingsStore = defineStore('settings', {
         const normalized = normalizeDensityMode(next)
         this.densityMode = normalized
         applyDensityModeLocally(normalized)
+        this.markVueUpdate()
+      } else if (key === 'settingsDesktopNotifications') {
+        const normalized = normalizeDesktopNotificationMode(next)
+        this.desktopNotificationMode = normalized
+        persistDesktopNotificationMode(normalized)
         this.markVueUpdate()
       }
     },

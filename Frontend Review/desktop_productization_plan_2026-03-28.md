@@ -63,12 +63,58 @@ The current frontend shell is already in a materially better state:
 
 The main remaining delta is no longer ordinary Vue UI debt. It is the desktop/Tauri layer:
 
-- dual Tauri config files still exist
-- no capability files exist
-- no CSP is configured
-- `withGlobalTauri` is still enabled
-- no Tauri desktop plugins are installed yet
+- canonical vs mirror Tauri config ownership needed to be made explicit
+- a capability model and CSP baseline still needed to exist in repo
+- desktop plugins for window state, logging, and notifications were still missing
 - the app still feels more like a polished web shell than a fully productized desktop app
+
+## Current Status
+
+This plan is now partially implemented.
+
+Completed in the current pass:
+
+- Phase 1 config/runtime cleanup
+- Phase 2 capability inventory and CSP baseline
+- Phase 3 window-state and launch polish
+- Phase 4 logging and diagnostics plumbing
+- Phase 5 OS notifications
+- the shipping portion of Phase 6 desktop chrome:
+  - custom frameless titlebar
+  - shell-mounted window controls
+  - desktop-shell accessibility verification for the new chrome
+- the quality-gate portion of Phase 8:
+  - `eslint-plugin-vuejs-accessibility`
+  - Playwright + axe smoke coverage for core desktop shell flows
+
+Still intentionally open:
+
+- the remaining decisions in Phase 6 desktop chrome and presence:
+  - tray/menu
+  - global shortcuts
+- Phase 7 updater and relaunch
+- the remaining decisions in Phase 8:
+  - Pro editor/diff evaluation
+  - any optional heavy power-user tooling
+
+Rollback posture for the completed slice:
+
+- disable the desktop startup service by removing [desktopProductization.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.ts) from [main.ts](C:\Rust Projects\ta_desktop_demo\web\src\main.ts)
+- remove the three adopted plugins from [src-tauri/Cargo.toml](C:\Rust Projects\ta_desktop_demo\src-tauri\Cargo.toml) and [web/package.json](C:\Rust Projects\ta_desktop_demo\web\package.json)
+- remove `visible: false` and the `security` block from the canonical and mirrored Tauri configs if startup/CSP behavior regresses
+- remove the `main-window` capability from [src-tauri/tauri.conf.json](C:\Rust Projects\ta_desktop_demo\src-tauri\tauri.conf.json) if capability scoping proves to be the source of a desktop launch regression
+
+Verification completed for the current slice:
+
+- `npm --prefix web run lint`
+- `npm --prefix web run typecheck`
+- `npm --prefix web run test`
+- `npm --prefix web run build`
+- `npm --prefix web run a11y:smoke`
+- `npm --prefix web run baseline:ui`
+- `npm --prefix web run check:bundle-budget`
+- `cargo check -p ta_desktop_demo_app`
+- `node scripts/check_tauri_config_sync.mjs`
 
 ## Current Repo Baseline
 
@@ -81,30 +127,52 @@ Current evidence:
 - [web/index.html](C:\Rust Projects\ta_desktop_demo\web\index.html)
 - [web/src/tauri/invoke.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.ts)
 - [web/src/components/GlobalShortcutBridge.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\GlobalShortcutBridge.vue)
+- [web/src/components/DesktopTitlebar.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\DesktopTitlebar.vue)
 - [web/src/components/TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue)
 - [web/src/components/SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+- [web/scripts/check-a11y-smoke.mjs](C:\Rust Projects\ta_desktop_demo\web\scripts\check-a11y-smoke.mjs)
+- [web/eslint.config.js](C:\Rust Projects\ta_desktop_demo\web\eslint.config.js)
 
 Current state summary:
 
 - the Tauri app exposes a large invoke surface through [lib.rs](C:\Rust Projects\ta_desktop_demo\src-tauri\src\lib.rs)
-- there is no `src-tauri/capabilities/` directory
-- CSP is not configured
-- `web/index.html` still uses an inline bootstrap script
-- `withGlobalTauri` is enabled in both Tauri config files
-- the repo still has two Tauri config files with different identity values
-- no official Tauri plugin crates or JS guest bindings are installed for:
+- [src-tauri/tauri.conf.json](C:\Rust Projects\ta_desktop_demo\src-tauri\tauri.conf.json) is now the canonical config, while [tauri.conf.json](C:\Rust Projects\ta_desktop_demo\tauri.conf.json) is a compatibility mirror kept in sync by [check_tauri_config_sync.mjs](C:\Rust Projects\ta_desktop_demo\scripts\check_tauri_config_sync.mjs)
+- `src-tauri/capabilities/` now exists with:
+  - [main.json](C:\Rust Projects\ta_desktop_demo\src-tauri\capabilities\main.json)
+  - [dev.json](C:\Rust Projects\ta_desktop_demo\src-tauri\capabilities\dev.json)
+- CSP is now configured in the canonical and mirrored Tauri configs
+- [web/index.html](C:\Rust Projects\ta_desktop_demo\web\index.html) now uses the module-based [preflight.ts](C:\Rust Projects\ta_desktop_demo\web\src\preflight.ts) bootstrap path
+- `withGlobalTauri` is disabled and the runtime path is module-first in:
+  - [invoke.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.ts)
+  - [events.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\events.ts)
+- adopted desktop plugins are now:
   - window state
   - log
   - notification
+- current desktop chrome posture:
+  - frameless window decorations are enabled in the canonical and mirrored Tauri configs
+  - [DesktopTitlebar.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\DesktopTitlebar.vue) is now the primary window chrome, with drag-region support, window controls, command-palette access, and run/status context
+  - [main.json](C:\Rust Projects\ta_desktop_demo\src-tauri\capabilities\main.json) now grants only the explicit `core:window` permissions needed for drag/minimize/maximize/close behavior
+  - the titlebar and shell landmarks now pass the browser-side accessibility smoke gate
+- still deferred:
   - updater
   - process
   - global shortcut
+  - tray/menu
+- accessibility/browser quality gates now include:
+  - `eslint-plugin-vuejs-accessibility` in the frontend lint stack
+  - [check-a11y-smoke.mjs](C:\Rust Projects\ta_desktop_demo\web\scripts\check-a11y-smoke.mjs) for core shell/settings/palette/task-center smoke scans
 - the app already has the right frontend anchor points for native polish:
   - Task Center
   - command palette
   - Settings diagnostics
+  - custom desktop titlebar
   - window effect settings
   - global in-app shortcut bridge
+- current inventory artifacts:
+  - [desktop_capability_inventory_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_capability_inventory_2026-03-28.md)
+  - [desktop_plugin_inventory_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_plugin_inventory_2026-03-28.md)
+  - [desktop_ux_decisions_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_ux_decisions_2026-03-28.md)
 
 ## Product Principles
 
@@ -417,61 +485,61 @@ Acceptance:
 
 ### Phase 1: Config And Runtime Baseline
 
-- [ ] Choose the canonical Tauri config file and remove or retire conflicting config drift.
-- [ ] Reconcile product name, identifier, and build-path differences between [src-tauri/tauri.conf.json](C:\Rust Projects\ta_desktop_demo\src-tauri\tauri.conf.json) and [tauri.conf.json](C:\Rust Projects\ta_desktop_demo\tauri.conf.json).
-- [ ] Audit all uses of `window.__TAURI__` and confirm the module-import invoke path is sufficient.
-- [ ] Turn off `withGlobalTauri` once the module-import path is confirmed.
-- [ ] Replace or refactor the inline bootstrap in [web/index.html](C:\Rust Projects\ta_desktop_demo\web\index.html) so CSP can be enabled cleanly.
-- [ ] Document stable window labels and any planned additional windows before capability work begins.
-- [ ] Record rollback instructions for this config-cleanup slice in case startup regresses.
+- [x] Choose the canonical Tauri config file and remove or retire conflicting config drift.
+- [x] Reconcile product name, identifier, and build-path differences between [src-tauri/tauri.conf.json](C:\Rust Projects\ta_desktop_demo\src-tauri\tauri.conf.json) and [tauri.conf.json](C:\Rust Projects\ta_desktop_demo\tauri.conf.json).
+- [x] Audit all uses of `window.__TAURI__` and confirm the module-import invoke path is sufficient.
+- [x] Turn off `withGlobalTauri` once the module-import path is confirmed.
+- [x] Replace or refactor the inline bootstrap in [web/index.html](C:\Rust Projects\ta_desktop_demo\web\index.html) so CSP can be enabled cleanly.
+- [x] Document stable window labels and any planned additional windows before capability work begins.
+- [x] Record rollback instructions for this config-cleanup slice in case startup regresses.
 
 ### Phase 2: Capability Inventory And CSP
 
-- [ ] Create `src-tauri/capabilities/`.
-- [ ] Add at least `main.json` and `dev.json`.
-- [ ] Inventory the current invoke command surface by workflow and trust level.
-- [ ] Record the capability inventory in a repo-local markdown artifact or equivalent reviewable file.
-- [ ] Scope the main desktop window to only the permissions it actually needs.
-- [ ] Keep richer debug/diagnostic permissions isolated from the main window.
-- [ ] Add an initial restrictive CSP to the canonical Tauri config.
-- [ ] Verify the app still runs with bundled-only assets and no remote script/style dependencies.
+- [x] Create `src-tauri/capabilities/`.
+- [x] Add at least `main.json` and `dev.json`.
+- [x] Inventory the current invoke command surface by workflow and trust level.
+- [x] Record the capability inventory in a repo-local markdown artifact or equivalent reviewable file.
+- [x] Scope the main desktop window to only the permissions it actually needs.
+- [x] Keep richer debug/diagnostic permissions isolated from the main window.
+- [x] Add an initial restrictive CSP to the canonical Tauri config.
+- [x] Verify the app still runs with bundled-only assets and no remote script/style dependencies.
 
 ### Phase 3: Window State And Launch Polish
 
-- [ ] Add `@tauri-apps/plugin-window-state` Rust and JS dependencies.
-- [ ] Restore window size/position/maximized state on startup.
-- [ ] Prevent visible launch flash before restored geometry is applied.
-- [ ] Handle invalid or off-screen restored geometry safely.
-- [ ] Verify restored state across normal close/relaunch and maximized-window relaunch.
+- [x] Add `@tauri-apps/plugin-window-state` Rust and JS dependencies.
+- [x] Restore window size/position/maximized state on startup.
+- [x] Prevent visible launch flash before restored geometry is applied.
+- [x] Handle invalid or off-screen restored geometry safely.
+- [x] Verify restored state across normal close/relaunch and maximized-window relaunch.
 
 ### Phase 4: Logging And Diagnostics
 
-- [ ] Add `@tauri-apps/plugin-log` Rust and JS dependencies.
-- [ ] Define the dev-only console-attach posture.
-- [ ] Route Rust-side logs into a consistent diagnostics path.
-- [ ] Extend the existing Settings diagnostics surface only where it materially improves operator understanding.
-- [ ] Decide retention/verbosity expectations for the in-app diagnostics view.
-- [ ] Verify diagnostics still make sense without developer tooling attached.
+- [x] Add `@tauri-apps/plugin-log` Rust and JS dependencies.
+- [x] Define the dev-only console-attach posture.
+- [x] Route Rust-side logs into a consistent diagnostics path.
+- [x] Extend the existing Settings diagnostics surface only where it materially improves operator understanding.
+- [x] Decide retention/verbosity expectations for the in-app diagnostics view.
+- [x] Verify diagnostics still make sense without developer tooling attached.
 
 ### Phase 5: OS Notifications
 
-- [ ] Add `@tauri-apps/plugin-notification` Rust and JS dependencies.
-- [ ] Define which lifecycle events are notification-worthy.
-- [ ] Add a user-facing notification preference if the signal volume warrants it.
-- [ ] Bridge high-signal task outcomes from the existing task model to OS notifications.
-- [ ] Define permission-denied and unsupported-platform fallback behavior.
-- [ ] Verify notifications do not spam routine progress updates.
+- [x] Add `@tauri-apps/plugin-notification` Rust and JS dependencies.
+- [x] Define which lifecycle events are notification-worthy.
+- [x] Add a user-facing notification preference if the signal volume warrants it.
+- [x] Bridge high-signal task outcomes from the existing task model to OS notifications.
+- [x] Define permission-denied and unsupported-platform fallback behavior.
+- [x] Verify notifications do not spam routine progress updates.
 
 ### Phase 6: Desktop Chrome And Presence
 
-- [ ] Decide whether custom titlebar/chrome is worth shipping for this app.
-- [ ] If yes, implement a minimal titlebar with drag region and window controls.
-- [ ] If yes, scope only the required window permissions.
+- [x] Decide whether custom titlebar/chrome is worth shipping for this app.
+- [x] If yes, implement a minimal titlebar with drag region and window controls.
+- [x] If yes, scope only the required window permissions.
 - [ ] Decide whether tray/menu meaningfully improves long-running workflow UX.
 - [ ] If yes, add tray/menu quick actions tied to the existing command system.
-- [ ] Reassess global shortcuts only after tray/titlebar decisions are settled.
+- [x] Reassess global shortcuts only after tray/titlebar decisions are settled.
 - [ ] If global shortcuts are adopted, keep the set minimal and user-justified.
-- [ ] Document Windows-first versus cross-platform expectations for titlebar/tray/global-shortcut behavior.
+- [x] Document Windows-first versus cross-platform expectations for titlebar/tray/global-shortcut behavior.
 
 ### Phase 7: Updater And Relaunch
 
@@ -484,12 +552,12 @@ Acceptance:
 
 ### Phase 8: Power-User Tooling And Quality Gates
 
-- [ ] Add `eslint-plugin-vuejs-accessibility` to the frontend lint stack.
-- [ ] Add `@axe-core/playwright` checks to the browser-side quality path.
-- [ ] Keep bundle analysis and lazy-load boundaries explicit as desktop features are added.
+- [x] Add `eslint-plugin-vuejs-accessibility` to the frontend lint stack.
+- [x] Add `@axe-core/playwright` checks to the browser-side quality path.
+- [x] Keep bundle analysis and lazy-load boundaries explicit as desktop features are added.
 - [ ] Evaluate whether a Pro editor/diff surface is still justified after desktop polish lands.
 - [ ] If justified, implement `CodeMirror` and/or config/result diffing as a lazy-loaded Pro-only surface.
-- [ ] Define bundle-budget expectations before adopting any heavy optional tooling.
+- [x] Define bundle-budget expectations before adopting any heavy optional tooling.
 
 ## Priority Notes
 

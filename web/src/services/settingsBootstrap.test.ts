@@ -60,6 +60,7 @@ describe('settings bootstrap service', () => {
       effect: 'mica',
       helpMode: 'concise',
       densityMode: 'dense',
+      desktopNotificationMode: '',
       workflowAdvanced: true,
       controlsCollapsed: false,
     })
@@ -80,6 +81,7 @@ describe('settings bootstrap service', () => {
       effect: '',
       helpMode: '',
       densityMode: '',
+      desktopNotificationMode: '',
       workflowAdvanced: null,
       controlsCollapsed: null,
     })
@@ -91,6 +93,7 @@ describe('settings bootstrap service', () => {
       vta_window_effect_v1: 'acrylic',
       vta_help_mode_v1: 'off',
       vta_density_mode_v1: 'comfortable',
+      vta_desktop_notification_mode_v1: 'failures',
       vta_workflow_advanced_v1: 'true',
       vta_controls_collapsed_v1: '1',
     })
@@ -102,6 +105,7 @@ describe('settings bootstrap service', () => {
     expect(store.effect).toBe('acrylic')
     expect(store.helpMode).toBe('off')
     expect(store.densityMode).toBe('comfortable')
+    expect(store.desktopNotificationMode).toBe('failures')
     expect(store.workflowAdvanced).toBe(true)
     expect(store.controlsCollapsed).toBe(true)
     expect(dataset.themePref).toBe('light')

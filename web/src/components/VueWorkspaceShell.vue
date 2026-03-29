@@ -412,7 +412,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="shellRoot">
-    <header class="shellHeader">
+    <div class="shellHeader" role="region" aria-label="Workspace shell header">
       <div class="brandRow">
         <div class="brandBlock">
           <h1>VectorGrid</h1>
@@ -495,7 +495,7 @@ onBeforeUnmount(() => {
           <div class="contextValue mono">{{ item.value }}</div>
         </article>
       </section>
-    </header>
+    </div>
 
     <main class="shellMain">
       <section
@@ -512,7 +512,12 @@ onBeforeUnmount(() => {
           :style="workspaceGridStyle"
           v-show="!settingsWorkspaceActive"
         >
-        <aside id="shellControlsColumn" v-show="controlsColumnVisible" class="controlsColumn">
+        <section
+          id="shellControlsColumn"
+          v-show="controlsColumnVisible"
+          class="controlsColumn"
+          aria-label="Setup panels"
+        >
           <nav
             v-if="controlsTabsVisible"
             id="controlsTabBar"
@@ -588,7 +593,7 @@ onBeforeUnmount(() => {
           >
             <div id="advancedVueShellMount"></div>
           </div>
-        </aside>
+        </section>
 
         <button
           v-if="splitLayoutActive"
@@ -759,7 +764,7 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <footer id="runFooterShell">
+    <footer id="runFooterShell" role="contentinfo">
       <div id="runFooterVueShellMount"></div>
     </footer>
   </section>
@@ -768,7 +773,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .shellRoot {
   position: fixed;
-  inset: 0;
+  inset: var(--desktop-titlebar-h, 0px) 0 0 0;
   z-index: 1200;
   background: var(--app-bg);
   color: var(--text);

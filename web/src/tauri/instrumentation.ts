@@ -207,11 +207,11 @@ function subscribeWithRetry(maxTries = 30, everyMs = 100): void {
 
   void run().then((ok) => {
     if (ok) return
-    const timer = window.setInterval(() => {
+    const timer = globalThis.setInterval(() => {
       tries += 1
       void run().then((done) => {
         if (done || tries >= maxTries) {
-          window.clearInterval(timer)
+          globalThis.clearInterval(timer)
         }
       })
     }, everyMs)
@@ -221,10 +221,10 @@ function subscribeWithRetry(maxTries = 30, everyMs = 100): void {
 function patchInvokeWithRetry(maxTries = 30, everyMs = 100): void {
   if (patchInvokeOnce()) return
   let tries = 0
-  const timer = window.setInterval(() => {
+  const timer = globalThis.setInterval(() => {
     tries += 1
     if (patchInvokeOnce() || tries >= maxTries) {
-      window.clearInterval(timer)
+      globalThis.clearInterval(timer)
     }
   }, everyMs)
 }

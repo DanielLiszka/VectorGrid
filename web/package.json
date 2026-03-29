@@ -13,6 +13,7 @@
     "lint": "eslint . --max-warnings=0 && npm run check:commands && node ./scripts/check-known-tauri-commands.mjs",
     "parity:outputs": "node ../scripts/check_output_parity.mjs --pairs ../scripts/output_parity_pairs.json",
     "baseline:ui": "node ./scripts/capture-baseline-ui.mjs",
+    "a11y:smoke": "node ./scripts/check-a11y-smoke.mjs",
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json",
     "parity": "node ./scripts/check-tauri-parity.mjs",
@@ -29,6 +30,9 @@
     "@tanstack/vue-table": "^8.21.3",
     "@tanstack/vue-virtual": "3.13.19",
     "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/plugin-log": "^2.8.0",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "@tauri-apps/plugin-window-state": "^2.4.1",
     "@vueuse/core": "14.2.1",
     "fuse.js": "^7.1.0",
     "lightweight-charts": "5.1.0",
@@ -40,6 +44,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
     "@playwright/test": "1.58.2",
     "@tauri-apps/cli": "2.10.0",
     "@types/node": "24.10.1",
@@ -50,6 +55,7 @@
     "@vue/tsconfig": "^0.8.1",
     "eslint": "10.0.0",
     "eslint-plugin-vue": "10.8.0",
+    "eslint-plugin-vuejs-accessibility": "^2.5.0",
     "jsdom": "^28.1.0",
     "prettier": "3.8.1",
     "rollup-plugin-visualizer": "^7.0.1",

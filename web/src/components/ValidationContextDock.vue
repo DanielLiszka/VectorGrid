@@ -35,7 +35,7 @@ function openValidationWorkspace(): void {
 </script>
 
 <template>
-  <aside class="valDock">
+  <aside class="valDock" aria-label="Validation context dock">
     <header class="dockHeader">
       <h2 class="title" style="margin: 0;">Validation Context</h2>
       <div class="stamp">{{ stamp }}</div>

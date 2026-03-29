@@ -687,7 +687,7 @@ function openRelatedView(task: TrackedTask): void {
 <style scoped>
 .taskOverlayRoot {
   position: fixed;
-  top: 12px;
+  top: calc(var(--desktop-titlebar-h, 0px) + 12px);
   right: 12px;
   z-index: 4000;
   pointer-events: none;
@@ -1196,7 +1196,7 @@ function openRelatedView(task: TrackedTask): void {
 
 @media (max-width: 760px) {
   .taskOverlayRoot {
-    top: 8px;
+    top: calc(var(--desktop-titlebar-h, 0px) + 8px);
     right: 8px;
   }
 

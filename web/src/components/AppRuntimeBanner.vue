@@ -48,7 +48,7 @@ const errorDetail = computed(() => {
   --runtime-surface: color-mix(in oklab, var(--surface-sticky) 94%, var(--panel-footer));
   --runtime-text: var(--text);
   position: fixed;
-  top: 10px;
+  top: calc(var(--desktop-titlebar-h, 0px) + 10px);
   left: 10px;
   z-index: 4050;
   border-radius: 10px;

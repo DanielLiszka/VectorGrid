@@ -33,7 +33,7 @@ const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 </script>
 
 <template>
-  <aside v-if="visible" class="historyDock">
+  <aside v-if="visible" class="historyDock" aria-label="History context dock">
     <header class="dockHeader">
       <h2 class="title" style="margin: 0;">History Context</h2>
       <div class="stamp">{{ stamp }}</div>

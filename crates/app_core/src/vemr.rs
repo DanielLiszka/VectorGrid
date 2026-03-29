@@ -1359,10 +1359,9 @@ mod tests {
             vol.push(1_000.0 + i as f64);
         }
         let candles = Candles::new(ts, open, high, low, close, vol);
-        let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-            &candles, "close", 0,
-        )
-        .expect("prepared cuda inputs");
+        let prepared_cuda_inputs =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
+                .expect("prepared cuda inputs");
 
         let signals = compute_vemr_risk_signals(
             &candles,
@@ -1377,8 +1376,7 @@ mod tests {
         let route_diagnostics = take_vemr_route_diagnostics().unwrap_or_default();
         assert!(
             route_diagnostics.iter().any(|entry| {
-                entry.contains("VEMR indicator atr/")
-                    && entry.contains("forced test fallback")
+                entry.contains("VEMR indicator atr/") && entry.contains("forced test fallback")
             }),
             "expected VEMR helper fallback diagnostic, got {:?}",
             route_diagnostics

@@ -1,0 +1,47 @@
+<svg width="125" height="125" viewBox="0 0 60 50" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="va-title va-desc">
+  <title id="va-title">VectorAlpha letterform logo</title>
+  <desc id="va-desc">Stylized Greek alpha with input and output vector bars.</desc>
+  
+  <defs>
+    <linearGradient id="va-gradient" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="rgb(59, 130, 246)" />
+      <stop offset="1" stop-color="rgb(139, 92, 246)" />
+    </linearGradient>
+    <style>
+      @media (forced-colors: active) {
+        .va-shape { fill: currentColor !important; }
+      }
+    </style>
+  </defs>
+
+  <g transform="translate(10 6)">
+    <!-- Input bars (left column) -->
+    <g>
+      <rect class="va-shape" x="0" y="8" width="8" height="2" fill="rgb(100, 116, 139)" />
+      <rect class="va-shape" x="0" y="14" width="8" height="2" fill="rgb(100, 116, 139)" />
+      <rect class="va-shape" x="0" y="20" width="8" height="2" fill="rgb(100, 116, 139)" />
+      <rect class="va-shape" x="0" y="26" width="8" height="2" fill="rgb(100, 116, 139)" />
+    </g>
+
+    <!-- Greek alpha letterform -->
+    <text 
+      class="va-shape"
+      x="20" 
+      y="28" 
+      text-anchor="middle" 
+      font-family="Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif" 
+      font-size="28" 
+      font-weight="700" 
+      fill="url(#va-gradient)">
+      α
+    </text>
+
+    <!-- Output bars (right column) -->
+    <g>
+      <rect class="va-shape" x="32" y="8" width="8" height="2" fill="url(#va-gradient)" />
+      <rect class="va-shape" x="32" y="14" width="8" height="2" fill="url(#va-gradient)" />
+      <rect class="va-shape" x="32" y="20" width="8" height="2" fill="url(#va-gradient)" />
+      <rect class="va-shape" x="32" y="26" width="8" height="2" fill="url(#va-gradient)" />
+    </g>
+  </g>
+</svg>

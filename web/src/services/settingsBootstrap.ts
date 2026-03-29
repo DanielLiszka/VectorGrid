@@ -1,5 +1,6 @@
 import {
   CONTROLS_COLLAPSED_KEY,
+  DESKTOP_NOTIFICATION_MODE_KEY,
   DENSITY_MODE_KEY,
   HELP_MODE_KEY,
   THEME_PREF_KEY,
@@ -21,6 +22,7 @@ export interface SettingsBootstrapState {
   effect: string
   helpMode: string
   densityMode: string
+  desktopNotificationMode: string
   workflowAdvanced: boolean | null
   controlsCollapsed: boolean | null
 }
@@ -56,6 +58,10 @@ export function readSettingsBootstrapState(): SettingsBootstrapState {
     effect: normalizeFromSet(readStorageValue(WINDOW_EFFECT_KEY), EFFECT_KEYS),
     helpMode: normalizeFromSet(readStorageValue(HELP_MODE_KEY), HELP_MODE_KEYS),
     densityMode: normalizeFromSet(readStorageValue(DENSITY_MODE_KEY), DENSITY_MODE_KEYS),
+    desktopNotificationMode: normalizeFromSet(
+      readStorageValue(DESKTOP_NOTIFICATION_MODE_KEY),
+      new Set(['off', 'failures', 'important']),
+    ),
     workflowAdvanced: readBooleanFlag(WORKFLOW_ADVANCED_KEY),
     controlsCollapsed: readBooleanFlag(CONTROLS_COLLAPSED_KEY),
   }
@@ -63,7 +69,15 @@ export function readSettingsBootstrapState(): SettingsBootstrapState {
 
 export function applySettingsBootstrapFromStorage(): void {
   const state = readSettingsBootstrapState()
-  if (!state.theme && !state.effect && !state.helpMode && !state.densityMode && state.workflowAdvanced == null && state.controlsCollapsed == null) return
+  if (
+    !state.theme
+    && !state.effect
+    && !state.helpMode
+    && !state.densityMode
+    && !state.desktopNotificationMode
+    && state.workflowAdvanced == null
+    && state.controlsCollapsed == null
+  ) return
   const pinia = resolveRuntimePinia()
   if (!pinia) return
   const store = useSettingsStore(pinia)
@@ -82,6 +96,10 @@ export function applySettingsBootstrapFromStorage(): void {
 
   if (state.densityMode) {
     store.setSelectField('settingsDensityMode', state.densityMode)
+  }
+
+  if (state.desktopNotificationMode) {
+    store.setSelectField('settingsDesktopNotifications', state.desktopNotificationMode)
   }
 
   if (state.workflowAdvanced != null) {

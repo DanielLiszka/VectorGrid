@@ -6,10 +6,10 @@ pub mod settings;
 pub mod state;
 
 use commands::*;
-use tauri_plugin_log::{Target, TargetKind};
-use tauri_plugin_window_state::{StateFlags, WindowExt};
 use state::AppState;
 use state::BackgroundTaskState;
+use tauri_plugin_log::{Target, TargetKind};
+use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 pub fn run_tauri() {
     tauri::Builder::default()

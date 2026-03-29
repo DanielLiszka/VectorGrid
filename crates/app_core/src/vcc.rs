@@ -1129,10 +1129,9 @@ mod tests {
         let _reset = ResetVccCpuFallback;
 
         let candles = make_trending_candles(512);
-        let prepared_cuda_inputs = PreparedCudaIndicatorInputs::from_candles_on_device(
-            &candles, "close", 0,
-        )
-        .expect("prepared cuda inputs");
+        let prepared_cuda_inputs =
+            PreparedCudaIndicatorInputs::from_candles_on_device(&candles, "close", 0)
+                .expect("prepared cuda inputs");
 
         let signals = compute_vcc_trend_signals(
             &candles,

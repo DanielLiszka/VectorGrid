@@ -275,10 +275,7 @@ fn cdmc_indicator_ids() -> Result<&'static CdmcIndicatorIds, String> {
             correlation_cycle_angle_output: resolve_output_id("correlation_cycle", &["angle"])?,
             correlation_cycle_state_output: resolve_output_id("correlation_cycle", &["state"])?,
             #[cfg(feature = "cuda")]
-            decycler_period_key: resolve_param_key(
-                "decycler",
-                &["hp_period", "period", "length"],
-            )?,
+            decycler_period_key: resolve_param_key("decycler", &["hp_period", "period", "length"])?,
             #[cfg(feature = "cuda")]
             decycler_output: resolve_output_id("decycler", &["value", "decycler"])?,
         })
@@ -839,7 +836,7 @@ pub fn compute_cdmc_signals(
         fama.as_slice(),
         decycler.as_slice(),
     ])
-        .ok_or_else(|| "CDMC signals are all non-finite".to_string())?;
+    .ok_or_else(|| "CDMC signals are all non-finite".to_string())?;
 
     Ok(CdmcSignals {
         dpo,
