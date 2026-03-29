@@ -3470,7 +3470,7 @@ static __device__ __forceinline__ bool metrics_row_uses_log_space_f32(int M)
     return M < 17;
 }
 
-template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1>
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, bool WALK_SERIES_PTRS = false>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
@@ -3643,9 +3643,23 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         int losing_trades = 0;
         float gross_profit = 0.0f;
         float gross_loss = 0.0f;
+        const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
+        const int start_sig = loop_start - trade_offset;
+        const float* fast_ptr = nullptr;
+        const float* slow_ptr = nullptr;
+        const float* lr_ptr = nullptr;
+        const float* ret1_ptr = nullptr;
+        if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+            const size_t sig_offset = (size_t)start_sig;
+            fast_ptr = fast_ma_T + sig_offset * (size_t)fast_stride + (size_t)pf_local;
+            slow_ptr = slow_ma_T + sig_offset * (size_t)slow_stride + (size_t)ps_local;
+            lr_ptr = lr + (size_t)loop_start;
+            if (ret1 != nullptr) {
+                ret1_ptr = ret1 + (size_t)loop_start;
+            }
+        }
         if (!use_risk) {
             float trade_log_ret = 0.0f;
-            const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
             for (int t = loop_start; t < end_t; ++t) {
                 if constexpr (LOCKSTEP_TIME) {
                     if (t < start_t) {
@@ -3653,10 +3667,17 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
                 }
                 const int t_sig = t - trade_offset;
-                const float f = FAST_WARP_DEDUP
-                    ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
-                    : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
-                const float s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
+                float f = 0.0f;
+                float s = 0.0f;
+                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                    f = ld_ro_1d(fast_ptr, 0);
+                    s = ld_ro_1d(slow_ptr, 0);
+                } else {
+                    f = FAST_WARP_DEDUP
+                        ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
+                        : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
+                    s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
+                }
                 const float eps = compute_eps_f32<EPS_MODE>(s, eps_rel);
                 int sign = desired_sign_mode_f32<REGIME_MODE>(
                     f,
@@ -3727,7 +3748,12 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
                 }
 
-                const float lr_t = ld_ro_1d(lr, (size_t)t);
+                float lr_t = 0.0f;
+                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                    lr_t = ld_ro_1d(lr_ptr, 0);
+                } else {
+                    lr_t = ld_ro_1d(lr, (size_t)t);
+                }
                 const float step_log = (float)pos * lr_t;
                 log_eq += step_log;
                 if (pos != 0 && need_trade_metrics) {
@@ -3757,7 +3783,12 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 }
 
                 if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
-                    const float ret1_t = ld_ro_1d(ret1, (size_t)t);
+                    float ret1_t = 0.0f;
+                    if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                        ret1_t = ld_ro_1d(ret1_ptr, 0);
+                    } else {
+                        ret1_t = ld_ro_1d(ret1, (size_t)t);
+                    }
                     const float step_r =
                         (pos == 0) ? 0.0f : (float)pos * ret1_t;
                     if (need_stats) {
@@ -3799,11 +3830,17 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                         }
                     }
                 }
+                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                    fast_ptr += (size_t)fast_stride;
+                    slow_ptr += (size_t)slow_stride;
+                    lr_ptr += 1;
+                    if (ret1_ptr != nullptr) {
+                        ret1_ptr += 1;
+                    }
+                }
             }
         } else {
             float trade_log_ret = 0.0f;
-
-            const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
             for (int t = loop_start; t < end_t; ++t) {
                 if constexpr (LOCKSTEP_TIME) {
                     if (t < start_t) {
@@ -3811,10 +3848,17 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
                 }
                 const int t_sig = t - trade_offset;
-                const float f = FAST_WARP_DEDUP
-                    ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
-                    : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
-                const float s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
+                float f = 0.0f;
+                float s = 0.0f;
+                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                    f = ld_ro_1d(fast_ptr, 0);
+                    s = ld_ro_1d(slow_ptr, 0);
+                } else {
+                    f = FAST_WARP_DEDUP
+                        ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
+                        : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
+                    s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
+                }
                 const float eps = compute_eps_f32<EPS_MODE>(s, eps_rel);
                 int sign = desired_sign_mode_f32<REGIME_MODE>(
                     f,
@@ -3886,7 +3930,12 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 }
 
                 const int pos_bar = pos;
-                const float lr_t = ld_ro_1d(lr, (size_t)t);
+                float lr_t = 0.0f;
+                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                    lr_t = ld_ro_1d(lr_ptr, 0);
+                } else {
+                    lr_t = ld_ro_1d(lr, (size_t)t);
+                }
                 const float step_log = (float)pos_bar * lr_t;
                 log_eq += step_log;
                 obs += 1;
@@ -3936,7 +3985,12 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 }
 
                 if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
-                    const float ret1_t = ld_ro_1d(ret1, (size_t)t);
+                    float ret1_t = 0.0f;
+                    if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                        ret1_t = ld_ro_1d(ret1_ptr, 0);
+                    } else {
+                        ret1_t = ld_ro_1d(ret1, (size_t)t);
+                    }
                     const float step_r =
                         (pos_bar == 0) ? 0.0f : (float)pos_bar * ret1_t;
                     if (need_stats) {
@@ -3976,6 +4030,14 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                             short_obs += 1;
                             short_sum_r += step_r;
                         }
+                    }
+                }
+                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                    fast_ptr += (size_t)fast_stride;
+                    slow_ptr += (size_t)slow_stride;
+                    lr_ptr += 1;
+                    if (ret1_ptr != nullptr) {
+                        ret1_ptr += 1;
                     }
                 }
             }
@@ -4077,7 +4139,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     }
 }
 
-template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1>
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, bool WALK_SERIES_PTRS = false>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
@@ -4113,7 +4175,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE>(
+    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, WALK_SERIES_PTRS>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4202,7 +4264,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    double_cross_backtest_tm_flex_f32_body<false, false, false>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4299,7 +4361,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     (void)commission;
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4347,7 +4409,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
 ){
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4396,7 +4458,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     (void)commission;
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4444,7 +4506,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
 ){
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4493,7 +4555,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     (void)commission;
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4541,7 +4603,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22(
 ){
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4590,7 +4652,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     (void)commission;
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4638,7 +4700,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
 ){
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4687,7 +4749,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     (void)commission;
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4735,7 +4797,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
 ){
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4784,7 +4846,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     (void)commission;
     (void)M;
     (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,

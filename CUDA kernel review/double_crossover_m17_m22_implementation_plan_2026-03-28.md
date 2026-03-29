@@ -270,6 +270,59 @@ Measured smoke results:
     - ALU is still the highest-utilized pipeline
     - the largest sampled stall remains L1TEX scoreboard dependency
     - global load/store sector utilization is poor enough that future work should treat coalescing and load/store locality as a more credible next target than generic launch-bounds tuning
+- a first source-level access-pattern experiment is now implemented and kept on the windowed family:
+  - change shape: walk the time-major `fast_ma_T`, `slow_ma_T`, `lr`, and `ret1` pointers directly inside the non-lockstep windowed body instead of rebuilding indexed `t * stride + i` addresses every iteration
+  - scope: windowed kernels only; the generic non-windowed and lockstep families are unchanged
+  - direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)`:
+    - before pointer walking:
+      - `full17`: `377 / 385 / 392 ms` min / median / max, `384.7 ms` mean
+      - `trade22`: `386 / 392 / 403 ms` min / median / max, `393.7 ms` mean
+    - after the retained windowed-only pointer walk:
+      - `full17`: `373 / 376 / 376 ms` min / median / max, `375.0 ms` mean
+      - `trade22`: `388 / 394 / 396 ms` min / median / max, `392.7 ms` mean
+  - the first broader non-windowed version of the same idea was also measured and then narrowed back out:
+    - it still helped the direct windowed hot surface
+    - but it introduced mixed full-range behavior on non-windowed exact routes, which is why only the windowed family kept the change
+  - verification:
+    - `cargo test -p ta_app_core fixed_contract_kernel_flavor_covers_full_row_regime_variants --features cuda,cuda-backtest-kernel`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+  - conclusion: this is the first positive bounded response to the windowed L1TEX / address-dependency investigation; it stays on the windowed family because `full17` improves materially and `trade22` stays effectively neutral
+- a follow-up regime-value hoist on top of that retained pointer-walk path was prototyped and rejected:
+  - change shape: pre-walk `regime_filter` and feed the loaded regime value directly into fixed `RegimeOn` / `RegimeHybrid` helpers inside the same windowed path
+  - workload: direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
+  - baseline retained pointer-walk state:
+    - `full17`: `373 / 376 / 376 ms` min / median / max, `375.0 ms` mean
+  - with the regime-value hoist enabled:
+    - `full17`: `390 / 394 / 396 ms` min / median / max, `393.3 ms` mean
+  - decision:
+    - revert immediately
+    - do not spend further time on direct regime-value helper inlining until profiling shows a stronger bottleneck than the retained generic pointer walk
+- a targeted windowed fast-side dedup experiment was prototyped on the exact hot `regime_hybrid` surface, measured, and reverted in the same session:
+  - workload: `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
+  - baseline current specialized windowed route:
+    - `full17`: `383 / 388 / 389 ms` min / median / max, `386.7 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `390 / 393 / 393 ms` min / median / max, `392.0 ms` mean across 3 measured iterations after 1 warmup
+  - with narrow windowed `FAST_WARP_DEDUP=true` M17 / M22 `eps0 + nocomm` kernels enabled through the existing dedup gate:
+    - `full17`: `458 / 458 / 459 ms` min / median / max, `458.3 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `533 / 534 / 535 ms` min / median / max, `534.0 ms` mean across 3 measured iterations after 1 warmup
+  - conclusion: do not expand the current fast-side dedup helper into dedicated windowed full-row kernels; the present helper shape is a clear regression on the benchmark-hot direct windowed surface
+- a temporary alternate compact valid-pair order probe was measured on device-only exact routes and then removed from runtime:
+  - the probe temporarily exposed `VECTORBT_KERNEL_GLOBAL_TOPK_VALID_PAIR_ORDER=slow_major`, but only when `global_topk_mode` was active, so it never changed the host decode / export path that still reconstructs dense pf-major compact rows on the CPU
+  - direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)`:
+    - baseline current order:
+      - `full17`: `377 / 385 / 392 ms` min / median / max, `384.7 ms` mean
+      - `trade22`: `386 / 392 / 403 ms` min / median / max, `393.7 ms` mean
+    - with temporary `slow_major` probe:
+      - `full17`: `379 / 379 / 388 ms` min / median / max, `382.0 ms` mean
+      - `trade22`: `385 / 391 / 392 ms` min / median / max, `389.3 ms` mean
+  - direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + full evaluation range:
+    - baseline current order:
+      - `full17`: one measured pass produced `457 / 418 / 418 ms`; the stable steady-state samples were `418 / 418 ms`
+      - `trade22`: `418 / 420 / 422 ms` min / median / max, `420.0 ms` mean
+    - with temporary `slow_major` probe:
+      - `full17`: `420 / 422 / 423 ms` min / median / max, `421.7 ms` mean
+      - `trade22`: `414 / 418 / 420 ms` min / median / max, `417.3 ms` mean
+  - conclusion: alternate compact-order execution is a real probe, but the gain is too small and inconsistent to justify carrying a runtime knob for it yet
 - a selective `__launch_bounds__(128, 2)` experiment on just the two benchmark-hot lockstep regime-on kernels was measured and reverted:
   - workload: xlarge `trend_quality` + `alma/alma` + objective `sharpe`
   - baseline before the experiment:
@@ -290,6 +343,10 @@ Current interpretation:
 - the `alma/alma` large fixed-contract slice is now running below the old mid-80 ms expectation in direct exact-route runner measurements
 - the generic combined lockstep/dedup idea is now measured as a regression, not an open presumed win
 - the existing generic dedup path is also a regression proxy for M17 / M22 full-row work, so dedicated dedup variants are now lower priority than lockstep load cleanup
+- the targeted windowed fast-side dedup experiment is also a regression, so the current helper design is no longer a credible next step for exact windowed M17 / M22 work
+- the temporary `slow_major` compact-order probe produced only mixed low-single-digit movement, so it was not retained in the runtime
+- the first source-level windowed pointer-walk experiment is the first kept access-shape win on this surface: it materially improves `full17`, keeps `trade22` roughly flat, and is still stronger evidence than the rejected occupancy and dedup experiments
+- the first regime-value hoist on top of that pointer walk is now also measured as a regression, so remaining windowed work should bias toward larger layout or write-path changes rather than more helper-level regime inlining
 - the first Nsight Compute pass does not point to a DRAM-bound kernel:
   - both hot lockstep regime-on kernels are primarily compute / latency limited
   - both are register-limited on theoretical occupancy
@@ -781,6 +838,10 @@ Guardrails:
 - [ ] Add warp-uniform lockstep loads for `ret1`.
 - [ ] Add warp-uniform regime-value loads for lockstep regime paths.
 - [ ] Investigate windowed L1TEX scoreboard stalls and poor global load/store sector utilization before any further launch-bounds or occupancy experiments.
+- [x] Keep the first positive windowed pointer-walk load experiment after a direct `full17` win, `trade22` neutrality, and a passing GPU perf gate.
+- [x] Reject the first windowed regime-value hoist on top of the retained pointer walk after a direct `full17` regression.
+- [x] Reject the first dedicated windowed fast-side dedup experiment after measured regression on the hot `regime_hybrid` direct exact surface.
+- [x] Measure a temporary `slow_major` compact-order probe on direct exact surfaces and reject keeping a runtime knob for it for now.
 - [x] Benchmark whether M17 lockstep full-row routes should also get dedicated dedup variants.
 - [x] Benchmark whether M22 lockstep full-row routes should also get dedicated dedup variants.
 - [x] Keep dense / `pf`-major compact valid-pair ordering covered by tests or comments.
