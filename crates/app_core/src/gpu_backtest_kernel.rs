@@ -830,6 +830,19 @@ fn fixed_metrics_contract_rows(metrics_count: usize, metrics_stride: usize) -> O
     }
 }
 
+#[inline]
+fn exact_eval_metrics_count_with_contract(
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
+) -> usize {
+    match metric_contract {
+        Some(DoubleMaMetricContract::Trade22) => TRADE_METRICS_COUNT,
+        Some(DoubleMaMetricContract::Full17) => METRICS_COUNT,
+        None if include_trade_metrics => TRADE_METRICS_COUNT,
+        None => METRICS_COUNT,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FixedContractDispatchKind {
     None,
@@ -1271,6 +1284,10 @@ struct KernelScratch {
     d_top_metrics: Option<DeviceBuffer<f32>>,
     d_top_packed: Option<DeviceBuffer<f32>>,
     d_valid_pair_index: Option<DeviceBuffer<i32>>,
+    d_valid_pair_fast_period: Option<DeviceBuffer<i32>>,
+    d_valid_pair_slow_period: Option<DeviceBuffer<i32>>,
+    d_valid_pair_fast_local: Option<DeviceBuffer<i32>>,
+    d_valid_pair_slow_local: Option<DeviceBuffer<i32>>,
     returns_key: Option<ReturnsCacheKey>,
 }
 
@@ -1397,6 +1414,10 @@ struct HostExactComboScratch {
     tile_host_buf: HostTransferScratchF32,
     tile_combo_indices: Vec<usize>,
     tile_pair_index_map: Vec<i32>,
+    tile_fast_period_rows: Vec<i32>,
+    tile_slow_period_rows: Vec<i32>,
+    tile_fast_local_rows: Vec<i32>,
+    tile_slow_local_rows: Vec<i32>,
     last_fast_period_upload: Option<PeriodUploadSignature>,
     last_slow_period_upload: Option<PeriodUploadSignature>,
     last_pair_index_upload: Option<PeriodUploadSignature>,
@@ -1443,6 +1464,16 @@ struct CachedValidPairMap {
     fast_rows: DeviceBuffer<i32>,
     slow_rows: DeviceBuffer<i32>,
     len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedValidPairMap {
+    index_ptr: u64,
+    len: usize,
+    fast_period_ptr: u64,
+    slow_period_ptr: u64,
+    fast_local_ptr: u64,
+    slow_local_ptr: u64,
 }
 
 impl KernelScratch {
@@ -1513,6 +1544,10 @@ impl KernelScratch {
         Self::drop_opt_async(&mut self.d_top_metrics, stream)?;
         Self::drop_opt_async(&mut self.d_top_packed, stream)?;
         Self::drop_opt_async(&mut self.d_valid_pair_index, stream)?;
+        Self::drop_opt_async(&mut self.d_valid_pair_fast_period, stream)?;
+        Self::drop_opt_async(&mut self.d_valid_pair_slow_period, stream)?;
+        Self::drop_opt_async(&mut self.d_valid_pair_fast_local, stream)?;
+        Self::drop_opt_async(&mut self.d_valid_pair_slow_local, stream)?;
         self.returns_key = None;
         Ok(())
     }
@@ -1636,7 +1671,7 @@ fn ensure_cached_valid_pair_map(
     valid_pair_maps: &mut HashMap<ValidPairMapSignature, CachedValidPairMap>,
     fast_periods: &[u16],
     slow_periods: &[u16],
-) -> Result<Option<(u64, usize, u64, u64)>, String> {
+) -> Result<Option<ResolvedValidPairMap>, String> {
     let Some(fast_sig) = period_slice_signature(fast_periods) else {
         return Ok(None);
     };
@@ -1670,12 +1705,14 @@ fn ensure_cached_valid_pair_map(
     let entry = valid_pair_maps
         .get(&key)
         .ok_or_else(|| "cached valid pair map missing after insertion".to_string())?;
-    Ok(Some((
-        entry.buffer.as_device_ptr().as_raw(),
-        entry.len,
-        entry.fast_rows.as_device_ptr().as_raw(),
-        entry.slow_rows.as_device_ptr().as_raw(),
-    )))
+    Ok(Some(ResolvedValidPairMap {
+        index_ptr: entry.buffer.as_device_ptr().as_raw(),
+        len: entry.len,
+        fast_period_ptr: entry.fast_rows.as_device_ptr().as_raw(),
+        slow_period_ptr: entry.slow_rows.as_device_ptr().as_raw(),
+        fast_local_ptr: 0,
+        slow_local_ptr: 0,
+    }))
 }
 
 fn device_compute_capability(device: Device) -> Option<(u32, u32)> {
@@ -1949,6 +1986,7 @@ pub(crate) fn rerank_shortlist_by_slice_robustness_for_host(
     slow_alma_sigma: f64,
     hurdle_tau: f64,
     include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
 ) -> Result<(Vec<(DoubleMaParams, Metrics)>, ShortlistSliceDiagnostics), String> {
     let mode = kernel_shortlist_slice_mode(Some(mode))?
         .ok_or_else(|| "shortlist_slice_mode is required".to_string())?;
@@ -1964,6 +2002,8 @@ pub(crate) fn rerank_shortlist_by_slice_robustness_for_host(
                 rt,
                 candles,
                 rows,
+                rows.len(),
+                rows.len(),
                 mode,
                 fast_ma_type,
                 slow_ma_type,
@@ -1979,7 +2019,7 @@ pub(crate) fn rerank_shortlist_by_slice_robustness_for_host(
                     slow_alma_sigma,
                     hurdle_tau,
                     include_trade_metrics,
-                    metric_contract: None,
+                    metric_contract,
                 },
                 None,
                 None,
@@ -2471,6 +2511,10 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
             let mut m_i = out_stride as i32;
             let mut metrics_stride_i = out_stride as i32;
             let mut pair_map_ptr = uploaded_batch.d_pair_index_map.as_device_ptr().as_raw();
+            let mut pair_fast_rows_ptr = 0u64;
+            let mut pair_slow_rows_ptr = 0u64;
+            let mut pair_fast_local_rows_ptr = 0u64;
+            let mut pair_slow_local_rows_ptr = 0u64;
             let mut pair_count_i = uploaded_batch.combo_count as i32;
             let mut compact_output_i = 0i32;
             let mut host_out = alloc_uninit_f32(out_len);
@@ -2519,6 +2563,10 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
                     &mut m_i as *mut _ as *mut c_void,
                     &mut metrics_stride_i as *mut _ as *mut c_void,
                     &mut pair_map_ptr as *mut _ as *mut c_void,
+                    &mut pair_fast_rows_ptr as *mut _ as *mut c_void,
+                    &mut pair_slow_rows_ptr as *mut _ as *mut c_void,
+                    &mut pair_fast_local_rows_ptr as *mut _ as *mut c_void,
+                    &mut pair_slow_local_rows_ptr as *mut _ as *mut c_void,
                     &mut pair_count_i as *mut _ as *mut c_void,
                     &mut compact_output_i as *mut _ as *mut c_void,
                     &mut out_ptr as *mut _ as *mut c_void,
@@ -3294,6 +3342,30 @@ fn build_valid_pair_period_rows_i32(
         }
     }
     (fast_rows, slow_rows)
+}
+
+#[cfg(test)]
+#[inline]
+fn build_valid_pair_local_rows_i32(
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+) -> Result<(Vec<i32>, Vec<i32>), String> {
+    let ps = slow_periods.len();
+    let mut fast_rows: Vec<i32> = Vec::with_capacity(fast_periods.len().saturating_mul(ps));
+    let mut slow_rows: Vec<i32> = Vec::with_capacity(fast_periods.len().saturating_mul(ps));
+    for (fi, &fast_len) in fast_periods.iter().enumerate() {
+        let fi_i32 = i32::try_from(fi)
+            .map_err(|_| "valid pair fast local row exceeds i32::MAX".to_string())?;
+        let j0 = slow_periods.partition_point(|&s| s <= fast_len);
+        for sj in j0..ps {
+            fast_rows.push(fi_i32);
+            slow_rows.push(
+                i32::try_from(sj)
+                    .map_err(|_| "valid pair slow local row exceeds i32::MAX".to_string())?,
+            );
+        }
+    }
+    Ok((fast_rows, slow_rows))
 }
 
 #[inline]
@@ -4834,8 +4906,8 @@ fn compute_shortlist_slice_mode_records(
         let mut slice_excess_returns: Vec<f64> = Vec::with_capacity(slice_count);
         let mut slices = Vec::with_capacity(slice_count);
         for slice_idx in 0..slice_count {
-            let slice_metrics = range_metrics[slice_idx * combo_count + combo_idx].clone();
-            let slice_score = effective_score(&slice_metrics, objective, score_mode);
+            let slice_metrics = &range_metrics[slice_idx * combo_count + combo_idx];
+            let slice_score = effective_score(slice_metrics, objective, score_mode);
             worst_slice_score = worst_slice_score.min(slice_score);
             if slice_score >= 0.0 {
                 positive_slice_count += 1;
@@ -4845,7 +4917,7 @@ fn compute_shortlist_slice_mode_records(
             let (start_bar, end_bar) = ranges[slice_idx];
             if let Some(benchmark_slice_returns) = benchmark_slice_returns.as_ref() {
                 let obs = end_bar.saturating_sub(start_bar);
-                let candidate_sum = shortlist_slice_candidate_return_sum(&slice_metrics, obs);
+                let candidate_sum = shortlist_slice_candidate_return_sum(slice_metrics, obs);
                 slice_excess_returns.push(candidate_sum - benchmark_slice_returns[slice_idx]);
             }
             slices.push(ShortlistSliceSnapshot {
@@ -4853,7 +4925,7 @@ fn compute_shortlist_slice_mode_records(
                 start_bar,
                 end_bar,
                 score: slice_score,
-                metrics: slice_metrics,
+                metrics: slice_metrics.clone(),
             });
         }
         mean_slice_score /= slice_count as f64;
@@ -4931,7 +5003,9 @@ fn kernel_valid_pair_map_max_pairs() -> usize {
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&v| v > 0)
-        .unwrap_or(150_000)
+        // The xlarge double-MA benchmark-hot surface is about 491k dense pairs. Keeping the
+        // default cap below that silently forces the main pass back onto dense Pf*Ps launches.
+        .unwrap_or(1_000_000)
 }
 
 #[inline]
@@ -5108,24 +5182,32 @@ fn kernel_metrics_pad8_enabled_for_pair(fast_ma: &str, slow_ma: &str) -> bool {
 }
 
 #[inline]
-fn kernel_metrics_full_stride_override() -> Option<usize> {
-    std::env::var("VECTORBT_KERNEL_METRICS_FULL_STRIDE")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&v| v >= METRICS_COUNT)
+fn kernel_metrics_fixed_stride_override(metrics_count: usize) -> Option<usize> {
+    let parse = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&v| v >= metrics_count)
+    };
+    match metrics_count {
+        METRICS_COUNT => parse("VECTORBT_KERNEL_METRICS_FULL17_STRIDE")
+            .or_else(|| parse("VECTORBT_KERNEL_METRICS_FULL_STRIDE")),
+        TRADE_METRICS_COUNT => parse("VECTORBT_KERNEL_METRICS_TRADE22_STRIDE"),
+        _ => None,
+    }
 }
 
 #[inline]
 fn effective_metrics_stride(
     metrics_count: usize,
     pad8_enabled: bool,
-    full_stride_override: Option<usize>,
+    fixed_stride_override: Option<usize>,
 ) -> usize {
-    if metrics_count == METRICS_COUNT {
-        if let Some(v) = kernel_metrics_full_stride_override() {
+    if matches!(metrics_count, METRICS_COUNT | TRADE_METRICS_COUNT) {
+        if let Some(v) = kernel_metrics_fixed_stride_override(metrics_count) {
             return v;
         }
-        if let Some(v) = full_stride_override {
+        if let Some(v) = fixed_stride_override.filter(|&v| v >= metrics_count) {
             return v;
         }
     }
@@ -5201,6 +5283,11 @@ pub(crate) fn search_metrics_count_for_optimization_with_contract(
     }
 
     metrics_count.min(METRICS_COUNT)
+}
+
+#[inline]
+fn exact_eval_metrics_count(cfg: KernelConfig) -> usize {
+    exact_eval_metrics_count_with_contract(cfg.include_trade_metrics, cfg.metric_contract)
 }
 
 #[inline]
@@ -7139,9 +7226,45 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest_windowed_m17 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_windowed_m17")
         .ok();
+    let backtest_windowed_m17_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk")
+        .ok();
+    let backtest_windowed_m17_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_windowed_m17_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk")
+        .ok();
+    let backtest_windowed_m17_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm",
+        )
+        .ok();
     let backtest_windowed_m17_regime_off_norisk_eps0_nocomm = bt_module
         .get_function(
             "double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_windowed_m22 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22")
+        .ok();
+    let backtest_windowed_m22_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m22_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_windowed_m22_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk")
+        .ok();
+    let backtest_windowed_m22_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_windowed_m22_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk")
+        .ok();
+    let backtest_windowed_m22_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm",
         )
         .ok();
     let backtest_m7 = bt_module
@@ -7173,6 +7296,33 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .ok();
     let backtest_m17_regime_hybrid_norisk_eps0_nocomm = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_m17_regime_hybrid_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m22 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22")
+        .ok();
+    let backtest_m22_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk")
+        .ok();
+    let backtest_m22_regime_off_norisk_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk_nocomm")
+        .ok();
+    let backtest_m22_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk_eps0")
+        .ok();
+    let backtest_m22_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_off_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m22_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_on_norisk")
+        .ok();
+    let backtest_m22_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_on_norisk_eps0_nocomm")
+        .ok();
+    let backtest_m22_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_hybrid_norisk")
+        .ok();
+    let backtest_m22_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_m22_regime_hybrid_norisk_eps0_nocomm")
         .ok();
     let backtest_lockstep = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
@@ -7215,6 +7365,41 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_hybrid_norisk_eps0_nocomm",
         )
         .ok();
+    let backtest_lockstep_m22 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22")
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk")
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk_eps0 = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0")
+        .ok();
+    let backtest_lockstep_m22_regime_off_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m22_regime_on_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_on_norisk")
+        .ok();
+    let backtest_lockstep_m22_regime_on_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_on_norisk_eps0_nocomm",
+        )
+        .ok();
+    let backtest_lockstep_m22_regime_hybrid_norisk = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_hybrid_norisk")
+        .ok();
+    let backtest_lockstep_m22_regime_hybrid_norisk_eps0_nocomm = bt_module
+        .get_function(
+            "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_hybrid_norisk_eps0_nocomm",
+        )
+        .ok();
     let backtest_lockstep_m7_regime_off = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7_regime_off")
         .ok();
@@ -7255,6 +7440,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest_m17_launch_caps = backtest_m17
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM17, f));
+    let backtest_m22_launch_caps = backtest_m22
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM22, f));
     let backtest_lockstep_launch_caps = backtest_lockstep
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
@@ -7264,6 +7452,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let backtest_lockstep_m17_launch_caps = backtest_lockstep_m17
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM17, f));
+    let backtest_lockstep_m22_launch_caps = backtest_lockstep_m22
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstepM22, f));
     let backtest_fast_launch_caps = backtest_fast_warp
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestFastWarpDedup, f));
@@ -7400,6 +7591,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
     let d_ret1_ptr = scratch.d_ret1.as_ref().unwrap().as_device_ptr().as_raw();
 
+    let use_windowed_eval = ranges
+        .iter()
+        .any(|&(eval_start_t, eval_end_t_raw)| eval_start_t != 0 || eval_end_t_raw.min(n) != n);
+    let metrics_count = exact_eval_metrics_count(cfg);
     let (pf_tile, ps_tile) = choose_tiles(
         f_total,
         s_total,
@@ -7409,7 +7604,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         fast_ma.as_str(),
         slow_ma.as_str(),
         !alloc_ma_buf,
-        METRICS_COUNT,
+        metrics_count,
         0,
         true,
         0,
@@ -7418,7 +7613,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let _ = is_multi_tile_workload;
     let metrics_pad8_enabled =
         kernel_metrics_pad8_enabled_for_pair(fast_ma.as_str(), slow_ma.as_str());
-    let tile_metrics_stride = effective_metrics_stride(METRICS_COUNT, metrics_pad8_enabled, None);
+    let tile_metrics_stride = effective_metrics_stride(metrics_count, metrics_pad8_enabled, None);
 
     let pad_tm = kernel_tm_padding_enabled();
     let pf_tile_tm = if pad_tm {
@@ -7750,6 +7945,21 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             let pairmap_t0 = replay_profile.as_ref().map(|_| Instant::now());
             host_exact_combo.tile_combo_indices.clear();
             host_exact_combo.tile_pair_index_map.clear();
+            host_exact_combo.tile_fast_period_rows.clear();
+            host_exact_combo.tile_slow_period_rows.clear();
+            host_exact_combo.tile_fast_local_rows.clear();
+            host_exact_combo.tile_slow_local_rows.clear();
+            #[derive(Clone, Copy)]
+            struct ReplayTileRow {
+                combo_idx: usize,
+                pair_index: i32,
+                fast_period: i32,
+                slow_period: i32,
+                fast_local: i32,
+                slow_local: i32,
+            }
+            let mut replay_tile_rows: Vec<ReplayTileRow> =
+                Vec::with_capacity(combo_period_indices.len());
             for (combo_idx, &(global_f, global_s)) in combo_period_indices.iter().enumerate() {
                 if global_f >= f_start
                     && global_f < f_start + pf
@@ -7758,18 +7968,37 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 {
                     let local_f = global_f - f_start;
                     let local_s = global_s - s_start;
-                    host_exact_combo.tile_combo_indices.push(combo_idx);
-                    host_exact_combo.tile_pair_index_map.push(
-                        i32::try_from(local_f.saturating_mul(ps).saturating_add(local_s))
+                    replay_tile_rows.push(ReplayTileRow {
+                        combo_idx,
+                        pair_index: i32::try_from(local_f.saturating_mul(ps).saturating_add(local_s))
                             .map_err(|_| "tile pair index exceeds i32::MAX".to_string())?,
-                    );
+                        fast_period: i32::from(fast_periods[global_f]),
+                        slow_period: i32::from(slow_periods[global_s]),
+                        fast_local: i32::try_from(local_f)
+                            .map_err(|_| "tile fast local row exceeds i32::MAX".to_string())?,
+                        slow_local: i32::try_from(local_s)
+                            .map_err(|_| "tile slow local row exceeds i32::MAX".to_string())?,
+                    });
                 }
+            }
+            replay_tile_rows.sort_unstable_by_key(|row| (row.fast_local, row.slow_local));
+            for row in replay_tile_rows {
+                host_exact_combo.tile_combo_indices.push(row.combo_idx);
+                host_exact_combo.tile_pair_index_map.push(row.pair_index);
+                host_exact_combo.tile_fast_period_rows.push(row.fast_period);
+                host_exact_combo.tile_slow_period_rows.push(row.slow_period);
+                host_exact_combo.tile_fast_local_rows.push(row.fast_local);
+                host_exact_combo.tile_slow_local_rows.push(row.slow_local);
             }
             let launch_pairs = host_exact_combo.tile_combo_indices.len();
             let out_len = launch_pairs
                 .checked_mul(tile_metrics_stride)
                 .ok_or_else(|| "launch_pairs*metrics overflow".to_string())?;
             let mut pair_index_map_ptr: u64 = 0;
+            let mut pair_fast_rows_ptr: u64 = 0;
+            let mut pair_slow_rows_ptr: u64 = 0;
+            let mut pair_fast_local_rows_ptr: u64 = 0;
+            let mut pair_slow_local_rows_ptr: u64 = 0;
             if launch_pairs > 0 {
                 let pair_index_upload_signature =
                     period_upload_signature(&host_exact_combo.tile_pair_index_map);
@@ -7785,12 +8014,80 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         .ok_or_else(|| "missing exact pair index buffer".to_string())?
                         .copy_from(&host_exact_combo.tile_pair_index_map)
                         .map_err(|e| e.to_string())?;
+                    KernelScratch::ensure_len_i32(
+                        &mut scratch.d_valid_pair_fast_period,
+                        launch_pairs,
+                        bt_stream,
+                    )?;
+                    scratch
+                        .d_valid_pair_fast_period
+                        .as_mut()
+                        .ok_or_else(|| "missing exact fast period buffer".to_string())?
+                        .copy_from(&host_exact_combo.tile_fast_period_rows)
+                        .map_err(|e| e.to_string())?;
+                    KernelScratch::ensure_len_i32(
+                        &mut scratch.d_valid_pair_slow_period,
+                        launch_pairs,
+                        bt_stream,
+                    )?;
+                    scratch
+                        .d_valid_pair_slow_period
+                        .as_mut()
+                        .ok_or_else(|| "missing exact slow period buffer".to_string())?
+                        .copy_from(&host_exact_combo.tile_slow_period_rows)
+                        .map_err(|e| e.to_string())?;
+                    KernelScratch::ensure_len_i32(
+                        &mut scratch.d_valid_pair_fast_local,
+                        launch_pairs,
+                        bt_stream,
+                    )?;
+                    scratch
+                        .d_valid_pair_fast_local
+                        .as_mut()
+                        .ok_or_else(|| "missing exact fast local row buffer".to_string())?
+                        .copy_from(&host_exact_combo.tile_fast_local_rows)
+                        .map_err(|e| e.to_string())?;
+                    KernelScratch::ensure_len_i32(
+                        &mut scratch.d_valid_pair_slow_local,
+                        launch_pairs,
+                        bt_stream,
+                    )?;
+                    scratch
+                        .d_valid_pair_slow_local
+                        .as_mut()
+                        .ok_or_else(|| "missing exact slow local row buffer".to_string())?
+                        .copy_from(&host_exact_combo.tile_slow_local_rows)
+                        .map_err(|e| e.to_string())?;
                     host_exact_combo.last_pair_index_upload = Some(pair_index_upload_signature);
                 }
                 pair_index_map_ptr = scratch
                     .d_valid_pair_index
                     .as_ref()
                     .ok_or_else(|| "missing exact pair index buffer".to_string())?
+                    .as_device_ptr()
+                    .as_raw();
+                pair_fast_rows_ptr = scratch
+                    .d_valid_pair_fast_period
+                    .as_ref()
+                    .ok_or_else(|| "missing exact fast period buffer".to_string())?
+                    .as_device_ptr()
+                    .as_raw();
+                pair_slow_rows_ptr = scratch
+                    .d_valid_pair_slow_period
+                    .as_ref()
+                    .ok_or_else(|| "missing exact slow period buffer".to_string())?
+                    .as_device_ptr()
+                    .as_raw();
+                pair_fast_local_rows_ptr = scratch
+                    .d_valid_pair_fast_local
+                    .as_ref()
+                    .ok_or_else(|| "missing exact fast local row buffer".to_string())?
+                    .as_device_ptr()
+                    .as_raw();
+                pair_slow_local_rows_ptr = scratch
+                    .d_valid_pair_slow_local
+                    .as_ref()
+                    .ok_or_else(|| "missing exact slow local row buffer".to_string())?
                     .as_device_ptr()
                     .as_raw();
             }
@@ -7846,15 +8143,34 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         let mut stop_log = stop_log;
                         let mut take_log = take_log;
                         let mut flags_u = flags;
-                        let mut m_i = METRICS_COUNT as i32;
+                        let mut m_i = metrics_count as i32;
                         let mut metrics_stride_i = tile_metrics_stride as i32;
                         let mut pair_map_ptr = pair_index_map_ptr;
+                        let mut pair_fast_rows = pair_fast_rows_ptr;
+                        let mut pair_slow_rows = pair_slow_rows_ptr;
+                        let mut pair_fast_local_rows = pair_fast_local_rows_ptr;
+                        let mut pair_slow_local_rows = pair_slow_local_rows_ptr;
                         let mut pair_count_i = launch_pairs as i32;
                         let mut compact_output_i = 1i32;
                         let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut eval_start_i = eval_start_t as i32;
                         let mut eval_end_i = eval_end_t as i32;
-                        let use_windowed_eval = eval_start_t != 0 || eval_end_t != n;
+                        let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
+                        let zero_commission_mode = commission <= 0.0f32;
+                        let eps_zero_mode = eps_rel <= 0.0f32;
+                        let fixed_metrics_contract =
+                            fixed_metrics_contract_rows(metrics_count, tile_metrics_stride);
+                        let prefer_full_metric_specialization = match fixed_metrics_contract {
+                            Some(METRICS_COUNT) => backtest_m17.is_some(),
+                            Some(TRADE_METRICS_COUNT) => backtest_m22.is_some(),
+                            _ => false,
+                        };
+                        let prefer_full_metric_lockstep_specialization =
+                            match fixed_metrics_contract {
+                                Some(METRICS_COUNT) => backtest_lockstep_m17.is_some(),
+                                Some(TRADE_METRICS_COUNT) => backtest_lockstep_m22.is_some(),
+                                _ => false,
+                            };
 
                         let use_lockstep_time = !use_windowed_eval
                             && kernel_should_use_lockstep_time(
@@ -7863,97 +8179,235 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 max_start_t,
                                 backtest_lockstep.is_some(),
                             );
+                        let allow_m7_exact = metrics_count == METRICS_COUNT;
                         // Full-metric finalist reruns are tiny in pair count but still walk the
                         // entire time axis. The M7 kernel is a much better fit here than the
                         // generic full-metric path, so allow a recompute-only low-pair fast path.
-                        let force_low_pair_m7 = should_force_low_pair_m7_recompute(
-                            prefer_low_pair_m7_dispatch,
-                            use_windowed_eval,
-                            is_multi_tile_workload,
-                            launch_pairs,
-                            backtest_m7.is_some(),
-                        );
-                        let use_m7 = force_low_pair_m7
-                            || (!backtest_m17.is_some()
-                                && !use_windowed_eval
-                                && kernel_should_use_m7_specialize(
-                                    launch_pairs,
-                                    n,
-                                    max_start_t,
-                                    is_multi_tile_workload,
-                                    METRICS_COUNT,
-                                    backtest_m7.is_some(),
-                                ));
+                        let force_low_pair_m7 = allow_m7_exact
+                            && should_force_low_pair_m7_recompute(
+                                prefer_low_pair_m7_dispatch,
+                                use_windowed_eval,
+                                is_multi_tile_workload,
+                                launch_pairs,
+                                backtest_m7.is_some(),
+                            );
+                        let use_m7 = allow_m7_exact
+                            && (force_low_pair_m7
+                                || (!prefer_full_metric_specialization
+                                    && !use_windowed_eval
+                                    && kernel_should_use_m7_specialize(
+                                        launch_pairs,
+                                        n,
+                                        max_start_t,
+                                        is_multi_tile_workload,
+                                        metrics_count,
+                                        backtest_m7.is_some(),
+                                    )));
                         let use_lockstep_m7 = use_lockstep_time
+                            && allow_m7_exact
                             && !is_multi_tile_workload
-                            && !backtest_lockstep_m17.is_some()
+                            && !prefer_full_metric_lockstep_specialization
                             && kernel_should_use_m7_specialize(
                                 launch_pairs,
                                 n,
                                 max_start_t,
                                 false,
-                                METRICS_COUNT,
+                                metrics_count,
                                 backtest_lockstep_m7.is_some(),
                             );
-                        let use_lockstep_m17 = use_lockstep_time
-                            && !use_lockstep_m7
-                            && backtest_lockstep_m17.is_some();
                         let use_fast_warp_dedup = !use_windowed_eval
                             && !use_lockstep_time
                             && fast_warp_dedup_enabled
                             && launch_pairs >= fast_warp_dedup_min_pairs
                             && backtest_fast_warp.is_some();
-                        let use_windowed_m17 = use_windowed_eval && backtest_windowed_m17.is_some();
-                        let use_m17 = !use_windowed_eval
-                            && !use_lockstep_time
-                            && !use_fast_warp_dedup
-                            && !use_m7
-                            && backtest_m17.is_some();
-                        let launch_caps = if use_windowed_m17 || use_windowed_eval {
-                            backtest_launch_caps
-                        } else if use_lockstep_m7 {
-                            backtest_lockstep_m7_launch_caps
-                                .or(backtest_lockstep_launch_caps)
-                                .unwrap_or(backtest_launch_caps)
-                        } else if use_lockstep_m17 {
-                            backtest_lockstep_m17_launch_caps
-                                .or(backtest_lockstep_launch_caps)
-                                .unwrap_or(backtest_launch_caps)
-                        } else if use_lockstep_time {
-                            backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else if use_fast_warp_dedup {
-                            backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else if use_m17 {
-                            backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else if use_m7 {
-                            backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
-                        } else {
-                            backtest_launch_caps
-                        };
+                        let fixed_contract_dispatch = choose_fixed_contract_dispatch_kind(
+                            fixed_metrics_contract,
+                            use_windowed_eval,
+                            use_lockstep_time,
+                            use_fast_warp_dedup,
+                            use_m7,
+                            use_lockstep_m7,
+                            backtest_windowed_m17.is_some(),
+                            backtest_windowed_m22.is_some(),
+                            backtest_m17.is_some(),
+                            backtest_m22.is_some(),
+                            backtest_lockstep_m17.is_some(),
+                            backtest_lockstep_m22.is_some(),
+                        );
+                        let use_windowed_m17 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::WindowedM17;
+                        let use_windowed_m22 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::WindowedM22;
+                        let use_lockstep_m17 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::LockstepM17;
+                        let use_lockstep_m22 =
+                            fixed_contract_dispatch == FixedContractDispatchKind::LockstepM22;
+                        let use_m17 = fixed_contract_dispatch == FixedContractDispatchKind::M17;
+                        let use_m22 = fixed_contract_dispatch == FixedContractDispatchKind::M22;
+                        let launch_caps =
+                            if use_windowed_m17 || use_windowed_m22 || use_windowed_eval {
+                                backtest_launch_caps
+                            } else if use_lockstep_m7 {
+                                backtest_lockstep_m7_launch_caps
+                                    .or(backtest_lockstep_launch_caps)
+                                    .unwrap_or(backtest_launch_caps)
+                            } else if use_lockstep_m17 {
+                                backtest_lockstep_m17_launch_caps
+                                    .or(backtest_lockstep_launch_caps)
+                                    .unwrap_or(backtest_launch_caps)
+                            } else if use_lockstep_m22 {
+                                backtest_lockstep_m22_launch_caps
+                                    .or(backtest_lockstep_launch_caps)
+                                    .unwrap_or(backtest_launch_caps)
+                            } else if use_lockstep_time {
+                                backtest_lockstep_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_fast_warp_dedup {
+                                backtest_fast_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_m17 {
+                                backtest_m17_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_m22 {
+                                backtest_m22_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else if use_m7 {
+                                backtest_m7_launch_caps.unwrap_or(backtest_launch_caps)
+                            } else {
+                                backtest_launch_caps
+                            };
                         let launch = choose_backtest_launch_shape_1d(
                             launch_pairs,
                             device_launch_caps,
                             launch_caps,
                         );
-                        let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
-                        let zero_commission_mode = commission <= 0.0f32;
-                        let eps_zero_mode = eps_rel <= 0.0f32;
+                        let dispatch_label = if use_windowed_eval {
+                            if use_windowed_m17 {
+                                "windowed_m17"
+                            } else if use_windowed_m22 {
+                                "windowed_m22"
+                            } else {
+                                "windowed"
+                            }
+                        } else if use_lockstep_m7 {
+                            "lockstep_m7"
+                        } else if use_lockstep_m17 {
+                            "lockstep_m17"
+                        } else if use_lockstep_m22 {
+                            "lockstep_m22"
+                        } else if use_lockstep_time {
+                            "lockstep_time"
+                        } else if use_fast_warp_dedup {
+                            "fast_warp_dedup"
+                        } else if use_m17 {
+                            "m17"
+                        } else if use_m22 {
+                            "m22"
+                        } else if use_m7 {
+                            "m7"
+                        } else {
+                            "baseline"
+                        };
+                        if kernel_log_dispatch_enabled() {
+                            eprintln!(
+                                "VECTORBT_KERNEL_EVAL_DISPATCH: pair={}/{} range_idx={} launch_pairs={} dispatch={} use_m7={} use_m17={} use_m22={} use_lockstep_time={} use_lockstep_m7={} use_lockstep_m17={} use_lockstep_m22={} use_fast_warp={} metrics_count={} tile_metrics_stride={} fixed_metrics_contract={:?}",
+                                fast_ma,
+                                slow_ma,
+                                range_idx,
+                                launch_pairs,
+                                dispatch_label,
+                                use_m7,
+                                use_m17,
+                                use_m22,
+                                use_lockstep_time,
+                                use_lockstep_m7,
+                                use_lockstep_m17,
+                                use_lockstep_m22,
+                                use_fast_warp_dedup,
+                                metrics_count,
+                                tile_metrics_stride,
+                                fixed_metrics_contract
+                            );
+                        }
+                        let fixed_contract_flavor = choose_fixed_contract_kernel_flavor(
+                            no_risk_mode,
+                            use_regime_i != 0,
+                            use_regime_hybrid_i != 0,
+                            zero_commission_mode,
+                            eps_zero_mode,
+                        );
                         let backtest_fn = if use_windowed_eval {
                             if use_windowed_m17 {
-                                if no_risk_mode
-                                    && use_regime_i == 0
-                                    && use_regime_hybrid_i == 0
-                                    && zero_commission_mode
-                                    && eps_zero_mode
-                                {
-                                    backtest_windowed_m17_regime_off_norisk_eps0_nocomm
+                                match fixed_contract_flavor {
+                                    FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                        backtest_windowed_m17_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                        backtest_windowed_m17_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                        backtest_windowed_m17_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m17_regime_on_norisk.as_ref())
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                        backtest_windowed_m17_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                        backtest_windowed_m17_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m17_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_windowed_m17.as_ref())
+                                            .expect("checked windowed m17 kernel availability")
+                                    }
+                                    _ => backtest_windowed_m17
                                         .as_ref()
-                                        .or(backtest_windowed_m17.as_ref())
-                                        .expect("checked windowed m17 kernel availability")
-                                } else {
-                                    backtest_windowed_m17
+                                        .expect("checked windowed m17 kernel availability"),
+                                }
+                            } else if use_windowed_m22 {
+                                match fixed_contract_flavor {
+                                    FixedContractKernelFlavor::RegimeOffNoRiskEps0NoComm => {
+                                        backtest_windowed_m22_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRisk => {
+                                        backtest_windowed_m22_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeOnNoRiskEps0NoComm => {
+                                        backtest_windowed_m22_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m22_regime_on_norisk.as_ref())
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRisk => {
+                                        backtest_windowed_m22_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    FixedContractKernelFlavor::RegimeHybridNoRiskEps0NoComm => {
+                                        backtest_windowed_m22_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_windowed_m22_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_windowed_m22.as_ref())
+                                            .expect("checked windowed m22 kernel availability")
+                                    }
+                                    _ => backtest_windowed_m22
                                         .as_ref()
-                                        .expect("checked windowed m17 kernel availability")
+                                        .expect("checked windowed m22 kernel availability"),
                                 }
                             } else {
                                 &backtest_windowed
@@ -8086,6 +8540,69 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                     .as_ref()
                                     .expect("checked lockstep m17 kernel availability")
                             }
+                        } else if use_lockstep_m22 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m22_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m22_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_lockstep_m22_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_on_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m22_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_lockstep_m22_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_off_norisk_eps0
+                                                .as_ref())
+                                            .or(backtest_lockstep_m22_regime_off_norisk_nocomm
+                                                .as_ref())
+                                            .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    } else {
+                                        backtest_lockstep_m22_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_lockstep_m22.as_ref())
+                                            .expect("checked lockstep m22 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_lockstep_m22_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                } else {
+                                    backtest_lockstep_m22_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_lockstep_m22.as_ref())
+                                        .expect("checked lockstep m22 kernel availability")
+                                }
+                            } else {
+                                backtest_lockstep_m22
+                                    .as_ref()
+                                    .expect("checked lockstep m22 kernel availability")
+                            }
                         } else if use_lockstep_time {
                             backtest_lockstep
                                 .as_ref()
@@ -8155,6 +8672,67 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                     .as_ref()
                                     .expect("checked m17 kernel availability")
                             }
+                        } else if use_m22 {
+                            if no_risk_mode {
+                                if use_regime_hybrid_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m22_regime_hybrid_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_hybrid_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    } else {
+                                        backtest_m22_regime_hybrid_norisk
+                                            .as_ref()
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    }
+                                } else if use_regime_i != 0 {
+                                    if zero_commission_mode && eps_zero_mode {
+                                        backtest_m22_regime_on_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_on_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    } else {
+                                        backtest_m22_regime_on_norisk
+                                            .as_ref()
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    }
+                                } else if zero_commission_mode {
+                                    if eps_zero_mode {
+                                        backtest_m22_regime_off_norisk_eps0_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_off_norisk_eps0.as_ref())
+                                            .or(backtest_m22_regime_off_norisk_nocomm.as_ref())
+                                            .or(backtest_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    } else {
+                                        backtest_m22_regime_off_norisk_nocomm
+                                            .as_ref()
+                                            .or(backtest_m22_regime_off_norisk.as_ref())
+                                            .or(backtest_m22.as_ref())
+                                            .expect("checked m22 kernel availability")
+                                    }
+                                } else if eps_zero_mode {
+                                    backtest_m22_regime_off_norisk_eps0
+                                        .as_ref()
+                                        .or(backtest_m22_regime_off_norisk.as_ref())
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                } else {
+                                    backtest_m22_regime_off_norisk
+                                        .as_ref()
+                                        .or(backtest_m22.as_ref())
+                                        .expect("checked m22 kernel availability")
+                                }
+                            } else {
+                                backtest_m22
+                                    .as_ref()
+                                    .expect("checked m22 kernel availability")
+                            }
                         } else if use_m7 {
                             backtest_m7
                                 .as_ref()
@@ -8165,6 +8743,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         let block_x: u32 = launch.block_x;
                         let grid_x: u32 = launch.grid_x;
                         if use_windowed_eval {
+                            let mut compact_output_i = 1i32;
                             let args: &mut [*mut c_void] = &mut [
                                 &mut f_ma_tm as *mut _ as *mut c_void,
                                 &mut s_ma_tm as *mut _ as *mut c_void,
@@ -8199,6 +8778,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 &mut m_i as *mut _ as *mut c_void,
                                 &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_fast_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_rows as *mut _ as *mut c_void,
+                                &mut pair_fast_local_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_local_rows as *mut _ as *mut c_void,
                                 &mut pair_count_i as *mut _ as *mut c_void,
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
@@ -8239,6 +8822,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 &mut m_i as *mut _ as *mut c_void,
                                 &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_fast_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_rows as *mut _ as *mut c_void,
+                                &mut pair_fast_local_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_local_rows as *mut _ as *mut c_void,
                                 &mut pair_count_i as *mut _ as *mut c_void,
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
@@ -8272,7 +8859,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             decode_tm_flex_metrics_row(
                                 host_metrics,
                                 src_base,
-                                tile_metrics_stride,
+                                metrics_count,
                                 cfg.hurdle_tau,
                             );
                     }
@@ -8312,6 +8899,8 @@ fn rerank_shortlist_by_slice_robustness(
     rt: &mut CudaKernelRuntime,
     candles: &Candles,
     rows: &[(DoubleMaParams, Metrics)],
+    return_limit: usize,
+    diagnostic_limit: usize,
     mode: ShortlistSliceMode,
     fast_ma_type: &str,
     slow_ma_type: &str,
@@ -8365,13 +8954,58 @@ fn rerank_shortlist_by_slice_robustness(
         eval_start,
         eval_end,
     )?;
+    let mut ranked_active: Vec<(
+        DoubleMaParams,
+        Metrics,
+        ShortlistSliceModeDiagnostics,
+    )> = active_records
+        .into_iter()
+        .map(|record| (record.params, record.full_metrics, record.diagnostics))
+        .collect();
+
+    ranked_active.sort_by(|a, b| {
+        b.2.worst_slice_score
+            .total_cmp(&a.2.worst_slice_score)
+            .then_with(|| {
+                b.2.worst_omission_score
+                    .total_cmp(&a.2.worst_omission_score)
+            })
+            .then_with(|| b.2.positive_slice_frac.total_cmp(&a.2.positive_slice_frac))
+            .then_with(|| {
+                a.2.omission_score_spread
+                    .total_cmp(&b.2.omission_score_spread)
+            })
+            .then_with(|| b.2.mean_slice_score.total_cmp(&a.2.mean_slice_score))
+            .then_with(|| {
+                let sa = effective_score(&a.1, objective, score_mode);
+                let sb = effective_score(&b.1, objective, score_mode);
+                sb.total_cmp(&sa)
+            })
+            .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
+    });
+
+    let diag_count = diagnostic_limit.min(ranked_active.len());
+    let diagnostic_rows: Vec<(DoubleMaParams, Metrics)> = ranked_active
+        .iter()
+        .take(diag_count)
+        .map(|(params, metrics, _)| (params.clone(), metrics.clone()))
+        .collect();
+
     let halves_records = if mode == ShortlistSliceMode::Halves {
-        active_records.clone()
+        ranked_active
+            .iter()
+            .take(diag_count)
+            .map(|(params, metrics, diagnostics)| ShortlistSliceModeCandidateRecord {
+                params: params.clone(),
+                full_metrics: metrics.clone(),
+                diagnostics: diagnostics.clone(),
+            })
+            .collect()
     } else {
         compute_shortlist_slice_mode_records(
             rt,
             candles,
-            rows,
+            diagnostic_rows.as_slice(),
             ShortlistSliceMode::Halves,
             fast_ma_type,
             slow_ma_type,
@@ -8393,12 +9027,20 @@ fn rerank_shortlist_by_slice_robustness(
         )?
     };
     let quartiles_records = if mode == ShortlistSliceMode::Quartiles {
-        active_records.clone()
+        ranked_active
+            .iter()
+            .take(diag_count)
+            .map(|(params, metrics, diagnostics)| ShortlistSliceModeCandidateRecord {
+                params: params.clone(),
+                full_metrics: metrics.clone(),
+                diagnostics: diagnostics.clone(),
+            })
+            .collect()
     } else {
         compute_shortlist_slice_mode_records(
             rt,
             candles,
-            rows,
+            diagnostic_rows.as_slice(),
             ShortlistSliceMode::Quartiles,
             fast_ma_type,
             slow_ma_type,
@@ -8420,88 +9062,128 @@ fn rerank_shortlist_by_slice_robustness(
         )?
     };
 
-    let mut halves_by_pair: HashMap<(u16, u16), ShortlistSliceModeDiagnostics> = halves_records
+    let mut candidate_diags: Vec<ShortlistSliceCandidateDiagnostics> =
+        Vec::with_capacity(diag_count);
+    for ((halves_record, quartiles_record), (params, full_metrics, _)) in halves_records
         .into_iter()
-        .map(|record| {
-            (
-                (record.params.fast_len, record.params.slow_len),
-                record.diagnostics,
-            )
-        })
-        .collect();
-    let mut quartiles_by_pair: HashMap<(u16, u16), ShortlistSliceModeDiagnostics> =
-        quartiles_records
-            .into_iter()
-            .map(|record| {
-                (
-                    (record.params.fast_len, record.params.slow_len),
-                    record.diagnostics,
-                )
-            })
-            .collect();
-
-    let mut ranked: Vec<(
-        DoubleMaParams,
-        Metrics,
-        ShortlistSliceModeDiagnostics,
-        ShortlistSliceCandidateDiagnostics,
-    )> = Vec::with_capacity(active_records.len());
-    for record in active_records {
-        let key = (record.params.fast_len, record.params.slow_len);
-        let halves = halves_by_pair
-            .remove(&key)
-            .ok_or_else(|| format!("missing half-split slice diagnostics for {key:?}"))?;
-        let quartiles = quartiles_by_pair
-            .remove(&key)
-            .ok_or_else(|| format!("missing quartile slice diagnostics for {key:?}"))?;
+        .zip(quartiles_records.into_iter())
+        .zip(ranked_active.iter().take(diag_count))
+    {
+        let halves_key = (halves_record.params.fast_len, halves_record.params.slow_len);
+        let quartiles_key = (
+            quartiles_record.params.fast_len,
+            quartiles_record.params.slow_len,
+        );
+        let ranked_key = (params.fast_len, params.slow_len);
+        if halves_key != ranked_key {
+            return Err(format!(
+                "misaligned half-split slice diagnostics: expected {ranked_key:?}, got {halves_key:?}"
+            ));
+        }
+        if quartiles_key != ranked_key {
+            return Err(format!(
+                "misaligned quartile slice diagnostics: expected {ranked_key:?}, got {quartiles_key:?}"
+            ));
+        }
         let candidate_diag = ShortlistSliceCandidateDiagnostics {
-            params: record.params.clone(),
-            full_metrics: record.full_metrics.clone(),
-            halves,
-            quartiles,
+            params: params.clone(),
+            full_metrics: full_metrics.clone(),
+            halves: halves_record.diagnostics,
+            quartiles: quartiles_record.diagnostics,
         };
-        ranked.push((
-            record.params,
-            record.full_metrics,
-            record.diagnostics,
-            candidate_diag,
-        ));
+        candidate_diags.push(candidate_diag);
     }
 
-    ranked.sort_by(|a, b| {
-        b.2.worst_slice_score
-            .total_cmp(&a.2.worst_slice_score)
-            .then_with(|| {
-                b.2.worst_omission_score
-                    .total_cmp(&a.2.worst_omission_score)
-            })
-            .then_with(|| b.2.positive_slice_frac.total_cmp(&a.2.positive_slice_frac))
-            .then_with(|| {
-                a.2.omission_score_spread
-                    .total_cmp(&b.2.omission_score_spread)
-            })
-            .then_with(|| b.2.mean_slice_score.total_cmp(&a.2.mean_slice_score))
-            .then_with(|| {
-                let sa = effective_score(&a.1, objective, score_mode);
-                let sb = effective_score(&b.1, objective, score_mode);
-                sb.total_cmp(&sa)
-            })
-            .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
-    });
-
-    let reranked_rows = ranked
+    let reranked_rows = ranked_active
         .iter()
-        .map(|(params, metrics, _, _)| (params.clone(), metrics.clone()))
+        .take(return_limit.max(1))
+        .map(|(params, metrics, _)| (params.clone(), metrics.clone()))
         .collect();
     let diagnostics = ShortlistSliceDiagnostics {
         ranking_mode: mode.as_str().to_string(),
         neighborhood_robustness: None,
-        candidates: ranked
-            .into_iter()
-            .map(|(_, _, _, candidate_diag)| candidate_diag)
-            .collect(),
+        candidates: candidate_diags,
     };
     Ok((reranked_rows, diagnostics))
+}
+
+fn exact_eval_metrics_for_params(
+    rt: &mut CudaKernelRuntime,
+    candles: &Candles,
+    params: &[DoubleMaParams],
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    regime_filter: Option<RegimeFilterInput<'_>>,
+    cfg: KernelConfig,
+    strategy: &StrategyConfig,
+    eval_range: Option<(usize, usize)>,
+) -> Result<Vec<Metrics>, String> {
+    if params.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut unique_params: Vec<DoubleMaParams> = Vec::new();
+    let mut unique_indices: Vec<usize> = Vec::with_capacity(params.len());
+    let mut seen: HashMap<(u16, u16), usize> = HashMap::new();
+    for params in params {
+        let key = (params.fast_len, params.slow_len);
+        let idx = if let Some(&idx) = seen.get(&key) {
+            idx
+        } else {
+            let idx = unique_params.len();
+            seen.insert(key, idx);
+            unique_params.push(params.clone());
+            idx
+        };
+        unique_indices.push(idx);
+    }
+
+    let mut finalist_fast_periods: Vec<u16> =
+        unique_params.iter().map(|params| params.fast_len).collect();
+    finalist_fast_periods.sort_unstable();
+    finalist_fast_periods.dedup();
+    let mut finalist_slow_periods: Vec<u16> =
+        unique_params.iter().map(|params| params.slow_len).collect();
+    finalist_slow_periods.sort_unstable();
+    finalist_slow_periods.dedup();
+
+    let ranges = [finalist_recompute_eval_range(
+        eval_range,
+        candles.close.len(),
+    )];
+    let recomputed = eval_double_ma_batch_gpu_kernel_impl(
+        rt,
+        candles,
+        unique_params.as_slice(),
+        finalist_fast_periods.as_slice(),
+        finalist_slow_periods.as_slice(),
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+        fast_ma_params,
+        slow_ma_params,
+        regime_filter,
+        cfg,
+        None,
+        None,
+        strategy,
+        true,
+        ranges.as_slice(),
+    )?;
+    if recomputed.len() != unique_params.len() {
+        return Err(format!(
+            "exact metrics recompute returned {} metrics for {} unique params",
+            recomputed.len(),
+            unique_params.len()
+        ));
+    }
+    Ok(unique_indices
+        .into_iter()
+        .map(|idx| recomputed[idx].clone())
+        .collect())
 }
 
 fn recompute_optimization_result_finalists_with_full_gpu_pass(
@@ -8518,43 +9200,16 @@ fn recompute_optimization_result_finalists_with_full_gpu_pass(
     regime_filter: Option<RegimeFilterInput<'_>>,
     cfg: KernelConfig,
     strategy: &StrategyConfig,
+    eval_range: Option<(usize, usize)>,
 ) -> Result<(), String> {
-    let mut finalists: Vec<DoubleMaParams> = Vec::new();
-    let mut seen: HashMap<(u16, u16), usize> = HashMap::new();
-    let mut top_indices: Vec<usize> = Vec::with_capacity(result.top.len());
-
-    let best_key = (result.best_params.fast_len, result.best_params.slow_len);
-    seen.insert(best_key, 0);
+    let mut finalists: Vec<DoubleMaParams> = Vec::with_capacity(1 + result.top.len());
     finalists.push(result.best_params.clone());
+    finalists.extend(result.top.iter().map(|(params, _)| params.clone()));
 
-    for (params, _) in &result.top {
-        let key = (params.fast_len, params.slow_len);
-        let idx = if let Some(&existing) = seen.get(&key) {
-            existing
-        } else {
-            let next = finalists.len();
-            seen.insert(key, next);
-            finalists.push(params.clone());
-            next
-        };
-        top_indices.push(idx);
-    }
-
-    let mut finalist_fast_periods: Vec<u16> =
-        finalists.iter().map(|params| params.fast_len).collect();
-    finalist_fast_periods.sort_unstable();
-    finalist_fast_periods.dedup();
-    let mut finalist_slow_periods: Vec<u16> =
-        finalists.iter().map(|params| params.slow_len).collect();
-    finalist_slow_periods.sort_unstable();
-    finalist_slow_periods.dedup();
-
-    let recomputed = eval_double_ma_batch_gpu_kernel_impl(
+    let recomputed = exact_eval_metrics_for_params(
         rt,
         candles,
         finalists.as_slice(),
-        finalist_fast_periods.as_slice(),
-        finalist_slow_periods.as_slice(),
         fast_ma_type,
         slow_ma_type,
         ma_source,
@@ -8562,26 +9217,24 @@ fn recompute_optimization_result_finalists_with_full_gpu_pass(
         slow_ma_params,
         regime_filter,
         cfg,
-        None,
-        None,
         strategy,
-        true,
-        &[(0, candles.close.len())],
+        eval_range,
     )?;
-    if recomputed.len() != finalists.len() {
-        return Err(format!(
-            "full finalist recompute returned {} metrics for {} finalists",
-            recomputed.len(),
-            finalists.len()
-        ));
-    }
 
     result.best_metrics = recomputed[0].clone();
-    for ((_, metrics), &idx) in result.top.iter_mut().zip(top_indices.iter()) {
-        *metrics = recomputed[idx].clone();
+    for ((_, metrics), recomputed_metrics) in result.top.iter_mut().zip(recomputed.iter().skip(1)) {
+        *metrics = recomputed_metrics.clone();
     }
 
     Ok(())
+}
+
+#[inline]
+fn finalist_recompute_eval_range(
+    eval_range: Option<(usize, usize)>,
+    total_bars: usize,
+) -> (usize, usize) {
+    eval_range.unwrap_or((0, total_bars))
 }
 
 pub fn optimize_double_ma_gpu_kernel(
@@ -9748,6 +10401,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let d_lr_ptr = scratch.d_lr.as_ref().unwrap().as_device_ptr().as_raw();
     let d_ret1_ptr = scratch.d_ret1.as_ref().unwrap().as_device_ptr().as_raw();
 
+    let use_windowed_eval = eval_range.is_some();
     let (pf_tile, ps_tile) = choose_tiles(
         f_total,
         s_total,
@@ -10375,23 +11029,38 @@ fn optimize_double_ma_gpu_kernel_impl(
             let mut pair_index_map_ptr: u64 = 0;
             let mut pair_fast_rows_ptr: u64 = 0;
             let mut pair_slow_rows_ptr: u64 = 0;
+            let mut pair_fast_local_rows_ptr: u64 = 0;
+            let mut pair_slow_local_rows_ptr: u64 = 0;
             if use_valid_pair_map && pairs <= valid_pair_map_max_pairs {
                 let cached_valid_map = ensure_cached_valid_pair_map(
                     valid_pair_maps,
                     &fast_periods[f_start..f_start + pf],
                     &slow_periods[s_start..s_start + ps],
                 )?;
-                launch_pairs = cached_valid_map.map(|(_, len, _, _)| len).unwrap_or(0);
+                launch_pairs = cached_valid_map.map(|map| map.len).unwrap_or(0);
                 if launch_pairs > 0 {
                     pair_index_map_ptr = cached_valid_map
-                        .map(|(ptr, _, _, _)| ptr)
+                        .map(|map| map.index_ptr)
                         .unwrap_or_default();
                     pair_fast_rows_ptr = cached_valid_map
-                        .map(|(_, _, fast_ptr, _)| fast_ptr)
+                        .map(|map| map.fast_period_ptr)
                         .unwrap_or_default();
                     pair_slow_rows_ptr = cached_valid_map
-                        .map(|(_, _, _, slow_ptr)| slow_ptr)
+                        .map(|map| map.slow_period_ptr)
                         .unwrap_or_default();
+                    // The compact local-row metadata is a proven win on the exact/windowed
+                    // replay surfaces, but on the generic product path it regressed the hot
+                    // small benchmark. Keep the compact pair map and period rows here, but
+                    // leave local-row pointers null so the baseline kernel keeps using the
+                    // older dense-pair decode path.
+                    if use_windowed_eval {
+                        pair_fast_local_rows_ptr = cached_valid_map
+                            .map(|map| map.fast_local_ptr)
+                            .unwrap_or_default();
+                        pair_slow_local_rows_ptr = cached_valid_map
+                            .map(|map| map.slow_local_ptr)
+                            .unwrap_or_default();
+                    }
                 }
 
                 if !compact_valid_pair_output {
@@ -10476,6 +11145,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut m_i = metrics_count as i32;
                         let mut metrics_stride_i = tile_metrics_stride as i32;
                         let mut pair_map_ptr = pair_index_map_ptr;
+                        let mut pair_fast_rows = pair_fast_rows_ptr;
+                        let mut pair_slow_rows = pair_slow_rows_ptr;
+                        let mut pair_fast_local_rows = pair_fast_local_rows_ptr;
+                        let mut pair_slow_local_rows = pair_slow_local_rows_ptr;
                         let mut pair_count_i = launch_pairs as i32;
                         let mut compact_output_i = if compact_valid_pair_output {
                             1i32
@@ -10485,7 +11158,6 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
                         let mut eval_start_i = eval_start_t as i32;
                         let mut eval_end_i = eval_end_t as i32;
-                        let use_windowed_eval = eval_range.is_some();
                         let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
                         let zero_commission_mode = commission <= 0.0f32;
                         let eps_zero_mode = eps_rel <= 0.0f32;
@@ -11149,6 +11821,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut m_i as *mut _ as *mut c_void,
                                 &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_fast_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_rows as *mut _ as *mut c_void,
+                                &mut pair_fast_local_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_local_rows as *mut _ as *mut c_void,
                                 &mut pair_count_i as *mut _ as *mut c_void,
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
@@ -11195,6 +11871,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut m_i as *mut _ as *mut c_void,
                                 &mut metrics_stride_i as *mut _ as *mut c_void,
                                 &mut pair_map_ptr as *mut _ as *mut c_void,
+                                &mut pair_fast_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_rows as *mut _ as *mut c_void,
+                                &mut pair_fast_local_rows as *mut _ as *mut c_void,
+                                &mut pair_slow_local_rows as *mut _ as *mut c_void,
                                 &mut pair_count_i as *mut _ as *mut c_void,
                                 &mut compact_output_i as *mut _ as *mut c_void,
                                 &mut out_ptr as *mut _ as *mut c_void,
@@ -12310,11 +12990,11 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
 
     let sync_and_decode_scope = crate::nvtx::scope("kernel", "sync_and_decode");
-    let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> = if shortlist_union_mode
-        .is_some()
+    let materialize_shortlist_rows = shortlist_union_mode.is_some()
         || shortlist_confidence_mode.is_some()
-        || shortlist_slice_mode.is_some()
-    {
+        || (shortlist_slice_mode.is_some() && extra_shortlist_enabled);
+    let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> =
+        if materialize_shortlist_rows {
         Vec::with_capacity(
             global_rows_cap
                 .saturating_mul(extra_shortlist_heads.len().saturating_add(1))
@@ -12368,10 +13048,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                     fast_ma_id: 0,
                     slow_ma_id: 0,
                 };
-                if shortlist_union_mode.is_some()
-                    || shortlist_confidence_mode.is_some()
-                    || shortlist_slice_mode.is_some()
-                {
+                if materialize_shortlist_rows {
                     materialized_shortlist_rows.push((params.clone(), metrics.clone()));
                 }
                 agg.push(params, metrics);
@@ -12491,9 +13168,10 @@ fn optimize_double_ma_gpu_kernel_impl(
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
 
+    let finalist_recompute_required = metrics_count < METRICS_COUNT
+        && !can_decode_current_gpu_product_metrics_without_recompute(metrics_count);
     if !device_include_all
-        && metrics_count < METRICS_COUNT
-        && !can_decode_current_gpu_product_metrics_without_recompute(metrics_count)
+        && finalist_recompute_required
         && !fast_precomputed_enabled
         && !slow_precomputed_enabled
         && kernel_finalist_recompute_enabled()
@@ -12512,6 +13190,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             regime_filter,
             cfg,
             strategy,
+            eval_range,
         )?;
     }
     if let Some(mode) = shortlist_union_mode {
@@ -12563,15 +13242,17 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
     if let Some(mode) = shortlist_slice_mode {
         let top_limit = result.top.len().max(1);
-        let slice_rows: Vec<(DoubleMaParams, Metrics)> = if materialized_shortlist_rows.is_empty() {
-            result.top.clone()
+        let slice_rows: &[(DoubleMaParams, Metrics)] = if materialized_shortlist_rows.is_empty() {
+            result.top.as_slice()
         } else {
-            materialized_shortlist_rows.clone()
+            materialized_shortlist_rows.as_slice()
         };
         let (reranked, diagnostics) = rerank_shortlist_by_slice_robustness(
             rt,
             candles,
-            slice_rows.as_slice(),
+            slice_rows,
+            top_limit,
+            top_limit,
             mode,
             fast_ma.as_str(),
             slow_ma.as_str(),
@@ -12591,11 +13272,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             eval_start_t,
             eval_end_t,
         )?;
-        record_last_shortlist_slice_diagnostics(ShortlistSliceDiagnostics {
-            ranking_mode: diagnostics.ranking_mode.clone(),
-            neighborhood_robustness: diagnostics.neighborhood_robustness.clone(),
-            candidates: diagnostics.candidates.into_iter().take(top_limit).collect(),
-        });
+        record_last_shortlist_slice_diagnostics(diagnostics);
         let (best_params, best_metrics) = reranked
             .first()
             .cloned()
@@ -12658,11 +13335,13 @@ fn optimize_double_ma_gpu_kernel_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_device_constraint_args, build_valid_pair_index_map_i32, calmar_ratio,
+        build_device_constraint_args, build_valid_pair_index_map_i32,
+        build_valid_pair_local_rows_i32, calmar_ratio,
         can_decode_current_gpu_product_metrics_without_recompute,
         choose_fixed_contract_dispatch_kind, choose_fixed_contract_kernel_flavor,
         compute_shortlist_slice_benchmark_relative_summary, decode_tm_flex_metrics_row,
-        effective_sample_lcb_10_pair_score, eval_double_ma_dynamic_program_precomputed_gpu_kernel,
+        effective_metrics_stride, effective_sample_lcb_10_pair_score,
+        eval_double_ma_dynamic_program_precomputed_gpu_kernel, finalist_recompute_eval_range,
         fixed_metrics_contract_rows, install_effective_sample_score_context,
         kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
         kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
@@ -12728,6 +13407,28 @@ mod tests {
             low.push(base - 0.75);
             close.push(base + ((i % 11) as f64 - 5.0) * 0.01);
             vol.push(10_000.0 + ((i % 17) as f64) * 10.0);
+        }
+        Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn make_oscillating_candles(len: usize) -> Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+        let step = std::f64::consts::TAU / 32.0;
+        for i in 0..len {
+            ts.push(i as i64);
+            let base = 100.0 + i as f64 * 0.005;
+            let wave = (i as f64 * step).sin() * 3.0;
+            let c = base + wave;
+            open.push(c - 0.15);
+            high.push(c + 0.75);
+            low.push(c - 0.75);
+            close.push(c);
+            vol.push(8_000.0 + ((i % 29) as f64) * 25.0);
         }
         Candles::new(ts, open, high, low, close, vol)
     }
@@ -13407,6 +14108,21 @@ mod tests {
     }
 
     #[test]
+    fn kernel_valid_pair_map_cap_defaults_high_enough_for_xlarge_dense_grid() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_VALID_PAIR_MAP_MAX_PAIRS").ok();
+        std::env::remove_var("VECTORBT_KERNEL_VALID_PAIR_MAP_MAX_PAIRS");
+        assert!(
+            super::kernel_valid_pair_map_max_pairs() >= 491_536,
+            "default valid-pair cap should cover the xlarge dense grid"
+        );
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_VALID_PAIR_MAP_MAX_PAIRS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_VALID_PAIR_MAP_MAX_PAIRS"),
+        }
+    }
+
+    #[test]
     fn search_metrics_count_uses_minimal_search_payload_when_allowed() {
         let _guard = lock_env();
         let prev = std::env::var("VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS").ok();
@@ -13599,6 +14315,127 @@ mod tests {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE", v),
             None => std::env::remove_var("VECTORBT_KERNEL_FINALIST_RECOMPUTE"),
         }
+    }
+
+    #[test]
+    fn exact_eval_metrics_count_prefers_metric_contract_over_trade_flag() {
+        assert_eq!(
+            super::exact_eval_metrics_count(super::KernelConfig {
+                device_id: 0,
+                fast_alma_offset: 0.85,
+                fast_alma_sigma: 6.0,
+                slow_alma_offset: 0.85,
+                slow_alma_sigma: 6.0,
+                hurdle_tau: 0.0,
+                include_trade_metrics: false,
+                metric_contract: Some(super::DoubleMaMetricContract::Trade22),
+            }),
+            super::TRADE_METRICS_COUNT
+        );
+        assert_eq!(
+            super::exact_eval_metrics_count(super::KernelConfig {
+                device_id: 0,
+                fast_alma_offset: 0.85,
+                fast_alma_sigma: 6.0,
+                slow_alma_offset: 0.85,
+                slow_alma_sigma: 6.0,
+                hurdle_tau: 0.0,
+                include_trade_metrics: true,
+                metric_contract: Some(super::DoubleMaMetricContract::Full17),
+            }),
+            super::METRICS_COUNT
+        );
+        assert_eq!(
+            super::exact_eval_metrics_count(super::KernelConfig {
+                device_id: 0,
+                fast_alma_offset: 0.85,
+                fast_alma_sigma: 6.0,
+                slow_alma_offset: 0.85,
+                slow_alma_sigma: 6.0,
+                hurdle_tau: 0.0,
+                include_trade_metrics: true,
+                metric_contract: None,
+            }),
+            super::TRADE_METRICS_COUNT
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn exact_eval_windowed_trade22_populates_trade_tail_metrics() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_oscillating_candles(4096);
+        let strategy = StrategyConfig::default();
+        let combos = vec![
+            DoubleMaParams {
+                fast_len: 5,
+                slow_len: 20,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            DoubleMaParams {
+                fast_len: 6,
+                slow_len: 21,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            DoubleMaParams {
+                fast_len: 7,
+                slow_len: 22,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            DoubleMaParams {
+                fast_len: 8,
+                slow_len: 23,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+        ];
+        let cfg = super::KernelConfig {
+            device_id: 0,
+            fast_alma_offset: 0.85,
+            fast_alma_sigma: 6.0,
+            slow_alma_offset: 0.85,
+            slow_alma_sigma: 6.0,
+            hurdle_tau: 0.0,
+            include_trade_metrics: true,
+            metric_contract: Some(super::DoubleMaMetricContract::Trade22),
+        };
+
+        let metrics = super::eval_double_ma_batch_gpu_kernel_with_periods_and_regime(
+            &candles,
+            combos.as_slice(),
+            &[5u16, 6u16, 7u16, 8u16],
+            &[20u16, 21u16, 22u16, 23u16],
+            "alma",
+            "alma",
+            "close",
+            None,
+            None,
+            None,
+            cfg,
+            &strategy,
+            Some((512, 3584)),
+        )
+        .expect("windowed exact gpu eval trade22");
+
+        assert!(
+            metrics.iter().any(|row| row.trades > 0),
+            "expected at least one trade on windowed eval"
+        );
+        assert!(
+            metrics.iter().any(|row| {
+                row.closed_trades > 0
+                    && row.winning_trades + row.losing_trades <= row.closed_trades
+                    && (row.gross_profit != 0.0 || row.gross_loss != 0.0)
+            }),
+            "expected trade22 tail metrics to be populated on windowed eval"
+        );
     }
 
     #[test]
@@ -14037,6 +14874,41 @@ mod tests {
     }
 
     #[test]
+    fn exact_eval_metrics_count_contract_respects_trade22_request() {
+        assert_eq!(
+            super::exact_eval_metrics_count_with_contract(
+                false,
+                Some(DoubleMaMetricContract::Full17),
+            ),
+            METRICS_COUNT
+        );
+        assert_eq!(
+            super::exact_eval_metrics_count_with_contract(
+                false,
+                Some(DoubleMaMetricContract::Trade22),
+            ),
+            TRADE_METRICS_COUNT
+        );
+        assert_eq!(
+            super::exact_eval_metrics_count_with_contract(true, None),
+            TRADE_METRICS_COUNT
+        );
+        assert_eq!(
+            super::exact_eval_metrics_count_with_contract(false, None),
+            METRICS_COUNT
+        );
+    }
+
+    #[test]
+    fn finalist_recompute_eval_range_preserves_windowed_span() {
+        assert_eq!(
+            finalist_recompute_eval_range(Some((512, 3584)), 4096),
+            (512, 3584)
+        );
+        assert_eq!(finalist_recompute_eval_range(None, 4096), (0, 4096));
+    }
+
+    #[test]
     fn search_metrics_count_promotes_to_trade_rows_when_requested() {
         assert_eq!(
             search_metrics_count_for_optimization(
@@ -14094,6 +14966,20 @@ mod tests {
         assert_eq!(
             fixed_metrics_contract_rows(PRODUCT_REDUCED_METRICS_COUNT, METRICS_COUNT),
             None
+        );
+        assert_eq!(fixed_metrics_contract_rows(TRADE_METRICS_COUNT, 24), None);
+    }
+
+    #[test]
+    fn effective_metrics_stride_accepts_fixed_full_row_override() {
+        assert_eq!(effective_metrics_stride(METRICS_COUNT, false, Some(24)), 24);
+        assert_eq!(
+            effective_metrics_stride(TRADE_METRICS_COUNT, false, Some(24)),
+            24
+        );
+        assert_eq!(
+            effective_metrics_stride(TRADE_METRICS_COUNT, false, Some(METRICS_COUNT)),
+            TRADE_METRICS_COUNT
         );
     }
 
@@ -14318,6 +15204,18 @@ mod tests {
             })
             .collect();
         assert_eq!(visited_pairs, vec![(5, 6), (5, 10), (5, 12), (10, 12)]);
+    }
+
+    #[test]
+    fn build_valid_pair_local_rows_match_compact_pf_major_order() {
+        let fast = [5u16, 10u16];
+        let slow = [6u16, 10u16, 12u16];
+
+        let (fast_rows, slow_rows) =
+            build_valid_pair_local_rows_i32(&fast, &slow).expect("local rows");
+
+        assert_eq!(fast_rows, vec![0, 0, 0, 1]);
+        assert_eq!(slow_rows, vec![0, 1, 2, 2]);
     }
 
     #[test]

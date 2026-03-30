@@ -5542,6 +5542,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                         fast_alma_sigma,
                         slow_alma_offset,
                         slow_alma_sigma,
+                        requested_trade_metrics,
+                        requested_metric_contract,
                         constraints,
                         export_all_csv_path,
                         total_pairs,
@@ -11820,6 +11822,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
     slow_alma_sigma: f64,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
     constraints: Option<&DoubleMaConstraints>,
     export_all_csv_path: Option<&str>,
     total_pairs: usize,
@@ -12015,8 +12019,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
-                    false,
-                    None,
+                    include_trade_metrics,
+                    metric_contract,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12062,8 +12066,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
-                    false,
-                    None,
+                    include_trade_metrics,
+                    metric_contract,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12110,8 +12114,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
-                    false,
-                    None,
+                    include_trade_metrics,
+                    metric_contract,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12158,8 +12162,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
-                    false,
-                    None,
+                    include_trade_metrics,
+                    metric_contract,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12206,8 +12210,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                     fast_alma_sigma,
                     slow_alma_offset,
                     slow_alma_sigma,
-                    false,
-                    None,
+                    include_trade_metrics,
+                    metric_contract,
                     constraints,
                     export_all_csv_path,
                     total_pairs,
@@ -12249,8 +12253,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
                 fast_alma_sigma,
                 slow_alma_offset,
                 slow_alma_sigma,
-                false,
-                None,
+                include_trade_metrics,
+                metric_contract,
                 fast_precomputed_host.as_deref(),
                 fast_precomputed_cols,
                 slow_precomputed_host.as_deref(),
@@ -12500,6 +12504,8 @@ pub(crate) fn validate_double_ma_gpu_hybrid_kernel_exact_combos(
                 fast_alma_sigma,
                 slow_alma_offset,
                 slow_alma_sigma,
+                false,
+                None,
                 None,
                 None,
                 total_pairs,
@@ -13129,14 +13135,15 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
 
     if let Some(mode) = shortlist_confidence_mode {
         let top_limit = result.top.len().max(1);
-        let confidence_rows: Vec<(DoubleMaParams, Metrics)> =
-            if materialized_shortlist_rows.is_empty() {
-                result.top.clone()
-            } else {
-                materialized_shortlist_rows.clone()
-            };
+        let confidence_rows: &[(DoubleMaParams, Metrics)] = if materialized_shortlist_rows
+            .is_empty()
+        {
+            result.top.as_slice()
+        } else {
+            materialized_shortlist_rows.as_slice()
+        };
         let reranked = crate::gpu_backtest_kernel::rerank_shortlist_by_confidence_for_host(
-            confidence_rows.as_slice(),
+            confidence_rows,
             mode,
             PairObservationScoreContextResolved {
                 first_valid: uploaded.first_valid(),
@@ -13168,16 +13175,16 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
 
     if let Some(mode) = shortlist_slice_mode {
         let top_limit = result.top.len().max(1);
-        let slice_rows: Vec<(DoubleMaParams, Metrics)> = if materialized_shortlist_rows.is_empty() {
-            result.top.clone()
+        let slice_rows: &[(DoubleMaParams, Metrics)] = if materialized_shortlist_rows.is_empty() {
+            result.top.as_slice()
         } else {
-            materialized_shortlist_rows.clone()
+            materialized_shortlist_rows.as_slice()
         };
         let (reranked, diagnostics) =
             crate::gpu_backtest_kernel::rerank_shortlist_by_slice_robustness_for_host(
                 device_id,
                 candles,
-                slice_rows.as_slice(),
+                slice_rows,
                 mode,
                 fast_ma_type,
                 slow_ma_type,
@@ -13197,6 +13204,7 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
                 slow_alma_sigma,
                 strategy.hurdle_tau.unwrap_or(0.0),
                 include_trade_metrics,
+                metric_contract,
             )?;
         crate::gpu_backtest_kernel::record_last_shortlist_slice_diagnostics(
             ShortlistSliceDiagnostics {
@@ -13564,7 +13572,8 @@ mod tests {
     use super::double_ma_test_support::{
         breakout_strategy_for_kernel, double_like_kernel_strategy_cases, marrt_strategy_for_kernel,
         mts_strategy_for_kernel, orc_strategy_for_kernel, pit_strategy_for_kernel,
-        set_strategy_for_kernel, trend_quality_strategy_for_kernel, vfct_strategy_for_kernel,
+        regime_hybrid_strategy_for_kernel, set_strategy_for_kernel,
+        trend_quality_strategy_for_kernel, vfct_strategy_for_kernel,
     };
     use super::*;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
@@ -16338,6 +16347,7 @@ mod tests {
                 6.0,
                 strategy.hurdle_tau.unwrap_or(0.0),
                 false,
+                None,
             )
             .expect("host slice rerank");
         let expected_keys: Vec<(u16, u16)> = reranked
@@ -18611,6 +18621,373 @@ mod tests {
         assert_eq!(cfg.device_id, 3);
         assert!(cfg.include_trade_metrics);
         assert_eq!(cfg.metric_contract, Some(DoubleMaMetricContract::Trade22));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_regime_hybrid_trade22_populates_trade_tail_metrics() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(4_096);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (20, 24, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: regime_hybrid_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: true,
+            metric_contract: Some(DoubleMaMetricContract::Trade22),
+            hurdle_tau: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu regime_hybrid trade22 run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(
+            res.best_metrics.trades > 0,
+            "expected at least one trade on regime_hybrid trade22 surface"
+        );
+        assert!(
+            res.best_metrics.closed_trades > 0,
+            "expected trade22 tail metrics to be populated"
+        );
+        assert!(
+            res.best_metrics.winning_trades + res.best_metrics.losing_trades
+                <= res.best_metrics.closed_trades
+        );
+        assert!(
+            res.best_metrics.gross_profit != 0.0 || res.best_metrics.gross_loss != 0.0,
+            "expected non-zero trade22 gross profit/loss fields"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_exact_eval_trade22_metric_contract_populates_trade_tail_metrics() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(4_096);
+        let strategy = regime_hybrid_strategy_for_kernel();
+        let combos = vec![DoubleMaParams {
+            fast_len: 5,
+            slow_len: 20,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        }];
+        let cfg = exact_gpu_kernel_config(
+            0,
+            &strategy,
+            0.85,
+            6.0,
+            0.85,
+            6.0,
+            false,
+            Some(DoubleMaMetricContract::Trade22),
+        );
+
+        let metrics = crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel(
+            &candles,
+            combos.as_slice(),
+            (5, 5, 1),
+            (20, 20, 1),
+            "alma",
+            "alma",
+            "close",
+            None,
+            None,
+            cfg,
+            &strategy,
+        )
+        .expect("exact eval trade22 metrics");
+
+        assert_eq!(metrics.len(), 1);
+        assert!(metrics[0].trades > 0);
+        assert!(
+            metrics[0].closed_trades > 0,
+            "expected trade22 tail metrics from exact eval"
+        );
+        assert!(
+            metrics[0].gross_profit != 0.0 || metrics[0].gross_loss != 0.0,
+            "expected trade22 gross profit/loss fields from exact eval"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_shortlist_slice_trade22_metric_contract_preserves_trade_tail_metrics() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(4_096);
+        let strategy = regime_hybrid_strategy_for_kernel();
+        let combos = vec![
+            DoubleMaParams {
+                fast_len: 5,
+                slow_len: 20,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            DoubleMaParams {
+                fast_len: 6,
+                slow_len: 22,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+        ];
+        let cfg = exact_gpu_kernel_config(
+            0,
+            &strategy,
+            0.85,
+            6.0,
+            0.85,
+            6.0,
+            false,
+            Some(DoubleMaMetricContract::Trade22),
+        );
+        let metrics = crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel(
+            &candles,
+            combos.as_slice(),
+            (5, 6, 1),
+            (20, 22, 1),
+            "alma",
+            "alma",
+            "close",
+            None,
+            None,
+            cfg,
+            &strategy,
+        )
+        .expect("full-range shortlist seed metrics");
+        let rows: Vec<(DoubleMaParams, Metrics)> =
+            combos.iter().cloned().zip(metrics.into_iter()).collect();
+        let first_valid = first_finite_idx(vector_ta::utilities::data_loader::source_type(
+            &candles, "close",
+        ))
+        .unwrap_or(0);
+
+        let (reranked, diagnostics) =
+            crate::gpu_backtest_kernel::rerank_shortlist_by_slice_robustness_for_host(
+                0,
+                &candles,
+                rows.as_slice(),
+                DoubleMaShortlistSliceMode::Halves,
+                "alma",
+                "alma",
+                "close",
+                None,
+                None,
+                &strategy,
+                ObjectiveKind::Sharpe,
+                None,
+                None,
+                first_valid,
+                0,
+                candles.close.len(),
+                0.85,
+                6.0,
+                0.85,
+                6.0,
+                strategy.hurdle_tau.unwrap_or(0.0),
+                false,
+                Some(DoubleMaMetricContract::Trade22),
+            )
+            .expect("trade22 shortlist slice rerank");
+
+        assert!(!reranked.is_empty());
+        assert!(!diagnostics.candidates.is_empty());
+        assert!(
+            diagnostics
+                .candidates
+                .iter()
+                .flat_map(|candidate| {
+                    candidate
+                        .halves
+                        .slices
+                        .iter()
+                        .chain(candidate.quartiles.slices.iter())
+                })
+                .any(|slice| {
+                    slice.metrics.closed_trades > 0
+                        || slice.metrics.gross_profit != 0.0
+                        || slice.metrics.gross_loss != 0.0
+                }),
+            "expected trade22 tail metrics to survive shortlist-slice reruns",
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_regime_hybrid_trade22_multi_range_eval_preserves_trade_tail_metrics() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(4_096);
+        let cancel = AtomicBool::new(false);
+        let strategy = regime_hybrid_strategy_for_kernel();
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (20, 24, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: strategy.clone(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: true,
+            metric_contract: Some(DoubleMaMetricContract::Trade22),
+            hurdle_tau: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu regime_hybrid trade22 seed run");
+        assert!(res.best_metrics.closed_trades > 0);
+
+        let combos = vec![DoubleMaParams {
+            fast_len: res.best_params.fast_len,
+            slow_len: res.best_params.slow_len,
+            fast_ma_id: 0,
+            slow_ma_id: 0,
+        }];
+        let fast_periods = vec![5u16, 6u16, 7u16];
+        let slow_periods = vec![20u16, 21u16, 22u16, 23u16, 24u16];
+        let ranges = [(64usize, 4_096usize), (128usize, 4_096usize)];
+        let cfg = exact_gpu_kernel_config(
+            0,
+            &strategy,
+            0.85,
+            6.0,
+            0.85,
+            6.0,
+            true,
+            Some(DoubleMaMetricContract::Trade22),
+        );
+        let metrics =
+            crate::gpu_backtest_kernel::eval_double_ma_batch_gpu_kernel_multi_range_with_periods_and_regime(
+                &candles,
+                combos.as_slice(),
+                fast_periods.as_slice(),
+                slow_periods.as_slice(),
+                "alma",
+                "alma",
+                "close",
+                None,
+                None,
+                None,
+                cfg,
+                &strategy,
+                ranges.as_slice(),
+            )
+            .expect("trade22 multi-range eval");
+        assert_eq!(metrics.len(), ranges.len());
+        assert!(
+            metrics.iter().any(|m| m.closed_trades > 0),
+            "expected at least one exact replay range to close trades"
+        );
+        assert!(metrics
+            .iter()
+            .all(|m| m.winning_trades + m.losing_trades <= m.closed_trades));
+        assert!(
+            metrics
+                .iter()
+                .filter(|m| m.closed_trades > 0)
+                .all(|m| m.gross_profit != 0.0 || m.gross_loss != 0.0),
+            "expected trade22 tail metrics on every exact replay range that closes trades"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

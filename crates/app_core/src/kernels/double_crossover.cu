@@ -3470,7 +3470,87 @@ static __device__ __forceinline__ bool metrics_row_uses_log_space_f32(int M)
     return M < 17;
 }
 
-template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, bool WALK_SERIES_PTRS = false>
+template <int N>
+static __device__ __forceinline__ void zero_metrics_row_fixed_f32(
+    float* __restrict__ metrics_out,
+    size_t base)
+{
+#pragma unroll
+    for (int i = 0; i < N; ++i) {
+        metrics_out[base + (size_t)i] = 0.0f;
+    }
+}
+
+template <int N>
+static __device__ __forceinline__ void store_metrics_row_fixed_f32(
+    float* __restrict__ metrics_out,
+    size_t base,
+    unsigned int flags,
+    float pnl,
+    int trades,
+    float max_dd,
+    float mean,
+    float std,
+    float exposure,
+    float net_expo,
+    float downside_dev,
+    float ulcer_index,
+    float omega,
+    float downside_frequency,
+    float downside_severity,
+    float long_mean_return,
+    float short_mean_return,
+    float kappa_tau,
+    float underwater_fraction,
+    int max_underwater_duration_bars,
+    int closed_trades,
+    int winning_trades,
+    int losing_trades,
+    float gross_profit,
+    float gross_loss)
+{
+    if constexpr (N == 22) {
+        const float signed_net_expo = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+        float2* const row2 = reinterpret_cast<float2*>(metrics_out + base);
+        row2[0] = make_float2(pnl, (float)trades);
+        row2[1] = make_float2(max_dd, mean);
+        row2[2] = make_float2(std, exposure);
+        row2[3] = make_float2(signed_net_expo, downside_dev);
+        row2[4] = make_float2(ulcer_index, omega);
+        row2[5] = make_float2(downside_frequency, downside_severity);
+        row2[6] = make_float2(long_mean_return, short_mean_return);
+        row2[7] = make_float2(kappa_tau, underwater_fraction);
+        row2[8] = make_float2((float)max_underwater_duration_bars, (float)closed_trades);
+        row2[9] = make_float2((float)winning_trades, (float)losing_trades);
+        row2[10] = make_float2(gross_profit, gross_loss);
+        return;
+    }
+
+    metrics_out[base + 0] = pnl;
+    if constexpr (N > 1) metrics_out[base + 1] = (float)trades;
+    if constexpr (N > 2) metrics_out[base + 2] = max_dd;
+    if constexpr (N > 3) metrics_out[base + 3] = mean;
+    if constexpr (N > 4) metrics_out[base + 4] = std;
+    if constexpr (N > 5) metrics_out[base + 5] = exposure;
+    if constexpr (N > 6) metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+    if constexpr (N > 7) metrics_out[base + 7] = downside_dev;
+    if constexpr (N > 8) metrics_out[base + 8] = ulcer_index;
+    if constexpr (N > 9) metrics_out[base + 9] = omega;
+    if constexpr (N > 10) metrics_out[base + 10] = downside_frequency;
+    if constexpr (N > 11) metrics_out[base + 11] = downside_severity;
+    if constexpr (N > 12) metrics_out[base + 12] = long_mean_return;
+    if constexpr (N > 13) metrics_out[base + 13] = short_mean_return;
+    if constexpr (N > 14) metrics_out[base + 14] = kappa_tau;
+    if constexpr (N > 15) metrics_out[base + 15] = underwater_fraction;
+    if constexpr (N > 16) metrics_out[base + 16] = (float)max_underwater_duration_bars;
+    if constexpr (N > 17) metrics_out[base + 17] = (float)closed_trades;
+    if constexpr (N > 18) metrics_out[base + 18] = (float)winning_trades;
+    if constexpr (N > 19) metrics_out[base + 19] = (float)losing_trades;
+    if constexpr (N > 20) metrics_out[base + 20] = gross_profit;
+    if constexpr (N > 21) metrics_out[base + 21] = gross_loss;
+}
+
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
@@ -3505,23 +3585,29 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    const int metrics_stride = (metrics_out_stride > 0) ? metrics_out_stride : (FULL_M7 ? 7 : M);
+    const int effective_m = (FIXED_M > 0) ? FIXED_M : M;
+    const int metrics_stride =
+        (metrics_out_stride > 0) ? metrics_out_stride : (FULL_M7 ? 7 : effective_m);
     const bool has_commission =
         (COMMISSION_MODE == 0) ? false : ((COMMISSION_MODE == 1) ? true : (commission > 0.0f));
     const float log_comm = has_commission ? log1pf(-commission) : 0.0f;
-    const int need_trades = FULL_M7 ? 1 : (M > 1);
-    const int need_max_dd = FULL_M7 ? 1 : (M > 2);
-    const int need_stats  = FULL_M7 ? 1 : (M > 3);
-    const int need_std    = FULL_M7 ? 1 : (M > 4);
-    const int need_expo   = FULL_M7 ? 1 : (M > 5);
-    const int need_downside_dev = FULL_M7 ? 1 : (M > 7);
-    const int need_ulcer = FULL_M7 ? 1 : (M > 8);
-    const int need_omega = FULL_M7 ? 1 : (M > 9);
-    const int need_kappa_tau = FULL_M7 ? (metrics_stride > 14) : (M > 14);
+    const int need_trades = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 1) : (M > 1));
+    const int need_max_dd = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 2) : (M > 2));
+    const int need_stats  = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 3) : (M > 3));
+    const int need_std    = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 4) : (M > 4));
+    const int need_expo   = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 5) : (M > 5));
+    const int need_downside_dev = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 7) : (M > 7));
+    const int need_ulcer = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 8) : (M > 8));
+    const int need_omega = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 9) : (M > 9));
+    const int need_kappa_tau = FULL_M7 ? (metrics_stride > 14) : ((FIXED_M > 0) ? (FIXED_M > 14) : (M > 14));
     const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
     const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
     const int use_risk_runtime = use_stop || use_take;
@@ -3532,51 +3618,75 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
 
     const int total_pairs = (pair_count > 0) ? pair_count : (Pf_tile * Ps_tile);
     const int dense_pairs = Pf_tile * Ps_tile;
+    const bool use_compact_pair_rows =
+        pair_count > 0
+        && compact_fast_local_rows != nullptr
+        && compact_slow_local_rows != nullptr;
     for (int pair_local = blockIdx.x * blockDim.x + threadIdx.x;
          pair_local < total_pairs;
          pair_local += blockDim.x * gridDim.x)
     {
-        const int dense_pair =
-            (pair_index_map != nullptr) ? pair_index_map[pair_local] : pair_local;
-        if (dense_pair < 0 || dense_pair >= dense_pairs) {
-            continue;
+        int pf_local = 0;
+        int ps_local = 0;
+        int period_f = 0;
+        int period_s = 0;
+        if (use_compact_pair_rows) {
+            pf_local = compact_fast_local_rows[pair_local];
+            ps_local = compact_slow_local_rows[pair_local];
+            if (pf_local < 0 || pf_local >= Pf_tile || ps_local < 0 || ps_local >= Ps_tile) {
+                continue;
+            }
+            period_f = (compact_fast_periods != nullptr)
+                ? compact_fast_periods[pair_local]
+                : ld_ro_1d(fast_periods, (size_t)(f_offset + pf_local));
+            period_s = (compact_slow_periods != nullptr)
+                ? compact_slow_periods[pair_local]
+                : ld_ro_1d(slow_periods, (size_t)(s_offset + ps_local));
+        } else {
+            const int dense_pair =
+                (pair_index_map != nullptr) ? pair_index_map[pair_local] : pair_local;
+            if (dense_pair < 0 || dense_pair >= dense_pairs) {
+                continue;
+            }
+            pf_local = dense_pair / Ps_tile;
+            ps_local = dense_pair - pf_local * Ps_tile;
+            period_f = ld_ro_1d(fast_periods, (size_t)(f_offset + pf_local));
+            period_s = ld_ro_1d(slow_periods, (size_t)(s_offset + ps_local));
         }
-
-        const int pf_local  = dense_pair / Ps_tile;
-        const int ps_local  = dense_pair % Ps_tile;
         const int pf_global = f_offset + pf_local;
         const int ps_global = s_offset + ps_local;
-
-        const int period_f = ld_ro_1d(fast_periods, (size_t)pf_global);
-        const int period_s = ld_ro_1d(slow_periods, (size_t)ps_global);
 
         const size_t pair_global = (size_t)pf_global * (size_t)Ps_total + (size_t)ps_global;
         const size_t row_idx = compact_output ? (size_t)pair_local : pair_global;
         const size_t base = row_idx * (size_t)metrics_stride;
 
         if ((flags & STRAT_ENFORCE_FAST_LT_SLOW) && (period_f >= period_s)) {
-            if (M > 0) metrics_out[base + 0] = 0.0f;
-            if (M > 1) metrics_out[base + 1] = 0.0f;
-            if (M > 2) metrics_out[base + 2] = 0.0f;
-            if (M > 3) metrics_out[base + 3] = 0.0f;
-            if (M > 4) metrics_out[base + 4] = 0.0f;
-            if (M > 5) metrics_out[base + 5] = 0.0f;
-            if (M > 6) metrics_out[base + 6] = 0.0f;
-            if (M > 7) metrics_out[base + 7] = 0.0f;
-            if (M > 8) metrics_out[base + 8] = 0.0f;
-            if (M > 9) metrics_out[base + 9] = 0.0f;
-            if (M > 10) metrics_out[base + 10] = 0.0f;
-            if (M > 11) metrics_out[base + 11] = 0.0f;
-            if (M > 12) metrics_out[base + 12] = 0.0f;
-            if (M > 13) metrics_out[base + 13] = 0.0f;
-            if (M > 14) metrics_out[base + 14] = 0.0f;
-            if (M > 15) metrics_out[base + 15] = 0.0f;
-            if (M > 16) metrics_out[base + 16] = 0.0f;
-            if (M > 17) metrics_out[base + 17] = 0.0f;
-            if (M > 18) metrics_out[base + 18] = 0.0f;
-            if (M > 19) metrics_out[base + 19] = 0.0f;
-            if (M > 20) metrics_out[base + 20] = 0.0f;
-            if (M > 21) metrics_out[base + 21] = 0.0f;
+            if constexpr (FIXED_M > 0) {
+                zero_metrics_row_fixed_f32<FIXED_M>(metrics_out, base);
+            } else {
+                if (M > 0) metrics_out[base + 0] = 0.0f;
+                if (M > 1) metrics_out[base + 1] = 0.0f;
+                if (M > 2) metrics_out[base + 2] = 0.0f;
+                if (M > 3) metrics_out[base + 3] = 0.0f;
+                if (M > 4) metrics_out[base + 4] = 0.0f;
+                if (M > 5) metrics_out[base + 5] = 0.0f;
+                if (M > 6) metrics_out[base + 6] = 0.0f;
+                if (M > 7) metrics_out[base + 7] = 0.0f;
+                if (M > 8) metrics_out[base + 8] = 0.0f;
+                if (M > 9) metrics_out[base + 9] = 0.0f;
+                if (M > 10) metrics_out[base + 10] = 0.0f;
+                if (M > 11) metrics_out[base + 11] = 0.0f;
+                if (M > 12) metrics_out[base + 12] = 0.0f;
+                if (M > 13) metrics_out[base + 13] = 0.0f;
+                if (M > 14) metrics_out[base + 14] = 0.0f;
+                if (M > 15) metrics_out[base + 15] = 0.0f;
+                if (M > 16) metrics_out[base + 16] = 0.0f;
+                if (M > 17) metrics_out[base + 17] = 0.0f;
+                if (M > 18) metrics_out[base + 18] = 0.0f;
+                if (M > 19) metrics_out[base + 19] = 0.0f;
+                if (M > 20) metrics_out[base + 20] = 0.0f;
+                if (M > 21) metrics_out[base + 21] = 0.0f;
+            }
             continue;
         }
 
@@ -3587,28 +3697,32 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         const int end_t = min(T, eval_end);
 
         if (start_t >= end_t) {
-            if (M > 0) metrics_out[base + 0] = 0.0f;
-            if (M > 1) metrics_out[base + 1] = 0.0f;
-            if (M > 2) metrics_out[base + 2] = 0.0f;
-            if (M > 3) metrics_out[base + 3] = 0.0f;
-            if (M > 4) metrics_out[base + 4] = 0.0f;
-            if (M > 5) metrics_out[base + 5] = 0.0f;
-            if (M > 6) metrics_out[base + 6] = 0.0f;
-            if (M > 7) metrics_out[base + 7] = 0.0f;
-            if (M > 8) metrics_out[base + 8] = 0.0f;
-            if (M > 9) metrics_out[base + 9] = 0.0f;
-            if (M > 10) metrics_out[base + 10] = 0.0f;
-            if (M > 11) metrics_out[base + 11] = 0.0f;
-            if (M > 12) metrics_out[base + 12] = 0.0f;
-            if (M > 13) metrics_out[base + 13] = 0.0f;
-            if (M > 14) metrics_out[base + 14] = 0.0f;
-            if (M > 15) metrics_out[base + 15] = 0.0f;
-            if (M > 16) metrics_out[base + 16] = 0.0f;
-            if (M > 17) metrics_out[base + 17] = 0.0f;
-            if (M > 18) metrics_out[base + 18] = 0.0f;
-            if (M > 19) metrics_out[base + 19] = 0.0f;
-            if (M > 20) metrics_out[base + 20] = 0.0f;
-            if (M > 21) metrics_out[base + 21] = 0.0f;
+            if constexpr (FIXED_M > 0) {
+                zero_metrics_row_fixed_f32<FIXED_M>(metrics_out, base);
+            } else {
+                if (M > 0) metrics_out[base + 0] = 0.0f;
+                if (M > 1) metrics_out[base + 1] = 0.0f;
+                if (M > 2) metrics_out[base + 2] = 0.0f;
+                if (M > 3) metrics_out[base + 3] = 0.0f;
+                if (M > 4) metrics_out[base + 4] = 0.0f;
+                if (M > 5) metrics_out[base + 5] = 0.0f;
+                if (M > 6) metrics_out[base + 6] = 0.0f;
+                if (M > 7) metrics_out[base + 7] = 0.0f;
+                if (M > 8) metrics_out[base + 8] = 0.0f;
+                if (M > 9) metrics_out[base + 9] = 0.0f;
+                if (M > 10) metrics_out[base + 10] = 0.0f;
+                if (M > 11) metrics_out[base + 11] = 0.0f;
+                if (M > 12) metrics_out[base + 12] = 0.0f;
+                if (M > 13) metrics_out[base + 13] = 0.0f;
+                if (M > 14) metrics_out[base + 14] = 0.0f;
+                if (M > 15) metrics_out[base + 15] = 0.0f;
+                if (M > 16) metrics_out[base + 16] = 0.0f;
+                if (M > 17) metrics_out[base + 17] = 0.0f;
+                if (M > 18) metrics_out[base + 18] = 0.0f;
+                if (M > 19) metrics_out[base + 19] = 0.0f;
+                if (M > 20) metrics_out[base + 20] = 0.0f;
+                if (M > 21) metrics_out[base + 21] = 0.0f;
+            }
             continue;
         }
 
@@ -3628,9 +3742,12 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         float sum_pos_r = 0.0f;
         float sum_neg_abs_r = 0.0f;
         int count_neg = 0;
-        const bool need_side_means = FULL_M7 ? (metrics_stride > 12) : (M > 12);
-        const bool need_underwater = FULL_M7 ? (metrics_stride > 16) : (M > 16);
-        const bool need_trade_metrics = FULL_M7 ? (metrics_stride > 21) : (M > 21);
+        const bool need_side_means =
+            FULL_M7 ? (metrics_stride > 12) : ((FIXED_M > 0) ? (FIXED_M > 12) : (M > 12));
+        const bool need_underwater =
+            FULL_M7 ? (metrics_stride > 16) : ((FIXED_M > 0) ? (FIXED_M > 16) : (M > 16));
+        const bool need_trade_metrics =
+            FULL_M7 ? (metrics_stride > 21) : ((FIXED_M > 0) ? (FIXED_M > 21) : (M > 21));
         int long_obs = 0;
         int short_obs = 0;
         float long_sum_r = 0.0f;
@@ -3643,21 +3760,33 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         int losing_trades = 0;
         float gross_profit = 0.0f;
         float gross_loss = 0.0f;
-        const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
-        const int start_sig = loop_start - trade_offset;
-        const float* fast_ptr = nullptr;
-        const float* slow_ptr = nullptr;
-        const float* lr_ptr = nullptr;
-        const float* ret1_ptr = nullptr;
-        if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-            const size_t sig_offset = (size_t)start_sig;
-            fast_ptr = fast_ma_T + sig_offset * (size_t)fast_stride + (size_t)pf_local;
-            slow_ptr = slow_ma_T + sig_offset * (size_t)slow_stride + (size_t)ps_local;
-            lr_ptr = lr + (size_t)loop_start;
-            if (ret1 != nullptr) {
-                ret1_ptr = ret1 + (size_t)loop_start;
-            }
+        const bool need_step_returns =
+            need_stats || need_downside_dev || need_omega || need_kappa_tau;
+    const int loop_start = LOCKSTEP_TIME ? first_valid : start_t;
+    const int start_sig = loop_start - trade_offset;
+    const float* fast_ptr = nullptr;
+    const float* slow_ptr = nullptr;
+    const float* lr_ptr = nullptr;
+    const float* ret1_ptr = nullptr;
+    float fast_cur = 0.0f;
+    float slow_cur = 0.0f;
+    float lr_cur = 0.0f;
+    float ret1_cur = 0.0f;
+    if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+        const size_t sig_offset = (size_t)start_sig;
+        fast_ptr = fast_ma_T + sig_offset * (size_t)fast_stride + (size_t)pf_local;
+        slow_ptr = slow_ma_T + sig_offset * (size_t)slow_stride + (size_t)ps_local;
+        lr_ptr = lr + (size_t)loop_start;
+        if (ret1 != nullptr) {
+            ret1_ptr = ret1 + (size_t)loop_start;
         }
+        fast_cur = ld_ro_1d(fast_ptr, 0);
+        slow_cur = ld_ro_1d(slow_ptr, 0);
+        lr_cur = ld_ro_1d(lr_ptr, 0);
+        if (need_step_returns && ret1_ptr != nullptr) {
+            ret1_cur = ld_ro_1d(ret1_ptr, 0);
+        }
+    }
         if (!use_risk) {
             float trade_log_ret = 0.0f;
             for (int t = loop_start; t < end_t; ++t) {
@@ -3669,14 +3798,48 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 const int t_sig = t - trade_offset;
                 float f = 0.0f;
                 float s = 0.0f;
+                float lr_t = 0.0f;
+                float ret1_t = 0.0f;
                 if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                    f = ld_ro_1d(fast_ptr, 0);
-                    s = ld_ro_1d(slow_ptr, 0);
+                    const bool has_next = (t + 1) < end_t;
+                    float fast_next = 0.0f;
+                    float slow_next = 0.0f;
+                    float lr_next = 0.0f;
+                    float ret1_next = 0.0f;
+                    if (has_next) {
+                        fast_next = ld_ro_1d(fast_ptr + (size_t)fast_stride, 0);
+                        slow_next = ld_ro_1d(slow_ptr + (size_t)slow_stride, 0);
+                        lr_next = ld_ro_1d(lr_ptr + 1, 0);
+                        if (need_step_returns && ret1_ptr != nullptr) {
+                            ret1_next = ld_ro_1d(ret1_ptr + 1, 0);
+                        }
+                    }
+                    f = fast_cur;
+                    s = slow_cur;
+                    lr_t = lr_cur;
+                    if (need_step_returns) {
+                        ret1_t = ret1_cur;
+                    }
+                    if (has_next) {
+                        fast_ptr += (size_t)fast_stride;
+                        slow_ptr += (size_t)slow_stride;
+                        lr_ptr += 1;
+                        fast_cur = fast_next;
+                        slow_cur = slow_next;
+                        lr_cur = lr_next;
+                        if (ret1_ptr != nullptr) {
+                            ret1_ptr += 1;
+                            if (need_step_returns) {
+                                ret1_cur = ret1_next;
+                            }
+                        }
+                    }
                 } else {
                     f = FAST_WARP_DEDUP
                         ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
                         : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
                     s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
+                    lr_t = ld_ro_1d(lr, (size_t)t);
                 }
                 const float eps = compute_eps_f32<EPS_MODE>(s, eps_rel);
                 int sign = desired_sign_mode_f32<REGIME_MODE>(
@@ -3748,12 +3911,6 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                     }
                 }
 
-                float lr_t = 0.0f;
-                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                    lr_t = ld_ro_1d(lr_ptr, 0);
-                } else {
-                    lr_t = ld_ro_1d(lr, (size_t)t);
-                }
                 const float step_log = (float)pos * lr_t;
                 log_eq += step_log;
                 if (pos != 0 && need_trade_metrics) {
@@ -3783,10 +3940,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                 }
 
                 if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
-                    float ret1_t = 0.0f;
-                    if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                        ret1_t = ld_ro_1d(ret1_ptr, 0);
-                    } else {
+                    if constexpr (!(WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP)) {
                         ret1_t = ld_ro_1d(ret1, (size_t)t);
                     }
                     const float step_r =
@@ -3828,14 +3982,6 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
                             short_obs += 1;
                             short_sum_r += step_r;
                         }
-                    }
-                }
-                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                    fast_ptr += (size_t)fast_stride;
-                    slow_ptr += (size_t)slow_stride;
-                    lr_ptr += 1;
-                    if (ret1_ptr != nullptr) {
-                        ret1_ptr += 1;
                     }
                 }
             }
@@ -4112,34 +4258,63 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             if (metrics_stride > 20) metrics_out[base + 20] = gross_profit;
             if (metrics_stride > 21) metrics_out[base + 21] = gross_loss;
         } else {
-            const bool search_row = metrics_row_uses_log_space_f32(M);
-            if (M > 0) metrics_out[base + 0] = search_row ? log_eq : pnl;
-            if (M > 1) metrics_out[base + 1] = (float)trades;
-            if (M > 2) metrics_out[base + 2] = search_row ? max_log_dd : max_dd;
-            if (M > 3) metrics_out[base + 3] = mean;
-            if (M > 4) metrics_out[base + 4] = std;
-            if (M > 5) metrics_out[base + 5] = exposure;
-            if (M > 6) metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
-            if (M > 7) metrics_out[base + 7] = downside_dev;
-            if (M > 8) metrics_out[base + 8] = ulcer_index;
-            if (M > 9) metrics_out[base + 9] = omega;
-            if (M > 10) metrics_out[base + 10] = downside_frequency;
-            if (M > 11) metrics_out[base + 11] = downside_severity;
-            if (M > 12) metrics_out[base + 12] = long_mean_return;
-            if (M > 13) metrics_out[base + 13] = short_mean_return;
-            if (M > 14) metrics_out[base + 14] = kappa_tau;
-            if (M > 15) metrics_out[base + 15] = underwater_fraction;
-            if (M > 16) metrics_out[base + 16] = (float)max_underwater_duration_bars;
-            if (M > 17) metrics_out[base + 17] = (float)closed_trades;
-            if (M > 18) metrics_out[base + 18] = (float)winning_trades;
-            if (M > 19) metrics_out[base + 19] = (float)losing_trades;
-            if (M > 20) metrics_out[base + 20] = gross_profit;
-            if (M > 21) metrics_out[base + 21] = gross_loss;
+            if constexpr (FIXED_M > 0) {
+                store_metrics_row_fixed_f32<FIXED_M>(
+                    metrics_out,
+                    base,
+                    flags,
+                    pnl,
+                    trades,
+                    max_dd,
+                    mean,
+                    std,
+                    exposure,
+                    net_expo,
+                    downside_dev,
+                    ulcer_index,
+                    omega,
+                    downside_frequency,
+                    downside_severity,
+                    long_mean_return,
+                    short_mean_return,
+                    kappa_tau,
+                    underwater_fraction,
+                    max_underwater_duration_bars,
+                    closed_trades,
+                    winning_trades,
+                    losing_trades,
+                    gross_profit,
+                    gross_loss);
+            } else {
+                const bool search_row = metrics_row_uses_log_space_f32(M);
+                if (M > 0) metrics_out[base + 0] = search_row ? log_eq : pnl;
+                if (M > 1) metrics_out[base + 1] = (float)trades;
+                if (M > 2) metrics_out[base + 2] = search_row ? max_log_dd : max_dd;
+                if (M > 3) metrics_out[base + 3] = mean;
+                if (M > 4) metrics_out[base + 4] = std;
+                if (M > 5) metrics_out[base + 5] = exposure;
+                if (M > 6) metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+                if (M > 7) metrics_out[base + 7] = downside_dev;
+                if (M > 8) metrics_out[base + 8] = ulcer_index;
+                if (M > 9) metrics_out[base + 9] = omega;
+                if (M > 10) metrics_out[base + 10] = downside_frequency;
+                if (M > 11) metrics_out[base + 11] = downside_severity;
+                if (M > 12) metrics_out[base + 12] = long_mean_return;
+                if (M > 13) metrics_out[base + 13] = short_mean_return;
+                if (M > 14) metrics_out[base + 14] = kappa_tau;
+                if (M > 15) metrics_out[base + 15] = underwater_fraction;
+                if (M > 16) metrics_out[base + 16] = (float)max_underwater_duration_bars;
+                if (M > 17) metrics_out[base + 17] = (float)closed_trades;
+                if (M > 18) metrics_out[base + 18] = (float)winning_trades;
+                if (M > 19) metrics_out[base + 19] = (float)losing_trades;
+                if (M > 20) metrics_out[base + 20] = gross_profit;
+                if (M > 21) metrics_out[base + 21] = gross_loss;
+            }
         }
     }
 }
 
-template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, bool WALK_SERIES_PTRS = false>
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
@@ -4171,18 +4346,24 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, WALK_SERIES_PTRS>(
+    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, WALK_SERIES_PTRS>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         0, T,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride,
+        pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows,
+        compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4215,6 +4396,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -4225,7 +4410,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4260,18 +4445,22 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 0, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4306,12 +4495,15 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)M;
-    (void)metrics_out_stride;
     double_cross_backtest_tm_flex_f32_body<false, false, false>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
@@ -4319,7 +4511,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17(
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4354,21 +4546,24 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)commission;
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, 17, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4403,20 +4598,23 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, 17, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4451,21 +4649,24 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)commission;
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, 17, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4500,20 +4701,23 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, 17, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4548,21 +4752,24 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)commission;
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, 17, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4597,20 +4804,23 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 22, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4645,21 +4855,24 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)commission;
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, 22, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4694,20 +4907,23 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, 22, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4742,21 +4958,24 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)commission;
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, 22, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4791,20 +5010,23 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, 22, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4839,21 +5061,24 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
 ){
     (void)commission;
     (void)M;
-    (void)metrics_out_stride;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, true>(
+    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, 22, true>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4886,6 +5111,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -4896,7 +5125,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_fast_warp_dedup(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4929,6 +5158,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -4939,7 +5172,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -4972,6 +5205,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m7(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -4982,7 +5219,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m7(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5015,6 +5252,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5027,7 +5268,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5060,6 +5301,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5072,7 +5317,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5105,6 +5350,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5117,7 +5366,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5150,6 +5399,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5163,7 +5416,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5196,6 +5449,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5208,7 +5465,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5241,6 +5498,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5254,7 +5515,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5287,6 +5548,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_on_nori
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5299,7 +5564,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_on_nori
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5332,6 +5597,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_on_nori
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5345,7 +5614,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_on_nori
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5378,6 +5647,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_hybrid_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5390,7 +5663,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_hybrid_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5423,6 +5696,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_hybrid_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5436,7 +5713,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m17_regime_hybrid_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5469,6 +5746,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5481,7 +5762,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5514,6 +5795,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5527,7 +5812,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5560,6 +5845,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5572,7 +5861,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5605,6 +5894,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5618,7 +5911,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_off_nor
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5651,6 +5944,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_on_nori
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5663,7 +5960,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_on_nori
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5696,6 +5993,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_on_nori
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5709,7 +6010,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_on_nori
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5742,6 +6043,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_hybrid_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5754,7 +6059,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_hybrid_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5787,6 +6092,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_hybrid_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5800,7 +6109,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_m22_regime_hybrid_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5833,6 +6142,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5843,7 +6156,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5876,6 +6189,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5888,7 +6205,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5921,6 +6238,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22(
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5933,7 +6254,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22(
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -5966,6 +6287,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -5976,7 +6301,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6009,6 +6334,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6019,7 +6348,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6052,6 +6381,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6062,7 +6395,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6095,6 +6428,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6107,7 +6444,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6140,6 +6477,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6153,7 +6494,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6186,6 +6527,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6198,7 +6543,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6231,6 +6576,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6244,7 +6593,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m10_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 10, 10, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6277,6 +6626,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6289,7 +6642,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6322,6 +6675,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6335,7 +6692,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6368,6 +6725,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6380,7 +6741,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6413,6 +6774,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6426,7 +6791,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6459,6 +6824,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6471,7 +6840,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6504,6 +6873,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6517,7 +6890,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6550,6 +6923,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6562,7 +6939,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6595,6 +6972,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6608,7 +6989,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m17_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, 17, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6641,6 +7022,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6653,7 +7038,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6686,6 +7071,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6699,7 +7088,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6732,6 +7121,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6744,7 +7137,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6777,6 +7170,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6790,7 +7187,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6823,6 +7220,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6835,7 +7236,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6868,6 +7269,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6881,7 +7286,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6914,6 +7319,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6926,7 +7335,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -6959,6 +7368,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -6972,7 +7385,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m22_
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, pair_count, compact_output, metrics_out
+        0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, 22, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -7005,6 +7418,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -7015,7 +7432,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -7048,6 +7465,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -7058,7 +7479,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -7091,6 +7512,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -7101,7 +7526,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -7134,6 +7559,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -7144,7 +7573,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -7177,6 +7606,10 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
     int M,
     int metrics_out_stride,
     const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
     int pair_count,
     int compact_output,
     float* __restrict__ metrics_out
@@ -7187,7 +7620,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_m7_r
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
-        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, pair_count, compact_output, metrics_out
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
 
@@ -9522,6 +9955,7 @@ void vemr_backtest_metrics_f32(
         out_metrics[base + 11] = ulcer_index;
     }
 }
+
 
 
 

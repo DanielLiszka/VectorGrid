@@ -68,29 +68,15 @@ function Find-LatestGpuKernelEstimate([string]$glob) {
   return $estimate
 }
 
-function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabled, [string]$estimateSnapshotPath) {
-  Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU benchmark launch"
-  if ($dynamicStrategyEnabled) {
-    $env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL = "1"
-    Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight ON..."
-  } else {
-    Remove-Item Env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL -ErrorAction SilentlyContinue
-    Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight OFF..."
-  }
-
-  $benchCmd = @(
-    "bench",
-    "-p", "ta_app_core",
-    "--bench", "double_ma_opt",
-    "--features", "cuda,cuda-backtest-kernel",
-    "--",
-    $benchFilter
-  )
+function Invoke-CargoCommandAndEcho(
+  [string[]]$ArgumentList,
+  [string]$FailureContext
+) {
   $stdoutPath = [System.IO.Path]::GetTempFileName()
   $stderrPath = [System.IO.Path]::GetTempFileName()
   try {
     $proc = Start-Process -FilePath "cargo" `
-      -ArgumentList $benchCmd `
+      -ArgumentList $ArgumentList `
       -NoNewWindow `
       -Wait `
       -PassThru `
@@ -106,13 +92,81 @@ function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabl
     foreach ($line in $output) {
       Write-Host $line
     }
-    $global:LASTEXITCODE = $proc.ExitCode
+    if ($proc.ExitCode -ne 0) {
+      throw "${FailureContext} (cargo exit code $($proc.ExitCode))"
+    }
   } finally {
     Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
   }
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+}
+
+function Invoke-ProcessAndEcho(
+  [string]$FilePath,
+  [string[]]$ArgumentList,
+  [string]$FailureContext
+) {
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+  try {
+    $proc = Start-Process -FilePath $FilePath `
+      -ArgumentList $ArgumentList `
+      -NoNewWindow `
+      -Wait `
+      -PassThru `
+      -RedirectStandardOutput $stdoutPath `
+      -RedirectStandardError $stderrPath
+    $output = @()
+    if (Test-Path $stdoutPath) {
+      $output += Get-Content $stdoutPath
+    }
+    if (Test-Path $stderrPath) {
+      $output += Get-Content $stderrPath
+    }
+    foreach ($line in $output) {
+      Write-Host $line
+    }
+    if ($proc.ExitCode -ne 0) {
+      throw "${FailureContext} ($FilePath exit code $($proc.ExitCode))"
+    }
+    return $output
+  } finally {
+    Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
   }
+}
+
+function Find-LatestBenchExecutable([string]$benchName) {
+  $benchExe = Get-ChildItem -Path "target/release/deps" -File -Filter "${benchName}-*.exe" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if ($null -eq $benchExe) {
+    throw "Could not find built benchmark executable for ${benchName} under target/release/deps"
+  }
+  return $benchExe
+}
+
+function Invoke-GpuKernelBench([string]$benchFilter, [bool]$dynamicStrategyEnabled, [string]$estimateSnapshotPath) {
+  Wait-NoPerfProcesses -TimeoutSeconds 120 -Context "before GPU benchmark launch"
+  if ($dynamicStrategyEnabled) {
+    $env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL = "1"
+    Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight ON..."
+  } else {
+    Remove-Item Env:VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL -ErrorAction SilentlyContinue
+    Write-Host "Running GPU kernel benchmark ($benchFilter) with dynamic strategy preflight OFF..."
+  }
+
+  Invoke-CargoCommandAndEcho -ArgumentList @(
+    "bench",
+    "-p", "ta_app_core",
+    "--bench", "double_ma_opt",
+    "--features", "cuda,cuda-backtest-kernel",
+    "--no-run"
+  ) -FailureContext "Failed to build GPU kernel benchmark executable"
+
+  $benchExe = Find-LatestBenchExecutable -benchName "double_ma_opt"
+  Invoke-ProcessAndEcho -FilePath $benchExe.FullName -ArgumentList @(
+    $benchFilter,
+    "--bench"
+  ) -FailureContext "GPU kernel benchmark process failed" | Out-Null
   Wait-NoPerfProcesses -TimeoutSeconds 900 -Context "after GPU benchmark completion"
 
   $estimate = Find-LatestGpuKernelEstimate -glob $CriterionEstimatesGlob
@@ -142,44 +196,24 @@ function Invoke-DynamicStrategyProfileRun([bool]$dynamicStrategyEnabled, [int]$i
     Write-Host "Running profile_gpu_dynamic_runner with dynamic strategy preflight OFF..."
   }
 
-  $dynMode = if ($dynamicStrategyEnabled) { "on" } else { "off" }
-  $runnerCmd = @(
-    "run",
+  Invoke-CargoCommandAndEcho -ArgumentList @(
+    "build",
     "-q",
     "-p", "ta_app_core",
     "--bin", "profile_gpu_dynamic_runner",
-    "--features", "cuda,cuda-backtest-kernel",
-    "--",
+    "--release",
+    "--features", "cuda,cuda-backtest-kernel"
+  ) -FailureContext "Failed to build profile_gpu_dynamic_runner"
+
+  $dynMode = if ($dynamicStrategyEnabled) { "on" } else { "off" }
+  $runnerExe = Join-Path (Resolve-Path "target/release").Path "profile_gpu_dynamic_runner.exe"
+  $output = Invoke-ProcessAndEcho -FilePath $runnerExe -ArgumentList @(
     "--strategy", "double_ma",
     "--workload", "small",
     "--iterations", "$iterations",
     "--dynamic-mode", $dynMode,
     "--device-id", "0"
-  )
-  $stdoutPath = [System.IO.Path]::GetTempFileName()
-  $stderrPath = [System.IO.Path]::GetTempFileName()
-  try {
-    $proc = Start-Process -FilePath "cargo" `
-      -ArgumentList $runnerCmd `
-      -NoNewWindow `
-      -Wait `
-      -PassThru `
-      -RedirectStandardOutput $stdoutPath `
-      -RedirectStandardError $stderrPath
-    $output = @()
-    if (Test-Path $stdoutPath) {
-      $output += Get-Content $stdoutPath
-    }
-    if (Test-Path $stderrPath) {
-      $output += Get-Content $stderrPath
-    }
-    $global:LASTEXITCODE = $proc.ExitCode
-  } finally {
-    Remove-Item $stdoutPath, $stderrPath -ErrorAction SilentlyContinue
-  }
-  if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-  }
+  ) -FailureContext "profile_gpu_dynamic_runner failed"
   Wait-NoPerfProcesses -TimeoutSeconds 300 -Context "after dynamic strategy profile run"
 
   $iterRows = @()

@@ -36,6 +36,21 @@ struct MaBenchCase {
     slow_ma: &'static str,
 }
 
+fn make_bench_data_id(parts: &[&str]) -> String {
+    let mut out = String::from("bench");
+    for part in parts {
+        out.push('-');
+        for ch in part.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                out.push(ch);
+            } else {
+                out.push('-');
+            }
+        }
+    }
+    out
+}
+
 fn make_synth_candles(len: usize) -> Candles {
     let mut ts = Vec::with_capacity(len);
     let mut open = Vec::with_capacity(len);
@@ -373,6 +388,16 @@ fn run_with_product_reduced_rows_env<T>(value: Option<bool>, f: impl FnOnce() ->
     out
 }
 
+fn bench_route_probe_logging_enabled() -> bool {
+    std::env::var("VECTORBT_BENCH_LOG_ROUTE_PROBES")
+        .ok()
+        .map(|raw| {
+            let value = raw.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
 fn bench_double_ma_cpu(c: &mut Criterion) {
     let candles = make_synth_candles(200_000);
     let cancel = AtomicBool::new(false);
@@ -424,7 +449,7 @@ fn bench_double_ma_cpu(c: &mut Criterion) {
 
             let req = DoubleMaRequest {
                 backend: Backend::CpuOnly,
-                data_id: "bench".to_string(),
+                data_id: make_bench_data_id(&["cpu", ma.label, &name]),
                 fast_range,
                 slow_range,
                 fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -531,7 +556,7 @@ fn bench_double_ma_gpu_sweep(c: &mut Criterion) {
 
             let req = DoubleMaRequest {
                 backend: Backend::GpuOnly { device_id: 0 },
-                data_id: "bench".to_string(),
+                data_id: make_bench_data_id(&["gpu-only", ma.label, &name]),
                 fast_range,
                 slow_range,
                 fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -663,7 +688,7 @@ fn bench_double_ma_gpu_kernel(c: &mut Criterion) {
 
             let req = DoubleMaRequest {
                 backend: Backend::GpuKernel { device_id: 0 },
-                data_id: "bench".to_string(),
+                data_id: make_bench_data_id(&["gpu-kernel", ma.label, &name]),
                 fast_range,
                 slow_range,
                 fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -745,7 +770,7 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
 
     let base_req = DoubleMaRequest {
         backend: Backend::GpuKernel { device_id: 0 },
-        data_id: "bench".to_string(),
+        data_id: make_bench_data_id(&["gpu-kernel-contract-split", "alma_alma", &pairs.to_string()]),
         fast_range,
         slow_range,
         fast_ma_types: vec!["alma".to_string()],
@@ -948,7 +973,7 @@ fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
 
             let req = DoubleMaRequest {
                 backend: Backend::GpuHybridKernel { device_id: 0 },
-                data_id: "bench".to_string(),
+                data_id: make_bench_data_id(&["gpu-hybrid-kernel", ma.label, &name]),
                 fast_range,
                 slow_range,
                 fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -1131,7 +1156,7 @@ fn bench_double_ma_gpu_kernel_extra_ma(c: &mut Criterion) {
 
             let req = DoubleMaRequest {
                 backend: Backend::GpuKernel { device_id: 0 },
-                data_id: "bench".to_string(),
+                data_id: make_bench_data_id(&["gpu-kernel-extra", ma.label, &name]),
                 fast_range,
                 slow_range,
                 fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -1260,7 +1285,7 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
 
                 let req = DoubleMaRequest {
                     backend: Backend::GpuKernel { device_id: 0 },
-                    data_id: "bench".to_string(),
+                    data_id: make_bench_data_id(&["gpu-kernel-strategy", ma.label, strategy_label, &name]),
                     fast_range,
                     slow_range,
                     fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -1302,24 +1327,27 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
                 } else {
                     &trend_candles
                 };
-                let route_probe = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req.clone(),
-                    candles,
-                    &cancel,
-                    None,
-                )
-                .expect("gpu kernel strategy profile route probe");
-                println!(
-                    "benchmark route double_ma/gpu_kernel_strategy/{}/200k/{}: backend_used={:?} backend_route={} fallback={}",
-                    ma.label,
-                    name,
-                    route_probe.backend_used,
-                    route_probe.backend_route.as_deref().unwrap_or("<none>"),
-                    route_probe
-                        .backend_fallback_reason
-                        .as_deref()
-                        .unwrap_or("<none>")
-                );
+                if bench_route_probe_logging_enabled() {
+                    let route_probe =
+                        ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                            req.clone(),
+                            candles,
+                            &cancel,
+                            None,
+                        )
+                        .expect("gpu kernel strategy profile route probe");
+                    println!(
+                        "benchmark route double_ma/gpu_kernel_strategy/{}/200k/{}: backend_used={:?} backend_route={} fallback={}",
+                        ma.label,
+                        name,
+                        route_probe.backend_used,
+                        route_probe.backend_route.as_deref().unwrap_or("<none>"),
+                        route_probe
+                            .backend_fallback_reason
+                            .as_deref()
+                            .unwrap_or("<none>")
+                    );
+                }
 
                 group.bench_function(&name, |b| {
                     b.iter(|| {
@@ -1383,7 +1411,7 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
 
                 let req = DoubleMaRequest {
                     backend: Backend::GpuKernel { device_id: 0 },
-                    data_id: "bench".to_string(),
+                    data_id: make_bench_data_id(&["gpu-kernel-dynamic-preflight", strategy_label, mode_label, &name]),
                     fast_range,
                     slow_range,
                     fast_ma_types: vec!["sma".to_string()],
@@ -1465,7 +1493,7 @@ fn bench_double_ma_dynamic_contract_overhead(c: &mut Criterion) {
 
     let req = DoubleMaRequest {
         backend: Backend::GpuKernel { device_id: 0 },
-        data_id: "bench".to_string(),
+        data_id: make_bench_data_id(&["dynamic-contract", "alma_alma", &pairs.to_string()]),
         fast_range,
         slow_range,
         fast_ma_types: vec!["alma".to_string()],
@@ -1819,7 +1847,7 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
 
             let grid_req = DoubleMaRequest {
                 backend: Backend::GpuKernel { device_id: 0 },
-                data_id: "bench".to_string(),
+                data_id: make_bench_data_id(&["gpu-kernel-vdps-grid", ma.label, &grid_name]),
                 fast_range,
                 slow_range,
                 fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -1867,7 +1895,7 @@ fn bench_double_ma_gpu_kernel_vdps(c: &mut Criterion) {
 
             let vdps_req = DoubleMaRequest {
                 backend: Backend::GpuKernel { device_id: 0 },
-                data_id: "bench".to_string(),
+                data_id: make_bench_data_id(&["gpu-kernel-vdps-vdps", ma.label, &grid_name]),
                 fast_range,
                 slow_range,
                 fast_ma_types: vec![ma.fast_ma.to_string()],

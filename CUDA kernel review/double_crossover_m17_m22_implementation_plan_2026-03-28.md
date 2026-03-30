@@ -246,6 +246,30 @@ Measured smoke results:
     - `dispatch=fast_warp_dedup` + `full17`: `945 / 963 / 968 ms` min / median / max, `958.7 ms` mean across 3 measured iterations after 1 warmup
     - `dispatch=fast_warp_dedup` + `trade22`: `958 / 962 / 974 ms` min / median / max, `964.7 ms` mean across 3 measured iterations after 1 warmup
   - conclusion: do not add dedicated M17 / M22 dedup variants based on the current dedup design; the existing dedup route is more than 2x slower than the specialized lockstep full-row routes on this benchmark-hot surface
+- corrected replay-backed Nsight Compute on the hot `trade22` shortlist kernel now points more clearly at the next bounded coalescing target:
+  - kernel: `double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm`
+  - `62` registers per thread, `66.67%` theoretical occupancy, `53.83%` achieved occupancy
+  - no local/shared spilling was reported
+  - global load sector utilization is poor at about `17.4 / 32` bytes used per sector
+  - global store sector utilization is very poor at about `4.0 / 32` bytes used per sector
+  - the largest sampled stall remains L1TEX scoreboard dependency at about `5.4` cycles, about `52.4%` of the average `10.3` cycles between issued instructions
+  - Nsight speedup guidance on this corrected hotspot was about `8.152%` for global-load efficiency and `15.62%` for global-store efficiency
+- a bounded fixed-row metrics-write experiment was then run directly against that signal:
+  - first pass: add paired `float2` stores for both `M17` and `M22` in `store_metrics_row_fixed_f32()`
+  - controlled A/B on `alma/alma` + `xlarge/370750pairs` + `objective=sharpe` + `shortlist_slice_mode=halves`:
+    - paired-store state:
+      - `trade22`: `456 / 454 / 453 ms`
+      - `full17`: `437 / 436 / 430 ms`
+    - scalar-write reverted state:
+      - `trade22`: `465 / 473 / 461 ms`
+      - `full17`: `428 / 424 / 419 ms`
+  - conclusion: reject the `M17` paired-store variant after the direct `full17` regression, but keep the `M22` paired-store specialization because the corrected-scope `trade22` A/B stayed favorable
+- current kept code state for that experiment:
+  - `store_metrics_row_fixed_f32<22>()` now uses paired `float2` stores for the fixed 22-row metrics layout
+  - all other fixed-row contracts, including `M17`, remain on the original scalar write path
+- fresh Nsight Systems captures taken after that experiment became inconsistent with the direct runner timings in the same session.
+  - treat the corrected A/B runner timings and the imported corrected Nsight Compute counters as the acceptance evidence
+  - do not treat those later Nsight Systems wall times as acceptance evidence for or against the kept `M22`-only store specialization
 - reduced-row and full-row max-drawdown constraint packing is now covered directly in unit tests:
   - `build_device_constraint_args()` converts reduced rows into log-space
   - `build_device_constraint_args()` keeps raw `max_drawdown` thresholds for both `full17` and `trade22`
@@ -297,6 +321,64 @@ Measured smoke results:
   - decision:
     - revert immediately
     - do not spend further time on direct regime-value helper inlining until profiling shows a stronger bottleneck than the retained generic pointer walk
+- a second bounded write-path experiment is now implemented and kept on the same windowed family:
+  - change shape:
+    - add a fixed-`M` template path to the shared non-lockstep body for these wrappers
+    - use `zero_metrics_row_fixed_f32<17/22>()` for invalid rows and empty eval windows
+    - use `store_metrics_row_fixed_f32<17/22>()` for the final metrics row writeout
+    - thread the fixed metric count through the dedicated windowed M17 / M22 wrappers instead of relying on wrapper-only constant propagation
+  - workload: direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
+  - baseline retained pointer-walk state:
+    - `full17`: `373 / 376 / 376 ms` min / median / max, `375.0 ms` mean
+    - `trade22`: `388 / 394 / 396 ms` min / median / max, `392.7 ms` mean
+  - with fixed-row write specialization enabled:
+    - `full17`: `370 / 373 / 374 ms` min / median / max, `372.3 ms` mean
+    - `trade22`: `383 / 393 / 393 ms` min / median / max, `389.7 ms` mean
+  - verification:
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+      - passed with Criterion GPU mean about `82.0 ms`
+  - conclusion:
+    - wrapper-only constant propagation was not sufficient for this slice
+    - a fixed-`M` body path is now justified and retained for the dedicated windowed M17 / M22 wrappers
+    - the next credible write-path experiment is a larger layout change such as padded windowed `metrics_stride`, not more helper-level regime inlining
+- the exact eval / replay path now truly honors the requested full-row contract instead of silently collapsing back to 17-row decode/routing:
+  - `eval_double_ma_batch_gpu_kernel_impl()` now derives exact replay row count from `metric_contract` / `include_trade_metrics`
+  - eval/replay symbol loading now includes the fixed-contract `windowed_m22`, `m22`, and `lockstep_m22` families alongside the existing M17 families
+  - eval/replay dispatch now uses the same fixed-contract selection model as optimize, including `windowed_m22` and the dedicated no-risk regime flavors
+  - the generic `double_cross_backtest_tm_flex_f32_windowed` wrapper is no longer accidentally hard-wired to the fixed 17-row write path
+  - coverage:
+    - `gpu_kernel_regime_hybrid_trade22_multi_range_eval_preserves_trade_tail_metrics`
+    - `gpu_kernel_regime_hybrid_trade22_populates_trade_tail_metrics`
+    - `exact_eval_metrics_count_contract_respects_trade22_request`
+    - `finalist_recompute_eval_range_preserves_windowed_span`
+  - live runner confirmation on the product-facing shortlist-slice surface:
+    - `regime_hybrid` + `alma/alma` + `large/58300pairs` + `metric_contract=trade22` + `shortlist_slice_mode=halves`
+    - main search still logs `dispatch=lockstep_m22`
+    - replay ranges now log `VECTORBT_KERNEL_EVAL_DISPATCH ... dispatch=windowed_m22 ... metrics_count=22 ... fixed_metrics_contract=Some(22)`
+    - one measured run completed at about `257 ms`
+- verification after the replay fix:
+  - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+    - passed
+    - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: about `84.07 ms`
+- a third bounded write-layout experiment was measured on the same windowed family and then rejected:
+  - change shape:
+    - raise the windowed full-row exact `metrics_stride` from `17/22` to `24`
+    - keep host decode on the true metric row count so padded rows do not change full17 decode semantics on exact finalist reruns
+    - keep fixed-contract dispatch strict off-windowed so padded full-row strides do not create a latent non-windowed misroute
+  - workload: direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
+  - corrected-scope A/B on the same binary:
+    - `full17` with padded `metrics_stride=24`: `372 / 377 / 377 ms` min / median / max, `375.3 ms` mean
+    - `full17` with forced exact `metrics_stride=17`: `374 / 375 / 375 ms` min / median / max, `374.7 ms` mean
+    - `trade22` with padded `metrics_stride=24`: `386 / 389 / 393 ms` min / median / max, `389.3 ms` mean
+    - `trade22` with forced exact `metrics_stride=22`: `386 / 390 / 393 ms` min / median / max, `389.7 ms` mean
+  - verification:
+    - `cargo test -p ta_app_core fixed_metrics_contract_rows_require_matching_metric_stride --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core fixed_contract_dispatch_selects_specialized_routes_when_symbols_are_present --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core exact_gpu_kernel_config_preserves_metric_contract_request --features cuda,cuda-backtest-kernel`
+  - conclusion:
+    - the corrected-scope delta is too small and inconsistent to justify carrying the extra stride specialization
+    - revert it and keep the tree on the stronger retained pointer-walk and fixed-row write-path changes only
+    - the next credible step is either a larger row-write layout change or deferring tail trade metrics out of the all-pairs pass
 - a targeted windowed fast-side dedup experiment was prototyped on the exact hot `regime_hybrid` surface, measured, and reverted in the same session:
   - workload: `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
   - baseline current specialized windowed route:
@@ -347,6 +429,9 @@ Current interpretation:
 - the temporary `slow_major` compact-order probe produced only mixed low-single-digit movement, so it was not retained in the runtime
 - the first source-level windowed pointer-walk experiment is the first kept access-shape win on this surface: it materially improves `full17`, keeps `trade22` roughly flat, and is still stronger evidence than the rejected occupancy and dedup experiments
 - the first regime-value hoist on top of that pointer walk is now also measured as a regression, so remaining windowed work should bias toward larger layout or write-path changes rather than more helper-level regime inlining
+- the second bounded write-path experiment is also now a kept win on top of the retained pointer walk:
+  - the fixed-`M` windowed write path improves both direct exact contracts, with a clearer `full17` gain and a smaller `trade22` gain
+  - the passing GPU perf gate is enough to keep it, but the higher small Criterion mean means it should still be treated as a targeted exact-windowed win rather than a universal throughput improvement
 - the first Nsight Compute pass does not point to a DRAM-bound kernel:
   - both hot lockstep regime-on kernels are primarily compute / latency limited
   - both are register-limited on theoretical occupancy
@@ -377,7 +462,7 @@ Current interpretation:
 - the measured gain is material:
   - `xlarge` `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves` now runs at `433 / 429 / 425 ms` min / median / max, `429.0 ms` mean across 3 measured iterations after 1 warmup
   - `xlarge` `double_ma` + `alma/alma` + `trade22` + `shortlist_slice_mode=halves` now runs at `442 / 445 / 447 ms` min / median / max, `444.7 ms` mean across 3 measured iterations after 1 warmup
-  - `trade22` benefits here because the current shortlist-slice rerank still replays full 17-row metrics
+  - the older `trade22` shortlist-slice number above should now be treated as a stale pre-fix reference because the replay / eval path was still pinned to 17 rows when it was captured
   - Nsight Systems after specialization shows the 6 rerun launches now using `double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm` at `95.4 ms` total, `22.5%` of GPU kernel time
 - the direct windowed `trend_quality` exact surface is now measured and specialized:
   - before the new slice, direct `xlarge` `trend_quality` + `alma/alma` + `eval_range=[1000,199000)` smokes landed on:
@@ -417,6 +502,336 @@ Current interpretation:
   - Nsight Systems now shows the new regime-hybrid windowed kernels as the dominant exact kernels:
     - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm`: `372.4 ms`, `96.2%` of GPU kernel time
     - `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm`: `376.1 ms`, `96.2%` of GPU kernel time
+- a later host-route audit found that the exact `GpuHybridKernel` phase-1 path was silently dropping `include_trade_metrics` and `metric_contract`, forcing `trade22` requests back onto the 17-row contract on the direct `regime_hybrid` surface:
+  - evidence before the fix:
+    - direct dispatch logging on `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + `metric_contract=trade22` showed `dispatch=windowed_m17`, `metrics_count=17`, and `fixed_metrics_contract=Some(17)`
+    - repeated direct measurements then collapsed to wrong output on the same `(39,138)` pair, for example `462 / 463 / 465 ms` with `sharpe=0.026430`
+  - action taken:
+    - rejected the attempted `trade22 -> 17-row search + finalist refill` contraction because the current refill path still replays only 17 rows and cannot restore the 22-row trade tail safely
+    - kept the separate `eval_range` finalist-recompute fix so replay-backed exact routes no longer hardcode `[0, candles.len())`
+    - threaded `include_trade_metrics` and `metric_contract` through `optimize_double_ma_gpu_hybrid_kernel_phase1()`
+    - added a focused GPU test that exercises the `regime_hybrid` exact trade22 surface and asserts the trade-tail fields are populated
+  - corrected direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` timings after the host-route fix:
+    - `full17`: `378 / 380 / 380 ms` min / median / max, `379.3 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `388 / 391 / 396 ms` min / median / max, `391.7 ms` mean across 3 measured iterations after 1 warmup
+  - corrected dispatch evidence after the host-route fix:
+    - direct dispatch logging on the same `trade22` surface now shows `dispatch=windowed_m22`, `metrics_count=22`, and `fixed_metrics_contract=Some(22)`
+  - implication:
+    - the earlier direct `regime_hybrid` `trade22` timings recorded above should be treated as invalid historical data because they were still running on the 17-row contract
+- a later host-side revisit tried to re-enable `trade22 -> 17-row search + 22-row refill` now that the exact eval / replay path was repaired, then rejected it again and reverted it:
+  - change shape under test:
+    - allow the existing `trade22 -> 17-row` search contraction only when finalist recompute is available
+    - move the 22-row refill later in the host finalize / rerank flow so the explicit contract is restored after ranking
+  - measured outcome:
+    - direct `large/58300pairs` + `alma/alma` + `trade22` regressed from the stable mid-`80 ms` range to about `184 ms` on a one-iteration logged run and about `140-145 ms` on repeated measured iterations
+    - `xlarge` shortlist-slice reruns briefly hit `CUDA_ERROR_INVALID_VALUE` because the slice reranker was already issuing exact `m22` refreshes and the extra post-rank refill became redundant
+  - decision:
+    - revert the host-side refill revisit completely
+    - keep the earlier rejection in force: this contraction is still not a credible performance win on the current runtime architecture even after the eval-path repairs
+- a separate exact-eval audit then found that the replay / eval implementation itself was also still structurally pinned to 17 rows:
+  - evidence before the fix:
+    - `eval_double_ma_batch_gpu_kernel_impl()` still chose tiles, kernel `M`, decode width, and stride from `METRICS_COUNT`
+    - the eval path only loaded / selected `m17` and `windowed_m17` fixed-contract symbols, not the matching 22-row family
+  - action taken:
+    - added an exact-eval contract helper so replay-backed exact paths honor `metric_contract` and `include_trade_metrics`
+    - loaded `windowed_m22`, `m22`, and `lockstep_m22` families in the eval path and switched eval dispatch onto the same fixed-contract selection logic used by the main optimize path
+    - added a focused GPU test that exercises windowed exact eval with `metric_contract=trade22` and asserts the trade-tail fields are populated
+    - added a second focused GPU test that drives shortlist-slice reruns with `include_trade_metrics=false` and `metric_contract=trade22`, proving the replay helper honors the contract instead of relying on the trade-metrics boolean
+    - corrected the older multi-range exact-eval regression test so it only requires non-zero trade-tail fields on ranges that actually close trades
+  - corrected dispatch evidence after the eval-path fix:
+    - dispatch-logged GPU test now shows `VECTORBT_KERNEL_EVAL_DISPATCH: ... dispatch=windowed_m22 ... metrics_count=22 ... tile_metrics_stride=22 ... fixed_metrics_contract=Some(22)`
+  - verification:
+    - `cargo test -p ta_app_core exact_eval_metrics_count_prefers_metric_contract_over_trade_flag --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core gpu_kernel_exact_eval_trade22_metric_contract_populates_trade_tail_metrics --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_trade22_metric_contract_preserves_trade_tail_metrics --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core gpu_kernel_regime_hybrid_trade22_multi_range_eval_preserves_trade_tail_metrics --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core gpu_kernel_regime_hybrid_trade22_populates_trade_tail_metrics --features cuda,cuda-backtest-kernel`
+  - corrected replay-backed shortlist-slice measurements on `double_ma` + `alma/alma` + `xlarge/370750pairs` + `shortlist_slice_mode=halves` after the eval-path fix:
+    - `full17`: `432 / 434 / 442 ms` min / median / max, `436.0 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `465 / 468 / 468 ms` min / median / max, `467.0 ms` mean across 3 measured iterations after 1 warmup
+    - dispatch logging on the same rerank surface now shows the all-pairs pass on `lockstep_m22` and the replay slices on `windowed_m22`
+  - Nsight Systems on the corrected replay-backed `trade22` shortlist-slice surface (`target/nsight/double_ma_shortlist_trade22_postfix.nsys-rep`) now shows:
+    - `double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm`: `321.2 ms`, `73.6%` of GPU kernel time
+    - 6 replay launches on `double_cross_backtest_tm_flex_f32_windowed_m22_regime_off_norisk_eps0_nocomm`: `100.1 ms` total, `22.9%` of GPU kernel time
+    - implication: the corrected replay-backed `trade22` slowdown is still mostly dominated by the main all-pairs `lockstep_m22` pass, with replay slices as a secondary cost rather than the primary bottleneck
+  - current GPU perf gate summary on the updated state:
+    - `target/gpu_perf_summary.json` now records `criterion_mean_ms=85.398143` for `double_ma/gpu_kernel/sma_sma/200k/small`
+    - dynamic preflight ratio is now recorded as `72.75 / 80.75 = 0.900929`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` returned a passing state on the current tree
+    - both checked values remain comfortably inside the budgets in `scripts/baselines/gpu_perf_baseline.json`
+  - implication:
+    - replay-backed exact `trade22` surfaces are no longer structurally forced through 17-row decode / dispatch
+    - the older `444.7 ms` shortlist-slice `trade22` figure above is now a stale pre-fix reference, not the current corrected number
+- a later repaired exact-eval / finalist-refill revisit kept only the exact-eval dedupe cleanup and rejected the contraction again:
+  - kept code shape:
+    - `exact_eval_metrics_for_params()` now dedupes exact replay params by `(fast_len, slow_len)` before the GPU batch eval and expands results back to caller order
+    - `recompute_optimization_result_finalists_with_full_gpu_pass()` now uses that helper
+  - rejected code shape:
+    - a second `trade22 -> full17 search + 22-row restore` attempt was measured after the eval-path repairs and then reverted completely
+    - it still regressed the replay-backed shortlist surface and briefly reintroduced unstable first-run behavior on the hot `trade22` path
+  - corrected serial post-revert baselines on `double_ma` + `alma/alma` + `xlarge/370750pairs` + `shortlist_slice_mode=halves`:
+    - `full17`: `391 / 391 / 392 ms` min / median / max, `391.3 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `395 / 398 / 401 ms` min / median / max, `398.0 ms` mean across 3 measured iterations after 1 warmup
+    - best output is stable again on the same `(5,1000)` pair after the revert
+  - current post-revert GPU perf gate summary:
+    - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[82.498 ms 82.765 ms 83.054 ms]`
+    - dynamic preflight: `71.5 ms` (on) vs `77.5 ms` (off)
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed on the reverted tree
+  - implication:
+    - keep the contraction rejected
+    - treat the reverted shortlist baselines above as the current pre-experiment anchor for any next compact-pair hotspot work
+- the next compact-pair hotspot slice is now implemented and kept in the shared backtest body:
+  - change shape:
+    - the backtest ABI now accepts optional compact valid-pair metadata for:
+      - compact fast/slow period rows
+      - compact fast/slow local row indices
+    - the hot compact-output path now uses those local-row arrays directly instead of recomputing `pair_index_map -> dense_pair -> pf_local / ps_local` and then reloading period values lane-by-lane
+    - optimize-path cached valid-pair maps now cache the extra local-row arrays alongside the existing compact period rows
+    - exact eval / replay scratch now uploads the same compact period/local-row metadata for replay-backed full-row routes
+  - added host coverage:
+    - `build_valid_pair_local_rows_match_compact_pf_major_order`
+  - measured serial `double_ma` + `alma/alma` results on the kept tree:
+    - `xlarge/370750pairs` + `shortlist_slice_mode=halves`:
+      - `full17`: `386 / 389 / 403 ms` min / median / max, `392.7 ms` mean across 3 measured iterations after 1 warmup
+      - `trade22`: `398 / 401 / 401 ms` min / median / max, `400.0 ms` mean across 3 measured iterations after 1 warmup
+    - compared with the corrected post-revert anchor above:
+      - `full17` stayed roughly flat inside normal shortlist-surface noise
+      - `trade22` stayed effectively flat inside normal shortlist-surface noise
+    - direct `eval_range=[1000,199000)` runner smoke on the kept tree:
+      - `full17`: `342 / 342 / 344 ms` min / median / max, `342.7 ms` mean across 3 measured iterations after 1 warmup
+      - `trade22`: `355 / 359 / 360 ms` min / median / max, `358.0 ms` mean across 3 measured iterations after 1 warmup
+    - compared with the corrected direct exact anchor above:
+      - `full17` improved from `379.3 ms` to `342.7 ms`
+      - `trade22` improved from `391.7 ms` to `358.0 ms`
+  - Nsight Systems on the kept direct exact tree now shows:
+    - artifact: `target/nsight/regime_hybrid_windowed_full17_compact_rows.nsys-rep`
+    - hot kernel: `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm`
+    - kernel time: `325.5 ms`, `95.8%` of GPU kernel time
+  - verification:
+    - `cargo build -p ta_app_core --bin profile_gpu_dynamic_runner --release --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core build_valid_pair_local_rows_match_compact_pf_major_order --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core build_valid_pair_index_map_preserves_dense_pf_major_order --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_exact_eval_trade22_metric_contract_populates_trade_tail_metrics --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_trade22_metric_contract_preserves_trade_tail_metrics --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core compact_valid_pair_output --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core fixed_contract_kernel_flavor_covers_full_row_regime_variants --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+      - passed
+      - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[81.359 ms 81.602 ms 81.845 ms]`
+      - dynamic preflight: `72.25 ms` (on) vs `76.75 ms` (off)
+- implication:
+  - keep the compact local-row metadata path
+  - it is a targeted direct exact-route win, safe on the current gate, and a credible partial response to the compact-pair setup cost in the hot backtest body
+  - it does not yet move the replay-heavy shortlist surface materially, so the next work should come from post-compact profiling or a larger write/layout experiment rather than revisiting the rejected 17-row contraction
+- fresh recovered profiling now pins the current product-facing shortlist hotspot more cleanly:
+  - Nsight Systems artifact: `target/nsight/double_ma_shortlist_full17_postrevert.nsys-rep`
+  - xlarge `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves`:
+    - `double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm`: `285.5 ms`, `70.2%` of GPU kernel time
+    - 6 replay launches on `double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm`: `105.5 ms` total, `26.0%` of GPU kernel time
+  - implication:
+    - the current shortlist surface is still dominated by the main all-pairs lockstep `m17` regime-off kernel
+    - replay-windowed reruns are still material, but they are secondary on this surface after the retained direct exact improvements
+- light Nsight Compute now also exists for the current recovered shortlist lockstep hotspots:
+  - artifacts:
+    - `target/nsight/double_ma_shortlist_full17_lockstep_ncu_light.ncu-rep`
+    - `target/nsight/double_ma_shortlist_trade22_lockstep_ncu_light.ncu-rep`
+  - `lockstep_time_m17_regime_off_norisk_eps0_nocomm`:
+    - `275.27 ms`, compute throughput `67.90%`, memory throughput `23.21%`
+    - `56` registers/thread, theoretical occupancy `75.0%`, achieved occupancy `66.42%`
+    - no local/shared spilling
+    - global loads still use only about `17.7 / 32` bytes per L1TEX sector
+    - global stores still use only about `4.0 / 32` bytes per L1TEX sector
+    - L1TEX scoreboard stalls are still about `5.4` cycles, about `48.9%` of the average `11.0` cycles between issued instructions
+    - Nsight still calls out a tail-wave risk of up to `33.3%`
+  - `lockstep_time_m22_regime_off_norisk_eps0_nocomm`:
+    - `311.64 ms`, compute throughput `67.55%`, memory throughput `20.90%`
+    - `64` registers/thread, theoretical occupancy `66.67%`, achieved occupancy `61.31%`
+    - no local/shared spilling
+    - global loads still use only about `17.7 / 32` bytes per L1TEX sector
+    - global stores still use only about `4.0 / 32` bytes per L1TEX sector
+    - L1TEX scoreboard stalls are still about `4.8` cycles, about `47.0%` of the average `10.3` cycles between issued instructions
+    - Nsight still calls out a tail-wave risk of up to `33.3%`
+- three additional bounded probes are now measured and rejected on the recovered tree:
+  - lockstep fixed-contract pointer-walk addressing in the shared backtest body:
+    - change shape: extend the retained pointer-walk idea into `LOCKSTEP_TIME` fixed `m17` / `m22` routes by prewalking `fast_ma_T`, `slow_ma_T`, `lr`, and `ret1`
+    - workload: xlarge `double_ma` + `alma/alma` + `shortlist_slice_mode=halves`
+    - measured result:
+      - `full17`: `435 / 437 / 438 ms` min / median / max, `436.7 ms` mean
+      - `trade22`: `468 / 470 / 472 ms` min / median / max, `470.0 ms` mean
+    - decision: revert immediately; do not treat lockstep pointer walking as the next route-matrix win
+  - padded `full17` lockstep/write-layout probe via `VECTORBT_KERNEL_METRICS_FULL17_STRIDE=18`:
+    - workload: xlarge `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves`
+    - measured result: `621 / 641 / 655 ms` min / median / max, `639.0 ms` mean
+    - decision: reject; simple row padding alone is not a viable fix for the current shortlist hotspot
+  - block-size override probes via `VECTORBT_KERNEL_BLOCK_X`:
+    - workload: xlarge `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves`
+    - `block_x=256`: `454 / 481 / 485 ms` min / median / max, `473.3 ms` mean
+    - `block_x=96`: `461 / 472 / 506 ms` min / median / max, `479.7 ms` mean
+    - decision: reject both overrides; the current chooser was not missing an easy launch-shape fix on this surface
+- a later exact-only compact column-major output probe was also measured and rejected immediately:
+  - change shape:
+    - keep the existing exact windowed backtest kernels and host decode flow
+    - switch only the exact replay compact scratch for fixed `windowed_m17` / `windowed_m22` routes to a column-major metrics layout so per-metric stores become warp-contiguous
+    - add matching host-side column-major decode helpers and coverage tests
+  - workload: direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
+  - measured result with the probe enabled:
+    - `full17`: `392 / 400 / 384 ms` min / median / max
+    - `trade22`: `1055 / 1079 / 1088 ms` min / median / max
+  - decision:
+    - revert immediately
+    - do not revisit this exact column-major scratch idea without a much narrower theory for why the current `trade22` path explodes
+- current measurement caveat after that revert:
+  - the tree is back on the previously retained code path
+  - however, later post-revert measurements in this same session became invalid because the workstation GPU was already saturated by external load
+  - observed machine state:
+    - `nvidia-smi`: about `98-100%` GPU utilization, about `47-48%` memory-controller utilization, about `304-323 W`
+    - active external graphics workload: `DS2.exe`
+  - implication:
+    - do not treat the subsequent multi-second exact-run timings from this session as acceptance evidence for or against the reverted code
+    - the next CUDA timing pass must start from an idle GPU
+- the next idle-GPU recovery pass on the same tree found and fixed two real regressions on the shared small product surface:
+  - first issue:
+    - the bench build was no longer trustworthy because `use_windowed_col_major_exact_output` was referenced outside its defining scope in the exact replay helper
+    - that scope bug is now fixed before taking any new acceptance timings
+  - second issue:
+    - the generic product valid-pair cache was still constructing and uploading compact fast/slow local-row metadata even though the non-windowed product path had already stopped using those pointers
+    - the cache now keeps only compact pair indexes plus compact fast/slow period rows on the product path; exact replay scratch still owns its own local-row uploads where they were actually measured as useful
+  - recovered measurements on an idle GPU:
+    - direct `profile_gpu_dynamic_runner` sanity on `double_ma` + `sma/sma` + `small/1590pairs` + `heatmap_bins=64`: about `84-96 ms` wall/runtime across measured iterations on the restored default path
+    - fresh Criterion rerun on `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[92.990 ms 109.87 ms 140.57 ms]`
+    - authoritative gate rerun on the same recovered tree:
+      - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[91.906 ms 92.152 ms 92.392 ms]`
+      - dynamic preflight: `79 ms` (on) vs `86.25 ms` (off)
+      - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed
+  - verification:
+    - `cargo test -p ta_app_core build_valid_pair_local_rows_match_compact_pf_major_order --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_exact_eval_trade22_metric_contract_populates_trade_tail_metrics --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+- the first explicit lockstep warp-uniform `lr` / `ret1` load experiment is now measured and rejected:
+  - change shape:
+    - add warp-uniform broadcast loads for `lr[t]` and `ret1[t]` inside the shared `LOCKSTEP_TIME` loop body
+    - do not change regime loads, pair scheduling, or pointer-walk behavior in the same probe
+  - workload: xlarge `double_ma` + `alma/alma` + `shortlist_slice_mode=halves`
+  - pre-change anchor on the recovered tree:
+    - `full17`: `455 / 440 / 440 ms` min / median / max, `441.7 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `458 / 456 / 461 ms` min / median / max, `458.3 ms` mean across 3 measured iterations after 1 warmup
+  - measured result with the probe enabled:
+    - `full17`: `469 / 460 / 460 ms` min / median / max, `463.0 ms` mean
+    - `trade22`: `489 / 481 / 492 ms` min / median / max, `487.0 ms` mean
+  - decision:
+    - revert immediately
+    - do not treat warp-uniform `lr` / `ret1` broadcast alone as a viable next lockstep win on the shortlist surface
+- a later post-crash shortlist finalize pass first confirmed that the previously invoked release runner had been stale:
+  - after rebuilding `profile_gpu_dynamic_runner`, the truthful current-source shortlist anchor briefly widened to:
+    - `xlarge` `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves`: `487 / 489 / 487 ms` min / median / max, with `host_finalize` about `160-162 ms`
+    - `xlarge` `double_ma` + `alma/alma` + `trade22` + `shortlist_slice_mode=halves`: `507 / 564 / 513 ms` min / median / max, with `host_finalize` about `170-174 ms`
+  - focused profiling on that rebuilt state showed the widened shortlist tail was replay-heavy:
+    - shortlist `full17` pipeline profile: `final_finalize` about `161.7 ms`, about `35.1%` of total pipeline time
+    - replay profile on the same `halves` surface exposed three exact replay batches:
+      - `50 finalists x 2 ranges`: about `61.8 ms`
+      - another `50 finalists x 2 ranges`: about `50.7 ms`
+      - `50 finalists x 4 ranges`: about `48.5 ms`
+    - the replay timing was overwhelmingly landing in `d2h_decode`, which on this path also carries the replay-launch synchronization cost
+- the kept fix for that rebuilt shortlist regression removes the redundant same-mode replay in `rerank_shortlist_by_slice_robustness()`:
+  - kept changes:
+    - keep the shortlist-slice rerank call on a borrowed slice instead of cloning the shortlisted row vector at the call site
+    - stop rebuilding a second `ShortlistSliceDiagnostics` object after rerank when the helper has already limited diagnostics to `top_limit`
+    - stop cloning the full sorted rerank list on the optimize path and return only `top_limit` rows there, while preserving the full-row host wrapper for tests
+    - align top `halves` / `quartiles` diagnostic records by order instead of temporary `(fast_len, slow_len)` hash maps, with explicit mismatch checks
+    - reuse the already-ranked diagnostics for the active slice mode instead of replaying that same mode a second time
+  - corrected profiling after the kept replay-reuse change:
+    - shortlist `full17` pipeline profile: `final_finalize` back down to about `115.9 ms`
+    - replay profile on the same `halves` surface now shows only two batches:
+      - `50 finalists x 2 ranges`: about `64.7 ms`
+      - `50 finalists x 4 ranges`: about `50.6 ms`
+  - fresh serial reruns on the kept tree:
+    - `xlarge` `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves`: `442 / 435 / 436 ms` min / median / max, with `host_finalize` about `109-113 ms`
+    - `xlarge` `double_ma` + `alma/alma` + `trade22` + `shortlist_slice_mode=halves`: `458 / 456 / 451 ms` min / median / max, with `host_finalize` about `117-120 ms`
+  - conclusion:
+    - keep the bounded host-side trims and the same-mode replay reuse
+    - the rebuilt current-source shortlist surface is now back in line with the earlier recovered anchor
+    - the remaining shortlist tail is still replay-heavy, but the obvious duplicate rerun is now gone
+  - verification:
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_trade22_metric_contract_preserves_trade_tail_metrics --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_request_diagnostics_are_exposed_on_backend_result --features cuda,cuda-backtest-kernel -- --test-threads=1`
+- the next kept shortlist trim removes duplicate shortlist-row materialization on the exact slice-only path when there are no extra shortlist heads and no union/confidence rerank:
+  - kept change:
+    - only build `materialized_shortlist_rows` on the optimize path when later stages actually need a separate shortlist buffer
+    - plain `shortlist_slice_mode` reranks without extra shortlist heads now fall back to `result.top.as_slice()` instead of cloning the same rows during decode
+  - fresh serial reruns on the kept tree:
+    - `xlarge` `double_ma` + `alma/alma` + `full17` + `shortlist_slice_mode=halves`: `436 / 431 / 435 ms` min / median / max, `434.0 ms` mean, with `host_finalize` about `108-114 ms`
+    - `xlarge` `double_ma` + `alma/alma` + `trade22` + `shortlist_slice_mode=halves`: `454 / 453 / 453 ms` min / median / max, `453.3 ms` mean, with `host_finalize` about `116-118 ms`
+  - gate / verification:
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_request_matches_exhaustive_host_union --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_request_diagnostics_are_exposed_on_backend_result --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+      - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[91.963 ms 92.231 ms 92.481 ms]`
+      - dynamic preflight: `79 ms` (on) vs `87 ms` (off)
+      - pass
+- the next retained windowed replay experiment is a software-pipelined load path layered on top of the kept pointer-walk body:
+  - change shape:
+    - keep the scope limited to `WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP`
+    - preload the current `fast_ma_T`, `slow_ma_T`, `lr`, and `ret1` values once per pair
+    - fetch the next-step values before consuming the current step so the long per-pair loop can overlap more load latency with the current iteration's arithmetic
+    - leave lockstep kernels, generic non-windowed kernels, pair ordering, and host dispatch unchanged
+  - target benchmark surface:
+    - `xlarge` `double_ma` + `alma/alma` + `shortlist_slice_mode=halves`
+    - fixed full-row reruns that hit `windowed_m17_regime_off_norisk_eps0_nocomm` / `windowed_m22_regime_off_norisk_eps0_nocomm`
+  - fresh serial reruns on the kept state:
+    - `full17`: `397 / 396 / 398 ms` min / median / max, `397.0 ms` mean, with `host_finalize` about `77-79 ms`
+    - `trade22`: `424 / 420 / 425 ms` min / median / max, `423.0 ms` mean, with `host_finalize` about `83-86 ms`
+  - comparison against the prior recovered shortlist anchor:
+    - `full17`: from `434.0 ms` mean down to `397.0 ms`
+    - `trade22`: from `453.3 ms` mean down to `423.0 ms`
+    - `host_finalize` dropped by about `31-35 ms` on both contracts, which matches the replay-heavy tail this pass was targeting
+  - post-change Nsight Systems smoke on the `full17` shortlist surface:
+    - report: `target/nsight/double_ma_shortlist_full17_postpipeline.nsys-rep`
+    - hot-kernel summary:
+      - `lockstep_time_m17_regime_off_norisk_eps0_nocomm`: `282.8 ms`, `76.6%` of GPU kernel time
+      - `windowed_m17_regime_off_norisk_eps0_nocomm`: `71.7 ms` across 6 launches, `19.4%` of GPU kernel time
+      - `alma_batch_tiled_f32_2x_tile256_tm`: `14.8 ms`, `4.0%`
+    - compared with the earlier post-trim smoke on the same surface, the windowed rerun kernel dropped from about `103.4 ms` total to about `71.7 ms`
+  - decision:
+    - keep the software-pipelined windowed load path
+    - treat it as the first retained follow-on win after the earlier pointer-walk cleanup, because it moves the remaining replay kernel cost itself rather than just shaving host-side duplication
+  - verification:
+    - `cargo build -p ta_app_core --bin profile_gpu_dynamic_runner --release --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_trade22_metric_contract_preserves_trade_tail_metrics --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_request_diagnostics_are_exposed_on_backend_result --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_request_matches_exhaustive_host_union --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+      - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[85.308 ms 85.601 ms 85.876 ms]`
+      - dynamic preflight: `77.75 ms` (on) vs `79.75 ms` (off)
+      - pass
+- a fresh post-crash serial rerun on the current tree tightened the shortlist anchor again:
+  - workload: `double_ma` + `alma/alma` + `xlarge/370750pairs` + objective `sharpe` + `shortlist_slice_mode=halves`
+  - `full17`: `396 / 398 / 400 ms` min / median / max, `398.0 ms` mean across 3 measured iterations after 1 warmup, with `host_finalize` about `75-77 ms`
+  - `trade22`: `419 / 432 / 434 ms` min / median / max, `428.3 ms` mean across 3 measured iterations after 1 warmup, with `host_finalize` about `83-85 ms`
+  - note:
+    - single cold runs on this surface can still produce misleading first-iteration outliers well above the warmed steady state, so only the warmed serial measurements above should be treated as the current acceptance anchor
+- a bounded lockstep regime-value broadcast experiment was measured and rejected:
+  - change shape:
+    - add warp-uniform `regime_filter[t_sig]` loads only for the compile-time `REGIME_MODE=1` / `REGIME_MODE=2` lockstep routes
+    - leave generic runtime-regime paths and non-lockstep routes unchanged
+  - workload: `trend_quality` + `alma/alma` + `xlarge/370750pairs` + objective `sharpe`
+  - measured result:
+    - `full17`: `425 / 429 / 430 ms` min / median / max, `428.0 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `436 / 438 / 440 ms` min / median / max, `438.0 ms` mean across 3 measured iterations after 1 warmup
+  - decision:
+    - revert immediately
+    - do not carry extra lockstep regime-broadcast complexity without a clear win; the measured result was effectively flat against the prior regime-on anchor
+- a later raw-pointer windowed-load probe was also measured and rejected:
+  - change shape:
+    - replace the retained windowed pointer-walk `__ldg` loads with plain dereferences on the `WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP` path
+    - leave the rest of the shared body unchanged
+  - apparent shortlist result on `double_ma` + `alma/alma` + `xlarge/370750pairs` + `shortlist_slice_mode=halves`:
+    - `full17`: `391 / 393 / 415 ms` min / median / max, `399.7 ms` mean across 3 measured iterations after 1 warmup
+    - `trade22`: `425 / 427 / 429 ms` min / median / max, `427.0 ms` mean across 3 measured iterations after 1 warmup
+  - failing cross-check on the direct exact windowed surface:
+    - `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + `full17` regressed to `1102 / 1110 / 1119 ms` min / median / max after a `590 ms` warmup
+  - decision:
+    - revert immediately
+    - do not treat shortlist-only improvement as valid acceptance evidence when the same load change catastrophically regresses the direct exact windowed route
 - remaining open work is now centered on source-level investigation of the windowed L1TEX dependency / coalescing hints, deciding whether the windowed family should expand beyond the now-proven `regime_off`, `regime_on`, and `regime_hybrid` hot slices, and only then reconsidering downstream fusion work if the backtest kernel stops dominating
 
 ## Implementation Order
@@ -808,7 +1223,7 @@ Guardrails:
 - [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_on_norisk_eps0_nocomm`.
 - [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk`.
 - [x] Add `double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm`.
-- [ ] Decide whether wrapper-only constant propagation is sufficient or a fixed-`M` template body is required.
+- [x] Decide whether wrapper-only constant propagation is sufficient or a fixed-`M` template body is required.
 
 ### Phase 3 Checklist: Host Dispatch
 
@@ -821,6 +1236,9 @@ Guardrails:
 - [x] Route windowed `RegimeHybridNoRisk` fixed-contract requests to dedicated M17 / M22 kernels when present.
 - [x] Route shortlist-slice 17-row reruns to `windowed_m17` when present.
 - [x] Expose a direct `eval_start` / `eval_end` benchmark surface for exact GPU routes.
+- [x] Thread `include_trade_metrics` and `metric_contract` through the exact `GpuHybridKernel` phase-1 route instead of silently dropping them.
+- [x] Make the exact eval / replay path honor `metric_contract` and `include_trade_metrics` instead of forcing 17-row decode and dispatch.
+- [x] Load and route fixed-contract `windowed_m22` / `m22` / `lockstep_m22` families on the eval / replay path.
 - [x] Preserve current reduced-row M7 route precedence.
 - [x] Preserve current reduced-row M10 product-route precedence.
 - [x] Add or update dispatch logging so M17 / M22 routes are visible in logs.
@@ -834,13 +1252,21 @@ Guardrails:
 - [x] Reject the first `__shfl_sync`-based warp-uniform `lr` / `ret1` lockstep helper after measured regression.
 - [x] Capture Nsight Compute on the hot lockstep `m17` / `m22` regime-on kernels and record whether they are memory- or register-limited.
 - [x] Reject the first selective `__launch_bounds__(128, 2)` experiment on the hot lockstep regime-on kernels after mixed results and a 22-row regression.
-- [ ] Add warp-uniform lockstep loads for `lr`.
-- [ ] Add warp-uniform lockstep loads for `ret1`.
+- [x] Benchmark and reject the first warp-uniform lockstep `lr` / `ret1` load experiment after shortlist regressions on both 17-row and 22-row surfaces.
+- [x] Reuse the already-ranked shortlist diagnostics for the active slice mode instead of replaying that same mode a second time on the current top-k shortlist surface.
+- [x] Skip duplicate shortlist-row materialization on the exact slice-only path when there are no extra shortlist heads and no union/confidence rerank stages.
 - [ ] Add warp-uniform regime-value loads for lockstep regime paths.
 - [ ] Investigate windowed L1TEX scoreboard stalls and poor global load/store sector utilization before any further launch-bounds or occupancy experiments.
+- [x] Profile the corrected replay-backed `trade22` hotspot with Nsight Compute and extract the dominant coalescing / L1TEX findings into the tracker.
 - [x] Keep the first positive windowed pointer-walk load experiment after a direct `full17` win, `trade22` neutrality, and a passing GPU perf gate.
 - [x] Reject the first windowed regime-value hoist on top of the retained pointer walk after a direct `full17` regression.
+- [x] Keep the fixed-row windowed M17 / M22 metrics write specialization after direct `full17` and `trade22` wins plus a passing GPU perf gate.
+- [x] Reject the broad M17 paired-store final-row write experiment after a same-surface `full17` regression.
+- [x] Keep the narrowed M22-only paired-store final-row write specialization after the corrected serial `trade22` shortlist A/B stays favorable.
+- [x] Keep compact valid-pair local-row metadata only on the exact / replay surfaces that still use it, and remove the generic product cache/build cost after the recovered small-benchmark regression.
+- [x] Measure the first padded windowed full-row `metrics_stride=24` experiment and reject keeping it after corrected-scope A/B results land inside noise.
 - [x] Reject the first dedicated windowed fast-side dedup experiment after measured regression on the hot `regime_hybrid` direct exact surface.
+- [x] Reject the attempted `trade22 -> 17-row search` contraction after confirming the current finalist refill path is not a safe 22-row restore surface.
 - [x] Measure a temporary `slow_major` compact-order probe on direct exact surfaces and reject keeping a runtime knob for it for now.
 - [x] Benchmark whether M17 lockstep full-row routes should also get dedicated dedup variants.
 - [x] Benchmark whether M22 lockstep full-row routes should also get dedicated dedup variants.
@@ -859,7 +1285,7 @@ Guardrails:
 
 - [ ] Run `cargo test -p ta_app_core` after each specialization wave.
 - [ ] Run targeted exact-route GPU tests for 17-row paths.
-- [ ] Run targeted exact-route GPU tests for 22-row paths.
+- [x] Run targeted exact-route GPU tests for 22-row paths.
 - [x] Run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` before handoff.
 - [ ] Run Nsight Compute from an elevated PowerShell session for the benchmark matrix above.
 - [x] Run Nsight Systems from an elevated PowerShell session if stage dominance changes after specialization.
