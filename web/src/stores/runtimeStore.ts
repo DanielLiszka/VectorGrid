@@ -63,7 +63,7 @@ export const useRuntimeStore = defineStore('runtime', {
       this.bootError = null
       this.bootErrorDetail = null
       this.bootReadyAt = null
-      if (!this.bootStartedAt) this.bootStartedAt = Date.now()
+      this.bootStartedAt = Date.now()
     },
 
     setBootStage(stage: string): void {

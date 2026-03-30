@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, reactive, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import AppRuntimeBanner from './components/AppRuntimeBanner.vue'
 import DesktopTitlebar from './components/DesktopTitlebar.vue'
 import GlobalShortcutBridge from './components/GlobalShortcutBridge.vue'
 import RunFooterPanel from './components/RunFooterPanel.vue'
+import StartupAnimationOverlay from './components/StartupAnimationOverlay.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
 import { useWorkflowStore } from './stores/workflowStore'
 
-const AppRuntimeBanner = defineAsyncComponent(() => import('./components/AppRuntimeBanner.vue'))
 const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/AdvancedWorkspacePanel.vue'))
 const AnalysisContextDock = defineAsyncComponent(() => import('./components/AnalysisContextDock.vue'))
 const CommandPaletteOverlay = defineAsyncComponent(() => import('./components/CommandPaletteOverlay.vue'))
@@ -101,6 +102,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
 </script>
 
 <template>
+  <StartupAnimationOverlay />
   <DesktopTitlebar />
   <VueWorkspaceShell />
   <CommandPaletteOverlay />

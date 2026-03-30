@@ -600,6 +600,20 @@ Deliverables:
 - measure on both direct exact and replay-backed exact surfaces
 - reject immediately if the change only helps one surface and regresses the other
 
+Current status update, March 30, 2026:
+
+- one bounded windowed-body hypothesis was tried and rejected:
+  - split the no-risk pointer-walk loop into a `ret1-present` fast path and a fallback path to remove per-bar `ret1_ptr != nullptr` checks on the hot full-row windowed reruns
+- the direct exact `eval_range=[1000,199000)` surface improved:
+  - `alma/alma`, `xlarge`, `full17` moved from `258 / 279 / 257 ms` to `238 / 239 / 241 ms`
+  - `alma/alma`, `xlarge`, `trade22` moved from `260 / 266 / 259 ms` to `258 / 249 / 249 ms`
+- the replay-backed exact surface regressed and forced immediate rollback:
+  - `alma/alma`, `xlarge`, `full17`, `shortlist_slice_mode=halves` moved from `371 / 371 / 370 ms` to `386 / 392 / 387 ms`
+- the slice was reverted immediately after that replay-backed regression
+- current conclusion:
+  - the retained windowed pointer-walk family can still produce isolated wins on direct exact reruns
+  - it no longer looks attractive as a general next step because replay-backed exact sensitivity remains high
+
 Acceptance:
 
 - measurable win on direct exact or replay-backed exact windowed surfaces without regressing the other surface
@@ -877,11 +891,11 @@ Required tooling:
 
 ### Phase 2 Checklist
 
-- [ ] Form one bounded windowed full-row kernel-body hypothesis from fresh Nsight evidence.
-- [ ] Keep the hypothesis inside the retained kept windowed pointer-walk family, not the already-rejected neighboring probes.
-- [ ] Measure the change on direct exact windowed surfaces.
-- [ ] Measure the change on replay-backed exact windowed surfaces.
-- [ ] Revert immediately if the change helps only one windowed surface and regresses the other.
+- [x] Form one bounded windowed full-row kernel-body hypothesis from fresh Nsight evidence.
+- [x] Keep the hypothesis inside the retained kept windowed pointer-walk family, not the already-rejected neighboring probes.
+- [x] Measure the change on direct exact windowed surfaces.
+- [x] Measure the change on replay-backed exact windowed surfaces.
+- [x] Revert immediately if the change helps only one windowed surface and regresses the other.
 
 ### Phase 3 Checklist
 
@@ -941,6 +955,7 @@ These ideas were already measured and should not be treated as fresh opportuniti
 - padded full-row stride probes
 - exact column-major scratch probes
 - raw-pointer windowed load probes
+- no-risk windowed pointer-walk `ret1_ptr` null-check loop split in the current form
 - `trade22 -> full17 search + refill` contraction
 - changing the default product/UI metric contract from `auto` to `trade22`
 - alignment-guarded packed `full17` row stores in the current lockstep row-first exact path
