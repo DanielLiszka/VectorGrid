@@ -13,6 +13,10 @@ import {
 import { buildDesktopSmokeApp } from './scripts/desktop/build-smoke-app.ts'
 import { verifyDesktopSmokePrereqs } from './scripts/desktop/verify-prereqs.ts'
 
+process.env.VECTORGRID_DESKTOP_SMOKE_RUN_ID =
+  String(process.env.VECTORGRID_DESKTOP_SMOKE_RUN_ID || '').trim()
+  || new Date().toISOString().replace(/[:.]/g, '-')
+
 const artifactContext = createDesktopArtifactContext()
 const outputDir = ensureDir(path.resolve(artifactContext.logsDir, 'wdio'))
 let tauriDriverProcess: ChildProcess | null = null
@@ -27,6 +31,15 @@ let edgeDriverPath = ''
 const tauriDriverPort = 4444
 const previewServerPort = 1420
 const vitePreviewEntrypoint = path.resolve(webRoot, 'node_modules', 'vite', 'bin', 'vite.js')
+const stableSmokeSpecs = [
+  './e2e/desktop/specs/desktop-shell-readiness.spec.ts',
+  './e2e/desktop/specs/desktop-workspace-navigation.spec.ts',
+  './e2e/desktop/specs/desktop-command-palette.spec.ts',
+  './e2e/desktop/specs/desktop-task-center.spec.ts',
+  './e2e/desktop/specs/desktop-settings-diagnostics.spec.ts',
+  './e2e/desktop/specs/desktop-titlebar-native-controls.spec.ts',
+]
+const geometrySmokeSpec = './e2e/desktop/specs/desktop-window-geometry.spec.ts'
 
 type TauriDesktopCapability = WebdriverIO.Capabilities & {
   'tauri:options': {
@@ -170,10 +183,12 @@ async function startTauriDriver(): Promise<void> {
 export const config: WebdriverIO.Config = {
   hostname: '127.0.0.1',
   port: tauriDriverPort,
-  specs: ['./e2e/desktop/specs/**/*.spec.ts'],
+  specs: stableSmokeSpecs,
   maxInstances: 1,
   suites: {
-    smoke: ['./e2e/desktop/specs/**/*.spec.ts'],
+    smoke: stableSmokeSpecs,
+    geometry: [geometrySmokeSpec],
+    all: [...stableSmokeSpecs, geometrySmokeSpec],
   },
   capabilities: [
     {

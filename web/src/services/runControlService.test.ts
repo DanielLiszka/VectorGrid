@@ -45,6 +45,22 @@ describe('runControlService', () => {
     })
   })
 
+  it('keeps a successful cancellation request when the background-task probe fails', async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('background unavailable'))
+
+    const result = await requestCancelCurrentRun()
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'cancel_current_run')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'cancel_background_task')
+    expect(result).toEqual({
+      requested: true,
+      usedLegacyFallback: false,
+      backgroundTaskRequested: false,
+    })
+  })
+
   it('throws when no cancellation command can be requested', async () => {
     invokeCommandMock
       .mockRejectedValueOnce(new Error('missing'))

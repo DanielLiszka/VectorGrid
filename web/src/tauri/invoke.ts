@@ -14,7 +14,7 @@ export function tauriRuntimeAvailable(): boolean {
 
 export async function invokeCommand<T>(command: TauriCommand, args?: InvokeArgs): Promise<T> {
   try {
-    return tauriApiInvoke<T>(command, args)
+    return await tauriApiInvoke<T>(command, args)
   } catch (cause) {
     throw normalizeTauriRuntimeError({
       code: 'TAURI_INVOKE_FAILED',

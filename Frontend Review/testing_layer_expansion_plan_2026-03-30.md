@@ -4,7 +4,7 @@ Date: 2026-03-30
 
 Scope: repo-specific implementation plan for the valid follow-up testing ideas that remain after the first-wave `WebdriverIO + tauri-driver` desktop smoke harness.
 
-Status: audited and adjusted to match the current repo/runtime shape.
+Status: implemented for the current scoped testing-layer expansion work.
 
 ## Goal
 
@@ -710,61 +710,61 @@ Do not revisit `@wdio/tauri-service` / `@wdio/tauri-plugin` until at least one o
 
 ### Phase 1: Frontend `mockIPC` Foundation
 
-- [ ] Add a shared frontend Tauri-mocking helper layer under `web/src/test/`.
-- [ ] Add wrapper helpers for `mockIPC` and `clearMocks`.
-- [ ] Add `mockWindows` helpers only where window-label simulation is actually useful.
-- [ ] Document the helper usage pattern near the new test-support layer.
-- [ ] Use fail-fast unknown-command behavior by default.
-- [ ] Add cleanup helpers so every test file can fully reset IPC and window mocks in `afterEach`.
+- [x] Add a shared frontend Tauri-mocking helper layer under `web/src/test/`.
+- [x] Add wrapper helpers for `mockIPC` and `clearMocks`.
+- [x] Add `mockWindows` helpers only where window-label simulation is actually useful.
+- [x] Document the helper usage pattern near the new test-support layer.
+- [x] Use fail-fast unknown-command behavior by default.
+- [x] Add cleanup helpers so every test file can fully reset IPC and window mocks in `afterEach`.
 
 ### Phase 2: High-Value Frontend Tauri-Path Tests
 
-- [ ] Add `web/src/tauri/invoke.mockIPC.test.ts`.
-- [ ] Cover success, thrown-string error, thrown-Error object, unknown-command, and args-forwarding cases for [invoke.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.ts).
-- [ ] Fix [invoke.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.ts) promise rejection normalization if the new `mockIPC` tests prove the current async path bypasses `TauriRuntimeError`.
-- [ ] Add `web/src/tauri/instrumentation.mockIPC.test.ts` only if the test setup explicitly bridges `window.__TAURI__`, `globalThis.isTauri`, and mocked event listeners.
-- [ ] Cover tracked-command begin/complete/fail flows and one valid/one malformed event case for [instrumentation.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\instrumentation.ts) only if that bridge exists.
-- [ ] Extend [runControlService.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\runControlService.test.ts) or add `runControlService.mockIPC.test.ts`, whichever is the lower-risk way to cover the missing background-task best-effort path.
-- [ ] Keep task lifecycle additions in normal store tests unless a direct Tauri IPC seam is shown to be the missing coverage for [taskStore.ts](C:\Rust Projects\ta_desktop_demo\web\src\stores\taskStore.ts).
-- [ ] Extend [desktopProductization.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.test.ts) only if a real `mockIPC` case is still missing after the above files exist.
-- [ ] Keep these tests deterministic and independent of live data or real desktop startup.
-- [ ] Leave [invoke.contract.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.contract.test.ts) and [commands.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\commands.test.ts) as simpler contract checks.
+- [x] Add `web/src/tauri/invoke.mockIPC.test.ts`.
+- [x] Cover success, thrown-string error, thrown-Error object, unknown-command, and args-forwarding cases for [invoke.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.ts).
+- [x] Fix [invoke.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.ts) promise rejection normalization if the new `mockIPC` tests prove the current async path bypasses `TauriRuntimeError`.
+- [x] Add `web/src/tauri/instrumentation.mockIPC.test.ts` only if the test setup explicitly bridges `window.__TAURI__`, `globalThis.isTauri`, and mocked event listeners.
+- [x] Cover tracked-command begin/complete/fail flows and one valid/one malformed event case for [instrumentation.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\instrumentation.ts) only if that bridge exists.
+- [x] Extend [runControlService.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\runControlService.test.ts) or add `runControlService.mockIPC.test.ts`, whichever is the lower-risk way to cover the missing background-task best-effort path.
+- [x] Keep task lifecycle additions in normal store tests unless a direct Tauri IPC seam is shown to be the missing coverage for [taskStore.ts](C:\Rust Projects\ta_desktop_demo\web\src\stores\taskStore.ts).
+- [x] Extend [desktopProductization.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.test.ts) only if a real `mockIPC` case is still missing after the above files exist.
+- [x] Keep these tests deterministic and independent of live data or real desktop startup.
+- [x] Leave [invoke.contract.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\invoke.contract.test.ts) and [commands.test.ts](C:\Rust Projects\ta_desktop_demo\web\src\tauri\commands.test.ts) as simpler contract checks.
 
 ### Phase 3: Rust Mock-Runtime / Command Wiring Layer
 
-- [ ] Keep `[lib] test = false` unchanged in the first pass.
-- [ ] Add `src-tauri/tests/support/mod.rs`.
-- [ ] Add `src-tauri/tests/mock_runtime_smoke.rs`.
-- [ ] Add `src-tauri/tests/command_runtime_wiring.rs`.
-- [ ] Add a minimal mock-runtime app-builder helper in `src-tauri/tests/support/mod.rs`.
-- [ ] Add a smoke assertion that managed `AppState` and `BackgroundTaskState` are accessible from the mock app.
-- [ ] Add a `main`-window assertion only if the test support helper explicitly creates that window in setup.
-- [ ] Add a state + command smoke assertion for `cancel_background_task`.
-- [ ] Add a state + command smoke assertion for `cancel_current_run`.
-- [ ] Add a state + command smoke assertion for `cancel_double_ma_optimization`.
-- [ ] Keep pure logic tests as plain unit tests where mock runtime adds no value.
-- [ ] Keep validation/execution command modules out of the first wave.
-- [ ] Do not claim full production invoke-registry coverage unless the repo later accepts a shared builder helper or test-side handler duplication.
-- [ ] Reassess crate test-target policy only if the integration-test route proves insufficient.
+- [x] Keep `[lib] test = false` unchanged in the first pass.
+- [x] Add `src-tauri/tests/support/mod.rs`.
+- [x] Add `src-tauri/tests/mock_runtime_smoke.rs`.
+- [x] Add `src-tauri/tests/command_runtime_wiring.rs`.
+- [x] Add a minimal mock-runtime app-builder helper in `src-tauri/tests/support/mod.rs`.
+- [x] Add a smoke assertion that managed `AppState` and `BackgroundTaskState` are accessible from the mock app.
+- [x] Keep the `main`-window assertion deferred because the first-wave helper does not create that window.
+- [x] Add a state + command smoke assertion for `cancel_background_task`.
+- [x] Add a state + command smoke assertion for `cancel_current_run`.
+- [x] Add a state + command smoke assertion for `cancel_double_ma_optimization`.
+- [x] Keep pure logic tests as plain unit tests where mock runtime adds no value.
+- [x] Keep validation/execution command modules out of the first wave.
+- [x] Do not claim full production invoke-registry coverage unless the repo later accepts a shared builder helper or test-side handler duplication.
+- [x] Reassess crate test-target policy only if the integration-test route proves insufficient.
 
 ### Phase 4: Desktop Smoke Hardening
 
-- [ ] Add `web/e2e/desktop/specs/desktop-window-geometry.spec.ts`.
-- [ ] Use `getWindowRect` plus `setWindowSize` rather than drag simulation.
-- [ ] Resize to `1180x700` without adding move-state assertions in the first wave.
-- [ ] Verify titlebar, workspace bar, and run footer remain visible after the geometry change.
-- [ ] Verify the Settings workspace still renders correctly after the geometry change.
-- [ ] Restore the original rect in `finally`.
-- [ ] Keep drag automation out of the default green suite.
-- [ ] Keep the geometry spec opt-in until it proves stable across repeated local runs.
-- [ ] Keep any flaky native-only assertion out of PR-gating.
+- [x] Add `web/e2e/desktop/specs/desktop-window-geometry.spec.ts`.
+- [x] Use `getWindowRect` plus `setWindowSize` rather than drag simulation.
+- [x] Resize to `1180x700` without adding move-state assertions in the first wave.
+- [x] Verify titlebar, workspace bar, and run footer remain visible after the geometry change.
+- [x] Verify the Settings workspace still renders correctly after the geometry change.
+- [x] Restore the original rect in `finally`.
+- [x] Keep drag automation out of the default green suite.
+- [x] Keep the geometry spec opt-in until it proves stable across repeated local runs.
+- [x] Keep any flaky native-only assertion out of PR-gating.
 
 ### Phase 5: Conditional Evaluation Only
 
-- [ ] Record `@wdio/tauri-service` as deferred unless the current harness proves a real limitation.
-- [ ] Record `@wdio/tauri-plugin` as deferred unless deeper execute/mock/log features become worth the added app/test complexity.
-- [ ] Record macOS driver-provider work as deferred unless macOS desktop E2E becomes a real requirement.
-- [ ] Do not expand CI gating for this plan until the unrelated fresh-build blocker is resolved and the new layers remain stable locally.
+- [x] Record `@wdio/tauri-service` as deferred unless the current harness proves a real limitation.
+- [x] Record `@wdio/tauri-plugin` as deferred unless deeper execute/mock/log features become worth the added app/test complexity.
+- [x] Record macOS driver-provider work as deferred unless macOS desktop E2E becomes a real requirement.
+- [x] Do not expand CI gating for this plan until the unrelated fresh-build blocker is resolved and the new layers remain stable locally.
 
 ## Success Criteria
 

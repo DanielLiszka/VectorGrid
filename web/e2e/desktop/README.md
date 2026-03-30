@@ -33,6 +33,8 @@ From the repo root:
 npm --prefix web run test:desktop:smoke
 ```
 
+The default smoke suite intentionally excludes the opt-in geometry resize spec until it proves stable enough for wider use.
+
 Run a single spec:
 
 ```powershell
@@ -43,6 +45,12 @@ Debug runner logging:
 
 ```powershell
 npm --prefix web run test:desktop:smoke:debug
+```
+
+Run only the opt-in geometry smoke:
+
+```powershell
+npm --prefix web run test:desktop:geometry
 ```
 
 ## What the harness does
@@ -68,6 +76,13 @@ Optional local overrides:
   - point the harness at a specific desktop executable instead of `target\\debug\\ta_desktop_demo_app.exe`
 - `VECTORGRID_DESKTOP_SMOKE_APP_URL=http://127.0.0.1:1420/`
   - override the preview/bootstrap URL if needed
+
+Recommended local command while geometry remains opt-in:
+
+```powershell
+$env:VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD='1'
+npm --prefix web run test:desktop:geometry
+```
 
 ## Failure artifacts
 

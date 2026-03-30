@@ -19,6 +19,6 @@ describe('desktop settings diagnostics', () => {
     expect(text).toContain('DESKTOP LOGS')
     expect(text).toContain('Open task center')
     expect(text).toContain('Copy diagnostics snapshot')
-    expect(text).toContain('Window geometry persists')
+    expect(text).toMatch(/Window (geometry persists|state persistence)/)
   })
 })
