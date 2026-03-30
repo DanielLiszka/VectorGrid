@@ -34,4 +34,5 @@ npm run test:desktop:smoke
 - `scripts/check-tauri-parity.mjs` enforces command parity between backend `generate_handler!` and frontend command registry.
 - `npm run parity:outputs` runs `scripts/check_output_parity.mjs` against representative JSON/CSV/XLSX artifact pairs to verify output-structure compatibility.
 - `wdio.desktop.conf.ts` plus `e2e/desktop/` own the Windows-first `WebdriverIO + tauri-driver` desktop smoke harness for the real Tauri shell.
+- The desktop smoke harness starts its own preview host on `127.0.0.1:1420` and bootstraps blank desktop contexts to that URL when `tauri-driver` initially attaches to `about:blank`.
 - Desktop smoke local run instructions and prerequisite notes live in `e2e/desktop/README.md`.

@@ -9,13 +9,13 @@ describe('desktop workspace navigation', () => {
 
     await openWorkspace('library')
     await expect($(workspaceTabSelector('library'))).toHaveAttr('aria-selected', 'true')
-    const libraryText = await $('body').getText()
-    expect(libraryText).toContain('Session history runs')
+    await expect($(shellSelectors.libraryPanelTitle)).toBeDisplayed()
+    await expect($(shellSelectors.libraryPanelTitle)).toHaveText('Run History')
 
     await openWorkspace('aggregate')
     await expect($(workspaceTabSelector('aggregate'))).toHaveAttr('aria-selected', 'true')
-    const aggregateText = await $('body').getText()
-    expect(aggregateText).toContain('Meta analysis sections')
+    await expect($(shellSelectors.aggregatePanelTitle)).toBeDisplayed()
+    await expect($(shellSelectors.aggregatePanelTitle)).toHaveText('Meta Analysis')
 
     await openWorkspace('settings')
     await expect($(workspaceTabSelector('settings'))).toHaveAttr('aria-selected', 'true')

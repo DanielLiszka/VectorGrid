@@ -4,9 +4,40 @@ Date: 2026-03-29
 
 Scope: implementation-spec plan for adding a real desktop end-to-end smoke harness for the Tauri app using `WebdriverIO + tauri-driver`.
 
-Status: open.
+Status: implemented for the first-wave Windows desktop smoke scope.
 
-This document upgrades the earlier roadmap into a concrete implementation spec. It pins the first-wave package set, file layout, launch topology, selector policy, first smoke specs, artifact policy, and CI rollout for this repo.
+This document upgrades the earlier roadmap into a concrete implementation spec. It now also records the implemented first-wave harness, the repo-specific launch adjustments that were required in practice, and the current verification status.
+
+## Current Verification Status
+
+Implemented in repo:
+
+- [web/wdio.desktop.conf.ts](C:\Rust Projects\ta_desktop_demo\web\wdio.desktop.conf.ts)
+- [web/tsconfig.wdio.json](C:\Rust Projects\ta_desktop_demo\web\tsconfig.wdio.json)
+- [web/e2e/desktop/specs](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs)
+- [web/e2e/desktop/support](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\support)
+- [web/scripts/desktop](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop)
+- [.github/workflows/desktop-smoke.yml](C:\Rust Projects\ta_desktop_demo\.github\workflows\desktop-smoke.yml)
+
+Verified locally on Windows:
+
+- `npm --prefix web run test:desktop:smoke`
+  - green on `2026-03-30`
+  - run used `VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD=1`
+  - the suite launched the real Tauri shell through `tauri-driver`
+  - all six first-wave desktop smoke specs passed
+
+Important repo-specific caveat:
+
+- a fresh `cargo build -p ta_desktop_demo_app` path is currently blocked by an unrelated backend compile failure outside this harness work
+- because of that, the green local proof used the existing debug binary plus the managed preview host
+
+Important implemented launch adjustment:
+
+- under `tauri-driver`, this repo’s debug desktop session initially surfaced a blank shell context
+- the harness now starts a managed Vite preview host at `http://127.0.0.1:1420/`
+- if the initial WebDriver context is `about:blank`, the harness explicitly navigates that desktop webview to the preview host before asserting shell readiness
+- this keeps the smoke suite useful for real frontend/runtime validation without relying on `cargo tauri dev`
 
 ## Why This Exists
 
@@ -148,9 +179,11 @@ The canonical local and CI launch path is:
 
 1. build the frontend explicitly
 2. build the Tauri app crate explicitly in debug
-3. start `tauri-driver`
-4. let `tauri-driver` launch the desktop app binary
-5. run WDIO against that real desktop app session
+3. start a managed preview host on `127.0.0.1:1420`
+4. start `tauri-driver`
+5. let `tauri-driver` launch the desktop app binary
+6. if the initial desktop context is blank, navigate it to the preview host
+7. run WDIO against that real desktop app session
 
 This means:
 
@@ -234,9 +267,9 @@ Add these files:
   - shell readiness waits and deterministic polling helpers
 - [web/e2e/desktop/support/artifacts.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\support\artifacts.ts)
   - failure screenshot/log capture helpers
-- [web/scripts/desktop/build-smoke-app.mjs](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\build-smoke-app.mjs)
+- [web/scripts/desktop/build-smoke-app.ts](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\build-smoke-app.ts)
   - explicit frontend + app debug build helper
-- [web/scripts/desktop/verify-prereqs.mjs](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\verify-prereqs.mjs)
+- [web/scripts/desktop/verify-prereqs.ts](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\verify-prereqs.ts)
   - confirm `tauri-driver` and `msedgedriver` availability and echo versions
 
 Keep the first wave under `web/`.
@@ -278,6 +311,7 @@ The harness should build the app this way:
 
 1. `npm --prefix web run build`
 2. `cargo build -p ta_desktop_demo_app`
+3. start a preview host on `127.0.0.1:1420`
 
 Then let `tauri-driver` launch:
 
@@ -314,10 +348,11 @@ Required runner behavior:
 - `onPrepare`
   - verify prerequisites
   - run the explicit build helper
-- `beforeSession`
+  - start the preview host
   - spawn `tauri-driver`
   - pipe driver stdout/stderr to a log file
-- `afterSession`
+- `onComplete`
+  - stop the preview host
   - stop `tauri-driver`
 - `afterTest`
   - on failure, capture screenshot and useful metadata
@@ -352,6 +387,9 @@ Important policy:
 - do not commit an EdgeDriver binary into the repo
 - do not rely on a stale driver staying on `PATH` forever
 - the prerequisite helper should print the detected versions so failures are diagnosable
+- local fallback is supported through:
+  - repo-root `msedgedriver.exe`
+  - `VECTORGRID_DESKTOP_SMOKE_EDGE_DRIVER`
 
 ## Selector Strategy
 
@@ -770,43 +808,43 @@ This plan is successful when:
 
 ### Phase 1: Harness Bootstrap
 
-- [ ] Add the first-wave WDIO devDependencies to [web/package.json](C:\Rust Projects\ta_desktop_demo\web\package.json).
-- [ ] Add [web/wdio.desktop.conf.ts](C:\Rust Projects\ta_desktop_demo\web\wdio.desktop.conf.ts).
-- [ ] Add [web/tsconfig.wdio.json](C:\Rust Projects\ta_desktop_demo\web\tsconfig.wdio.json).
-- [ ] Add [web/scripts/desktop/verify-prereqs.mjs](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\verify-prereqs.mjs).
-- [ ] Add [web/scripts/desktop/build-smoke-app.mjs](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\build-smoke-app.mjs).
-- [ ] Add the desktop smoke npm scripts to [web/package.json](C:\Rust Projects\ta_desktop_demo\web\package.json).
-- [ ] Document local setup for `tauri-driver` and `msedgedriver`.
+- [x] Add the first-wave WDIO devDependencies to [web/package.json](C:\Rust Projects\ta_desktop_demo\web\package.json).
+- [x] Add [web/wdio.desktop.conf.ts](C:\Rust Projects\ta_desktop_demo\web\wdio.desktop.conf.ts).
+- [x] Add [web/tsconfig.wdio.json](C:\Rust Projects\ta_desktop_demo\web\tsconfig.wdio.json).
+- [x] Add [web/scripts/desktop/verify-prereqs.ts](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\verify-prereqs.ts).
+- [x] Add [web/scripts/desktop/build-smoke-app.ts](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\build-smoke-app.ts).
+- [x] Add the desktop smoke npm scripts to [web/package.json](C:\Rust Projects\ta_desktop_demo\web\package.json).
+- [x] Document local setup for `tauri-driver` and `msedgedriver`.
 
 ### Phase 2: Desktop Launch And Shell Readiness
 
-- [ ] Add [web/e2e/desktop/specs/desktop-shell-readiness.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-shell-readiness.spec.ts).
-- [ ] Add reusable shell readiness waits.
-- [ ] Capture screenshots/logs on launch failure.
-- [ ] Verify the custom titlebar is present in the real desktop runtime.
+- [x] Add [web/e2e/desktop/specs/desktop-shell-readiness.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-shell-readiness.spec.ts).
+- [x] Add reusable shell readiness waits.
+- [x] Capture screenshots/logs on launch failure.
+- [x] Verify the custom titlebar is present in the real desktop runtime.
 
 ### Phase 3: Core Frontend Desktop Smoke Flows
 
-- [ ] Add [web/e2e/desktop/specs/desktop-workspace-navigation.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-workspace-navigation.spec.ts).
-- [ ] Add [web/e2e/desktop/specs/desktop-command-palette.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-command-palette.spec.ts).
-- [ ] Add [web/e2e/desktop/specs/desktop-task-center.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-task-center.spec.ts).
-- [ ] Add [web/e2e/desktop/specs/desktop-settings-diagnostics.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-settings-diagnostics.spec.ts).
-- [ ] Keep first-wave coverage deterministic and free of live-data dependencies.
+- [x] Add [web/e2e/desktop/specs/desktop-workspace-navigation.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-workspace-navigation.spec.ts).
+- [x] Add [web/e2e/desktop/specs/desktop-command-palette.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-command-palette.spec.ts).
+- [x] Add [web/e2e/desktop/specs/desktop-task-center.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-task-center.spec.ts).
+- [x] Add [web/e2e/desktop/specs/desktop-settings-diagnostics.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-settings-diagnostics.spec.ts).
+- [x] Keep first-wave coverage deterministic and free of live-data dependencies.
 
 ### Phase 4: Native Desktop Assertions
 
-- [ ] Add [web/e2e/desktop/specs/desktop-titlebar-native-controls.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-titlebar-native-controls.spec.ts).
-- [ ] Automate maximize/restore in the default suite.
-- [ ] Explicitly defer drag/minimize/close automation unless proven stable.
-- [ ] Keep flaky native assertions out of the default green path.
+- [x] Add [web/e2e/desktop/specs/desktop-titlebar-native-controls.spec.ts](C:\Rust Projects\ta_desktop_demo\web\e2e\desktop\specs\desktop-titlebar-native-controls.spec.ts).
+- [x] Automate maximize/restore in the default suite.
+- [x] Explicitly defer drag/minimize/close automation unless proven stable.
+- [x] Keep flaky native assertions out of the default green path.
 
 ### Phase 5: CI And Maintenance
 
-- [ ] Add a separate Windows-first desktop smoke workflow plan.
-- [ ] Add failure artifact upload for `output/wdio/desktop-smoke/**`.
-- [ ] Document local run instructions and troubleshooting.
-- [ ] Keep `@wdio/tauri-service` and `@wdio/tauri-plugin` documented as deferred work.
-- [ ] Reassess PR-gating only after repeated stable local/manual CI runs.
+- [x] Add a separate Windows-first desktop smoke workflow plan.
+- [x] Add failure artifact upload for `output/wdio/desktop-smoke/**`.
+- [x] Document local run instructions and troubleshooting.
+- [x] Keep `@wdio/tauri-service` and `@wdio/tauri-plugin` documented as deferred work.
+- [x] Reassess PR-gating only after repeated stable local/manual CI runs.
 
 ## Recommended Starting Point
 

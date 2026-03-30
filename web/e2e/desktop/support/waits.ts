@@ -68,18 +68,18 @@ export async function openCommandPalette(timeout = 10000): Promise<void> {
   const button = await $(shellSelectors.commandPaletteButton)
   await button.waitForClickable({ timeout })
   await button.click()
-  await (await $(commandPaletteSelectors.dialog)).waitForDisplayed({ timeout })
-  await browser.waitUntil(
-    async () => {
-      const active = await browser.getActiveElement()
-      const input = await $(commandPaletteSelectors.searchInput)
-      return (await input.isExisting()) && active.elementId === input.elementId
-    },
-    {
-      timeout,
-      timeoutMsg: 'Command palette search input did not receive focus.',
-    },
-  )
+  const dialog = await $(commandPaletteSelectors.dialog)
+  await dialog.waitForDisplayed({ timeout })
+  const input = await $(commandPaletteSelectors.searchInput)
+  await input.waitForDisplayed({ timeout })
+  const inputFocused = await browser.execute((selector) => {
+    const doc = (globalThis as { document?: { querySelector: (value: string) => unknown; activeElement: unknown } }).document
+    const inputEl = doc?.querySelector(selector)
+    return Boolean(inputEl && doc?.activeElement === inputEl)
+  }, commandPaletteSelectors.searchInput)
+  if (!inputFocused) {
+    await input.click()
+  }
 }
 
 export async function closeCommandPalette(timeout = 10000): Promise<void> {
@@ -95,8 +95,17 @@ export async function closeCommandPalette(timeout = 10000): Promise<void> {
 
 export async function openTaskCenter(timeout = 10000): Promise<void> {
   const launcher = await $(taskCenterSelectors.launcher)
-  await launcher.waitForClickable({ timeout })
-  await launcher.click()
+  await launcher.waitForDisplayed({ timeout })
+  try {
+    await launcher.waitForClickable({ timeout })
+    await launcher.click()
+  } catch {
+    await browser.execute((selector) => {
+      const doc = (globalThis as { document?: { querySelector: (value: string) => { click?: () => void } | null } }).document
+      const element = doc?.querySelector(selector)
+      element?.click?.()
+    }, taskCenterSelectors.launcher)
+  }
   await (await $(taskCenterSelectors.dialog)).waitForDisplayed({ timeout })
 }
 

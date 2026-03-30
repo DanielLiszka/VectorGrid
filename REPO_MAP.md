@@ -24,7 +24,8 @@ Do not treat this as the full implementation spec. Use it together with:
 - `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
 - `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
 - `Frontend Review/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan, completed phases, and open checklist
-- `Frontend Review/desktop_e2e_testing_plan_2026-03-29.md` for the Windows-first `WebdriverIO + tauri-driver` desktop smoke implementation spec, launch topology, and open checklist
+- `Frontend Review/desktop_e2e_testing_plan_2026-03-29.md` for the Windows-first `WebdriverIO + tauri-driver` desktop smoke implementation spec, implemented harness status, and current verification notes
+- `Frontend Review/testing_layer_expansion_plan_2026-03-30.md` for the follow-up testing-layer plan covering frontend `mockIPC`, Rust mock-runtime coverage, and narrow desktop smoke hardening after the first-wave WDIO harness
 - `Frontend Review/desktop_capability_inventory_2026-03-28.md` for the current desktop capability/window-label inventory
 - `Frontend Review/desktop_plugin_inventory_2026-03-28.md` for the adopted/deferred desktop plugin record
 - `Frontend Review/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase

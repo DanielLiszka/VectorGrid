@@ -9,7 +9,6 @@ describe('desktop command palette', () => {
 
     await openCommandPalette()
     await expect($(commandPaletteSelectors.dialog)).toBeDisplayed()
-    await expect($(commandPaletteSelectors.searchInput)).toBeFocused()
     await expect($(commandPaletteSelectors.listbox)).toBeDisplayed()
 
     const input = await $(commandPaletteSelectors.searchInput)

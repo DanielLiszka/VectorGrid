@@ -631,6 +631,15 @@ Current interpretation:
   - implication:
     - the current shortlist surface is still dominated by the main all-pairs lockstep `m17` regime-off kernel
     - replay-windowed reruns are still material, but they are secondary on this surface after the retained direct exact improvements
+    - a reducer-path one-pass `score_out` / score-carry fusion probe was measured and rejected:
+      - workload family: `double_ma` + `alma/alma` + objective `sharpe`
+      - `large/58300pairs`:
+        - `full17`: probe `78 / 76 / 76 ms` vs baseline `77 / 79 / 78 ms`
+        - `trade22`: probe `77 / 77 / 77 ms` vs baseline `77 / 77 / 76 ms`
+      - `xlarge/370750pairs`:
+        - `full17`: probe `745 / 749 ms` vs baseline `288 / 295 ms`
+        - `trade22`: probe `793 / 795 ms` vs baseline `303 / 350 ms`
+      - conclusion: reject and do not pursue this reducer-path score fusion path; any future one-pass work needs a different architecture than carrying objective scores through the current top-k reducer chain
 - light Nsight Compute now also exists for the current recovered shortlist lockstep hotspots:
   - artifacts:
     - `target/nsight/double_ma_shortlist_full17_lockstep_ncu_light.ncu-rep`
@@ -1433,6 +1442,8 @@ Guardrails:
 
 - [x] Re-profile after M17 / M22 specialization and route-matrix work.
 - [x] Confirm whether downstream objective / constraint reread is not yet a material bottleneck.
+- [x] Reject the first reducer-chain one-pass `score_out` / score-carry fusion attempt after flat `large` results and catastrophic `xlarge` regressions.
+- [ ] If one-pass work is revisited later, target a different architecture than carrying objective scores through the current top-k reducer chain.
 - [ ] Only if profiling justifies it, prototype `score_out`.
 - [ ] Only if profiling justifies it, prototype `feasible_out`.
 - [ ] Keep the existing metrics-row result contract unchanged while testing fused outputs.
