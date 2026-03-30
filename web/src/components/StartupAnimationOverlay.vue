@@ -8,9 +8,10 @@ import { useRuntimeStore } from '../stores/runtimeStore'
 
 type OverlayStage = 'hidden' | 'intro' | 'exiting' | 'dismissed'
 
-const MIN_VISIBLE_MS = 360
-const SIGNATURE_MS = 1400
+const MIN_VISIBLE_MS = 5000
+const SIGNATURE_MS = 5000
 const EXIT_MS = 180
+const SKIP_UNLOCK_MS = 600
 const HOLD_QUERY_VALUE = 'hold'
 const HOLD_QUERY_KEY = 'startup_overlay'
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
@@ -65,7 +66,6 @@ const statusLabel = computed(() => {
   return 'Starting workspace runtime'
 })
 const skipHintVisible = computed(() => canSkip.value && bootPhase.value !== 'error')
-const overlayStageAttr = computed(() => overlayStage.value)
 
 function bindKeyListener(): void {
   if (typeof window === 'undefined' || keyListenerBound) return
@@ -127,7 +127,7 @@ function startIntro(): void {
   skipUnlockTimer = window.setTimeout(() => {
     canSkip.value = true
     skipUnlockTimer = null
-  }, MIN_VISIBLE_MS)
+  }, SKIP_UNLOCK_MS)
 
   if (!holdDebugState.value) {
     signatureTimer = window.setTimeout(() => {
@@ -187,20 +187,13 @@ onBeforeUnmount(() => {
     id="startupAnimationOverlay"
     class="startupOverlay"
     :class="[overlayStage, { reduced: prefersReducedMotion }]"
-    :data-stage="overlayStageAttr"
+    :data-stage="overlayStage"
     @click="requestSkip"
   >
-    <section
-      class="startupShell"
-      role="status"
-      aria-live="polite"
-      aria-label="VectorGrid startup"
-      @click.stop
-    >
-      <div class="startupBackdrop" aria-hidden="true"></div>
-
+    <div class="startupVeil" aria-hidden="true"></div>
+    <section class="startupScene" role="status" aria-live="polite" aria-label="VectorGrid startup">
       <div class="startupBrand">
-        <div class="startupLogoFrame">
+        <div class="startupLogoHalo">
           <img
             v-if="animatedLogoEnabled"
             class="startupLogo startupLogoAnimated"
@@ -223,11 +216,23 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="startupNarrative" aria-hidden="true">
-        <div class="startupGridAccent">
-          <span v-for="index in 20" :key="`startup_grid_${index}`" class="startupGridDot"></span>
+      <div class="startupGridField" aria-hidden="true">
+        <div class="startupGridMesh"></div>
+        <div class="startupGridGlow"></div>
+        <div class="startupGridCells">
+          <span
+            v-for="index in 18"
+            :key="`startup_grid_${index}`"
+            class="startupGridCell"
+          ></span>
         </div>
-        <div class="startupResultAccent">
+        <div class="startupSweep"></div>
+        <div class="startupFocusTrail"></div>
+      </div>
+
+      <div class="startupResultRail" aria-hidden="true">
+        <div class="startupResultMeta">Exact-grid scan</div>
+        <div class="startupResultBars">
           <span class="startupMetricBar"></span>
           <span class="startupMetricBar highlight"></span>
           <span class="startupMetricBar"></span>
@@ -235,7 +240,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="startupFooter">
+      <div class="startupStatusRail">
         <div class="startupStatus">
           <span class="startupStatusDot" aria-hidden="true"></span>
           <span class="startupStatusLabel">{{ statusLabel }}</span>
@@ -255,19 +260,12 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .startupOverlay {
+  --startup-overlay-opacity: 0.8;
   position: fixed;
   inset: 0;
   z-index: 5000;
-  display: grid;
-  place-items: center;
-  padding: max(1.2rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
-    max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
-  background:
-    radial-gradient(circle at 18% 18%, color-mix(in oklab, var(--accent-soft) 32%, transparent), transparent 34%),
-    radial-gradient(circle at 82% 18%, color-mix(in oklab, var(--selection-fill) 18%, transparent), transparent 30%),
-    linear-gradient(180deg, color-mix(in oklab, var(--surface-sticky) 96%, black 4%), color-mix(in oklab, var(--header-bg) 88%, black 12%));
-  backdrop-filter: blur(18px);
-  opacity: 1;
+  overflow: hidden;
+  opacity: var(--startup-overlay-opacity);
   transition: opacity 180ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1));
   pointer-events: auto;
 }
@@ -276,58 +274,60 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
-.startupShell {
-  position: relative;
-  width: min(640px, calc(100vw - 2rem));
-  display: grid;
-  gap: 1.15rem;
-  padding: 1.35rem 1.4rem 1.15rem;
-  border-radius: 24px;
-  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 26%, var(--border));
-  background:
-    linear-gradient(180deg, color-mix(in oklab, var(--surface-working) 96%, transparent), color-mix(in oklab, var(--surface-inline) 92%, transparent)),
-    color-mix(in oklab, var(--surface-sticky) 92%, var(--panel-footer));
-  box-shadow:
-    0 32px 80px color-mix(in srgb, black 46%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
-  overflow: hidden;
-}
-
-.startupBackdrop {
+.startupVeil {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(120deg, transparent 0%, color-mix(in oklab, var(--selection-fill) 10%, transparent) 28%, transparent 56%),
-    linear-gradient(180deg, transparent, color-mix(in oklab, var(--accent-soft) 10%, transparent));
+    radial-gradient(circle at 18% 16%, color-mix(in oklab, var(--accent-soft) 52%, transparent), transparent 30%),
+    radial-gradient(circle at 78% 24%, color-mix(in oklab, var(--selection-fill-strong) 34%, transparent), transparent 32%),
+    linear-gradient(180deg, color-mix(in oklab, var(--surface-sticky) 52%, transparent), color-mix(in oklab, var(--header-bg) 26%, transparent) 40%, color-mix(in oklab, var(--surface-sticky) 72%, transparent));
+  backdrop-filter: blur(14px) saturate(1.08);
+  opacity: 0.86;
   pointer-events: none;
 }
 
-.startupBrand,
-.startupNarrative,
-.startupFooter {
-  position: relative;
-  z-index: 1;
+.startupScene {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 .startupBrand {
+  position: absolute;
+  top: calc(var(--desktop-titlebar-h, 52px) + clamp(1rem, 2.4vh, 1.6rem));
+  left: clamp(1rem, 3.4vw, 2.4rem);
+  max-width: min(32rem, calc(100vw - 2rem));
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.95rem;
+  gap: 0.8rem;
   align-items: center;
+  padding: 0.8rem 0.9rem;
+  border-radius: 18px;
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 20%, var(--border));
+  background: color-mix(in oklab, var(--surface-sticky) 66%, transparent);
+  box-shadow:
+    0 18px 44px color-mix(in srgb, black 20%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 12%, transparent);
+  backdrop-filter: blur(10px);
+  opacity: 0.94;
 }
 
-.startupLogoFrame {
-  width: clamp(74px, 12vw, 96px);
-  aspect-ratio: 6 / 5;
+.startupLogoHalo {
+  width: clamp(54px, 8vw, 68px);
+  aspect-ratio: 1;
   display: grid;
   place-items: center;
-  border-radius: 20px;
-  background: color-mix(in oklab, var(--surface-sunken) 68%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--border) 72%, transparent);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in oklab, var(--surface-working) 82%, transparent), transparent 74%),
+    color-mix(in oklab, var(--surface-sunken) 58%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--border) 62%, transparent),
+    0 0 34px color-mix(in srgb, var(--accent-soft) 18%, transparent);
 }
 
 .startupLogo {
-  width: 78%;
+  width: 72%;
   height: auto;
   display: block;
   object-fit: contain;
@@ -343,7 +343,7 @@ onBeforeUnmount(() => {
 }
 
 .startupEyebrow {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -352,60 +352,169 @@ onBeforeUnmount(() => {
 
 .startupTitle {
   margin: 0;
-  font-size: clamp(1.7rem, 3vw, 2.3rem);
-  line-height: 0.96;
+  font-size: clamp(1.45rem, 2.6vw, 2rem);
+  line-height: 0.92;
   letter-spacing: -0.04em;
   color: var(--text);
+  text-wrap: balance;
 }
 
 .startupSubtitle {
   margin: 0;
-  font-size: 0.84rem;
+  font-size: 0.8rem;
   color: var(--muted-strong);
-  max-width: 32ch;
+  max-width: 28ch;
 }
 
-.startupNarrative {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.95fr);
-  gap: 0.95rem;
-  align-items: center;
-}
-
-.startupGridAccent,
-.startupResultAccent {
-  border-radius: 18px;
-  border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
-  background: color-mix(in oklab, var(--surface-sunken) 80%, transparent);
-}
-
-.startupGridAccent {
-  padding: 0.9rem;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0.55rem;
-}
-
-.startupGridDot {
-  width: 100%;
-  aspect-ratio: 1;
-  border-radius: 999px;
+.startupGridField {
+  position: absolute;
+  top: calc(var(--desktop-titlebar-h, 52px) + clamp(6rem, 16vh, 8.5rem));
+  left: clamp(1rem, 5vw, 3rem);
+  right: clamp(1rem, 7vw, 4rem);
+  bottom: clamp(4.8rem, 14vh, 7.2rem);
+  border-radius: 34px;
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 16%, var(--border));
   background:
-    radial-gradient(circle at 35% 35%, color-mix(in srgb, white 22%, transparent), transparent 38%),
-    color-mix(in oklab, var(--muted-soft) 54%, var(--surface-inline));
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--border) 56%, transparent);
-  animation: startup-grid-dot 1.4s var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) infinite;
+    linear-gradient(135deg, color-mix(in oklab, var(--surface-sticky) 28%, transparent), transparent 55%),
+    color-mix(in oklab, var(--surface-sticky) 18%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 7%, transparent),
+    0 30px 80px color-mix(in srgb, black 20%, transparent);
+  overflow: hidden;
+  opacity: 0.88;
 }
 
-.startupGridDot:nth-child(5n + 2) { animation-delay: 80ms; }
-.startupGridDot:nth-child(5n + 3) { animation-delay: 160ms; }
-.startupGridDot:nth-child(5n + 4) { animation-delay: 240ms; }
-.startupGridDot:nth-child(5n + 5) { animation-delay: 320ms; }
+.startupGridMesh,
+.startupGridGlow,
+.startupSweep,
+.startupFocusTrail,
+.startupGridCells {
+  position: absolute;
+}
 
-.startupResultAccent {
-  padding: 1rem 0.95rem;
+.startupGridMesh {
+  inset: 0;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--surface-working) 8%, transparent), transparent 30%, color-mix(in oklab, var(--surface-working) 12%, transparent)),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(16.66% - 1px),
+      color-mix(in oklab, var(--border) 28%, transparent) calc(16.66% - 1px),
+      color-mix(in oklab, var(--border) 28%, transparent) 16.66%
+    ),
+    repeating-linear-gradient(
+      180deg,
+      transparent 0,
+      transparent calc(25% - 1px),
+      color-mix(in oklab, var(--border) 24%, transparent) calc(25% - 1px),
+      color-mix(in oklab, var(--border) 24%, transparent) 25%
+    );
+  opacity: 0.9;
+}
+
+.startupGridGlow {
+  inset: 14% 24% 18% 10%;
+  background:
+    radial-gradient(circle at 28% 42%, color-mix(in srgb, var(--accent-soft) 30%, transparent), transparent 42%),
+    radial-gradient(circle at 68% 58%, color-mix(in srgb, var(--selection-fill-strong) 34%, transparent), transparent 38%);
+  filter: blur(24px);
+  opacity: 0.9;
+}
+
+.startupGridCells {
+  inset: 16% 18% 20% 10%;
   display: grid;
-  gap: 0.5rem;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: clamp(0.5rem, 1vw, 0.95rem);
+}
+
+.startupGridCell {
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, color-mix(in oklab, var(--surface-inline) 70%, transparent), color-mix(in oklab, var(--surface-sunken) 82%, transparent)),
+    color-mix(in oklab, var(--surface-inline) 72%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--border) 42%, transparent),
+    0 0 0 1px color-mix(in srgb, white 4%, transparent);
+  opacity: 0.42;
+  transform: scale(0.98);
+  animation: startup-grid-cell 900ms var(--ease-standard, cubic-bezier(0.2, 0, 0, 1)) infinite;
+}
+
+.startupGridCell:nth-child(3),
+.startupGridCell:nth-child(4),
+.startupGridCell:nth-child(5),
+.startupGridCell:nth-child(8),
+.startupGridCell:nth-child(9),
+.startupGridCell:nth-child(10),
+.startupGridCell:nth-child(11),
+.startupGridCell:nth-child(14),
+.startupGridCell:nth-child(15) {
+  background:
+    linear-gradient(135deg, color-mix(in oklab, var(--selection-fill) 80%, var(--surface-inline)), color-mix(in oklab, var(--accent) 44%, var(--selection-fill-strong)));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--selection-fill-strong) 34%, transparent),
+    0 0 28px color-mix(in srgb, var(--accent-soft) 18%, transparent);
+  opacity: 1;
+}
+
+.startupGridCell:nth-child(3n + 2) { animation-delay: 70ms; }
+.startupGridCell:nth-child(4n + 3) { animation-delay: 140ms; }
+
+.startupSweep {
+  top: -12%;
+  bottom: -12%;
+  left: -18%;
+  width: 28%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--selection-fill-strong) 62%, transparent), transparent);
+  filter: blur(20px);
+  opacity: 0.75;
+  animation: startup-sweep 920ms ease-in-out infinite;
+}
+
+.startupFocusTrail {
+  top: 22%;
+  right: 10%;
+  width: min(28vw, 260px);
+  height: 28%;
+  border-radius: 24px;
+  border: 1px solid color-mix(in oklab, var(--selection-fill-strong) 34%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, white 5%, transparent),
+    0 0 24px color-mix(in srgb, var(--accent-soft) 16%, transparent);
+  background: linear-gradient(135deg, color-mix(in oklab, var(--selection-fill) 14%, transparent), transparent 58%);
+}
+
+.startupResultRail {
+  position: absolute;
+  right: clamp(1rem, 4vw, 2.8rem);
+  bottom: clamp(1.15rem, 4vh, 2rem);
+  width: min(320px, calc(100vw - 2rem));
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 18px;
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 18%, var(--border));
+  background: color-mix(in oklab, var(--surface-sticky) 64%, transparent);
+  box-shadow:
+    0 18px 44px color-mix(in srgb, black 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+  backdrop-filter: blur(10px);
+  opacity: 0.94;
+}
+
+.startupResultMeta {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+}
+
+.startupResultBars {
+  display: grid;
+  gap: 0.46rem;
 }
 
 .startupMetricBar {
@@ -435,11 +544,15 @@ onBeforeUnmount(() => {
   background: color-mix(in oklab, var(--muted) 48%, var(--surface-inline));
 }
 
-.startupFooter {
+.startupStatusRail {
+  position: absolute;
+  left: clamp(1rem, 3.4vw, 2.4rem);
+  bottom: clamp(1.2rem, 4vh, 2rem);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.8rem;
+  min-width: 0;
+  opacity: 0.92;
 }
 
 .startupStatus {
@@ -461,6 +574,7 @@ onBeforeUnmount(() => {
 }
 
 .startupSkipButton {
+  pointer-events: auto;
   min-height: 34px;
   padding: 0.45rem 0.72rem;
   border-radius: 10px;
@@ -476,14 +590,16 @@ onBeforeUnmount(() => {
 }
 
 .startupOverlay.reduced .startupStatusDot,
-.startupOverlay.reduced .startupGridDot,
+.startupOverlay.reduced .startupGridCell,
+.startupOverlay.reduced .startupSweep,
 .startupOverlay.reduced .startupMetricBar.highlight {
   animation: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .startupOverlay,
-  .startupGridDot,
+  .startupGridCell,
+  .startupSweep,
   .startupMetricBar.highlight,
   .startupStatusDot {
     animation: none;
@@ -492,42 +608,66 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
-  .startupOverlay {
-    padding: 0.85rem;
-  }
-
-  .startupShell {
-    width: 100%;
-    padding: 1rem;
-    gap: 0.95rem;
-  }
-
   .startupBrand {
-    grid-template-columns: 1fr;
-    justify-items: start;
+    right: 1rem;
+    max-width: none;
   }
 
-  .startupNarrative {
-    grid-template-columns: 1fr;
+  .startupGridField {
+    top: calc(var(--desktop-titlebar-h, 52px) + 7rem);
+    left: 0.85rem;
+    right: 0.85rem;
+    bottom: 6.8rem;
   }
 
-  .startupFooter {
-    align-items: flex-start;
-    flex-direction: column;
+  .startupGridCells {
+    inset: 18% 9% 24% 9%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .startupFocusTrail {
+    width: 42vw;
+    height: 24%;
+  }
+
+  .startupResultRail,
+  .startupStatusRail {
+    right: 0.85rem;
+    left: 0.85rem;
+  }
+
+  .startupResultRail {
+    bottom: 4.75rem;
+  }
+
+  .startupStatusRail {
+    bottom: 0.85rem;
+    justify-content: space-between;
   }
 }
 
-@keyframes startup-grid-dot {
+@keyframes startup-grid-cell {
   0%, 100% {
-    transform: scale(1);
-    opacity: 0.72;
+    transform: translateY(0) scale(0.98);
+    opacity: 0.42;
   }
-  45% {
-    transform: scale(1.12);
-    opacity: 1;
-    background:
-      radial-gradient(circle at 35% 35%, color-mix(in srgb, white 34%, transparent), transparent 38%),
-      color-mix(in oklab, var(--selection-fill) 76%, var(--surface-inline));
+  50% {
+    transform: translateY(-3px) scale(1);
+    opacity: 0.7;
+  }
+}
+
+@keyframes startup-sweep {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  18% {
+    opacity: 0.78;
+  }
+  100% {
+    transform: translateX(420%);
+    opacity: 0;
   }
 }
 

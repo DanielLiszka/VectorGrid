@@ -31,7 +31,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `Frontend Review/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase
 - `Frontend Review/workstation_behavior_plan_2026-03-28.md` for the completed workstation UX implementation record (perspectives, compare workflows, provenance, stale-state cues, density, bundle discipline)
 - `Frontend Review/existing_stack_utilization_plan_2026-03-28.md` for the current open plan to get more product value out of the stack already installed in `web/package.json` and the adopted desktop plugins
-- `Frontend Review/startup_animation_plan_2026-03-30.md` for the isolated in-window startup animation implementation plan and checklist using the existing VectorAlpha brand assets
+- `Frontend Review/startup_animation_plan_2026-03-30.md` for the implemented first-wave in-window startup animation record, verification notes, and remaining optional follow-ups using the existing VectorAlpha brand assets
 - `Frontend Review/svg_generation_prompts_2026-03-28.md` for the paste-ready GPT-5.4 Pro prompts used to generate the proposed custom SVG asset set
 
 ## How To Use This Map
@@ -545,9 +545,9 @@ The current named event channels worth knowing are:
 The frontend is a Vue + Pinia workspace app, not a page-routed SPA.
 
 - `web/src/main.ts`
-  - bootstraps Pinia, storage migrations, settings/workflow bootstrap, and recommended optimization defaults
+  - bootstraps Pinia, drives the runtime boot stages, mounts the app early, and runs storage migrations, settings/workflow bootstrap, desktop startup wiring, and recommended optimization defaults
 - `web/src/App.vue`
-  - app shell, lazy panel router, and mount point for global overlays/bridges
+  - app shell, lazy panel router, and mount point for global overlays/bridges including the startup overlay
 - `web/src/components/VueWorkspaceShell.vue`
   - top-level workspace/workflow shell
 - `web/src/stores/workflowStore.ts`
@@ -586,6 +586,7 @@ If you are debugging navigation, visible panels, or why a tab is allowed or hidd
 `web/src/App.vue` does more than route lazy panels. It also mounts the cross-cutting app surfaces:
 
 - `web/src/components/DesktopTitlebar.vue`
+- `web/src/components/StartupAnimationOverlay.vue`
 - `web/src/components/CommandPaletteOverlay.vue`
 - `web/src/components/GlobalShortcutBridge.vue`
 - `web/src/components/AppRuntimeBanner.vue`
@@ -593,7 +594,7 @@ If you are debugging navigation, visible panels, or why a tab is allowed or hidd
 - `web/src/components/RunFooterPanel.vue`
 - `web/src/components/WorkflowQuickSwitch.vue`
 
-These are good first files when the task is global shortcuts, quick actions, runtime banners, footer status, or dev-only workflow navigation.
+These are good first files when the task is startup flow, global shortcuts, quick actions, runtime banners, footer status, or dev-only workflow navigation.
 
 ### Shell and panel ownership
 

@@ -655,10 +655,18 @@ Current status update, March 30, 2026:
   - `alma/alma`, `small`, `full17`: about `114 to 118 ms` score-first versus about `151 to 152 ms` row-first
   - `alma/alma`, `large`, `full17`: about `149 ms` score-first versus about `77 to 78 ms` row-first
   - `alma/alma`, `xlarge`, `full17`: about `369 to 376 ms` score-first versus about `289 to 296 ms` row-first
+- a follow-up packed pair-code global-head merge slice was also attempted and rejected in the current form:
+  - `alma/alma`, `small`, `full17`: `126 ms` score-first versus `67 ms` row-first
+  - `alma/alma`, `large`, `full17`: `169 ms` score-first versus `98 ms` row-first
+  - `alma/alma`, `xlarge`, `full17`: `414 ms` score-first versus `336 ms` row-first
+  - `alma/alma`, `large`, `trade22`: `170 ms` score-first versus `96 ms` row-first
+- that packed global-head slice was fully reverted immediately after the serial measurements above
+- the reverted tree re-passed `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` with Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs` at `77.314 / 77.487 / 77.656 ms` and dynamic preflight at `71.25 ms` on versus `70.25 ms` off
 - route diagnostics confirm the experimental branch is actually active:
   - `gpu_kernel.path=score_first_global_topk`
   - `gpu_kernel.score_first_mode=true`
 - that means Phase 3 is still not “ship the current prototype”; it remains “replace or substantially redesign the current prototype so it can actually beat the row-first path on `large` and `xlarge`”
+- it also means Phase 4 is no longer an obvious next step inside the current reducer shape; the first compact global-head extension attempt already lost on clean serial exact surfaces
 
 Initial route scope for the first slice:
 
@@ -911,7 +919,7 @@ Required tooling:
 
 ### Phase 4 Checklist
 
-- [ ] Extend the compact score-first path through global head merge.
+- [x] Attempt a compact score-first global head merge and reject it immediately if clean serial `small`, `large`, or `xlarge` exact surfaces regress.
 - [ ] Extend the path through shortlist-slice exact reruns.
 - [ ] Confirm `trade22` tail metrics still materialize correctly after finalist replay.
 - [ ] Re-benchmark shortlist-heavy `xlarge` surfaces.
@@ -959,6 +967,7 @@ These ideas were already measured and should not be treated as fresh opportuniti
 - `trade22 -> full17 search + refill` contraction
 - changing the default product/UI metric contract from `auto` to `trade22`
 - alignment-guarded packed `full17` row stores in the current lockstep row-first exact path
+- packed pair-code global-head merge on top of the current experimental score-first exact path
 
 If any of these are revisited later, the burden of proof should be high:
 

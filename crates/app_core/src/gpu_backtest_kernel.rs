@@ -5469,6 +5469,33 @@ fn exact_eval_metrics_count(cfg: KernelConfig) -> usize {
 }
 
 #[inline]
+fn score_first_search_metrics_count_with_exact_contract(
+    objective: ObjectiveKind,
+    score_mode: Option<DoubleMaScoreMode>,
+    constraints: Option<&DoubleMaConstraints>,
+    include_all: bool,
+    export_enabled: bool,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    exact_metrics_count: usize,
+) -> usize {
+    if exact_metrics_count != METRICS_COUNT && exact_metrics_count != TRADE_METRICS_COUNT {
+        return exact_metrics_count;
+    }
+    search_metrics_count_for_optimization_with_contract(
+        objective,
+        score_mode,
+        constraints,
+        include_all,
+        export_enabled,
+        fast_precomputed_enabled,
+        slow_precomputed_enabled,
+        false,
+        None,
+    )
+}
+
+#[inline]
 fn can_decode_current_gpu_product_metrics_without_recompute(metrics_count: usize) -> bool {
     metrics_count >= PRODUCT_REDUCED_METRICS_COUNT
 }
@@ -6793,7 +6820,7 @@ fn score_metric_rows_for_objective_on_device(
 }
 
 #[allow(dead_code)]
-fn reduce_scored_pairs_topk_on_device(
+fn reduce_scored_split_pairs_topk_on_device(
     bt_stream: &Stream,
     scratch: &mut KernelScratch,
     rows_fast: &DeviceBuffer<i32>,
@@ -6948,7 +6975,7 @@ fn reduce_scored_pairs_topk_on_device(
 }
 
 #[allow(dead_code)]
-fn merge_current_topk_scored_pairs_into_global_head(
+fn merge_current_topk_scored_split_pairs_into_global_head(
     bt_stream: &Stream,
     scratch: &mut KernelScratch,
     global_fast: &DeviceBuffer<i32>,
@@ -7062,7 +7089,7 @@ fn merge_current_topk_scored_pairs_into_global_head(
     )?;
     *global_rows_len = global_rows_len.saturating_add(topk_select);
 
-    reduce_scored_pairs_topk_on_device(
+    reduce_scored_split_pairs_topk_on_device(
         bt_stream,
         scratch,
         global_fast,

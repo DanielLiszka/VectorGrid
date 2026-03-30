@@ -6,9 +6,10 @@ import { nextTick } from 'vue'
 import StartupAnimationOverlay from './StartupAnimationOverlay.vue'
 import { useRuntimeStore } from '../stores/runtimeStore'
 
-const MIN_VISIBLE_MS = 360
-const SIGNATURE_MS = 1400
+const MIN_VISIBLE_MS = 5000
+const SIGNATURE_MS = 5000
 const EXIT_MS = 180
+const SKIP_UNLOCK_MS = 600
 
 function stubMatchMedia(reducedMotion = false): void {
   Object.defineProperty(window, 'matchMedia', {
@@ -107,7 +108,7 @@ describe('StartupAnimationOverlay', () => {
     await nextTick()
 
     expect(wrapper.find('.startupSkipButton').exists()).toBe(false)
-    await flushTimers(MIN_VISIBLE_MS)
+    await flushTimers(SKIP_UNLOCK_MS)
     expect(wrapper.find('.startupSkipButton').exists()).toBe(true)
 
     await wrapper.find('.startupSkipButton').trigger('click')

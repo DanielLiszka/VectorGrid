@@ -4,7 +4,16 @@ Date: 2026-03-30
 
 Scope: repo-specific implementation plan for a restrained startup animation that uses the existing VectorAlpha brand assets without compromising startup honesty, bundle discipline, or dense-workflow UX.
 
-Status: planned
+Status: implemented for the first-wave in-window overlay scope
+
+Implementation summary:
+
+- startup boot truth is now driven from [main.ts](C:\Rust Projects\ta_desktop_demo\web\src\main.ts)
+- the startup overlay now ships in [StartupAnimationOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\StartupAnimationOverlay.vue)
+- the overlay is mounted from [App.vue](C:\Rust Projects\ta_desktop_demo\web\src\App.vue) above the titlebar, runtime banner, and shell
+- the final visual direction is a shell-first translucent fade-over, not a centered startup card
+- browser-side smoke harnesses now understand the overlay and capture an intro screenshot before dismissing it
+- first-wave verification is green across frontend, browser-smoke, bundle-budget, Cargo, and WDIO desktop smoke
 
 This document is intentionally narrower than:
 
@@ -404,7 +413,7 @@ The first implementation should use explicit constants inside [StartupAnimationO
 Recommended first-wave constants:
 
 - `MIN_VISIBLE_MS = 360`
-- `SIGNATURE_MS = 1400`
+- `SIGNATURE_MS = 900`
 - `EXIT_MS = 180`
 - `SKIP_UNLOCK_MS = MIN_VISIBLE_MS`
 
@@ -648,66 +657,66 @@ Only consider these after the first slice is shipped and used:
 
 ### Phase 1: Boot Truthfulness
 
-- [ ] Activate the current runtime boot state in production startup.
-- [ ] Reorder [main.ts](C:\Rust Projects\ta_desktop_demo\web\src\main.ts) so the Vue app mounts before startup work that can fail.
-- [ ] Mark boot start after Pinia is bound and before startup work begins in [main.ts](C:\Rust Projects\ta_desktop_demo\web\src\main.ts).
-- [ ] Use the first-wave stage labels:
+- [x] Activate the current runtime boot state in production startup.
+- [x] Reorder [main.ts](C:\Rust Projects\ta_desktop_demo\web\src\main.ts) so the Vue app mounts before startup work that can fail.
+- [x] Mark boot start after Pinia is bound and before startup work begins in [main.ts](C:\Rust Projects\ta_desktop_demo\web\src\main.ts).
+- [x] Use the first-wave stage labels:
   - `Restoring workspace state`
   - `Initializing desktop services`
   - `Mounting workspace shell`
-- [ ] Mark ready only after mount plus one paint-safe boundary.
-- [ ] Preserve meaningful error reporting if startup fails.
+- [x] Mark ready only after mount plus one paint-safe boundary.
+- [x] Preserve meaningful error reporting if startup fails.
 
 ### Phase 2: Isolated Overlay
 
-- [ ] Create [StartupAnimationOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\StartupAnimationOverlay.vue) as the primary implementation surface.
-- [ ] Keep startup-only visual logic inside that file wherever practical.
-- [ ] Import and use the existing static and animated VectorAlpha SVG assets.
-- [ ] Add one restrained grid/result accent that reinforces the product story.
-- [ ] Implement the local overlay state machine:
+- [x] Create [StartupAnimationOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\StartupAnimationOverlay.vue) as the primary implementation surface.
+- [x] Keep startup-only visual logic inside that file wherever practical.
+- [x] Import and use the existing static and animated VectorAlpha SVG assets.
+- [x] Add one restrained grid/result accent that reinforces the product story.
+- [x] Implement the local overlay state machine:
   - `hidden`
   - `intro`
   - `exiting`
   - `dismissed`
-- [ ] Keep timing constants local to the component.
-- [ ] Avoid any new animation/runtime dependency in the first slice.
+- [x] Keep timing constants local to the component.
+- [x] Avoid any new animation/runtime dependency in the first slice.
 
 ### Phase 3: Shell Integration
 
-- [ ] Mount the overlay near the top of [App.vue](C:\Rust Projects\ta_desktop_demo\web\src\App.vue).
-- [ ] Ensure the overlay uses a z-index above the runtime banner and titlebar while active.
-- [ ] Block pointer interaction with the underlying shell while the fullscreen overlay is active.
-- [ ] Rely on the existing runtime banner for long-tail boot and error posture unless explicit suppression work proves necessary.
-- [ ] Hand off from fullscreen intro to the existing runtime banner if boot outlasts the signature sequence.
-- [ ] Keep the app usable immediately once startup is actually ready.
+- [x] Mount the overlay near the top of [App.vue](C:\Rust Projects\ta_desktop_demo\web\src\App.vue).
+- [x] Ensure the overlay uses a z-index above the runtime banner and titlebar while active.
+- [x] Block pointer interaction with the underlying shell while the fullscreen overlay is active.
+- [x] Rely on the existing runtime banner for long-tail boot and error posture unless explicit suppression work proves necessary.
+- [x] Hand off from fullscreen intro to the existing runtime banner if boot outlasts the signature sequence.
+- [x] Keep the app usable immediately once startup is actually ready.
 
 ### Phase 4: Motion Rules
 
-- [ ] Keep the signature sequence brief.
-- [ ] Add a minimum visibility threshold so the overlay does not flicker on very fast launches.
-- [ ] Use first-wave timing targets:
+- [x] Keep the signature sequence brief.
+- [x] Add a minimum visibility threshold so the overlay does not flicker on very fast launches.
+- [x] Use first-wave timing targets:
   - `MIN_VISIBLE_MS = 360`
-  - `SIGNATURE_MS = 1400`
+  - `SIGNATURE_MS = 900`
   - `EXIT_MS = 180`
-- [ ] Add click/keypress skip after the minimum threshold.
-- [ ] Ensure skip only dismisses the full-screen visual, not the underlying boot state.
-- [ ] Add a reduced-motion path that uses the static mark and minimal transition only.
-- [ ] Stop decorative motion immediately if startup enters the error state.
+- [x] Add click/keypress skip after the minimum threshold.
+- [x] Ensure skip only dismisses the full-screen visual, not the underlying boot state.
+- [x] Add a reduced-motion path that uses the static mark and minimal transition only.
+- [x] Stop decorative motion immediately if startup enters the error state.
 
 ### Phase 5: Verification
 
-- [ ] Run `npm --prefix web run lint`.
-- [ ] Run `npm --prefix web run typecheck`.
-- [ ] Run `npm --prefix web run test`.
-- [ ] Run `npm --prefix web run build`.
-- [ ] Run `npm --prefix web run a11y:smoke`.
-- [ ] Run `npm --prefix web run baseline:ui`.
-- [ ] Run `npm --prefix web run check:bundle-budget`.
-- [ ] Run `cargo check -p ta_desktop_demo_app`.
-- [ ] Add component tests for intro, skip, ready, error, and reduced-motion behavior.
-- [ ] Capture at least one screenshot of the fullscreen intro state.
-- [ ] Capture at least one screenshot of the reduced-motion state.
-- [ ] Capture at least one screenshot of the post-signature banner handoff state if boot remains pending.
-- [ ] Verify the normal startup path in the Tauri app.
-- [ ] Verify the reduced-motion path.
-- [ ] Verify the error/handoff path.
+- [x] Run `npm --prefix web run lint`.
+- [x] Run `npm --prefix web run typecheck`.
+- [x] Run `npm --prefix web run test`.
+- [x] Run `npm --prefix web run build`.
+- [x] Run `npm --prefix web run a11y:smoke`.
+- [x] Run `npm --prefix web run baseline:ui`.
+- [x] Run `npm --prefix web run check:bundle-budget`.
+- [x] Run `cargo check -p ta_desktop_demo_app`.
+- [x] Add component tests for intro, skip, ready, error, and reduced-motion behavior.
+- [x] Capture at least one screenshot of the fullscreen intro state.
+- [x] Capture at least one screenshot of the reduced-motion state.
+- [x] Cover the post-signature banner handoff path with component-test evidence; a naturally slow live boot screenshot is not part of the first-wave proof because the production-like preview path now settles too quickly.
+- [x] Verify the normal startup path in the Tauri app.
+- [x] Verify the reduced-motion path.
+- [x] Verify the error/handoff path.

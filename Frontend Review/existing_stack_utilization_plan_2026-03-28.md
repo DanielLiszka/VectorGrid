@@ -996,7 +996,8 @@ Requirements if these optional goals are pursued:
 
 ### Optional Checklist
 
-- [ ] Decide whether a startup animation is worth shipping or should remain deferred.
+- [x] Decide whether a startup animation is worth shipping or should remain deferred.
+  Current outcome: ship the first-wave in-window overlay implemented in [startup_animation_plan_2026-03-30.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\startup_animation_plan_2026-03-30.md).
 - [ ] Identify the highest-ROI practical information graphic that is not already covered by the current chart/table stack.
 - [ ] Define strict acceptance criteria before adding any non-SVG motion or visual flourish.
 - [ ] If a 3D analytical view is considered, document the practical justification and the required 2D fallback first.
