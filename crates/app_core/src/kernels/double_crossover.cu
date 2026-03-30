@@ -5031,7 +5031,7 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
 }
 
 extern "C" __global__
-__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm(
+__launch_bounds__(128, 2) void double_cross_backtest_tm_flex_f32_windowed_m22_regime_hybrid_norisk_eps0_nocomm(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
     const float* __restrict__ lr,
@@ -9955,8 +9955,6 @@ void vemr_backtest_metrics_f32(
         out_metrics[base + 11] = ulcer_index;
     }
 }
-
-
 
 
 

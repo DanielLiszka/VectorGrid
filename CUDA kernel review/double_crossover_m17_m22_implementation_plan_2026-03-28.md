@@ -832,6 +832,78 @@ Current interpretation:
   - decision:
     - revert immediately
     - do not treat shortlist-only improvement as valid acceptance evidence when the same load change catastrophically regresses the direct exact windowed route
+- a combined 6-range shortlist replay fast path was then implemented, A/B measured, and rejected:
+  - change shape:
+    - in `rerank_shortlist_by_slice_robustness()`, when `diagnostic_limit >= rows.len()`, collapse the current two replay batches into one exact multi-range call
+    - evaluate `halves + quartiles` together, then rebuild both diagnostic views from the single combined result
+  - correctness verification on the patched state:
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_request_matches_exhaustive_host_union --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core gpu_kernel_shortlist_slice_request_diagnostics_are_exposed_on_backend_result --features cuda,cuda-backtest-kernel -- --test-threads=1`
+  - controlled A/B on `double_ma` + `alma/alma` + `xlarge/370750pairs` + objective `sharpe` + `shortlist_slice_mode=halves`, all with `--warmup-iterations 2`:
+    - patched combined-replay state:
+      - `full17`: `396 / 399 / 404 ms` min / median / max, `399.7 ms` mean
+      - `trade22`: `416 / 423 / 428 ms` min / median / max, `422.3 ms` mean
+    - reverted baseline state:
+      - `full17`: `393 / 395 / 413 ms` min / median / max, `400.3 ms` mean
+      - `trade22`: `418 / 419 / 432 ms` min / median / max, `423.0 ms` mean
+  - decision:
+    - revert it and keep the simpler existing replay flow
+    - the measured delta is effectively noise-level, so the extra branch and reconstruction logic are not justified
+- clean-state verification after reverting the replay-merge experiment still passes:
+  - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+    - passed
+    - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[85.271 ms 85.480 ms 85.679 ms]`
+    - dynamic preflight: `77.75 ms` (on) vs `79.5 ms` (off)
+- a fresh clean-baseline Nsight Compute capture on the direct full17 windowed hybrid exact surface reinforces that the next real target is still inside the CUDA body, not the host replay plumbing:
+  - report: `target/nsight/regime_hybrid_windowed_full17_clean.ncu-rep`
+  - workload: `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe` + `metric_contract=full17`
+  - hot-kernel summary:
+    - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm`
+    - duration about `390.82 ms`
+    - compute throughput about `81.12%`
+    - memory throughput about `37.74%`
+    - L1/TEX throughput about `20.07%`
+    - L1/TEX hit rate about `40.92%`
+    - `61` registers per thread
+    - theoretical occupancy about `66.67%`
+    - achieved occupancy about `59.76%`
+  - interpretation:
+    - this slice is still compute / dependency heavy with non-trivial register pressure
+    - host replay-order experiments are lower-confidence than direct kernel-body work on the windowed hybrid path
+- a direct `#pragma unroll 1` probe on the hot no-risk time loop was measured and rejected immediately:
+  - workload: direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
+  - with the pragma enabled:
+    - `full17`: `398 / 401 / 402 ms`
+    - `trade22`: `1073 / 1299 / 1299 ms`
+  - decision:
+    - revert it
+    - the `trade22` blow-up was severe enough that this is not a credible register-pressure fix for the shared windowed path
+- a wrapper-local `__launch_bounds__(128, 2)` experiment on the direct windowed hybrid exact wrappers was then narrowed to a 22-row-only keep:
+  - first pass on both wrappers:
+    - `windowed_m17_regime_hybrid_norisk_eps0_nocomm`
+    - `windowed_m22_regime_hybrid_norisk_eps0_nocomm`
+  - clean-source baseline after restoring the CUDA file to `HEAD`:
+    - `full17`: `397 / 398 / 392 ms`
+    - `trade22`: `406 / 408 / 404 ms`
+  - narrowed retained state:
+    - leave `windowed_m17_regime_hybrid_norisk_eps0_nocomm` at `__launch_bounds__(128)`
+    - keep `windowed_m22_regime_hybrid_norisk_eps0_nocomm` at `__launch_bounds__(128, 2)`
+  - same-surface confirmation on the narrowed keep:
+    - `trade22`: `401 / 403 / 396 ms`
+  - conclusion:
+    - do not keep the 17-row wrapper annotation
+    - keep the 22-row wrapper-local launch-bounds change because it stays directionally favorable on the clean direct exact surface while leaving the 17-row kernel untouched
+- full NVCC / PTX rebuild health is now revalidated on the kept state:
+  - the forced rebuild exposed a broken half-refactor in the local working copy around trade-summary accumulation
+  - the CUDA file was restored to `HEAD`, then only the kept launch-bounds wrapper change was reapplied
+  - verification after that restore:
+    - `cargo build -p ta_app_core --bin profile_gpu_dynamic_runner --release --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core backend_for_strategy_keeps_regime_hybrid_on_exact_gpu_kernel_surface --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core exact_gpu_kernel_config_preserves_metric_contract_request --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+      - passed
+      - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[84.810 ms 85.064 ms 85.303 ms]`
+      - dynamic preflight: `77.5 ms` (on) vs `78.5 ms` (off)
 - remaining open work is now centered on source-level investigation of the windowed L1TEX dependency / coalescing hints, deciding whether the windowed family should expand beyond the now-proven `regime_off`, `regime_on`, and `regime_hybrid` hot slices, and only then reconsidering downstream fusion work if the backtest kernel stops dominating
 
 ## Implementation Order
@@ -1272,6 +1344,9 @@ Guardrails:
 - [x] Benchmark whether M22 lockstep full-row routes should also get dedicated dedup variants.
 - [x] Keep dense / `pf`-major compact valid-pair ordering covered by tests or comments.
 - [x] Re-check whether windowed exact full-row runs are hot enough to justify a dedicated family.
+- [x] Reject the first `#pragma unroll 1` probe on the shared no-risk time loop after a severe `trade22` regression on the direct windowed hybrid exact surface.
+- [x] Reject keeping the 17-row `windowed_m17_regime_hybrid_norisk_eps0_nocomm` `__launch_bounds__(128, 2)` annotation after mixed clean-source A/B results.
+- [x] Keep the 22-row `windowed_m22_regime_hybrid_norisk_eps0_nocomm` `__launch_bounds__(128, 2)` annotation after clean direct `trade22` wins and a passing GPU perf gate.
 
 ### Phase 5 Checklist: Optional Pipeline Fusion
 
