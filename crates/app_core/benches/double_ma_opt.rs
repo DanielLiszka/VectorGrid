@@ -770,7 +770,11 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
 
     let base_req = DoubleMaRequest {
         backend: Backend::GpuKernel { device_id: 0 },
-        data_id: make_bench_data_id(&["gpu-kernel-contract-split", "alma_alma", &pairs.to_string()]),
+        data_id: make_bench_data_id(&[
+            "gpu-kernel-contract-split",
+            "alma_alma",
+            &pairs.to_string(),
+        ]),
         fast_range,
         slow_range,
         fast_ma_types: vec!["alma".to_string()],
@@ -1285,7 +1289,12 @@ fn bench_double_ma_gpu_kernel_strategy_profiles(c: &mut Criterion) {
 
                 let req = DoubleMaRequest {
                     backend: Backend::GpuKernel { device_id: 0 },
-                    data_id: make_bench_data_id(&["gpu-kernel-strategy", ma.label, strategy_label, &name]),
+                    data_id: make_bench_data_id(&[
+                        "gpu-kernel-strategy",
+                        ma.label,
+                        strategy_label,
+                        &name,
+                    ]),
                     fast_range,
                     slow_range,
                     fast_ma_types: vec![ma.fast_ma.to_string()],
@@ -1411,7 +1420,12 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
 
                 let req = DoubleMaRequest {
                     backend: Backend::GpuKernel { device_id: 0 },
-                    data_id: make_bench_data_id(&["gpu-kernel-dynamic-preflight", strategy_label, mode_label, &name]),
+                    data_id: make_bench_data_id(&[
+                        "gpu-kernel-dynamic-preflight",
+                        strategy_label,
+                        mode_label,
+                        &name,
+                    ]),
                     fast_range,
                     slow_range,
                     fast_ma_types: vec!["sma".to_string()],

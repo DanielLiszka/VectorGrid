@@ -7121,6 +7121,12 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    let route_diagnostics = if matches!(backend_used, BackendUsed::Gpu) {
+        crate::gpu_backtest_kernel::take_last_route_diagnostics()
+    } else {
+        None
+    };
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let mut shortlist_slice_diagnostics = if matches!(backend_used, BackendUsed::Gpu) {
         crate::gpu_backtest_kernel::take_last_shortlist_slice_diagnostics()
     } else {
@@ -7132,6 +7138,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
     } else {
         None
     };
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    let route_diagnostics: Option<Vec<String>> = None;
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let mut shortlist_slice_diagnostics: Option<ShortlistSliceDiagnostics> = None;
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -7191,7 +7199,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                 gpu_kernel_timing_ms: merged_gpu_kernel_timing_ms,
                 backend_route: merged_backend_route,
                 backend_fallback_reason: merged_backend_fallback_reason,
-                route_diagnostics: None,
+                route_diagnostics,
                 indicator_route_plan: Some(indicator_route_plan_summary),
                 residency,
                 followup_cache_key,
@@ -13134,13 +13142,12 @@ fn optimize_double_ma_dynamic_gpu_kernel_tiled(
 
     if let Some(mode) = shortlist_confidence_mode {
         let top_limit = result.top.len().max(1);
-        let confidence_rows: &[(DoubleMaParams, Metrics)] = if materialized_shortlist_rows
-            .is_empty()
-        {
-            result.top.as_slice()
-        } else {
-            materialized_shortlist_rows.as_slice()
-        };
+        let confidence_rows: &[(DoubleMaParams, Metrics)] =
+            if materialized_shortlist_rows.is_empty() {
+                result.top.as_slice()
+            } else {
+                materialized_shortlist_rows.as_slice()
+            };
         let reranked = crate::gpu_backtest_kernel::rerank_shortlist_by_confidence_for_host(
             confidence_rows,
             mode,
@@ -24195,6 +24202,335 @@ mod tests {
             host_merged.best_metrics.pnl,
             device_merged.best_metrics.pnl
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn assert_gpu_kernel_score_first_topk_matches_row_first_on_narrow_exact_surface(
+        metric_contract: DoubleMaMetricContract,
+        include_trade_metrics: bool,
+    ) {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+
+        let prev_global = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+        let prev_score_first = std::env::var("VECTORBT_KERNEL_SCORE_FIRST_TOPK").ok();
+
+        let candles = make_trending_candles(6000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 80, 1),
+            slow_range: (10, 160, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(20),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics,
+            metric_contract: Some(metric_contract),
+            hurdle_tau: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "0");
+        let row_first =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("row-first exact gpu-kernel narrow surface");
+
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "1");
+        let score_first =
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("score-first exact gpu-kernel narrow surface");
+
+        match prev_global {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+        match prev_score_first {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK"),
+        }
+
+        assert_eq!(
+            row_first.best_params.fast_len,
+            score_first.best_params.fast_len
+        );
+        assert_eq!(
+            row_first.best_params.slow_len,
+            score_first.best_params.slow_len
+        );
+        assert!(
+            (row_first.best_metrics.sharpe - score_first.best_metrics.sharpe).abs() <= 1e-6,
+            "best sharpe mismatch row_first={} score_first={}",
+            row_first.best_metrics.sharpe,
+            score_first.best_metrics.sharpe
+        );
+        assert!(
+            (row_first.best_metrics.pnl - score_first.best_metrics.pnl).abs() <= 1e-6,
+            "best pnl mismatch row_first={} score_first={}",
+            row_first.best_metrics.pnl,
+            score_first.best_metrics.pnl
+        );
+
+        let row_first_top: Vec<(u16, u16)> = row_first
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        let score_first_top: Vec<(u16, u16)> = score_first
+            .top
+            .iter()
+            .map(|(params, _)| (params.fast_len, params.slow_len))
+            .collect();
+        assert_eq!(row_first_top, score_first_top);
+
+        if metric_contract == DoubleMaMetricContract::Trade22 {
+            assert_eq!(
+                row_first.best_metrics.closed_trades,
+                score_first.best_metrics.closed_trades
+            );
+            assert_eq!(
+                row_first.best_metrics.winning_trades,
+                score_first.best_metrics.winning_trades
+            );
+            assert_eq!(
+                row_first.best_metrics.losing_trades,
+                score_first.best_metrics.losing_trades
+            );
+            assert!(
+                (row_first.best_metrics.gross_profit - score_first.best_metrics.gross_profit).abs()
+                    <= 1e-6,
+                "best gross_profit mismatch row_first={} score_first={}",
+                row_first.best_metrics.gross_profit,
+                score_first.best_metrics.gross_profit
+            );
+            assert!(
+                (row_first.best_metrics.gross_loss - score_first.best_metrics.gross_loss).abs()
+                    <= 1e-6,
+                "best gross_loss mismatch row_first={} score_first={}",
+                row_first.best_metrics.gross_loss,
+                score_first.best_metrics.gross_loss
+            );
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_score_first_topk_matches_row_first_on_narrow_exact_surface() {
+        assert_gpu_kernel_score_first_topk_matches_row_first_on_narrow_exact_surface(
+            DoubleMaMetricContract::Full17,
+            false,
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_score_first_topk_matches_row_first_on_narrow_exact_surface_trade22() {
+        assert_gpu_kernel_score_first_topk_matches_row_first_on_narrow_exact_surface(
+            DoubleMaMetricContract::Trade22,
+            true,
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_route_diagnostics_expose_score_first_mode_and_blockers() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+
+        let prev_global = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
+        let prev_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
+        let prev_score_first = std::env::var("VECTORBT_KERNEL_SCORE_FIRST_TOPK").ok();
+
+        let candles = make_trending_candles(6000);
+        let cancel = AtomicBool::new(false);
+        let base_req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 80, 1),
+            slow_range: (10, 160, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(20),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: false,
+            metric_contract: Some(DoubleMaMetricContract::Full17),
+            hurdle_tau: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", "1");
+        std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK");
+
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "0");
+        let row_first = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("row-first route diagnostics");
+        let row_diags = row_first
+            .route_diagnostics
+            .as_ref()
+            .expect("row-first route diagnostics payload");
+        assert!(
+            row_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.path=row_first_global_topk"),
+            "expected row-first path diagnostic, got {row_diags:?}"
+        );
+        assert!(
+            row_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.score_first_mode=false"),
+            "expected row-first score-first_mode=false, got {row_diags:?}"
+        );
+        assert!(
+            row_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.score_first_blockers=env_disabled"),
+            "expected env-disabled blocker, got {row_diags:?}"
+        );
+
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "1");
+        let score_first = run_double_ma_optimization_blocking_with_candles(
+            base_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("score-first route diagnostics");
+        let score_diags = score_first
+            .route_diagnostics
+            .as_ref()
+            .expect("score-first route diagnostics payload");
+        assert!(
+            score_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.path=score_first_global_topk"),
+            "expected score-first path diagnostic, got {score_diags:?}"
+        );
+        assert!(
+            score_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.score_first_mode=true"),
+            "expected score-first score_first_mode=true, got {score_diags:?}"
+        );
+        assert!(
+            score_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.score_first_blockers=none"),
+            "expected blocker-free score-first path, got {score_diags:?}"
+        );
+
+        let blocked_req = DoubleMaRequest {
+            constraints: Some(DoubleMaConstraints {
+                min_trades: Some(1),
+                ..Default::default()
+            }),
+            ..base_req
+        };
+        let blocked =
+            run_double_ma_optimization_blocking_with_candles(blocked_req, &candles, &cancel, None)
+                .expect("blocked score-first route diagnostics");
+        let blocked_diags = blocked
+            .route_diagnostics
+            .as_ref()
+            .expect("blocked route diagnostics payload");
+        assert!(
+            blocked_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.path=row_first_global_topk"),
+            "expected blocked row-first path diagnostic, got {blocked_diags:?}"
+        );
+        assert!(
+            blocked_diags
+                .iter()
+                .any(|line| line == "gpu_kernel.score_first_mode=false"),
+            "expected blocked score_first_mode=false, got {blocked_diags:?}"
+        );
+        assert!(
+            blocked_diags.iter().any(|line| {
+                line == "gpu_kernel.score_first_blockers=constraints_present"
+                    || line.ends_with(",constraints_present")
+                    || line.contains("constraints_present,")
+            }),
+            "expected constraints blocker, got {blocked_diags:?}"
+        );
+
+        match prev_global {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_GLOBAL_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_GLOBAL_TOPK"),
+        }
+        match prev_legacy {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK"),
+        }
+        match prev_score_first {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK"),
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

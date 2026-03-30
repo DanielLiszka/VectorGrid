@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-03-29
+Last updated: 2026-03-30
 
 ## Purpose
 
@@ -31,6 +31,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `Frontend Review/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase
 - `Frontend Review/workstation_behavior_plan_2026-03-28.md` for the completed workstation UX implementation record (perspectives, compare workflows, provenance, stale-state cues, density, bundle discipline)
 - `Frontend Review/existing_stack_utilization_plan_2026-03-28.md` for the current open plan to get more product value out of the stack already installed in `web/package.json` and the adopted desktop plugins
+- `Frontend Review/startup_animation_plan_2026-03-30.md` for the isolated in-window startup animation implementation plan and checklist using the existing VectorAlpha brand assets
 - `Frontend Review/svg_generation_prompts_2026-03-28.md` for the paste-ready GPT-5.4 Pro prompts used to generate the proposed custom SVG asset set
 
 ## How To Use This Map

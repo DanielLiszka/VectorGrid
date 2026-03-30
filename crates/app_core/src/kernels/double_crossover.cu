@@ -3509,9 +3509,24 @@ static __device__ __forceinline__ void store_metrics_row_fixed_f32(
     float gross_profit,
     float gross_loss)
 {
+    const float signed_net_expo = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
     if constexpr (N == 22) {
-        const float signed_net_expo = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
-        float2* const row2 = reinterpret_cast<float2*>(metrics_out + base);
+        float* const row = metrics_out + base;
+        if ((((uintptr_t)row) & (sizeof(float4) - 1u)) == 0u) {
+            float4* const row4 = reinterpret_cast<float4*>(row);
+            row4[0] = make_float4(pnl, (float)trades, max_dd, mean);
+            row4[1] = make_float4(std, exposure, signed_net_expo, downside_dev);
+            row4[2] = make_float4(ulcer_index, omega, downside_frequency, downside_severity);
+            row4[3] = make_float4(long_mean_return, short_mean_return, kappa_tau, underwater_fraction);
+            row4[4] = make_float4(
+                (float)max_underwater_duration_bars,
+                (float)closed_trades,
+                (float)winning_trades,
+                (float)losing_trades);
+            reinterpret_cast<float2*>(row)[10] = make_float2(gross_profit, gross_loss);
+            return;
+        }
+        float2* const row2 = reinterpret_cast<float2*>(row);
         row2[0] = make_float2(pnl, (float)trades);
         row2[1] = make_float2(max_dd, mean);
         row2[2] = make_float2(std, exposure);
@@ -3532,7 +3547,7 @@ static __device__ __forceinline__ void store_metrics_row_fixed_f32(
     if constexpr (N > 3) metrics_out[base + 3] = mean;
     if constexpr (N > 4) metrics_out[base + 4] = std;
     if constexpr (N > 5) metrics_out[base + 5] = exposure;
-    if constexpr (N > 6) metrics_out[base + 6] = (flags & STRAT_SIGNED_EXPOSURE) ? net_expo : 0.0f;
+    if constexpr (N > 6) metrics_out[base + 6] = signed_net_expo;
     if constexpr (N > 7) metrics_out[base + 7] = downside_dev;
     if constexpr (N > 8) metrics_out[base + 8] = ulcer_index;
     if constexpr (N > 9) metrics_out[base + 9] = omega;
@@ -8367,6 +8382,407 @@ void gather_topk_pairs_tm_f32(
         const size_t base_in = row_idx * (size_t)metrics_stride;
         const size_t base_out = (size_t)i * (size_t)M;
         for (int m = 0; m < M; ++m) out_metrics[base_out + (size_t)m] = metrics[base_in + (size_t)m];
+    }
+}
+
+extern "C" __global__
+void select_topk_scored_pairs_tm_f32(
+    const float* __restrict__ metrics,
+    int pairs,
+    int M,
+    int metrics_stride,
+    int Pf_tile,
+    int Ps_tile,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    int objective,
+    float hurdle_tau,
+    int topk,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    int* __restrict__ out_pair_idx,
+    float* __restrict__ out_scores
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    const int dense_pairs = pairs;
+    const int total_pairs = (pair_count > 0) ? pair_count : pairs;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int compact_idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (compact_idx < total_pairs) {
+            if (compact_output && pair_index_map != nullptr && pair_count > 0) {
+                const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
+                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
+                if (!isfinite(score)) score = NEG_INF_F;
+                val = compact_idx;
+            } else {
+                const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
+                if (pair >= 0) {
+                    const int pf_local = pair / Ps_tile;
+                    const int ps_local = pair - pf_local * Ps_tile;
+                    if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                        const int f = fast_periods[pf_local];
+                        const int s = slow_periods[ps_local];
+                        if (f < s) {
+                            const size_t row_idx =
+                                compact_output ? (size_t)compact_idx : (size_t)pair;
+                            const size_t base = row_idx * (size_t)metrics_stride;
+                            score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
+                            if (!isfinite(score)) score = NEG_INF_F;
+                            val = compact_output ? compact_idx : pair;
+                        }
+                    }
+                }
+            }
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_scores[(int)blockIdx.x * topk + rank] = keys[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_scored_pairs_tm_f32_v2(
+    const float* __restrict__ metrics,
+    int pairs,
+    int M,
+    int metrics_stride,
+    int Pf_tile,
+    int Ps_tile,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    int objective,
+    float hurdle_tau,
+    int topk,
+    int use_min_trades,
+    float min_trades,
+    int use_max_dd,
+    float max_dd,
+    int use_min_sharpe,
+    float min_sharpe,
+    int use_min_sortino,
+    float min_sortino,
+    int use_min_calmar,
+    float min_calmar,
+    int use_max_volatility,
+    float max_volatility,
+    int use_min_exposure,
+    float min_exposure,
+    int use_max_exposure,
+    float max_exposure,
+    int use_max_abs_net_exposure,
+    float max_abs_net_exposure,
+    int use_min_omega,
+    float min_omega,
+    int use_max_ulcer,
+    float max_ulcer,
+    int use_max_downside_deviation,
+    float max_downside_deviation,
+    const int* __restrict__ pair_index_map,
+    int pair_count,
+    int compact_output,
+    int* __restrict__ out_pair_idx,
+    float* __restrict__ out_scores
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    const int dense_pairs = pairs;
+    const int total_pairs = (pair_count > 0) ? pair_count : pairs;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int compact_idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (compact_idx < total_pairs) {
+            if (compact_output && pair_index_map != nullptr && pair_count > 0) {
+                const size_t base = (size_t)compact_idx * (size_t)metrics_stride;
+                if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                    score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
+                    if (!isfinite(score)) score = NEG_INF_F;
+                    val = compact_idx;
+                }
+            } else {
+                const int pair = resolve_dense_pair_idx(compact_idx, dense_pairs, pair_index_map);
+                if (pair >= 0) {
+                    const int pf_local = pair / Ps_tile;
+                    const int ps_local = pair - pf_local * Ps_tile;
+                    if (pf_local >= 0 && pf_local < Pf_tile && ps_local >= 0 && ps_local < Ps_tile) {
+                        const int f = fast_periods[pf_local];
+                        const int s = slow_periods[ps_local];
+                        if (f < s) {
+                            const size_t row_idx =
+                                compact_output ? (size_t)compact_idx : (size_t)pair;
+                            const size_t base = row_idx * (size_t)metrics_stride;
+                            if (passes_constraints_f32(metrics, base, M, hurdle_tau, use_min_trades, min_trades, use_max_dd, max_dd, use_min_sharpe, min_sharpe, use_min_sortino, min_sortino, use_min_calmar, min_calmar, use_max_volatility, max_volatility, use_min_exposure, min_exposure, use_max_exposure, max_exposure, use_max_abs_net_exposure, max_abs_net_exposure, use_min_omega, min_omega, use_max_ulcer, max_ulcer, use_max_downside_deviation, max_downside_deviation)) {
+                                score = objective_score_f32(metrics, base, M, objective, hurdle_tau);
+                                if (!isfinite(score)) score = NEG_INF_F;
+                                val = compact_output ? compact_idx : pair;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_scores[(int)blockIdx.x * topk + rank] = keys[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_scored_candidates_tm_f32(
+    const int* __restrict__ in_pair_idx,
+    const float* __restrict__ in_scores,
+    int in_len,
+    int topk,
+    int* __restrict__ out_pair_idx,
+    float* __restrict__ out_scores
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (in_pos < in_len) {
+            score = in_scores[in_pos];
+            if (!isfinite(score)) score = NEG_INF_F;
+            val = in_pair_idx[in_pos];
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_pair_idx[(int)blockIdx.x * topk + rank] = vals[item];
+            out_scores[(int)blockIdx.x * topk + rank] = keys[item];
+        }
+    }
+}
+
+extern "C" __global__
+void gather_topk_scored_pairs_tm_f32(
+    int pairs,
+    int Pf_tile,
+    int Ps_tile,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const int* __restrict__ top_pair_idx,
+    const float* __restrict__ top_pair_scores,
+    int topk,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_rows,
+    const int* __restrict__ compact_slow_rows,
+    int pair_count,
+    int compact_output,
+    int* __restrict__ out_fast_len,
+    int* __restrict__ out_slow_len,
+    float* __restrict__ out_scores
+) {
+    const int total_rows = (compact_output && pair_count > 0) ? pair_count : pairs;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < topk; i += blockDim.x * gridDim.x) {
+        const int row = top_pair_idx[i];
+        const float score = top_pair_scores[i];
+        if (compact_output && compact_fast_rows != nullptr && compact_slow_rows != nullptr) {
+            if (row < 0 || row >= total_rows) {
+                out_fast_len[i] = 0;
+                out_slow_len[i] = 0;
+                out_scores[i] = NEG_INF_F;
+                continue;
+            }
+            out_fast_len[i] = compact_fast_rows[row];
+            out_slow_len[i] = compact_slow_rows[row];
+            out_scores[i] = isfinite(score) ? score : NEG_INF_F;
+            continue;
+        }
+        const int pair = compact_output
+            ? ((row >= 0 && row < total_rows)
+                ? resolve_dense_pair_idx(row, pairs, pair_index_map)
+                : -1)
+            : row;
+        if (pair < 0 || pair >= pairs) {
+            out_fast_len[i] = 0;
+            out_slow_len[i] = 0;
+            out_scores[i] = NEG_INF_F;
+            continue;
+        }
+        const int pf_local = pair / Ps_tile;
+        const int ps_local = pair - pf_local * Ps_tile;
+        if (pf_local < 0 || pf_local >= Pf_tile || ps_local < 0 || ps_local >= Ps_tile) {
+            out_fast_len[i] = 0;
+            out_slow_len[i] = 0;
+            out_scores[i] = NEG_INF_F;
+            continue;
+        }
+        out_fast_len[i] = fast_periods[pf_local];
+        out_slow_len[i] = slow_periods[ps_local];
+        out_scores[i] = isfinite(score) ? score : NEG_INF_F;
+    }
+}
+
+extern "C" __global__
+void score_metric_rows_f32(
+    const float* __restrict__ metrics_rows,
+    int rows,
+    int M,
+    int objective,
+    float hurdle_tau,
+    float* __restrict__ out_scores
+) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < rows; i += blockDim.x * gridDim.x) {
+        const size_t base = (size_t)i * (size_t)M;
+        float score = objective_score_f32(metrics_rows, base, M, objective, hurdle_tau);
+        if (!isfinite(score)) score = NEG_INF_F;
+        out_scores[i] = score;
+    }
+}
+
+extern "C" __global__
+void select_topk_scored_rows_f32(
+    const float* __restrict__ score_rows,
+    int rows,
+    int topk,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int idx = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        float score = NEG_INF_F;
+        int val = -1;
+        if (idx < rows) {
+            score = score_rows[idx];
+            if (!isfinite(score)) score = NEG_INF_F;
+            val = idx;
+        }
+        keys[item] = score;
+        vals[item] = val;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void select_topk_scored_rows_from_candidates_f32(
+    const float* __restrict__ score_rows,
+    int rows,
+    int topk,
+    const int* __restrict__ in_row_idx,
+    int in_len,
+    int* __restrict__ out_row_idx
+) {
+    const int block_start = (int)blockIdx.x * (int)TOPK_BLOCK_ITEMS;
+    float keys[TOPK_ITEMS_PER_THREAD];
+    int vals[TOPK_ITEMS_PER_THREAD];
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int in_pos = block_start + (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        int row = -1;
+        float score = NEG_INF_F;
+        if (in_pos < in_len) {
+            row = in_row_idx[in_pos];
+            if (row >= 0 && row < rows) {
+                score = score_rows[row];
+                if (!isfinite(score)) score = NEG_INF_F;
+            }
+        }
+        keys[item] = score;
+        vals[item] = row;
+    }
+
+    typedef cub::BlockRadixSort<float, TOPK_BLOCK_THREADS, TOPK_ITEMS_PER_THREAD, int> BlockSort;
+    __shared__ typename BlockSort::TempStorage temp_storage;
+    BlockSort(temp_storage).SortDescending(keys, vals);
+
+#pragma unroll
+    for (int item = 0; item < TOPK_ITEMS_PER_THREAD; ++item) {
+        const int rank = (int)threadIdx.x * TOPK_ITEMS_PER_THREAD + item;
+        if (rank < topk) {
+            out_row_idx[(int)blockIdx.x * topk + rank] = vals[item];
+        }
+    }
+}
+
+extern "C" __global__
+void gather_topk_scored_rows_f32(
+    const int* __restrict__ fast_rows,
+    const int* __restrict__ slow_rows,
+    const float* __restrict__ score_rows,
+    int rows,
+    const int* __restrict__ top_row_idx,
+    int topk,
+    int* __restrict__ out_fast_len,
+    int* __restrict__ out_slow_len,
+    float* __restrict__ out_scores
+) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < topk; i += blockDim.x * gridDim.x) {
+        const int row = top_row_idx[i];
+        if (row < 0 || row >= rows) {
+            out_fast_len[i] = 0;
+            out_slow_len[i] = 0;
+            out_scores[i] = NEG_INF_F;
+            continue;
+        }
+        out_fast_len[i] = fast_rows[row];
+        out_slow_len[i] = slow_rows[row];
+        const float score = score_rows[row];
+        out_scores[i] = isfinite(score) ? score : NEG_INF_F;
     }
 }
 

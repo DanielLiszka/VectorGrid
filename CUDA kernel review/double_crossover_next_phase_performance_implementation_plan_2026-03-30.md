@@ -556,6 +556,20 @@ Deliverables:
 - measure on both `full17` and `trade22`
 - reject immediately if the change repeats any already-rejected shuffle, broadcast, dedup, or pointer-walk pattern
 
+Current status update, March 30, 2026:
+
+- fresh Nsight Compute import on the hot `lockstep_time_m17` row-first kernel still pointed at weak store utilization, including about `4.0 B/sector` global-store efficiency and no spill-driven story
+- first bounded hypothesis, an alignment-guarded packed `full17` row store, was rejected:
+  - `alma/alma`, `xlarge`, `full17` moved from `289 / 297 / 294 ms` to `294 / 294 / 299 ms`
+- second bounded hypothesis, a `trade22`-only aligned `float4` plus `float2` tail store path in `store_metrics_row_fixed_f32<22>`, was kept:
+  - `alma/alma`, `xlarge`, `trade22` moved from `307 / 310 / 309 ms` to `301 / 304 / 305 ms`
+  - `alma/alma`, `large`, `trade22` now measures `73 / 73 / 74 ms`
+  - `alma/alma`, `small`, `trade22` now measures `46 / 46 / 50 ms`
+- the retained change is intentionally narrow:
+  - `full17` code returned to the scalar baseline path
+  - `trade22` keeps the wider-store fast path only when the row start is `16`-byte aligned
+- the row-first product gate still passes after the retained change
+
 Acceptance:
 
 - measurable win on shortlist-heavy `xlarge` lockstep surfaces
@@ -616,6 +630,21 @@ Deliverables:
 - keep final full-row materialization via exact replay
 - keep the current row-first path behind a switch or narrow host decision gate
 - land the new scratch / reducer flow as a parallel path first, not an in-place mutation of the current row-first reducers
+
+Current status update, March 30, 2026:
+
+- a narrow experimental score-first exact path now exists in the repo
+- it is parked behind explicit `VECTORBT_KERNEL_SCORE_FIRST_TOPK=1` opt-in and defaults off
+- the experimental path now uses a real tile-level scored-candidate reducer instead of the older faux row-first shortlist step
+- parity is now covered on the narrow exact route for both `full17` and `trade22`
+- fresh measured outcome on the retained prototype is still mixed and not shippable:
+  - `alma/alma`, `small`, `full17`: about `114 to 118 ms` score-first versus about `151 to 152 ms` row-first
+  - `alma/alma`, `large`, `full17`: about `149 ms` score-first versus about `77 to 78 ms` row-first
+  - `alma/alma`, `xlarge`, `full17`: about `369 to 376 ms` score-first versus about `289 to 296 ms` row-first
+- route diagnostics confirm the experimental branch is actually active:
+  - `gpu_kernel.path=score_first_global_topk`
+  - `gpu_kernel.score_first_mode=true`
+- that means Phase 3 is still not “ship the current prototype”; it remains “replace or substantially redesign the current prototype so it can actually beat the row-first path on `large` and `xlarge`”
 
 Initial route scope for the first slice:
 
@@ -753,6 +782,15 @@ target\release\profile_gpu_dynamic_runner.exe --strategy double_ma --fast-ma alm
 target\release\profile_gpu_dynamic_runner.exe --strategy double_ma --fast-ma alma --slow-ma alma --workload xlarge --objective sharpe --metric-contract trade22 --iterations 3 --warmup-iterations 1 --heatmap-bins 0
 ```
 
+Current row-first exact anchors, March 30, 2026:
+
+- `alma/alma`, `small`, `full17`: `44 / 44 / 44 ms`
+- `alma/alma`, `small`, `trade22`: `46 / 46 / 50 ms`
+- `alma/alma`, `large`, `full17`: `75 / 74 / 74 ms`
+- `alma/alma`, `large`, `trade22`: `73 / 73 / 74 ms`
+- `alma/alma`, `xlarge`, `full17`: `290 / 294 / 289 ms`
+- `alma/alma`, `xlarge`, `trade22`: `301 / 304 / 305 ms`
+
 Shortlist-heavy `xlarge` anchors:
 
 ```powershell
@@ -760,12 +798,22 @@ target\release\profile_gpu_dynamic_runner.exe --strategy double_ma --fast-ma alm
 target\release\profile_gpu_dynamic_runner.exe --strategy double_ma --fast-ma alma --slow-ma alma --workload xlarge --objective sharpe --metric-contract trade22 --shortlist-slice-mode halves --iterations 3 --warmup-iterations 1 --heatmap-bins 0
 ```
 
+Current row-first shortlist-heavy anchors, March 30, 2026:
+
+- `alma/alma`, `xlarge`, `full17`, `shortlist_slice_mode=halves`: `371 / 371 / 370 ms`
+- `alma/alma`, `xlarge`, `trade22`, `shortlist_slice_mode=halves`: `385 / 384 / 413 ms`
+
 Direct exact `eval_range` anchors:
 
 ```powershell
 target\release\profile_gpu_dynamic_runner.exe --strategy double_ma --fast-ma alma --slow-ma alma --workload xlarge --objective sharpe --metric-contract full17 --eval-start 1000 --eval-end 199000 --iterations 3 --warmup-iterations 1 --heatmap-bins 0
 target\release\profile_gpu_dynamic_runner.exe --strategy double_ma --fast-ma alma --slow-ma alma --workload xlarge --objective sharpe --metric-contract trade22 --eval-start 1000 --eval-end 199000 --iterations 3 --warmup-iterations 1 --heatmap-bins 0
 ```
+
+Current row-first direct exact `eval_range=[1000,199000)` anchors, March 30, 2026:
+
+- `alma/alma`, `xlarge`, `full17`: `258 / 279 / 257 ms`
+- `alma/alma`, `xlarge`, `trade22`: `260 / 266 / 259 ms`
 
 Optional constrained / risk anchors when relevant:
 
@@ -812,20 +860,20 @@ Required tooling:
 
 ### Phase 0 Checklist
 
-- [ ] Record fresh baseline timings for `small`, `large`, and `xlarge` on `alma/alma`.
-- [ ] Record fresh shortlist-heavy `xlarge` timing on the current row-first path.
-- [ ] Record fresh direct exact `eval_range` timing on the current row-first path.
-- [ ] Freeze the architecture-slice scope to primary objective, exact route only, no extra heads, no export, and no include-all.
-- [ ] Record the feature-preservation boundary for the phase: which surfaces stay on the current row-first fallback until parity is proven.
-- [ ] Add or refresh route-selection diagnostics so the new path can be distinguished from the current row-first path.
+- [x] Record fresh baseline timings for `small`, `large`, and `xlarge` on `alma/alma`.
+- [x] Record fresh shortlist-heavy `xlarge` timing on the current row-first path.
+- [x] Record fresh direct exact `eval_range` timing on the current row-first path.
+- [x] Freeze the architecture-slice scope to primary objective, exact route only, no extra heads, no export, and no include-all.
+- [x] Record the feature-preservation boundary for the phase: which surfaces stay on the current row-first fallback until parity is proven.
+- [x] Add or refresh route-selection diagnostics so the new path can be distinguished from the current row-first path.
 
 ### Phase 1 Checklist
 
-- [ ] Form one bounded lockstep full-row kernel-body hypothesis from fresh Nsight evidence.
-- [ ] Keep the hypothesis outside the already-rejected shuffle, broadcast, dedup, and lockstep pointer-walk families.
-- [ ] Measure the change on shortlist-heavy `xlarge` for both `full17` and `trade22`.
-- [ ] Recheck `small` and `large` after the lockstep-body change.
-- [ ] Revert immediately if the change is flat on `large` and loses on `xlarge`.
+- [x] Form one bounded lockstep full-row kernel-body hypothesis from fresh Nsight evidence.
+- [x] Keep the hypothesis outside the already-rejected shuffle, broadcast, dedup, and lockstep pointer-walk families.
+- [x] Measure the change on shortlist-heavy `xlarge` for both `full17` and `trade22`.
+- [x] Recheck `small` and `large` after the lockstep-body change.
+- [x] Revert immediately if the change is flat on `large` and loses on `xlarge`.
 
 ### Phase 2 Checklist
 
@@ -837,15 +885,15 @@ Required tooling:
 
 ### Phase 3 Checklist
 
-- [ ] Add compact score-first search output buffers to the exact path scratch.
-- [ ] Add a narrow score-only reducer path for compact candidates.
-- [ ] Keep final `full17` / `trade22` metric materialization on the existing exact replay path.
-- [ ] Gate the new path so the current row-first route remains available as a fallback.
-- [ ] Verify top-k identity parity on the minimal exact route slice.
-- [ ] Verify finalist metric parity on `full17`.
-- [ ] Verify finalist metric parity on `trade22`.
-- [ ] Benchmark `small`, `large`, and `xlarge` against the current row-first baseline.
-- [ ] Reject the slice immediately if `xlarge` regresses the way the old reducer-chain score-carry experiment did.
+- [x] Add compact score-first search output buffers to the exact path scratch.
+- [x] Add a narrow score-only reducer path for compact candidates.
+- [x] Keep final `full17` / `trade22` metric materialization on the existing exact replay path.
+- [x] Gate the new path so the current row-first route remains available as a fallback.
+- [x] Verify top-k identity parity on the minimal exact route slice.
+- [x] Verify finalist metric parity on `full17`.
+- [x] Verify finalist metric parity on `trade22`.
+- [x] Benchmark `small`, `large`, and `xlarge` against the current row-first baseline.
+- [x] Reject the slice immediately if `xlarge` regresses the way the old reducer-chain score-carry experiment did.
 
 ### Phase 4 Checklist
 
@@ -895,6 +943,7 @@ These ideas were already measured and should not be treated as fresh opportuniti
 - raw-pointer windowed load probes
 - `trade22 -> full17 search + refill` contraction
 - changing the default product/UI metric contract from `auto` to `trade22`
+- alignment-guarded packed `full17` row stores in the current lockstep row-first exact path
 
 If any of these are revisited later, the burden of proof should be high:
 

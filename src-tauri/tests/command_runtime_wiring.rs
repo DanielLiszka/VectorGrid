@@ -2,11 +2,11 @@ mod support;
 
 use std::sync::atomic::Ordering;
 
-use tauri::Manager;
 use ta_desktop_demo_app::{
     commands::{cancel_background_task, cancel_current_run, cancel_double_ma_optimization},
     state::{AppState, BackgroundTaskState},
 };
+use tauri::Manager;
 
 #[test]
 fn cancel_background_task_sets_background_cancel_intent() {

@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -101,6 +102,146 @@ function waitForPortReady(port: number, timeoutMs = 15_000): Promise<void> {
   })
 }
 
+function waitForWebDriverReady(port: number, timeoutMs = 20_000): Promise<void> {
+  const startedAt = Date.now()
+  return new Promise((resolve, reject) => {
+    const tryStatus = () => {
+      if (Date.now() - startedAt > timeoutMs) {
+        reject(new Error(`Expected WebDriver status on port ${String(port)} within ${String(timeoutMs)}ms.`))
+        return
+      }
+      const request = httpRequest(
+        {
+          host: '127.0.0.1',
+          port,
+          path: '/status',
+          method: 'GET',
+        },
+        (response) => {
+          let body = ''
+          response.setEncoding('utf8')
+          response.on('data', (chunk) => {
+            body += chunk
+          })
+          response.on('end', () => {
+            if (response.statusCode !== 200) {
+              setTimeout(tryStatus, 250)
+              return
+            }
+            try {
+              const parsed = JSON.parse(body) as { value?: { ready?: boolean } }
+              if (parsed.value?.ready === false) {
+                setTimeout(tryStatus, 250)
+                return
+              }
+            } catch {
+              // Some drivers may not return a strict JSON body immediately; the 200 response is enough.
+            }
+            resolve()
+          })
+        },
+      )
+      request.on('error', () => {
+        setTimeout(tryStatus, 250)
+      })
+      request.end()
+    }
+    tryStatus()
+  })
+}
+
+function deleteWebDriverSession(port: number, sessionId: string): Promise<void> {
+  return new Promise((resolve) => {
+    const request = httpRequest(
+      {
+        host: '127.0.0.1',
+        port,
+        path: `/session/${sessionId}`,
+        method: 'DELETE',
+      },
+      (response) => {
+        response.resume()
+        response.on('end', () => resolve())
+      },
+    )
+    request.on('error', () => resolve())
+    request.end()
+  })
+}
+
+function waitForDesktopSessionReady(timeoutMs = 30_000): Promise<void> {
+  const startedAt = Date.now()
+  const payload = JSON.stringify({
+    capabilities: {
+      alwaysMatch: {
+        browserName: 'wry',
+        'tauri:options': {
+          application: desktopAppBinaryPath,
+        },
+      },
+      firstMatch: [{}],
+    },
+  })
+  return new Promise((resolve, reject) => {
+    const trySession = () => {
+      if (Date.now() - startedAt > timeoutMs) {
+        reject(new Error(`Expected WebDriver session creation within ${String(timeoutMs)}ms.`))
+        return
+      }
+      const request = httpRequest(
+        {
+          host: '127.0.0.1',
+          port: tauriDriverPort,
+          path: '/session',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            'content-length': String(Buffer.byteLength(payload)),
+          },
+        },
+        (response) => {
+          let body = ''
+          response.setEncoding('utf8')
+          response.on('data', (chunk) => {
+            body += chunk
+          })
+          response.on('end', async () => {
+            if (response.statusCode !== 200) {
+              setTimeout(trySession, 500)
+              return
+            }
+            try {
+              const parsed = JSON.parse(body) as {
+                sessionId?: string
+                value?: {
+                  sessionId?: string
+                }
+              }
+              const sessionId = parsed.value?.sessionId || parsed.sessionId
+              if (!sessionId) {
+                setTimeout(trySession, 500)
+                return
+              }
+              appendLogLine(artifactContext.driverLogPath, `Warm-up session created: ${sessionId}`)
+              await deleteWebDriverSession(tauriDriverPort, sessionId)
+              appendLogLine(artifactContext.driverLogPath, `Warm-up session deleted: ${sessionId}`)
+              resolve()
+            } catch {
+              setTimeout(trySession, 500)
+            }
+          })
+        },
+      )
+      request.on('error', () => {
+        setTimeout(trySession, 500)
+      })
+      request.write(payload)
+      request.end()
+    }
+    trySession()
+  })
+}
+
 async function startPreviewServer(): Promise<void> {
   previewServerExpectedExit = false
   previewServerLogStream = fs.createWriteStream(artifactContext.previewLogPath, { flags: 'a' })
@@ -177,7 +318,8 @@ async function startTauriDriver(): Promise<void> {
       appendLogLine(artifactContext.driverLogPath, `tauri-driver exited unexpectedly with code ${String(code)}`)
     }
   })
-  await waitForPortReady(tauriDriverPort)
+  await waitForWebDriverReady(tauriDriverPort)
+  await waitForDesktopSessionReady()
 }
 
 export const config: WebdriverIO.Config = {

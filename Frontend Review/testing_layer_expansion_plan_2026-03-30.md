@@ -95,11 +95,11 @@ If a change touches desktop-smoke TypeScript files directly, also run:
 
 If a change touches desktop-smoke TypeScript files directly, the current Windows-first local smoke commands should be:
 
-- `VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD=1 npm --prefix web run test:desktop:smoke:spec -- .\\e2e\\desktop\\specs\\desktop-window-geometry.spec.ts`
+- `npm --prefix web run test:desktop:smoke:spec -- .\\e2e\\desktop\\specs\\desktop-window-geometry.spec.ts`
 - one follow-up full-suite pass only after the spec is stable locally:
-  - `VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD=1 npm --prefix web run test:desktop:smoke`
+  - `npm --prefix web run test:desktop:smoke`
 
-Do not assume the existing remote desktop-smoke workflow is currently a reliable validation path for this plan. That workflow still performs a fresh `cargo build -p ta_desktop_demo_app`, and the current desktop harness only has a documented local skip-build workaround.
+Do not assume the existing remote desktop-smoke workflow is automatically reliable just because the local harness is green. The local fresh-build path works again, but remote stability still needs to be proven in CI.
 
 ## Build-Ready Implementation Decisions
 
@@ -193,9 +193,9 @@ Reason:
 Use this staged rollout:
 
 1. local-only implementation and stabilization
-2. no assumption of remote desktop-smoke validation until the fresh-build blocker is resolved or a separate known-good-binary workflow exists
+2. no assumption of remote desktop-smoke validation until the workflow is proven stable in CI
 3. no new always-on PR gating for this plan until:
-   - the unrelated fresh-build blocker is resolved
+   - the remote desktop-smoke workflow is green with its own explicit build path
    - the geometry smoke remains green locally across multiple runs
    - the new frontend and Rust test layers are green in the normal repo verification stack
 
@@ -647,7 +647,7 @@ Reason:
 The geometry spec should be part of the local default suite only if:
 
 - it is green repeatedly on the user’s Windows machine
-- it is green in repeated local opt-in runs using the current skip-build desktop workflow
+- it is green in repeated local opt-in runs using the fast skip-build path or the normal managed-build path
 
 If it proves flaky, the first response is:
 
@@ -764,7 +764,7 @@ Do not revisit `@wdio/tauri-service` / `@wdio/tauri-plugin` until at least one o
 - [x] Record `@wdio/tauri-service` as deferred unless the current harness proves a real limitation.
 - [x] Record `@wdio/tauri-plugin` as deferred unless deeper execute/mock/log features become worth the added app/test complexity.
 - [x] Record macOS driver-provider work as deferred unless macOS desktop E2E becomes a real requirement.
-- [x] Do not expand CI gating for this plan until the unrelated fresh-build blocker is resolved and the new layers remain stable locally.
+- [x] Do not expand CI gating for this plan until the remote desktop-smoke workflow is green with its own explicit build path and the new layers remain stable locally.
 
 ## Success Criteria
 
@@ -773,5 +773,5 @@ This plan is successful when:
 - the repo has a new deterministic middle test layer on both the frontend and Rust sides
 - the current desktop smoke harness remains the thin real-app layer rather than absorbing every scenario
 - desktop smoke remains green and low-flake
-- the plan does not promise production-builder or remote-CI coverage that the current repo shape cannot yet support
+- the plan does not promise hosted-CI coverage that the current repo shape has not yet proven remotely
 - no regression is introduced in current frontend QA and verification workflows

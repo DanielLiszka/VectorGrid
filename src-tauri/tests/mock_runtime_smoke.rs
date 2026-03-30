@@ -2,8 +2,8 @@ mod support;
 
 use std::sync::atomic::Ordering;
 
-use tauri::Manager;
 use ta_desktop_demo_app::state::{AppState, BackgroundTaskState};
+use tauri::Manager;
 
 #[test]
 fn mock_runtime_app_resolves_managed_state() {

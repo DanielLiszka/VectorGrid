@@ -71,7 +71,7 @@ Optional local overrides:
 
 - `VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD=1`
   - skip the explicit frontend/Rust build step if you already have a trusted debug binary
-  - this is currently useful in this repo because a fresh `cargo build -p ta_desktop_demo_app` can be blocked by unrelated backend compile work outside the harness
+  - this is now just a local speed optimization; the managed fresh-build path works again
 - `VECTORGRID_DESKTOP_SMOKE_BINARY=<absolute-or-repo-relative-path>`
   - point the harness at a specific desktop executable instead of `target\\debug\\ta_desktop_demo_app.exe`
 - `VECTORGRID_DESKTOP_SMOKE_APP_URL=http://127.0.0.1:1420/`
@@ -80,8 +80,13 @@ Optional local overrides:
 Recommended local command while geometry remains opt-in:
 
 ```powershell
-$env:VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD='1'
 npm --prefix web run test:desktop:geometry
+```
+
+Recommended full managed-build smoke command:
+
+```powershell
+npm --prefix web run test:desktop:smoke
 ```
 
 ## Failure artifacts

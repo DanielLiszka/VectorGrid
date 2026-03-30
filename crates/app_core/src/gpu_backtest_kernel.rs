@@ -1273,14 +1273,18 @@ struct KernelScratch {
     d_slow_ma: Option<DeviceBuffer<f32>>,
     d_slow_ma_tm: Option<DeviceBuffer<f32>>,
     d_tile: Option<DeviceBuffer<f32>>,
+    d_tile_scores: Option<DeviceBuffer<f32>>,
 
     d_heatmap: Option<DeviceBuffer<f32>>,
     d_heatmap_sum: Option<DeviceBuffer<f32>>,
     d_heatmap_count: Option<DeviceBuffer<i32>>,
     d_cand_a: Option<DeviceBuffer<i32>>,
     d_cand_b: Option<DeviceBuffer<i32>>,
+    d_cand_scores_a: Option<DeviceBuffer<f32>>,
+    d_cand_scores_b: Option<DeviceBuffer<f32>>,
     d_top_fast: Option<DeviceBuffer<i32>>,
     d_top_slow: Option<DeviceBuffer<i32>>,
+    d_top_scores: Option<DeviceBuffer<f32>>,
     d_top_metrics: Option<DeviceBuffer<f32>>,
     d_top_packed: Option<DeviceBuffer<f32>>,
     d_valid_pair_index: Option<DeviceBuffer<i32>>,
@@ -1533,14 +1537,18 @@ impl KernelScratch {
         Self::drop_opt_async(&mut self.d_slow_ma, stream)?;
         Self::drop_opt_async(&mut self.d_slow_ma_tm, stream)?;
         Self::drop_opt_async(&mut self.d_tile, stream)?;
+        Self::drop_opt_async(&mut self.d_tile_scores, stream)?;
 
         Self::drop_opt_async(&mut self.d_heatmap, stream)?;
         Self::drop_opt_async(&mut self.d_heatmap_sum, stream)?;
         Self::drop_opt_async(&mut self.d_heatmap_count, stream)?;
         Self::drop_opt_async(&mut self.d_cand_a, stream)?;
         Self::drop_opt_async(&mut self.d_cand_b, stream)?;
+        Self::drop_opt_async(&mut self.d_cand_scores_a, stream)?;
+        Self::drop_opt_async(&mut self.d_cand_scores_b, stream)?;
         Self::drop_opt_async(&mut self.d_top_fast, stream)?;
         Self::drop_opt_async(&mut self.d_top_slow, stream)?;
+        Self::drop_opt_async(&mut self.d_top_scores, stream)?;
         Self::drop_opt_async(&mut self.d_top_metrics, stream)?;
         Self::drop_opt_async(&mut self.d_top_packed, stream)?;
         Self::drop_opt_async(&mut self.d_valid_pair_index, stream)?;
@@ -1741,6 +1749,7 @@ thread_local! {
     static CUDA_KERNEL_RUNTIME: RefCell<HashMap<u32, CudaKernelRuntime>> = RefCell::new(HashMap::new());
     static DYNAMIC_GPU_METRICS_SCRATCH: RefCell<HashMap<(u32, usize), DeviceBuffer<f32>>> = RefCell::new(HashMap::new());
     static LAST_KERNEL_EXECUTOR_TIMING: RefCell<Option<KernelExecutorTimingMs>> = RefCell::new(None);
+    static LAST_ROUTE_DIAGNOSTICS: RefCell<Option<Vec<String>>> = RefCell::new(None);
     static LAST_SHORTLIST_SLICE_DIAGNOSTICS: RefCell<Option<ShortlistSliceDiagnostics>> = RefCell::new(None);
     static LAST_SCORE_OBSERVATION_CONTEXT: RefCell<Option<PairObservationScoreContextResolved>> = RefCell::new(None);
     static EFFECTIVE_SAMPLE_SCORE_CONTEXT: RefCell<Option<EffectiveSampleScoreContext>> = RefCell::new(None);
@@ -1760,6 +1769,22 @@ fn record_last_kernel_executor_timing(timing: KernelExecutorTimingMs) {
 
 pub(crate) fn take_last_kernel_executor_timing() -> Option<KernelExecutorTimingMs> {
     LAST_KERNEL_EXECUTOR_TIMING.with(|cell| cell.borrow_mut().take())
+}
+
+fn clear_last_route_diagnostics() {
+    LAST_ROUTE_DIAGNOSTICS.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+}
+
+fn record_last_route_diagnostics(diag: Vec<String>) {
+    LAST_ROUTE_DIAGNOSTICS.with(|cell| {
+        *cell.borrow_mut() = Some(diag);
+    });
+}
+
+pub(crate) fn take_last_route_diagnostics() -> Option<Vec<String>> {
+    LAST_ROUTE_DIAGNOSTICS.with(|cell| cell.borrow_mut().take())
 }
 
 fn clear_last_shortlist_slice_diagnostics() {
@@ -4050,6 +4075,159 @@ fn kernel_global_topk_enabled() -> bool {
 }
 
 #[inline]
+fn kernel_score_first_topk_enabled() -> bool {
+    // This remains experimental until the exact path has a true score-only backtest flow.
+    // Default to the row-first reducers and require an explicit opt-in for score-first tests.
+    env_flag_enabled("VECTORBT_KERNEL_SCORE_FIRST_TOPK", false)
+}
+
+fn score_first_topk_blockers(
+    score_first_env_enabled: bool,
+    global_topk_mode: bool,
+    score_first_symbols_available: bool,
+    score_mode: Option<DoubleMaScoreMode>,
+    extra_shortlist_enabled: bool,
+    shortlist_confidence_mode: Option<ShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<ShortlistSliceMode>,
+    metrics_count: usize,
+    constraints_present: bool,
+    eval_range: Option<(usize, usize)>,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    heatmap_bins: usize,
+) -> Vec<&'static str> {
+    let mut blockers = Vec::new();
+    if !score_first_env_enabled {
+        blockers.push("env_disabled");
+    }
+    if !global_topk_mode {
+        blockers.push("global_topk_disabled");
+    }
+    if !score_first_symbols_available {
+        blockers.push("score_first_symbols_unavailable");
+    }
+    if score_mode.is_some() {
+        blockers.push("score_mode_active");
+    }
+    if extra_shortlist_enabled {
+        blockers.push("extra_shortlist_enabled");
+    }
+    if shortlist_confidence_mode.is_some() {
+        blockers.push("shortlist_confidence_enabled");
+    }
+    if shortlist_union_mode.is_some() {
+        blockers.push("shortlist_union_enabled");
+    }
+    if shortlist_slice_mode.is_some() {
+        blockers.push("shortlist_slice_enabled");
+    }
+    if metrics_count != METRICS_COUNT && metrics_count != TRADE_METRICS_COUNT {
+        blockers.push("metrics_contract_not_full_row");
+    }
+    if constraints_present {
+        blockers.push("constraints_present");
+    }
+    if eval_range.is_some() {
+        blockers.push("eval_range_set");
+    }
+    if fast_precomputed_enabled {
+        blockers.push("fast_precomputed_enabled");
+    }
+    if slow_precomputed_enabled {
+        blockers.push("slow_precomputed_enabled");
+    }
+    if heatmap_bins != 0 {
+        blockers.push("heatmap_bins_nonzero");
+    }
+    blockers
+}
+
+#[inline]
+fn should_use_score_first_topk_mode(
+    global_topk_mode: bool,
+    score_first_symbols_available: bool,
+    score_mode: Option<DoubleMaScoreMode>,
+    extra_shortlist_enabled: bool,
+    shortlist_confidence_mode: Option<ShortlistConfidenceMode>,
+    shortlist_union_mode: Option<DoubleMaShortlistUnionMode>,
+    shortlist_slice_mode: Option<ShortlistSliceMode>,
+    metrics_count: usize,
+    constraints_present: bool,
+    eval_range: Option<(usize, usize)>,
+    fast_precomputed_enabled: bool,
+    slow_precomputed_enabled: bool,
+    heatmap_bins: usize,
+) -> bool {
+    score_first_topk_blockers(
+        kernel_score_first_topk_enabled(),
+        global_topk_mode,
+        score_first_symbols_available,
+        score_mode,
+        extra_shortlist_enabled,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        metrics_count,
+        constraints_present,
+        eval_range,
+        fast_precomputed_enabled,
+        slow_precomputed_enabled,
+        heatmap_bins,
+    )
+    .is_empty()
+}
+
+fn build_gpu_kernel_route_diagnostics(
+    device_include_all: bool,
+    export_enabled: bool,
+    host_filter_mode: bool,
+    compact_valid_pair_output: bool,
+    global_topk_mode: bool,
+    score_first_env_enabled: bool,
+    score_first_symbols_available: bool,
+    score_first_topk_mode: bool,
+    metrics_count: usize,
+    tile_metrics_stride: usize,
+    score_first_blockers: &[&str],
+) -> Vec<String> {
+    let path = if device_include_all {
+        "device_include_all"
+    } else if export_enabled {
+        "export_all"
+    } else if host_filter_mode {
+        "host_filter_mode"
+    } else if global_topk_mode && score_first_topk_mode {
+        "score_first_global_topk"
+    } else if global_topk_mode {
+        "row_first_global_topk"
+    } else {
+        "host_merge_topk"
+    };
+
+    let blockers = if score_first_blockers.is_empty() {
+        "none".to_string()
+    } else {
+        score_first_blockers.join(",")
+    };
+
+    vec![
+        format!("gpu_kernel.path={path}"),
+        format!("gpu_kernel.device_include_all={device_include_all}"),
+        format!("gpu_kernel.export_enabled={export_enabled}"),
+        format!("gpu_kernel.host_filter_mode={host_filter_mode}"),
+        format!("gpu_kernel.compact_valid_pair_output={compact_valid_pair_output}"),
+        format!("gpu_kernel.global_topk_mode={global_topk_mode}"),
+        format!("gpu_kernel.score_first_env_enabled={score_first_env_enabled}"),
+        format!("gpu_kernel.score_first_symbols_available={score_first_symbols_available}"),
+        format!("gpu_kernel.score_first_mode={score_first_topk_mode}"),
+        format!("gpu_kernel.score_first_blockers={blockers}"),
+        format!("gpu_kernel.metrics_count={metrics_count}"),
+        format!("gpu_kernel.tile_metrics_stride={tile_metrics_stride}"),
+    ]
+}
+
+#[inline]
 fn objective_kind_kernel_index(objective: ObjectiveKind) -> i32 {
     match objective {
         ObjectiveKind::Pnl => 0,
@@ -5343,6 +5521,30 @@ fn copy_device_prefix_to_host_f32(
 }
 
 #[inline]
+fn copy_device_prefix_to_host_i32(
+    src: &DeviceBuffer<i32>,
+    dst: &mut Vec<i32>,
+    elems: usize,
+    stream: &Stream,
+) -> Result<(), String> {
+    dst.resize(elems, 0);
+    if elems == 0 {
+        return Ok(());
+    }
+    let bytes = elems
+        .checked_mul(std::mem::size_of::<i32>())
+        .ok_or_else(|| "device-to-host copy size overflow".to_string())?;
+    cu_result(unsafe {
+        cuda_sys::cuMemcpyDtoHAsync_v2(
+            dst.as_mut_ptr() as *mut c_void,
+            src.as_device_ptr().as_raw(),
+            bytes,
+            stream.as_inner(),
+        )
+    })
+}
+
+#[inline]
 fn pack_metric_rows_for_host_copy<'a>(
     stream: &Stream,
     scratch: &mut KernelScratch,
@@ -5900,6 +6102,321 @@ fn choose_tiles(
     )
 }
 
+fn reduce_scored_rows_topk_on_device(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    rows_fast: &DeviceBuffer<i32>,
+    rows_slow: &DeviceBuffer<i32>,
+    rows_scores: &DeviceBuffer<f32>,
+    rows_len: usize,
+    topk_select: usize,
+    select_rows: &cust::function::Function<'_>,
+    select_rows_candidates: &cust::function::Function<'_>,
+    gather_rows: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    if rows_len == 0 || topk_select == 0 {
+        return Ok(());
+    }
+
+    let blocks1 = (rows_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+    let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_a, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_b, cand_len1, bt_stream)?;
+
+    unsafe {
+        let mut scores_ptr = rows_scores.as_device_ptr().as_raw();
+        let mut rows_i = rows_len as i32;
+        let mut topk_i = topk_select as i32;
+        let mut out_ptr = scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = blocks1 as u32;
+        let args: &mut [*mut c_void] = &mut [
+            &mut scores_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut out_ptr as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            select_rows,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    let mut blocks_prev = blocks1;
+    let mut in_len = cand_len1;
+    let mut in_is_a = true;
+    while blocks_prev > 1 {
+        let blocks_next = (in_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+        let out_len = blocks_next.saturating_mul(topk_select).max(topk_select);
+        unsafe {
+            let mut scores_ptr = rows_scores.as_device_ptr().as_raw();
+            let mut rows_i = rows_len as i32;
+            let mut topk_i = topk_select as i32;
+            let mut in_ptr = if in_is_a {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+            let mut in_len_i = in_len as i32;
+            let mut out_ptr = if in_is_a {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+
+            let block_x: u32 = 256;
+            let grid_x: u32 = blocks_next as u32;
+            let args: &mut [*mut c_void] = &mut [
+                &mut scores_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut in_ptr as *mut _ as *mut c_void,
+                &mut in_len_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            launch_kernel_timed(
+                bt_stream,
+                select_rows_candidates,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
+        }
+        in_is_a = !in_is_a;
+        blocks_prev = blocks_next;
+        in_len = out_len;
+    }
+
+    unsafe {
+        let mut scores_ptr = rows_scores.as_device_ptr().as_raw();
+        let mut rows_i = rows_len as i32;
+        let mut fast_ptr = rows_fast.as_device_ptr().as_raw();
+        let mut slow_ptr = rows_slow.as_device_ptr().as_raw();
+        let mut top_ptr = if in_is_a {
+            scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+        } else {
+            scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+        };
+        let mut topk_i = topk_select as i32;
+        let mut out_f = scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_s = scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_scores = scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = ((topk_select as u32) + block_x - 1) / block_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut scores_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut fast_ptr as *mut _ as *mut c_void,
+            &mut slow_ptr as *mut _ as *mut c_void,
+            &mut top_ptr as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut out_f as *mut _ as *mut c_void,
+            &mut out_s as *mut _ as *mut c_void,
+            &mut out_scores as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            gather_rows,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_current_topk_scores_into_global_head(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    global_fast: &DeviceBuffer<i32>,
+    global_slow: &DeviceBuffer<i32>,
+    global_scores: &DeviceBuffer<f32>,
+    global_rows_len: &mut usize,
+    global_rows_cap: usize,
+    topk_select: usize,
+    select_rows: &cust::function::Function<'_>,
+    select_rows_candidates: &cust::function::Function<'_>,
+    gather_rows: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    let row_i32_bytes = topk_select
+        .checked_mul(std::mem::size_of::<i32>())
+        .ok_or_else(|| "topk row bytes overflow (i32)".to_string())?;
+    let row_score_bytes = topk_select
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "topk row bytes overflow (scores)".to_string())?;
+
+    if *global_rows_len == 0 {
+        cu_memcpy_d2d_async(
+            global_fast.as_device_ptr().as_raw(),
+            scratch
+                .d_top_fast
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_i32_bytes,
+            bt_stream,
+        )?;
+        cu_memcpy_d2d_async(
+            global_slow.as_device_ptr().as_raw(),
+            scratch
+                .d_top_slow
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_i32_bytes,
+            bt_stream,
+        )?;
+        cu_memcpy_d2d_async(
+            global_scores.as_device_ptr().as_raw(),
+            scratch
+                .d_top_scores
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_score_bytes,
+            bt_stream,
+        )?;
+        *global_rows_len = topk_select;
+        return Ok(());
+    }
+
+    if global_rows_len.saturating_add(topk_select) > global_rows_cap {
+        return Err(
+            "global score-top-k merge buffer overflow; expected capacity for 2 * top_k rows"
+                .to_string(),
+        );
+    }
+    let dst_fast = global_fast
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<i32>()) as u64);
+    let dst_slow = global_slow
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<i32>()) as u64);
+    let dst_scores = global_scores
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<f32>()) as u64);
+    cu_memcpy_d2d_async(
+        dst_fast,
+        scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        dst_slow,
+        scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        dst_scores,
+        scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_score_bytes,
+        bt_stream,
+    )?;
+    *global_rows_len = global_rows_len.saturating_add(topk_select);
+
+    reduce_scored_rows_topk_on_device(
+        bt_stream,
+        scratch,
+        global_fast,
+        global_slow,
+        global_scores,
+        *global_rows_len,
+        topk_select,
+        select_rows,
+        select_rows_candidates,
+        gather_rows,
+        launch_submit_elapsed,
+    )?;
+    cu_memcpy_d2d_async(
+        global_fast.as_device_ptr().as_raw(),
+        scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        global_slow.as_device_ptr().as_raw(),
+        scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        global_scores.as_device_ptr().as_raw(),
+        scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_score_bytes,
+        bt_stream,
+    )?;
+    *global_rows_len = topk_select;
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)]
 fn reduce_metric_rows_topk_on_device(
@@ -6213,6 +6730,386 @@ fn reduce_metric_rows_topk_on_device(
             launch_submit_elapsed,
         )?;
     }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn score_metric_rows_for_objective_on_device(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    rows: usize,
+    metrics_count: usize,
+    objective_i: i32,
+    hurdle_tau: f32,
+    score_metric_rows: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    if rows == 0 {
+        return Ok(());
+    }
+
+    KernelScratch::ensure_len_f32(&mut scratch.d_top_scores, rows, bt_stream)?;
+
+    unsafe {
+        let mut metrics_ptr = scratch
+            .d_top_metrics
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut rows_i = rows as i32;
+        let mut m_i = metrics_count as i32;
+        let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
+        let mut out_ptr = scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let block_x: u32 = 256;
+        let grid_x: u32 = ((rows as u32) + block_x - 1) / block_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut metrics_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut m_i as *mut _ as *mut c_void,
+            &mut obj_i as *mut _ as *mut c_void,
+            &mut hurdle_tau_i as *mut _ as *mut c_void,
+            &mut out_ptr as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            score_metric_rows,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn reduce_scored_pairs_topk_on_device(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    rows_fast: &DeviceBuffer<i32>,
+    rows_slow: &DeviceBuffer<i32>,
+    rows_scores: &DeviceBuffer<f32>,
+    rows_len: usize,
+    topk_select: usize,
+    select_scores_legacy: &cust::function::Function<'_>,
+    select_scores_candidates_legacy: &cust::function::Function<'_>,
+    gather_scored_pairs: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    if rows_len == 0 || topk_select == 0 {
+        return Ok(());
+    }
+
+    let blocks1 = (rows_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+    let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_a, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_b, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_top_fast, topk_select, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_top_slow, topk_select, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_top_scores, topk_select, bt_stream)?;
+
+    unsafe {
+        let mut scores_ptr = rows_scores.as_device_ptr().as_raw();
+        let mut rows_i = rows_len as i32;
+        let mut topk_i = topk_select as i32;
+        let mut out_ptr = scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = blocks1 as u32;
+        let args: &mut [*mut c_void] = &mut [
+            &mut scores_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut out_ptr as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            select_scores_legacy,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    let mut blocks_prev = blocks1;
+    let mut in_len = cand_len1;
+    let mut in_is_a = true;
+    while blocks_prev > 1 {
+        let blocks_next = (in_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+        let out_len = blocks_next.saturating_mul(topk_select).max(topk_select);
+        unsafe {
+            let mut scores_ptr = rows_scores.as_device_ptr().as_raw();
+            let mut rows_i = rows_len as i32;
+            let mut topk_i = topk_select as i32;
+            let mut in_ptr = if in_is_a {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+            let mut in_len_i = in_len as i32;
+            let mut out_ptr = if in_is_a {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+
+            let block_x: u32 = 256;
+            let grid_x: u32 = blocks_next as u32;
+            let args: &mut [*mut c_void] = &mut [
+                &mut scores_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut in_ptr as *mut _ as *mut c_void,
+                &mut in_len_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            launch_kernel_timed(
+                bt_stream,
+                select_scores_candidates_legacy,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
+        }
+        in_is_a = !in_is_a;
+        blocks_prev = blocks_next;
+        in_len = out_len;
+    }
+
+    unsafe {
+        let mut fast_ptr = rows_fast.as_device_ptr().as_raw();
+        let mut slow_ptr = rows_slow.as_device_ptr().as_raw();
+        let mut scores_ptr = rows_scores.as_device_ptr().as_raw();
+        let mut rows_i = rows_len as i32;
+        let mut top_ptr = if in_is_a {
+            scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+        } else {
+            scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+        };
+        let mut topk_i = topk_select as i32;
+        let mut out_f = scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_s = scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_scores = scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = ((topk_select as u32) + block_x - 1) / block_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut fast_ptr as *mut _ as *mut c_void,
+            &mut slow_ptr as *mut _ as *mut c_void,
+            &mut scores_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut top_ptr as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut out_f as *mut _ as *mut c_void,
+            &mut out_s as *mut _ as *mut c_void,
+            &mut out_scores as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            gather_scored_pairs,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn merge_current_topk_scored_pairs_into_global_head(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    global_fast: &DeviceBuffer<i32>,
+    global_slow: &DeviceBuffer<i32>,
+    global_scores: &DeviceBuffer<f32>,
+    global_rows_len: &mut usize,
+    global_rows_cap: usize,
+    topk_select: usize,
+    select_scores_legacy: &cust::function::Function<'_>,
+    select_scores_candidates_legacy: &cust::function::Function<'_>,
+    gather_scored_pairs: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    let row_i32_bytes = topk_select
+        .checked_mul(std::mem::size_of::<i32>())
+        .ok_or_else(|| "topk scored row bytes overflow (i32)".to_string())?;
+    let row_score_bytes = topk_select
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| "topk scored row bytes overflow (score)".to_string())?;
+
+    if *global_rows_len == 0 {
+        cu_memcpy_d2d_async(
+            global_fast.as_device_ptr().as_raw(),
+            scratch
+                .d_top_fast
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_i32_bytes,
+            bt_stream,
+        )?;
+        cu_memcpy_d2d_async(
+            global_slow.as_device_ptr().as_raw(),
+            scratch
+                .d_top_slow
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_i32_bytes,
+            bt_stream,
+        )?;
+        cu_memcpy_d2d_async(
+            global_scores.as_device_ptr().as_raw(),
+            scratch
+                .d_top_scores
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw(),
+            row_score_bytes,
+            bt_stream,
+        )?;
+        *global_rows_len = topk_select;
+        return Ok(());
+    }
+
+    if global_rows_len.saturating_add(topk_select) > global_rows_cap {
+        return Err(
+            "global scored top-k merge buffer overflow; expected capacity for 2 * top_k rows"
+                .to_string(),
+        );
+    }
+
+    let dst_fast = global_fast
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<i32>()) as u64);
+    let dst_slow = global_slow
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<i32>()) as u64);
+    let dst_scores = global_scores
+        .as_device_ptr()
+        .as_raw()
+        .saturating_add((*global_rows_len * std::mem::size_of::<f32>()) as u64);
+
+    cu_memcpy_d2d_async(
+        dst_fast,
+        scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        dst_slow,
+        scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        dst_scores,
+        scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_score_bytes,
+        bt_stream,
+    )?;
+    *global_rows_len = global_rows_len.saturating_add(topk_select);
+
+    reduce_scored_pairs_topk_on_device(
+        bt_stream,
+        scratch,
+        global_fast,
+        global_slow,
+        global_scores,
+        *global_rows_len,
+        topk_select,
+        select_scores_legacy,
+        select_scores_candidates_legacy,
+        gather_scored_pairs,
+        launch_submit_elapsed,
+    )?;
+
+    cu_memcpy_d2d_async(
+        global_fast.as_device_ptr().as_raw(),
+        scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        global_slow.as_device_ptr().as_raw(),
+        scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_i32_bytes,
+        bt_stream,
+    )?;
+    cu_memcpy_d2d_async(
+        global_scores.as_device_ptr().as_raw(),
+        scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw(),
+        row_score_bytes,
+        bt_stream,
+    )?;
+    *global_rows_len = topk_select;
 
     Ok(())
 }
@@ -6783,6 +7680,349 @@ fn select_tile_topk_rows_for_objective(
         launch_kernel_timed(
             bt_stream,
             gather_topk,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn select_tile_topk_scores_for_objective(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    pairs: usize,
+    launch_pairs: usize,
+    metrics_count: usize,
+    tile_metrics_stride: usize,
+    pf: usize,
+    ps: usize,
+    topk_select: usize,
+    objective_i: i32,
+    hurdle_tau: f32,
+    compact_valid_pair_output: bool,
+    pair_index_map_ptr: u64,
+    pair_fast_rows_ptr: u64,
+    pair_slow_rows_ptr: u64,
+    constraints_on_device: bool,
+    constraint_args: DeviceConstraintArgs,
+    select_scored_pairs: &cust::function::Function<'_>,
+    select_scored_candidates: &cust::function::Function<'_>,
+    select_scored_pairs_v2: Option<&cust::function::Function<'_>>,
+    gather_scored_pairs: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    let row_count = if pair_index_map_ptr != 0 && launch_pairs > 0 {
+        launch_pairs
+    } else {
+        pairs
+    };
+    if row_count == 0 || topk_select == 0 {
+        return Ok(());
+    }
+
+    let blocks1 = (row_count + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+    let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_a, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_b, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_cand_scores_a, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_cand_scores_b, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_top_fast, topk_select, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_top_slow, topk_select, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_top_scores, topk_select, bt_stream)?;
+
+    unsafe {
+        let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut pairs_i = pairs as i32;
+        let mut m_i = metrics_count as i32;
+        let mut metrics_stride_i = tile_metrics_stride as i32;
+        let mut pf_i = pf as i32;
+        let mut ps_i = ps as i32;
+        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut obj_i = objective_i;
+        let mut hurdle_tau_i = hurdle_tau;
+        let mut topk_i = topk_select as i32;
+        let mut pair_map_ptr = pair_index_map_ptr;
+        let mut pair_count_i = launch_pairs as i32;
+        let mut compact_output_i = if compact_valid_pair_output {
+            1i32
+        } else {
+            0i32
+        };
+        let mut out_pairs = scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut out_scores = scratch
+            .d_cand_scores_a
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let block_x: u32 = 256;
+        let grid_x: u32 = blocks1 as u32;
+        if constraints_on_device {
+            let mut use_min_trades = constraint_args.use_min_trades;
+            let mut min_trades = constraint_args.min_trades;
+            let mut use_max_dd = constraint_args.use_max_dd;
+            let mut max_dd = constraint_args.max_dd;
+            let mut use_min_sharpe = constraint_args.use_min_sharpe;
+            let mut min_sharpe = constraint_args.min_sharpe;
+            let mut use_min_sortino = constraint_args.use_min_sortino;
+            let mut min_sortino = constraint_args.min_sortino;
+            let mut use_min_calmar = constraint_args.use_min_calmar;
+            let mut min_calmar = constraint_args.min_calmar;
+            let mut use_max_volatility = constraint_args.use_max_volatility;
+            let mut max_volatility = constraint_args.max_volatility;
+            let mut use_min_exposure = constraint_args.use_min_exposure;
+            let mut min_exposure = constraint_args.min_exposure;
+            let mut use_max_exposure = constraint_args.use_max_exposure;
+            let mut max_exposure = constraint_args.max_exposure;
+            let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
+            let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
+            let mut use_min_omega = constraint_args.use_min_omega;
+            let mut min_omega = constraint_args.min_omega;
+            let mut use_max_ulcer = constraint_args.use_max_ulcer;
+            let mut max_ulcer = constraint_args.max_ulcer;
+            let mut use_max_downside_deviation = constraint_args.use_max_downside_deviation;
+            let mut max_downside_deviation = constraint_args.max_downside_deviation;
+            let args: &mut [*mut c_void] = &mut [
+                &mut metrics_ptr as *mut _ as *mut c_void,
+                &mut pairs_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
+                &mut pf_i as *mut _ as *mut c_void,
+                &mut ps_i as *mut _ as *mut c_void,
+                &mut f_per as *mut _ as *mut c_void,
+                &mut s_per as *mut _ as *mut c_void,
+                &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut use_min_trades as *mut _ as *mut c_void,
+                &mut min_trades as *mut _ as *mut c_void,
+                &mut use_max_dd as *mut _ as *mut c_void,
+                &mut max_dd as *mut _ as *mut c_void,
+                &mut use_min_sharpe as *mut _ as *mut c_void,
+                &mut min_sharpe as *mut _ as *mut c_void,
+                &mut use_min_sortino as *mut _ as *mut c_void,
+                &mut min_sortino as *mut _ as *mut c_void,
+                &mut use_min_calmar as *mut _ as *mut c_void,
+                &mut min_calmar as *mut _ as *mut c_void,
+                &mut use_max_volatility as *mut _ as *mut c_void,
+                &mut max_volatility as *mut _ as *mut c_void,
+                &mut use_min_exposure as *mut _ as *mut c_void,
+                &mut min_exposure as *mut _ as *mut c_void,
+                &mut use_max_exposure as *mut _ as *mut c_void,
+                &mut max_exposure as *mut _ as *mut c_void,
+                &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut max_abs_net_exposure as *mut _ as *mut c_void,
+                &mut use_min_omega as *mut _ as *mut c_void,
+                &mut min_omega as *mut _ as *mut c_void,
+                &mut use_max_ulcer as *mut _ as *mut c_void,
+                &mut max_ulcer as *mut _ as *mut c_void,
+                &mut use_max_downside_deviation as *mut _ as *mut c_void,
+                &mut max_downside_deviation as *mut _ as *mut c_void,
+                &mut pair_map_ptr as *mut _ as *mut c_void,
+                &mut pair_count_i as *mut _ as *mut c_void,
+                &mut compact_output_i as *mut _ as *mut c_void,
+                &mut out_pairs as *mut _ as *mut c_void,
+                &mut out_scores as *mut _ as *mut c_void,
+            ];
+            launch_kernel_timed(
+                bt_stream,
+                select_scored_pairs_v2
+                    .ok_or_else(|| "missing select_topk_scored_pairs_tm_f32_v2".to_string())?,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
+        } else {
+            let args: &mut [*mut c_void] = &mut [
+                &mut metrics_ptr as *mut _ as *mut c_void,
+                &mut pairs_i as *mut _ as *mut c_void,
+                &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
+                &mut pf_i as *mut _ as *mut c_void,
+                &mut ps_i as *mut _ as *mut c_void,
+                &mut f_per as *mut _ as *mut c_void,
+                &mut s_per as *mut _ as *mut c_void,
+                &mut obj_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut pair_map_ptr as *mut _ as *mut c_void,
+                &mut pair_count_i as *mut _ as *mut c_void,
+                &mut compact_output_i as *mut _ as *mut c_void,
+                &mut out_pairs as *mut _ as *mut c_void,
+                &mut out_scores as *mut _ as *mut c_void,
+            ];
+            launch_kernel_timed(
+                bt_stream,
+                select_scored_pairs,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
+        }
+    }
+
+    let mut blocks_prev = blocks1;
+    let mut in_len = cand_len1;
+    let mut in_is_a = true;
+    while blocks_prev > 1 {
+        let blocks_next = (in_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+        let out_len = blocks_next.saturating_mul(topk_select).max(topk_select);
+        unsafe {
+            let mut in_pairs = if in_is_a {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+            let mut in_scores = if in_is_a {
+                scratch
+                    .d_cand_scores_a
+                    .as_ref()
+                    .unwrap()
+                    .as_device_ptr()
+                    .as_raw()
+            } else {
+                scratch
+                    .d_cand_scores_b
+                    .as_ref()
+                    .unwrap()
+                    .as_device_ptr()
+                    .as_raw()
+            };
+            let mut in_len_i = in_len as i32;
+            let mut topk_i = topk_select as i32;
+            let mut out_pairs = if in_is_a {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+            let mut out_scores = if in_is_a {
+                scratch
+                    .d_cand_scores_b
+                    .as_ref()
+                    .unwrap()
+                    .as_device_ptr()
+                    .as_raw()
+            } else {
+                scratch
+                    .d_cand_scores_a
+                    .as_ref()
+                    .unwrap()
+                    .as_device_ptr()
+                    .as_raw()
+            };
+            let block_x: u32 = 256;
+            let grid_x: u32 = blocks_next as u32;
+            let args: &mut [*mut c_void] = &mut [
+                &mut in_pairs as *mut _ as *mut c_void,
+                &mut in_scores as *mut _ as *mut c_void,
+                &mut in_len_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut out_pairs as *mut _ as *mut c_void,
+                &mut out_scores as *mut _ as *mut c_void,
+            ];
+            launch_kernel_timed(
+                bt_stream,
+                select_scored_candidates,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
+        }
+        in_is_a = !in_is_a;
+        blocks_prev = blocks_next;
+        in_len = out_len;
+    }
+
+    unsafe {
+        let mut pairs_i = pairs as i32;
+        let mut pf_i = pf as i32;
+        let mut ps_i = ps as i32;
+        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut top_pairs = if in_is_a {
+            scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+        } else {
+            scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+        };
+        let mut top_scores = if in_is_a {
+            scratch
+                .d_cand_scores_a
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw()
+        } else {
+            scratch
+                .d_cand_scores_b
+                .as_ref()
+                .unwrap()
+                .as_device_ptr()
+                .as_raw()
+        };
+        let mut topk_i = topk_select as i32;
+        let mut pair_map_ptr = pair_index_map_ptr;
+        let mut pair_fast_rows = pair_fast_rows_ptr;
+        let mut pair_slow_rows = pair_slow_rows_ptr;
+        let mut pair_count_i = launch_pairs as i32;
+        let mut compact_output_i = if compact_valid_pair_output {
+            1i32
+        } else {
+            0i32
+        };
+        let mut out_f = scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_s = scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_scores = scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = ((topk_select as u32) + block_x - 1) / block_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut pairs_i as *mut _ as *mut c_void,
+            &mut pf_i as *mut _ as *mut c_void,
+            &mut ps_i as *mut _ as *mut c_void,
+            &mut f_per as *mut _ as *mut c_void,
+            &mut s_per as *mut _ as *mut c_void,
+            &mut top_pairs as *mut _ as *mut c_void,
+            &mut top_scores as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut pair_map_ptr as *mut _ as *mut c_void,
+            &mut pair_fast_rows as *mut _ as *mut c_void,
+            &mut pair_slow_rows as *mut _ as *mut c_void,
+            &mut pair_count_i as *mut _ as *mut c_void,
+            &mut compact_output_i as *mut _ as *mut c_void,
+            &mut out_f as *mut _ as *mut c_void,
+            &mut out_s as *mut _ as *mut c_void,
+            &mut out_scores as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            gather_scored_pairs,
             (grid_x, 1, 1),
             (block_x, 1, 1),
             0,
@@ -7970,8 +9210,10 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     let local_s = global_s - s_start;
                     replay_tile_rows.push(ReplayTileRow {
                         combo_idx,
-                        pair_index: i32::try_from(local_f.saturating_mul(ps).saturating_add(local_s))
-                            .map_err(|_| "tile pair index exceeds i32::MAX".to_string())?,
+                        pair_index: i32::try_from(
+                            local_f.saturating_mul(ps).saturating_add(local_s),
+                        )
+                        .map_err(|_| "tile pair index exceeds i32::MAX".to_string())?,
                         fast_period: i32::from(fast_periods[global_f]),
                         slow_period: i32::from(slow_periods[global_s]),
                         fast_local: i32::try_from(local_f)
@@ -8954,14 +10196,11 @@ fn rerank_shortlist_by_slice_robustness(
         eval_start,
         eval_end,
     )?;
-    let mut ranked_active: Vec<(
-        DoubleMaParams,
-        Metrics,
-        ShortlistSliceModeDiagnostics,
-    )> = active_records
-        .into_iter()
-        .map(|record| (record.params, record.full_metrics, record.diagnostics))
-        .collect();
+    let mut ranked_active: Vec<(DoubleMaParams, Metrics, ShortlistSliceModeDiagnostics)> =
+        active_records
+            .into_iter()
+            .map(|record| (record.params, record.full_metrics, record.diagnostics))
+            .collect();
 
     ranked_active.sort_by(|a, b| {
         b.2.worst_slice_score
@@ -8995,11 +10234,13 @@ fn rerank_shortlist_by_slice_robustness(
         ranked_active
             .iter()
             .take(diag_count)
-            .map(|(params, metrics, diagnostics)| ShortlistSliceModeCandidateRecord {
-                params: params.clone(),
-                full_metrics: metrics.clone(),
-                diagnostics: diagnostics.clone(),
-            })
+            .map(
+                |(params, metrics, diagnostics)| ShortlistSliceModeCandidateRecord {
+                    params: params.clone(),
+                    full_metrics: metrics.clone(),
+                    diagnostics: diagnostics.clone(),
+                },
+            )
             .collect()
     } else {
         compute_shortlist_slice_mode_records(
@@ -9030,11 +10271,13 @@ fn rerank_shortlist_by_slice_robustness(
         ranked_active
             .iter()
             .take(diag_count)
-            .map(|(params, metrics, diagnostics)| ShortlistSliceModeCandidateRecord {
-                params: params.clone(),
-                full_metrics: metrics.clone(),
-                diagnostics: diagnostics.clone(),
-            })
+            .map(
+                |(params, metrics, diagnostics)| ShortlistSliceModeCandidateRecord {
+                    params: params.clone(),
+                    full_metrics: metrics.clone(),
+                    diagnostics: diagnostics.clone(),
+                },
+            )
             .collect()
     } else {
         compute_shortlist_slice_mode_records(
@@ -9459,6 +10702,7 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     let device_id = cfg.device_id;
     let _nvtx_scope = crate::nvtx::scope("kernel", "kernel_executor_total");
     clear_last_kernel_executor_timing();
+    clear_last_route_diagnostics();
     clear_last_shortlist_slice_diagnostics();
     clear_last_score_observation_context();
     CUDA_KERNEL_RUNTIME.with(|cell| -> Result<OptimizationResult, String> {
@@ -10217,11 +11461,29 @@ fn optimize_double_ma_gpu_kernel_impl(
     let select_topk_candidates_v2 = bt_module
         .get_function("select_topk_from_candidates_tm_f32_v2")
         .ok();
+    let _score_metric_rows = bt_module.get_function("score_metric_rows_f32").ok();
+    let select_topk_scored_pairs = bt_module
+        .get_function("select_topk_scored_pairs_tm_f32")
+        .ok();
+    let select_topk_scored_pairs_v2 = bt_module
+        .get_function("select_topk_scored_pairs_tm_f32_v2")
+        .ok();
+    let select_topk_scored_candidates = bt_module
+        .get_function("select_topk_scored_candidates_tm_f32")
+        .ok();
+    let select_topk_scored_rows = bt_module.get_function("select_topk_scored_rows_f32").ok();
+    let select_topk_scored_rows_candidates = bt_module
+        .get_function("select_topk_scored_rows_from_candidates_f32")
+        .ok();
+    let gather_topk_scored_rows = bt_module.get_function("gather_topk_scored_rows_f32").ok();
     let select_v2_supported = !kernel_force_legacy_topk_enabled()
         && select_topk_pairs_v2.is_some()
         && select_topk_candidates_v2.is_some();
     let gather_topk = load_bt_fn("gather_topk_pairs_tm_f32")?;
     let pack_metric_rows = load_bt_fn("pack_metric_rows_f32")?;
+    let gather_topk_scored_pairs = bt_module
+        .get_function("gather_topk_scored_pairs_tm_f32")
+        .ok();
     let select_topk_rows_legacy = bt_module.get_function("select_topk_metric_rows_f32").ok();
     let select_topk_rows_candidates_legacy = bt_module
         .get_function("select_topk_metric_rows_from_candidates_f32")
@@ -10479,6 +11741,57 @@ fn optimize_double_ma_gpu_kernel_impl(
         && select_topk_rows_legacy.is_some()
         && select_topk_rows_candidates_legacy.is_some()
         && gather_topk_rows.is_some();
+    let score_first_topk_supported = select_topk_scored_pairs.is_some()
+        && select_topk_scored_candidates.is_some()
+        && select_topk_scored_rows.is_some()
+        && select_topk_scored_rows_candidates.is_some()
+        && gather_topk_scored_rows.is_some()
+        && gather_topk_scored_pairs.is_some();
+    let score_first_env_enabled = kernel_score_first_topk_enabled();
+    let score_first_blockers = score_first_topk_blockers(
+        score_first_env_enabled,
+        global_topk_mode,
+        score_first_topk_supported,
+        score_mode,
+        extra_shortlist_enabled,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        metrics_count,
+        constraints.is_some(),
+        eval_range,
+        fast_precomputed.is_some(),
+        slow_precomputed.is_some(),
+        heatmap_bins,
+    );
+    let score_first_topk_mode = should_use_score_first_topk_mode(
+        global_topk_mode,
+        score_first_topk_supported,
+        score_mode,
+        extra_shortlist_enabled,
+        shortlist_confidence_mode,
+        shortlist_union_mode,
+        shortlist_slice_mode,
+        metrics_count,
+        constraints.is_some(),
+        eval_range,
+        fast_precomputed.is_some(),
+        slow_precomputed.is_some(),
+        heatmap_bins,
+    );
+    record_last_route_diagnostics(build_gpu_kernel_route_diagnostics(
+        device_include_all,
+        export_enabled,
+        host_filter_mode,
+        compact_valid_pair_output,
+        global_topk_mode,
+        score_first_env_enabled,
+        score_first_topk_supported,
+        score_first_topk_mode,
+        metrics_count,
+        tile_metrics_stride,
+        &score_first_blockers,
+    ));
     let global_constraints_on_device =
         constraints.is_some() && global_topk_mode && row_select_v2_supported;
     if extra_shortlist_enabled && !global_topk_mode {
@@ -10533,6 +11846,7 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     let mut global_fast_rows: Option<DeviceBuffer<i32>> = None;
     let mut global_slow_rows: Option<DeviceBuffer<i32>> = None;
+    let mut global_score_rows: Option<DeviceBuffer<f32>> = None;
     let mut global_metrics_rows: Option<DeviceBuffer<f32>> = None;
     let mut global_rows_len: usize = 0;
     let global_rows_cap: usize = if global_topk_mode {
@@ -10573,27 +11887,31 @@ fn optimize_double_ma_gpu_kernel_impl(
         if global_topk_mode {
             KernelScratch::ensure_len_i32(&mut global_fast_rows, global_rows_cap, bt_stream)?;
             KernelScratch::ensure_len_i32(&mut global_slow_rows, global_rows_cap, bt_stream)?;
-            KernelScratch::ensure_len_f32(
-                &mut global_metrics_rows,
-                global_rows_cap.saturating_mul(metrics_count),
-                bt_stream,
-            )?;
-            for head in extra_shortlist_heads.iter_mut() {
-                KernelScratch::ensure_len_i32(
-                    &mut head.global_fast_rows,
-                    global_rows_cap,
-                    bt_stream,
-                )?;
-                KernelScratch::ensure_len_i32(
-                    &mut head.global_slow_rows,
-                    global_rows_cap,
-                    bt_stream,
-                )?;
+            if score_first_topk_mode {
+                KernelScratch::ensure_len_f32(&mut global_score_rows, global_rows_cap, bt_stream)?;
+            } else {
                 KernelScratch::ensure_len_f32(
-                    &mut head.global_metrics_rows,
+                    &mut global_metrics_rows,
                     global_rows_cap.saturating_mul(metrics_count),
                     bt_stream,
                 )?;
+                for head in extra_shortlist_heads.iter_mut() {
+                    KernelScratch::ensure_len_i32(
+                        &mut head.global_fast_rows,
+                        global_rows_cap,
+                        bt_stream,
+                    )?;
+                    KernelScratch::ensure_len_i32(
+                        &mut head.global_slow_rows,
+                        global_rows_cap,
+                        bt_stream,
+                    )?;
+                    KernelScratch::ensure_len_f32(
+                        &mut head.global_metrics_rows,
+                        global_rows_cap.saturating_mul(metrics_count),
+                        bt_stream,
+                    )?;
+                }
             }
         }
 
@@ -12280,480 +13598,128 @@ fn optimize_double_ma_gpu_kernel_impl(
                     continue;
                 }
 
-                let pair_stage_pairs = if pair_index_map_ptr != 0 && launch_pairs > 0 {
-                    launch_pairs
-                } else {
-                    pairs
-                };
-                let blocks1 = (pair_stage_pairs + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
-                let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
-                let cand_a = scratch.d_cand_a.as_mut().unwrap();
-                let cand_b = scratch.d_cand_b.as_mut().unwrap();
-
-                unsafe {
-                    let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut pairs_i = pairs as i32;
-                    let mut m_i = metrics_count as i32;
-                    let mut metrics_stride_i = tile_metrics_stride as i32;
-                    let mut pf_i = pf as i32;
-                    let mut ps_i = ps as i32;
-                    let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut obj_i = objective_i;
-                    let mut hurdle_tau_i = hurdle_tau;
-                    let mut topk_i = topk_select as i32;
-                    let mut pair_map_ptr = pair_index_map_ptr;
-                    let mut pair_count_i = launch_pairs as i32;
-                    let mut compact_output_i = if compact_valid_pair_output {
-                        1i32
-                    } else {
-                        0i32
-                    };
-                    let mut out_ptr = cand_a.as_device_ptr().as_raw();
-
-                    let block_x: u32 = 256;
-                    let grid_x: u32 = blocks1 as u32;
-                    if constraints_on_device {
-                        let mut use_min_trades = constraint_args.use_min_trades;
-                        let mut min_trades = constraint_args.min_trades;
-                        let mut use_max_dd = constraint_args.use_max_dd;
-                        let mut max_dd = constraint_args.max_dd;
-                        let mut use_min_sharpe = constraint_args.use_min_sharpe;
-                        let mut min_sharpe = constraint_args.min_sharpe;
-                        let mut use_min_sortino = constraint_args.use_min_sortino;
-                        let mut min_sortino = constraint_args.min_sortino;
-                        let mut use_min_calmar = constraint_args.use_min_calmar;
-                        let mut min_calmar = constraint_args.min_calmar;
-                        let mut use_max_volatility = constraint_args.use_max_volatility;
-                        let mut max_volatility = constraint_args.max_volatility;
-                        let mut use_min_exposure = constraint_args.use_min_exposure;
-                        let mut min_exposure = constraint_args.min_exposure;
-                        let mut use_max_exposure = constraint_args.use_max_exposure;
-                        let mut max_exposure = constraint_args.max_exposure;
-                        let mut use_max_abs_net_exposure = constraint_args.use_max_abs_net_exposure;
-                        let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
-                        let mut use_min_omega = constraint_args.use_min_omega;
-                        let mut min_omega = constraint_args.min_omega;
-                        let mut use_max_ulcer = constraint_args.use_max_ulcer;
-                        let mut max_ulcer = constraint_args.max_ulcer;
-                        let mut use_max_downside_deviation =
-                            constraint_args.use_max_downside_deviation;
-                        let mut max_downside_deviation = constraint_args.max_downside_deviation;
-                        let args: &mut [*mut c_void] = &mut [
-                            &mut metrics_ptr as *mut _ as *mut c_void,
-                            &mut pairs_i as *mut _ as *mut c_void,
-                            &mut m_i as *mut _ as *mut c_void,
-                            &mut metrics_stride_i as *mut _ as *mut c_void,
-                            &mut pf_i as *mut _ as *mut c_void,
-                            &mut ps_i as *mut _ as *mut c_void,
-                            &mut f_per as *mut _ as *mut c_void,
-                            &mut s_per as *mut _ as *mut c_void,
-                            &mut obj_i as *mut _ as *mut c_void,
-                            &mut hurdle_tau_i as *mut _ as *mut c_void,
-                            &mut topk_i as *mut _ as *mut c_void,
-                            &mut use_min_trades as *mut _ as *mut c_void,
-                            &mut min_trades as *mut _ as *mut c_void,
-                            &mut use_max_dd as *mut _ as *mut c_void,
-                            &mut max_dd as *mut _ as *mut c_void,
-                            &mut use_min_sharpe as *mut _ as *mut c_void,
-                            &mut min_sharpe as *mut _ as *mut c_void,
-                            &mut use_min_sortino as *mut _ as *mut c_void,
-                            &mut min_sortino as *mut _ as *mut c_void,
-                            &mut use_min_calmar as *mut _ as *mut c_void,
-                            &mut min_calmar as *mut _ as *mut c_void,
-                            &mut use_max_volatility as *mut _ as *mut c_void,
-                            &mut max_volatility as *mut _ as *mut c_void,
-                            &mut use_min_exposure as *mut _ as *mut c_void,
-                            &mut min_exposure as *mut _ as *mut c_void,
-                            &mut use_max_exposure as *mut _ as *mut c_void,
-                            &mut max_exposure as *mut _ as *mut c_void,
-                            &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
-                            &mut max_abs_net_exposure as *mut _ as *mut c_void,
-                            &mut use_min_omega as *mut _ as *mut c_void,
-                            &mut min_omega as *mut _ as *mut c_void,
-                            &mut use_max_ulcer as *mut _ as *mut c_void,
-                            &mut max_ulcer as *mut _ as *mut c_void,
-                            &mut use_max_downside_deviation as *mut _ as *mut c_void,
-                            &mut max_downside_deviation as *mut _ as *mut c_void,
-                            &mut pair_map_ptr as *mut _ as *mut c_void,
-                            &mut pair_count_i as *mut _ as *mut c_void,
-                            &mut compact_output_i as *mut _ as *mut c_void,
-                            &mut out_ptr as *mut _ as *mut c_void,
-                        ];
-                        launch_kernel_timed(
-                            bt_stream,
-                            select_topk_pairs_v2.as_ref().ok_or_else(|| {
-                                "missing select_topk_from_pairs_tm_f32_v2".to_string()
-                            })?,
-                            (grid_x, 1, 1),
-                            (block_x, 1, 1),
-                            0,
-                            args,
-                            &mut launch_submit_elapsed,
-                        )?;
-                    } else {
-                        let args: &mut [*mut c_void] = &mut [
-                            &mut metrics_ptr as *mut _ as *mut c_void,
-                            &mut pairs_i as *mut _ as *mut c_void,
-                            &mut m_i as *mut _ as *mut c_void,
-                            &mut metrics_stride_i as *mut _ as *mut c_void,
-                            &mut pf_i as *mut _ as *mut c_void,
-                            &mut ps_i as *mut _ as *mut c_void,
-                            &mut f_per as *mut _ as *mut c_void,
-                            &mut s_per as *mut _ as *mut c_void,
-                            &mut obj_i as *mut _ as *mut c_void,
-                            &mut hurdle_tau_i as *mut _ as *mut c_void,
-                            &mut topk_i as *mut _ as *mut c_void,
-                            &mut pair_map_ptr as *mut _ as *mut c_void,
-                            &mut pair_count_i as *mut _ as *mut c_void,
-                            &mut compact_output_i as *mut _ as *mut c_void,
-                            &mut out_ptr as *mut _ as *mut c_void,
-                        ];
-                        launch_kernel_timed(
-                            bt_stream,
-                            &select_topk_pairs_legacy,
-                            (grid_x, 1, 1),
-                            (block_x, 1, 1),
-                            0,
-                            args,
-                            &mut launch_submit_elapsed,
-                        )?;
-                    }
-                }
-
-                let mut blocks_prev = blocks1;
-                let mut in_len = cand_len1;
-                let mut in_is_a = true;
-                while blocks_prev > 1 {
-                    let blocks_next = (in_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
-                    let out_len = blocks_next.saturating_mul(topk_select).max(topk_select);
-                    unsafe {
-                        let mut metrics_ptr =
-                            scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-                        let mut pairs_i = pairs as i32;
-                        let mut m_i = metrics_count as i32;
-                        let mut metrics_stride_i = tile_metrics_stride as i32;
-                        let mut pf_i = pf as i32;
-                        let mut ps_i = ps as i32;
-                        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
-                        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                        let mut obj_i = objective_i;
-                        let mut hurdle_tau_i = hurdle_tau;
-                        let mut topk_i = topk_select as i32;
-                        let mut in_ptr = if in_is_a {
-                            cand_a.as_device_ptr().as_raw()
-                        } else {
-                            cand_b.as_device_ptr().as_raw()
-                        };
-                        let mut in_len_i = in_len as i32;
-                        let mut out_ptr = if in_is_a {
-                            cand_b.as_device_ptr().as_raw()
-                        } else {
-                            cand_a.as_device_ptr().as_raw()
-                        };
-                        let mut pair_map_ptr = pair_index_map_ptr;
-                        let mut pair_count_i = launch_pairs as i32;
-                        let mut compact_output_i = if compact_valid_pair_output {
-                            1i32
-                        } else {
-                            0i32
-                        };
-
-                        let block_x: u32 = 256;
-                        let grid_x: u32 = blocks_next as u32;
-                        if constraints_on_device {
-                            let mut use_min_trades = constraint_args.use_min_trades;
-                            let mut min_trades = constraint_args.min_trades;
-                            let mut use_max_dd = constraint_args.use_max_dd;
-                            let mut max_dd = constraint_args.max_dd;
-                            let mut use_min_sharpe = constraint_args.use_min_sharpe;
-                            let mut min_sharpe = constraint_args.min_sharpe;
-                            let mut use_min_sortino = constraint_args.use_min_sortino;
-                            let mut min_sortino = constraint_args.min_sortino;
-                            let mut use_min_calmar = constraint_args.use_min_calmar;
-                            let mut min_calmar = constraint_args.min_calmar;
-                            let mut use_max_volatility = constraint_args.use_max_volatility;
-                            let mut max_volatility = constraint_args.max_volatility;
-                            let mut use_min_exposure = constraint_args.use_min_exposure;
-                            let mut min_exposure = constraint_args.min_exposure;
-                            let mut use_max_exposure = constraint_args.use_max_exposure;
-                            let mut max_exposure = constraint_args.max_exposure;
-                            let mut use_max_abs_net_exposure =
-                                constraint_args.use_max_abs_net_exposure;
-                            let mut max_abs_net_exposure = constraint_args.max_abs_net_exposure;
-                            let mut use_min_omega = constraint_args.use_min_omega;
-                            let mut min_omega = constraint_args.min_omega;
-                            let mut use_max_ulcer = constraint_args.use_max_ulcer;
-                            let mut max_ulcer = constraint_args.max_ulcer;
-                            let mut use_max_downside_deviation =
-                                constraint_args.use_max_downside_deviation;
-                            let mut max_downside_deviation = constraint_args.max_downside_deviation;
-                            let args: &mut [*mut c_void] = &mut [
-                                &mut metrics_ptr as *mut _ as *mut c_void,
-                                &mut pairs_i as *mut _ as *mut c_void,
-                                &mut m_i as *mut _ as *mut c_void,
-                                &mut metrics_stride_i as *mut _ as *mut c_void,
-                                &mut pf_i as *mut _ as *mut c_void,
-                                &mut ps_i as *mut _ as *mut c_void,
-                                &mut f_per as *mut _ as *mut c_void,
-                                &mut s_per as *mut _ as *mut c_void,
-                                &mut obj_i as *mut _ as *mut c_void,
-                                &mut hurdle_tau_i as *mut _ as *mut c_void,
-                                &mut topk_i as *mut _ as *mut c_void,
-                                &mut in_ptr as *mut _ as *mut c_void,
-                                &mut in_len_i as *mut _ as *mut c_void,
-                                &mut use_min_trades as *mut _ as *mut c_void,
-                                &mut min_trades as *mut _ as *mut c_void,
-                                &mut use_max_dd as *mut _ as *mut c_void,
-                                &mut max_dd as *mut _ as *mut c_void,
-                                &mut use_min_sharpe as *mut _ as *mut c_void,
-                                &mut min_sharpe as *mut _ as *mut c_void,
-                                &mut use_min_sortino as *mut _ as *mut c_void,
-                                &mut min_sortino as *mut _ as *mut c_void,
-                                &mut use_min_calmar as *mut _ as *mut c_void,
-                                &mut min_calmar as *mut _ as *mut c_void,
-                                &mut use_max_volatility as *mut _ as *mut c_void,
-                                &mut max_volatility as *mut _ as *mut c_void,
-                                &mut use_min_exposure as *mut _ as *mut c_void,
-                                &mut min_exposure as *mut _ as *mut c_void,
-                                &mut use_max_exposure as *mut _ as *mut c_void,
-                                &mut max_exposure as *mut _ as *mut c_void,
-                                &mut use_max_abs_net_exposure as *mut _ as *mut c_void,
-                                &mut max_abs_net_exposure as *mut _ as *mut c_void,
-                                &mut use_min_omega as *mut _ as *mut c_void,
-                                &mut min_omega as *mut _ as *mut c_void,
-                                &mut use_max_ulcer as *mut _ as *mut c_void,
-                                &mut max_ulcer as *mut _ as *mut c_void,
-                                &mut use_max_downside_deviation as *mut _ as *mut c_void,
-                                &mut max_downside_deviation as *mut _ as *mut c_void,
-                                &mut pair_map_ptr as *mut _ as *mut c_void,
-                                &mut pair_count_i as *mut _ as *mut c_void,
-                                &mut compact_output_i as *mut _ as *mut c_void,
-                                &mut out_ptr as *mut _ as *mut c_void,
-                            ];
-                            launch_kernel_timed(
-                                bt_stream,
-                                select_topk_candidates_v2.as_ref().ok_or_else(|| {
-                                    "missing select_topk_from_candidates_tm_f32_v2".to_string()
-                                })?,
-                                (grid_x, 1, 1),
-                                (block_x, 1, 1),
-                                0,
-                                args,
-                                &mut launch_submit_elapsed,
-                            )?;
-                        } else {
-                            let args: &mut [*mut c_void] = &mut [
-                                &mut metrics_ptr as *mut _ as *mut c_void,
-                                &mut pairs_i as *mut _ as *mut c_void,
-                                &mut m_i as *mut _ as *mut c_void,
-                                &mut metrics_stride_i as *mut _ as *mut c_void,
-                                &mut pf_i as *mut _ as *mut c_void,
-                                &mut ps_i as *mut _ as *mut c_void,
-                                &mut f_per as *mut _ as *mut c_void,
-                                &mut s_per as *mut _ as *mut c_void,
-                                &mut obj_i as *mut _ as *mut c_void,
-                                &mut hurdle_tau_i as *mut _ as *mut c_void,
-                                &mut topk_i as *mut _ as *mut c_void,
-                                &mut in_ptr as *mut _ as *mut c_void,
-                                &mut in_len_i as *mut _ as *mut c_void,
-                                &mut pair_map_ptr as *mut _ as *mut c_void,
-                                &mut pair_count_i as *mut _ as *mut c_void,
-                                &mut compact_output_i as *mut _ as *mut c_void,
-                                &mut out_ptr as *mut _ as *mut c_void,
-                            ];
-                            launch_kernel_timed(
-                                bt_stream,
-                                &select_topk_candidates_legacy,
-                                (grid_x, 1, 1),
-                                (block_x, 1, 1),
-                                0,
-                                args,
-                                &mut launch_submit_elapsed,
-                            )?;
-                        }
-                    }
-                    in_is_a = !in_is_a;
-                    blocks_prev = blocks_next;
-                    in_len = out_len;
-                }
-
-                unsafe {
-                    let mut metrics_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut pairs_i = pairs as i32;
-                    let mut m_i = metrics_count as i32;
-                    let mut metrics_stride_i = tile_metrics_stride as i32;
-                    let mut pf_i = pf as i32;
-                    let mut ps_i = ps as i32;
-                    let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
-                    let mut top_ptr = if in_is_a {
-                        cand_a.as_device_ptr().as_raw()
-                    } else {
-                        cand_b.as_device_ptr().as_raw()
-                    };
-                    let mut topk_i = topk_select as i32;
-                    let mut pair_map_ptr = pair_index_map_ptr;
-                    let mut pair_count_i = launch_pairs as i32;
-                    let mut compact_output_i = if compact_valid_pair_output {
-                        1i32
-                    } else {
-                        0i32
-                    };
-                    let mut out_f = scratch
-                        .d_top_fast
-                        .as_ref()
-                        .unwrap()
-                        .as_device_ptr()
-                        .as_raw();
-                    let mut out_s = scratch
-                        .d_top_slow
-                        .as_ref()
-                        .unwrap()
-                        .as_device_ptr()
-                        .as_raw();
-                    let mut out_m = scratch
-                        .d_top_metrics
-                        .as_ref()
-                        .unwrap()
-                        .as_device_ptr()
-                        .as_raw();
-                    let mut pair_fast_rows = pair_fast_rows_ptr;
-                    let mut pair_slow_rows = pair_slow_rows_ptr;
-
-                    let block_x: u32 = 256;
-                    let grid_x: u32 = ((topk_select as u32) + block_x - 1) / block_x;
-                    let args: &mut [*mut c_void] = &mut [
-                        &mut metrics_ptr as *mut _ as *mut c_void,
-                        &mut pairs_i as *mut _ as *mut c_void,
-                        &mut m_i as *mut _ as *mut c_void,
-                        &mut metrics_stride_i as *mut _ as *mut c_void,
-                        &mut pf_i as *mut _ as *mut c_void,
-                        &mut ps_i as *mut _ as *mut c_void,
-                        &mut f_per as *mut _ as *mut c_void,
-                        &mut s_per as *mut _ as *mut c_void,
-                        &mut top_ptr as *mut _ as *mut c_void,
-                        &mut topk_i as *mut _ as *mut c_void,
-                        &mut pair_map_ptr as *mut _ as *mut c_void,
-                        &mut pair_fast_rows as *mut _ as *mut c_void,
-                        &mut pair_slow_rows as *mut _ as *mut c_void,
-                        &mut pair_count_i as *mut _ as *mut c_void,
-                        &mut compact_output_i as *mut _ as *mut c_void,
-                        &mut out_f as *mut _ as *mut c_void,
-                        &mut out_s as *mut _ as *mut c_void,
-                        &mut out_m as *mut _ as *mut c_void,
-                    ];
-                    launch_kernel_timed(
+                if score_first_topk_mode {
+                    select_tile_topk_scores_for_objective(
                         bt_stream,
+                        scratch,
+                        pairs,
+                        launch_pairs,
+                        metrics_count,
+                        tile_metrics_stride,
+                        pf,
+                        ps,
+                        topk_select,
+                        objective_i,
+                        hurdle_tau,
+                        compact_valid_pair_output,
+                        pair_index_map_ptr,
+                        pair_fast_rows_ptr,
+                        pair_slow_rows_ptr,
+                        constraints_on_device,
+                        constraint_args,
+                        select_topk_scored_pairs
+                            .as_ref()
+                            .ok_or_else(|| "missing select_topk_scored_pairs_tm_f32".to_string())?,
+                        select_topk_scored_candidates.as_ref().ok_or_else(|| {
+                            "missing select_topk_scored_candidates_tm_f32".to_string()
+                        })?,
+                        select_topk_scored_pairs_v2.as_ref(),
+                        gather_topk_scored_pairs
+                            .as_ref()
+                            .ok_or_else(|| "missing gather_topk_scored_pairs_tm_f32".to_string())?,
+                        &mut launch_submit_elapsed,
+                    )?;
+                } else {
+                    select_tile_topk_rows_for_objective(
+                        bt_stream,
+                        scratch,
+                        pairs,
+                        launch_pairs,
+                        metrics_count,
+                        tile_metrics_stride,
+                        pf,
+                        ps,
+                        topk_select,
+                        objective_i,
+                        hurdle_tau,
+                        compact_valid_pair_output,
+                        pair_index_map_ptr,
+                        pair_fast_rows_ptr,
+                        pair_slow_rows_ptr,
+                        constraints_on_device,
+                        constraint_args,
+                        &select_topk_pairs_legacy,
+                        &select_topk_candidates_legacy,
+                        select_topk_pairs_v2.as_ref(),
+                        select_topk_candidates_v2.as_ref(),
                         &gather_topk,
-                        (grid_x, 1, 1),
-                        (block_x, 1, 1),
-                        0,
-                        args,
                         &mut launch_submit_elapsed,
                     )?;
                 }
 
                 if global_topk_mode {
-                    let global_fast = global_fast_rows
-                        .as_ref()
-                        .ok_or_else(|| "missing global fast-row buffer".to_string())?;
-                    let global_slow = global_slow_rows
-                        .as_ref()
-                        .ok_or_else(|| "missing global slow-row buffer".to_string())?;
-                    let global_metrics = global_metrics_rows
-                        .as_ref()
-                        .ok_or_else(|| "missing global metrics-row buffer".to_string())?;
-                    let select_rows_legacy = select_topk_rows_legacy
-                        .as_ref()
-                        .ok_or_else(|| "missing select_topk_metric_rows_f32".to_string())?;
-                    let select_rows_candidates_legacy =
-                        select_topk_rows_candidates_legacy.as_ref().ok_or_else(|| {
-                            "missing select_topk_metric_rows_from_candidates_f32".to_string()
-                        })?;
-                    let gather_rows = gather_topk_rows
-                        .as_ref()
-                        .ok_or_else(|| "missing gather_topk_metric_rows_f32".to_string())?;
+                    if score_first_topk_mode {
+                        let global_fast = global_fast_rows
+                            .as_ref()
+                            .ok_or_else(|| "missing global fast-row buffer".to_string())?;
+                        let global_slow = global_slow_rows
+                            .as_ref()
+                            .ok_or_else(|| "missing global slow-row buffer".to_string())?;
+                        let global_scores = global_score_rows
+                            .as_ref()
+                            .ok_or_else(|| "missing global score-row buffer".to_string())?;
 
-                    merge_current_topk_rows_into_global_head(
-                        bt_stream,
-                        scratch,
-                        global_fast,
-                        global_slow,
-                        global_metrics,
-                        &mut global_rows_len,
-                        global_rows_cap,
-                        metrics_count,
-                        objective_i,
-                        hurdle_tau,
-                        topk_select,
-                        global_constraints_on_device,
-                        constraint_args,
-                        select_rows_legacy,
-                        select_rows_candidates_legacy,
-                        select_topk_rows_v2.as_ref(),
-                        select_topk_rows_candidates_v2.as_ref(),
-                        gather_rows,
-                        &mut launch_submit_elapsed,
-                    )?;
-
-                    for head in extra_shortlist_heads.iter_mut() {
-                        select_tile_topk_rows_for_objective(
+                        merge_current_topk_scores_into_global_head(
                             bt_stream,
                             scratch,
-                            pairs,
-                            launch_pairs,
-                            metrics_count,
-                            tile_metrics_stride,
-                            pf,
-                            ps,
+                            global_fast,
+                            global_slow,
+                            global_scores,
+                            &mut global_rows_len,
+                            global_rows_cap,
                             topk_select,
-                            head.objective_i,
-                            hurdle_tau,
-                            compact_valid_pair_output,
-                            pair_index_map_ptr,
-                            pair_fast_rows_ptr,
-                            pair_slow_rows_ptr,
-                            constraints_on_device,
-                            constraint_args,
-                            &select_topk_pairs_legacy,
-                            &select_topk_candidates_legacy,
-                            select_topk_pairs_v2.as_ref(),
-                            select_topk_candidates_v2.as_ref(),
-                            &gather_topk,
+                            select_topk_scored_rows
+                                .as_ref()
+                                .ok_or_else(|| "missing select_topk_scored_rows_f32".to_string())?,
+                            select_topk_scored_rows_candidates.as_ref().ok_or_else(|| {
+                                "missing select_topk_scored_rows_from_candidates_f32".to_string()
+                            })?,
+                            gather_topk_scored_rows
+                                .as_ref()
+                                .ok_or_else(|| "missing gather_topk_scored_rows_f32".to_string())?,
                             &mut launch_submit_elapsed,
                         )?;
-                        let head_global_fast = head.global_fast_rows.as_ref().ok_or_else(|| {
-                            format!(
-                                "missing global fast-row buffer for extra shortlist objective {:?}",
-                                head.objective
-                            )
-                        })?;
-                        let head_global_slow = head.global_slow_rows.as_ref().ok_or_else(|| {
-                            format!(
-                                "missing global slow-row buffer for extra shortlist objective {:?}",
-                                head.objective
-                            )
-                        })?;
-                        let head_global_metrics = head
-                            .global_metrics_rows
+                    } else {
+                        let global_fast = global_fast_rows
                             .as_ref()
-                            .ok_or_else(|| {
-                                format!(
-                                    "missing global metrics-row buffer for extra shortlist objective {:?}",
-                                    head.objective
-                                )
+                            .ok_or_else(|| "missing global fast-row buffer".to_string())?;
+                        let global_slow = global_slow_rows
+                            .as_ref()
+                            .ok_or_else(|| "missing global slow-row buffer".to_string())?;
+                        let global_metrics = global_metrics_rows
+                            .as_ref()
+                            .ok_or_else(|| "missing global metrics-row buffer".to_string())?;
+                        let select_rows_legacy = select_topk_rows_legacy
+                            .as_ref()
+                            .ok_or_else(|| "missing select_topk_metric_rows_f32".to_string())?;
+                        let select_rows_candidates_legacy =
+                            select_topk_rows_candidates_legacy.as_ref().ok_or_else(|| {
+                                "missing select_topk_metric_rows_from_candidates_f32".to_string()
                             })?;
+                        let gather_rows = gather_topk_rows
+                            .as_ref()
+                            .ok_or_else(|| "missing gather_topk_metric_rows_f32".to_string())?;
+
                         merge_current_topk_rows_into_global_head(
                             bt_stream,
                             scratch,
-                            head_global_fast,
-                            head_global_slow,
-                            head_global_metrics,
-                            &mut head.global_rows_len,
+                            global_fast,
+                            global_slow,
+                            global_metrics,
+                            &mut global_rows_len,
                             global_rows_cap,
                             metrics_count,
-                            head.objective_i,
+                            objective_i,
                             hurdle_tau,
                             topk_select,
                             global_constraints_on_device,
@@ -12765,6 +13731,76 @@ fn optimize_double_ma_gpu_kernel_impl(
                             gather_rows,
                             &mut launch_submit_elapsed,
                         )?;
+
+                        for head in extra_shortlist_heads.iter_mut() {
+                            select_tile_topk_rows_for_objective(
+                                bt_stream,
+                                scratch,
+                                pairs,
+                                launch_pairs,
+                                metrics_count,
+                                tile_metrics_stride,
+                                pf,
+                                ps,
+                                topk_select,
+                                head.objective_i,
+                                hurdle_tau,
+                                compact_valid_pair_output,
+                                pair_index_map_ptr,
+                                pair_fast_rows_ptr,
+                                pair_slow_rows_ptr,
+                                constraints_on_device,
+                                constraint_args,
+                                &select_topk_pairs_legacy,
+                                &select_topk_candidates_legacy,
+                                select_topk_pairs_v2.as_ref(),
+                                select_topk_candidates_v2.as_ref(),
+                                &gather_topk,
+                                &mut launch_submit_elapsed,
+                            )?;
+                            let head_global_fast = head.global_fast_rows.as_ref().ok_or_else(|| {
+                                format!(
+                                    "missing global fast-row buffer for extra shortlist objective {:?}",
+                                    head.objective
+                                )
+                            })?;
+                            let head_global_slow = head.global_slow_rows.as_ref().ok_or_else(|| {
+                                format!(
+                                    "missing global slow-row buffer for extra shortlist objective {:?}",
+                                    head.objective
+                                )
+                            })?;
+                            let head_global_metrics = head
+                                .global_metrics_rows
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "missing global metrics-row buffer for extra shortlist objective {:?}",
+                                        head.objective
+                                    )
+                                })?;
+                            merge_current_topk_rows_into_global_head(
+                                bt_stream,
+                                scratch,
+                                head_global_fast,
+                                head_global_slow,
+                                head_global_metrics,
+                                &mut head.global_rows_len,
+                                global_rows_cap,
+                                metrics_count,
+                                head.objective_i,
+                                hurdle_tau,
+                                topk_select,
+                                global_constraints_on_device,
+                                constraint_args,
+                                select_rows_legacy,
+                                select_rows_candidates_legacy,
+                                select_topk_rows_v2.as_ref(),
+                                select_topk_rows_candidates_v2.as_ref(),
+                                gather_rows,
+                                &mut launch_submit_elapsed,
+                            )?;
+                        }
                     }
                 } else {
                     sync_stream_timed(bt_stream, &mut explicit_sync_elapsed)?;
@@ -12995,16 +14031,16 @@ fn optimize_double_ma_gpu_kernel_impl(
         || (shortlist_slice_mode.is_some() && extra_shortlist_enabled);
     let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> =
         if materialize_shortlist_rows {
-        Vec::with_capacity(
-            global_rows_cap
-                .saturating_mul(extra_shortlist_heads.len().saturating_add(1))
-                .max(topk_select),
-        )
-    } else {
-        Vec::new()
-    };
+            Vec::with_capacity(
+                global_rows_cap
+                    .saturating_mul(extra_shortlist_heads.len().saturating_add(1))
+                    .max(topk_select),
+            )
+        } else {
+            Vec::new()
+        };
 
-    if global_topk_mode && !device_include_all && global_rows_len > 0 {
+    if !score_first_topk_mode && global_topk_mode && !device_include_all && global_rows_len > 0 {
         let mut shortlisted_pairs: HashSet<(u16, u16)> = HashSet::new();
         let mut push_global_head_rows = |rows_fast: &DeviceBuffer<i32>,
                                          rows_slow: &DeviceBuffer<i32>,
@@ -13160,6 +14196,82 @@ fn optimize_double_ma_gpu_kernel_impl(
     } else {
         None
     };
+
+    if score_first_topk_mode && global_rows_len > 0 {
+        let global_fast = global_fast_rows
+            .as_ref()
+            .ok_or_else(|| "missing global fast-row buffer".to_string())?;
+        let global_slow = global_slow_rows
+            .as_ref()
+            .ok_or_else(|| "missing global slow-row buffer".to_string())?;
+
+        let d2h_t0 = Instant::now();
+        let mut fast_host = vec![0i32; global_rows_len];
+        let mut slow_host = vec![0i32; global_rows_len];
+        copy_device_prefix_to_host_i32(global_fast, &mut fast_host, global_rows_len, bt_stream)?;
+        copy_device_prefix_to_host_i32(global_slow, &mut slow_host, global_rows_len, bt_stream)?;
+        d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());
+        sync_stream_timed(bt_stream, &mut explicit_sync_elapsed)?;
+
+        let mut finalists: Vec<DoubleMaParams> = Vec::with_capacity(global_rows_len);
+        for idx in 0..global_rows_len {
+            let fast_len_i = fast_host[idx];
+            let slow_len_i = slow_host[idx];
+            if fast_len_i <= 0 || slow_len_i <= 0 || fast_len_i >= slow_len_i {
+                continue;
+            }
+            let fast_len = u16::try_from(fast_len_i)
+                .map_err(|_| format!("score-first fast period out of range: {fast_len_i}"))?;
+            let slow_len = u16::try_from(slow_len_i)
+                .map_err(|_| format!("score-first slow period out of range: {slow_len_i}"))?;
+            finalists.push(DoubleMaParams {
+                fast_len,
+                slow_len,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            });
+        }
+
+        if finalists.is_empty() {
+            return Err("score-first exact shortlist produced no valid finalists".to_string());
+        }
+
+        let decode_t0 = Instant::now();
+        let ranges = [eval_range.unwrap_or((0, candles.close.len()))];
+        let replayed_metrics = eval_double_ma_batch_gpu_kernel_impl(
+            rt,
+            candles,
+            finalists.as_slice(),
+            fast_periods,
+            slow_periods,
+            fast_ma.as_str(),
+            slow_ma.as_str(),
+            ma_source,
+            fast_ma_params,
+            slow_ma_params,
+            regime_filter,
+            cfg,
+            fast_precomputed,
+            slow_precomputed,
+            strategy,
+            false,
+            &ranges,
+        )?;
+        let mut exact_rows: Vec<(DoubleMaParams, Metrics)> = finalists
+            .into_iter()
+            .zip(replayed_metrics.into_iter())
+            .filter(|(_, metrics)| metrics_pass_constraints(metrics, constraints))
+            .collect();
+        exact_rows.sort_by(|a, b| {
+            let sa = kernel_effective_score_for_pair(&a.0, &a.1, objective, score_mode);
+            let sb = kernel_effective_score_for_pair(&b.0, &b.1, objective, score_mode);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for (params, metrics) in exact_rows {
+            agg.push(params, metrics);
+        }
+        host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
+    }
 
     drop(sync_and_decode_scope);
     let _host_finalize_scope = crate::nvtx::scope("kernel", "host_finalize");
@@ -13344,24 +14456,25 @@ mod tests {
         eval_double_ma_dynamic_program_precomputed_gpu_kernel, finalist_recompute_eval_range,
         fixed_metrics_contract_rows, install_effective_sample_score_context,
         kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
-        kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled, kernel_shortlist_confidence_mode,
-        kernel_shortlist_slice_benchmark, kernel_shortlist_slice_mode, kernel_shortlist_union_mode,
-        kernel_should_use_lockstep_time, kernel_should_use_m7_specialize, kernel_strategy_params,
+        kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled, kernel_score_first_topk_enabled,
+        kernel_shortlist_confidence_mode, kernel_shortlist_slice_benchmark,
+        kernel_shortlist_slice_mode, kernel_shortlist_union_mode, kernel_should_use_lockstep_time,
+        kernel_should_use_m7_specialize, kernel_strategy_params,
         max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
-        rerank_shortlist_by_union_mode, search_metrics_count_for_optimization,
-        search_metrics_count_for_optimization_with_contract, search_rows_use_log_space,
-        shortlist_candidate_track_record_bars, shortlist_slice_ranges,
+        rerank_shortlist_by_union_mode, score_first_topk_blockers,
+        search_metrics_count_for_optimization, search_metrics_count_for_optimization_with_contract,
+        search_rows_use_log_space, shortlist_candidate_track_record_bars, shortlist_slice_ranges,
         should_force_low_pair_m7_recompute, should_use_compact_valid_pair_output,
-        upload_double_ma_dynamic_program_batch, EffectiveSampleScoreContext,
-        FixedContractDispatchKind, FixedContractKernelFlavor, ShortlistConfidenceMode,
-        ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT, STRAT_SIGNED_EXPOSURE,
-        TRADE_METRICS_COUNT,
+        should_use_score_first_topk_mode, upload_double_ma_dynamic_program_batch,
+        EffectiveSampleScoreContext, FixedContractDispatchKind, FixedContractKernelFlavor,
+        ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
+        STRAT_SIGNED_EXPOSURE, TRADE_METRICS_COUNT,
     };
     use crate::composite_validate::SpaBenchmarkKind;
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
-        DoubleMaMetricContract, DoubleMaShortlistConfidenceMode, DoubleMaShortlistSliceMode,
-        DoubleMaShortlistUnionMode,
+        DoubleMaMetricContract, DoubleMaScoreMode, DoubleMaShortlistConfidenceMode,
+        DoubleMaShortlistSliceMode, DoubleMaShortlistUnionMode,
     };
     use crate::strategy_dynamic::{
         build_dynamic_cpu_context_from_precomputed, compile_dynamic_plan_for_double_ma_config,
@@ -13494,6 +14607,292 @@ mod tests {
             Some(v) => std::env::set_var("VECTORBT_KERNEL_PINNED_H2D", v),
             None => std::env::remove_var("VECTORBT_KERNEL_PINNED_H2D"),
         }
+    }
+
+    #[test]
+    fn kernel_score_first_flag_defaults_to_disabled_and_parses_true() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_SCORE_FIRST_TOPK").ok();
+
+        std::env::remove_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK");
+        assert!(!kernel_score_first_topk_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "0");
+        assert!(!kernel_score_first_topk_enabled());
+
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "1");
+        assert!(kernel_score_first_topk_enabled());
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK"),
+        }
+    }
+
+    #[test]
+    fn score_first_topk_mode_requires_narrow_exact_surface() {
+        let _guard = lock_env();
+        let prev = std::env::var("VECTORBT_KERNEL_SCORE_FIRST_TOPK").ok();
+        std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", "1");
+
+        assert!(should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            TRADE_METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true, true, None, false, None, None, None, 10, false, None, false, false, 0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            Some(DoubleMaScoreMode::SupportShrunk10),
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            true,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            Some(ShortlistConfidenceMode::Psr),
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            Some(DoubleMaShortlistUnionMode::Pareto),
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            Some(ShortlistSliceMode::Halves),
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            true,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            Some((10, 100)),
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            true,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            true,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            8,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            false,
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+        assert!(!should_use_score_first_topk_mode(
+            true,
+            false,
+            None,
+            false,
+            None,
+            None,
+            None,
+            METRICS_COUNT,
+            false,
+            None,
+            false,
+            false,
+            0,
+        ));
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_SCORE_FIRST_TOPK"),
+        }
+    }
+
+    #[test]
+    fn score_first_topk_blockers_explain_why_row_first_fallback_is_used() {
+        let blockers = score_first_topk_blockers(
+            false,
+            false,
+            false,
+            Some(DoubleMaScoreMode::BalancedRiskAdjusted10),
+            true,
+            Some(ShortlistConfidenceMode::Psr),
+            Some(DoubleMaShortlistUnionMode::Pareto),
+            Some(ShortlistSliceMode::Halves),
+            PRODUCT_REDUCED_METRICS_COUNT,
+            true,
+            Some((100, 200)),
+            true,
+            true,
+            32,
+        );
+
+        assert_eq!(
+            blockers,
+            vec![
+                "env_disabled",
+                "global_topk_disabled",
+                "score_first_symbols_unavailable",
+                "score_mode_active",
+                "extra_shortlist_enabled",
+                "shortlist_confidence_enabled",
+                "shortlist_union_enabled",
+                "shortlist_slice_enabled",
+                "metrics_contract_not_full_row",
+                "constraints_present",
+                "eval_range_set",
+                "fast_precomputed_enabled",
+                "slow_precomputed_enabled",
+                "heatmap_bins_nonzero",
+            ]
+        );
     }
 
     #[test]

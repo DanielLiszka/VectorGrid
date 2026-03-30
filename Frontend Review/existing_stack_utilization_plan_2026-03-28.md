@@ -924,6 +924,10 @@ Intent:
 
 - use the animated VectorAlpha logo as part of a brief startup/ready-state moment
 
+Detailed implementation planning now lives in:
+
+- [startup_animation_plan_2026-03-30.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\startup_animation_plan_2026-03-30.md)
+
 Guardrails:
 
 - only while real initialization is occurring

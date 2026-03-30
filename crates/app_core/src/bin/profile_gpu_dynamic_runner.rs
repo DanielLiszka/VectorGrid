@@ -801,6 +801,7 @@ fn main() {
                 "hybrid_timing_ms": &res.hybrid_timing_ms,
                 "indicator_route_plan": &res.indicator_route_plan,
                 "backend_fallback_reason": res.backend_fallback_reason.as_deref(),
+                "route_diagnostics": &res.route_diagnostics,
             });
             println!(
                 "{}",
@@ -880,6 +881,11 @@ fn main() {
         }
         if let Some(reason) = res.backend_fallback_reason.as_deref() {
             println!("fallback_reason={reason}");
+        }
+        if let Some(diags) = res.route_diagnostics.as_ref() {
+            for diag in diags {
+                println!("route_diagnostic={diag}");
+            }
         }
     }
 }

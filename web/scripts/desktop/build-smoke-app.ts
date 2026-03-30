@@ -8,7 +8,10 @@ const repoRoot = path.resolve(webRoot, '..')
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 function runOrThrow(command: string, args: string[], cwd: string): void {
-  const result = spawnSync(command, args, {
+  const isWindowsCmd = process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')
+  const spawnCommand = isWindowsCmd ? 'cmd.exe' : command
+  const spawnArgs = isWindowsCmd ? ['/d', '/s', '/c', command, ...args] : args
+  const result = spawnSync(spawnCommand, spawnArgs, {
     cwd,
     stdio: 'inherit',
     shell: false,

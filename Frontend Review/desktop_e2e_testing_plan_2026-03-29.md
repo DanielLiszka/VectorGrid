@@ -23,14 +23,15 @@ Verified locally on Windows:
 
 - `npm --prefix web run test:desktop:smoke`
   - green on `2026-03-30`
-  - run used `VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD=1`
+  - green both with the normal managed-build path and with the optional `VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD=1` fast path
   - the suite launched the real Tauri shell through `tauri-driver`
   - all six first-wave desktop smoke specs passed
 
 Important repo-specific caveat:
 
-- a fresh `cargo build -p ta_desktop_demo_app` path is currently blocked by an unrelated backend compile failure outside this harness work
-- because of that, the green local proof used the existing debug binary plus the managed preview host
+- the earlier local blocker was not a Rust compile failure; it was a Windows process-launch bug in [build-smoke-app.ts](C:\Rust Projects\ta_desktop_demo\web\scripts\desktop\build-smoke-app.ts) when spawning `npm.cmd`
+- that helper now runs Windows `.cmd` commands through `cmd.exe /d /s /c`, so the managed fresh-build path works again locally
+- hosted CI still needs its own green proof on `windows-latest`; until then, treat the local passing run as the canonical evidence
 
 Important implemented launch adjustment:
 
