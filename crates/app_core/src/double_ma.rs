@@ -6832,12 +6832,6 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                 .to_string(),
         );
     }
-    if requested_trade_metrics && !matches!(backend, Backend::GpuKernel { .. }) {
-        return Err(
-            "include_trade_metrics currently requires the exact GpuKernel backend route"
-                .to_string(),
-        );
-    }
     if requested_metric_contract.is_some()
         && dynamic_runtime_plan.is_some()
         && !dynamic_exact_gpu_kernel_route
@@ -12658,10 +12652,13 @@ fn optimize_double_ma_gpu_kernel_tiled(
     _fast_alma_sigma: f64,
     _slow_alma_offset: f64,
     _slow_alma_sigma: f64,
+    _include_trade_metrics: bool,
+    _metric_contract: Option<DoubleMaMetricContract>,
     _constraints: Option<&DoubleMaConstraints>,
     _export_all_csv_path: Option<&str>,
     _total_pairs: usize,
     _heatmap_bins: usize,
+    _eval_range: Option<(usize, usize)>,
     _cancel: &AtomicBool,
     _progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
@@ -12694,6 +12691,8 @@ fn optimize_double_ma_gpu_kernel_tiled_with_precomputed(
     _fast_alma_sigma: f64,
     _slow_alma_offset: f64,
     _slow_alma_sigma: f64,
+    _include_trade_metrics: bool,
+    _metric_contract: Option<DoubleMaMetricContract>,
     _fast_precomputed_values: Option<&[f32]>,
     _fast_precomputed_cols: Option<usize>,
     _slow_precomputed_values: Option<&[f32]>,

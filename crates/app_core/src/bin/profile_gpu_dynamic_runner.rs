@@ -132,6 +132,16 @@ fn parse_optional_usize_flag(flag: &str) -> Result<Option<usize>, String> {
         .map_err(|e| format!("invalid {flag} '{}': {e}", raw.trim()))
 }
 
+fn parse_optional_f64_flag(flag: &str) -> Result<Option<f64>, String> {
+    let Some(raw) = parse_arg_value(flag) else {
+        return Ok(None);
+    };
+    raw.trim()
+        .parse::<f64>()
+        .map(Some)
+        .map_err(|e| format!("invalid {flag} '{}': {e}", raw.trim()))
+}
+
 fn parse_eval_range(total_bars: usize) -> Result<Option<(usize, usize)>, String> {
     let eval_start = parse_optional_usize_flag("--eval-start")?;
     let eval_end = parse_optional_usize_flag("--eval-end")?;
@@ -475,6 +485,19 @@ fn strategy_config(kind: StrategyKind, adx_mode: AdxMode) -> StrategyConfig {
     }
 }
 
+fn apply_risk_overrides(
+    strategy: &mut StrategyConfig,
+    stop_loss_pct: Option<f64>,
+    take_profit_pct: Option<f64>,
+) {
+    if let Some(stop_loss_pct) = stop_loss_pct {
+        strategy.stop_loss_pct = Some(stop_loss_pct);
+    }
+    if let Some(take_profit_pct) = take_profit_pct {
+        strategy.take_profit_pct = Some(take_profit_pct);
+    }
+}
+
 fn candles_for_strategy(kind: StrategyKind, len: usize) -> Candles {
     match kind {
         StrategyKind::DoubleMa | StrategyKind::TrendQuality => make_trending_candles(len),
@@ -610,6 +633,14 @@ fn main() {
         std::process::exit(2);
     });
     let emit_json = parse_emit_json();
+    let stop_loss_pct = parse_optional_f64_flag("--stop-loss-pct").unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
+    let take_profit_pct = parse_optional_f64_flag("--take-profit-pct").unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
 
     if !cuda_available() {
         eprintln!("CUDA device not available");
@@ -624,7 +655,8 @@ fn main() {
     apply_env_toggle("VECTORBT_KERNEL_USE_CUDA_GRAPHS", cuda_graphs_mode);
     apply_nvtx_phase(nvtx_mode, warmup_iterations > 0);
 
-    let strategy = strategy_config(strategy_kind, adx_mode);
+    let mut strategy = strategy_config(strategy_kind, adx_mode);
+    apply_risk_overrides(&mut strategy, stop_loss_pct, take_profit_pct);
     let candles = candles_for_run(strategy_kind, candle_shape, 200_000);
     let eval_range = parse_eval_range(candles.close.len()).unwrap_or_else(|e| {
         eprintln!("{e}");
@@ -742,6 +774,8 @@ fn main() {
                 "shortlist_slice_benchmark": shortlist_slice_benchmark_label(shortlist_slice_benchmark.as_ref()),
                 "eval_range": eval_range.map(|(start, end)| json!({ "start": start, "end": end })),
                 "include_trade_metrics": include_trade_metrics,
+                "stop_loss_pct": stop_loss_pct,
+                "take_profit_pct": take_profit_pct,
                 "fast_ma": &fast_ma_type,
                 "slow_ma": &slow_ma_type,
                 "heatmap_bins": heatmap_bins,
@@ -775,7 +809,7 @@ fn main() {
             continue;
         }
         println!(
-            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={:?} metric_contract={} shortlist_slice_mode={} shortlist_slice_benchmark={} eval_range={} include_trade_metrics={} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
+            "phase={} iter={} fast_ma={} slow_ma={} backend={:?} route={} objective={:?} metric_contract={} shortlist_slice_mode={} shortlist_slice_benchmark={} eval_range={} include_trade_metrics={} stop_loss_pct={} take_profit_pct={} runtime_ms={} wall_ms={} heatmap_bins={} cuda_graphs={} best=({}, {}) sharpe={:.6} pnl={:.6}",
             if is_warmup { "warmup" } else { "measure" },
             iter_index,
             fast_ma_type,
@@ -790,6 +824,12 @@ fn main() {
                 .map(|(start, end)| format!("[{start}, {end})"))
                 .unwrap_or_else(|| "full".to_string()),
             include_trade_metrics,
+            stop_loss_pct
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_else(|| "none".to_string()),
+            take_profit_pct
+                .map(|value| format!("{value:.6}"))
+                .unwrap_or_else(|| "none".to_string()),
             res.runtime_ms,
             wall_ms,
             heatmap_bins,

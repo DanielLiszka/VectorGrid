@@ -20839,8 +20839,12 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn vcc_validation_gpu_kernel_matches_cpu_metrics_on_roundtrip_unstable_fixture() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
         let candles = make_trending_candles(4096);
         let cancel = AtomicBool::new(false);
 

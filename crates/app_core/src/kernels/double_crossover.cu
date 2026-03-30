@@ -3789,404 +3789,420 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     }
         if (!use_risk) {
             float trade_log_ret = 0.0f;
-            for (int t = loop_start; t < end_t; ++t) {
-                if constexpr (LOCKSTEP_TIME) {
-                    if (t < start_t) {
-                        continue;
-                    }
-                }
-                const int t_sig = t - trade_offset;
-                float f = 0.0f;
-                float s = 0.0f;
-                float lr_t = 0.0f;
-                float ret1_t = 0.0f;
-                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                    const bool has_next = (t + 1) < end_t;
-                    float fast_next = 0.0f;
-                    float slow_next = 0.0f;
-                    float lr_next = 0.0f;
+#define PROCESS_NO_RISK_BAR(T_SIG_VALUE, F_VALUE, S_VALUE, LR_VALUE, RET1_VALUE)                    \
+            do {                                                                                     \
+                const float eps = compute_eps_f32<EPS_MODE>((S_VALUE), eps_rel);                    \
+                int sign = desired_sign_mode_f32<REGIME_MODE>(                                       \
+                    (F_VALUE),                                                                       \
+                    (S_VALUE),                                                                       \
+                    eps,                                                                             \
+                    flags,                                                                           \
+                    regime_filter,                                                                   \
+                    use_regime,                                                                      \
+                    use_regime_hybrid,                                                               \
+                    pos,                                                                             \
+                    (T_SIG_VALUE),                                                                   \
+                    regime_range_entry_rel,                                                          \
+                    regime_range_exit_rel);                                                          \
+                if (sign != pos) {                                                                   \
+                    if (pos == 0 || sign == 0) {                                                     \
+                        if (has_commission) {                                                        \
+                            log_eq += log_comm;                                                      \
+                            if (pos != 0 && need_trade_metrics) trade_log_ret += log_comm;          \
+                        }                                                                            \
+                        if (need_trades) trades += 1;                                                \
+                        if (pos != 0) {                                                              \
+                            record_closed_trade_summary_f32(                                         \
+                                need_trade_metrics,                                                  \
+                                trade_log_ret,                                                       \
+                                &closed_trades,                                                      \
+                                &winning_trades,                                                     \
+                                &losing_trades,                                                      \
+                                &gross_profit,                                                       \
+                                &gross_loss);                                                        \
+                        }                                                                            \
+                        pos = (sign == 0) ? 0 : sign;                                                \
+                        trade_log_ret = (pos != 0 && has_commission) ? log_comm : 0.0f;             \
+                    } else {                                                                         \
+                        if (flags & STRAT_NO_FLIP) {                                                 \
+                            if (has_commission) {                                                    \
+                                log_eq += log_comm;                                                  \
+                                if (need_trade_metrics) trade_log_ret += log_comm;                  \
+                            }                                                                        \
+                            if (need_trades) trades += 1;                                            \
+                            record_closed_trade_summary_f32(                                         \
+                                need_trade_metrics,                                                  \
+                                trade_log_ret,                                                       \
+                                &closed_trades,                                                      \
+                                &winning_trades,                                                     \
+                                &losing_trades,                                                      \
+                                &gross_profit,                                                       \
+                                &gross_loss);                                                        \
+                            pos = 0;                                                                 \
+                            trade_log_ret = 0.0f;                                                    \
+                        } else {                                                                     \
+                            if (has_commission) {                                                    \
+                                log_eq += 2.0f * log_comm;                                           \
+                                if (need_trade_metrics) trade_log_ret += log_comm;                  \
+                            }                                                                        \
+                            if (need_trades) trades += 2;                                            \
+                            record_closed_trade_summary_f32(                                         \
+                                need_trade_metrics,                                                  \
+                                trade_log_ret,                                                       \
+                                &closed_trades,                                                      \
+                                &winning_trades,                                                     \
+                                &losing_trades,                                                      \
+                                &gross_profit,                                                       \
+                                &gross_loss);                                                        \
+                            pos = sign;                                                              \
+                            trade_log_ret = has_commission ? log_comm : 0.0f;                       \
+                        }                                                                            \
+                    }                                                                                \
+                }                                                                                    \
+                const float step_log = (float)pos * (LR_VALUE);                                      \
+                log_eq += step_log;                                                                  \
+                if (pos != 0 && need_trade_metrics) {                                                \
+                    trade_log_ret += step_log;                                                       \
+                }                                                                                    \
+                obs += 1;                                                                            \
+                if (need_max_dd || need_ulcer || need_underwater) {                                  \
+                    if (log_eq > log_peak) log_peak = log_eq;                                        \
+                    const float dd_log = log_peak - log_eq;                                          \
+                    if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;                    \
+                    if (need_underwater) {                                                           \
+                        if (dd_log > 0.0f) {                                                         \
+                            underwater_bars += 1;                                                    \
+                            underwater_run += 1;                                                     \
+                            if (underwater_run > max_underwater_duration_bars) {                     \
+                                max_underwater_duration_bars = underwater_run;                       \
+                            }                                                                        \
+                        } else {                                                                     \
+                            underwater_run = 0;                                                      \
+                        }                                                                            \
+                    }                                                                                \
+                    if (need_ulcer) {                                                                \
+                        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;                 \
+                        ulcer_sum_sq += dd * dd;                                                     \
+                    }                                                                                \
+                }                                                                                    \
+                if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {              \
+                    const float step_r = (pos == 0) ? 0.0f : (float)pos * (RET1_VALUE);             \
+                    if (need_stats) {                                                                \
+                        n += 1;                                                                      \
+                        const float delta = step_r - mean;                                           \
+                        mean += delta / (float)n;                                                    \
+                        m2 += delta * (step_r - mean);                                               \
+                    }                                                                                \
+                    const float excess_r = step_r - hurdle_tau;                                      \
+                    if ((need_downside_dev || need_kappa_tau) && excess_r < 0.0f) {                 \
+                        count_neg += 1;                                                              \
+                        if (need_downside_dev) {                                                     \
+                            sum_neg_sq += excess_r * excess_r;                                       \
+                        }                                                                            \
+                        if (need_kappa_tau) {                                                        \
+                            const float neg_mag = -excess_r;                                         \
+                            sum_neg_cu += neg_mag * neg_mag * neg_mag;                               \
+                        }                                                                            \
+                    }                                                                                \
+                    if (need_omega) {                                                                \
+                        if (excess_r > 0.0f) {                                                       \
+                            sum_pos_r += excess_r;                                                   \
+                        } else if (excess_r < 0.0f) {                                                \
+                            sum_neg_abs_r -= excess_r;                                               \
+                        }                                                                            \
+                    }                                                                                \
+                    if (need_expo) {                                                                 \
+                        sum_abs_pos += abs(pos);                                                     \
+                        sum_pos += pos;                                                              \
+                    }                                                                                \
+                    if (need_side_means) {                                                           \
+                        if (pos > 0) {                                                               \
+                            long_obs += 1;                                                           \
+                            long_sum_r += step_r;                                                    \
+                        } else if (pos < 0) {                                                        \
+                            short_obs += 1;                                                          \
+                            short_sum_r += step_r;                                                   \
+                        }                                                                            \
+                    }                                                                                \
+                }                                                                                    \
+            } while (0)
+            if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                for (int t = loop_start; (t + 1) < end_t; ++t) {
+                    const int t_sig = t - trade_offset;
+                    const float f = fast_cur;
+                    const float s = slow_cur;
+                    const float lr_t = lr_cur;
+                    const float ret1_t = need_step_returns ? ret1_cur : 0.0f;
+                    const float fast_next = ld_ro_1d(fast_ptr + (size_t)fast_stride, 0);
+                    const float slow_next = ld_ro_1d(slow_ptr + (size_t)slow_stride, 0);
+                    const float lr_next = ld_ro_1d(lr_ptr + 1, 0);
                     float ret1_next = 0.0f;
-                    if (has_next) {
-                        fast_next = ld_ro_1d(fast_ptr + (size_t)fast_stride, 0);
-                        slow_next = ld_ro_1d(slow_ptr + (size_t)slow_stride, 0);
-                        lr_next = ld_ro_1d(lr_ptr + 1, 0);
-                        if (need_step_returns && ret1_ptr != nullptr) {
-                            ret1_next = ld_ro_1d(ret1_ptr + 1, 0);
-                        }
+                    if (need_step_returns && ret1_ptr != nullptr) {
+                        ret1_next = ld_ro_1d(ret1_ptr + 1, 0);
                     }
-                    f = fast_cur;
-                    s = slow_cur;
-                    lr_t = lr_cur;
-                    if (need_step_returns) {
-                        ret1_t = ret1_cur;
-                    }
-                    if (has_next) {
-                        fast_ptr += (size_t)fast_stride;
-                        slow_ptr += (size_t)slow_stride;
-                        lr_ptr += 1;
-                        fast_cur = fast_next;
-                        slow_cur = slow_next;
-                        lr_cur = lr_next;
-                        if (ret1_ptr != nullptr) {
-                            ret1_ptr += 1;
-                            if (need_step_returns) {
-                                ret1_cur = ret1_next;
-                            }
-                        }
-                    }
-                } else {
-                    f = FAST_WARP_DEDUP
-                        ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
-                        : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
-                    s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
-                    lr_t = ld_ro_1d(lr, (size_t)t);
-                }
-                const float eps = compute_eps_f32<EPS_MODE>(s, eps_rel);
-                int sign = desired_sign_mode_f32<REGIME_MODE>(
-                    f,
-                    s,
-                    eps,
-                    flags,
-                    regime_filter,
-                    use_regime,
-                    use_regime_hybrid,
-                    pos,
-                    t_sig,
-                    regime_range_entry_rel,
-                    regime_range_exit_rel);
-
-                if (sign != pos) {
-                    if (pos == 0 || sign == 0) {
-                        if (has_commission) {
-                            log_eq += log_comm;
-                            if (pos != 0 && need_trade_metrics) trade_log_ret += log_comm;
-                        }
-                        if (need_trades) trades += 1;
-                        if (pos != 0) {
-                            record_closed_trade_summary_f32(
-                                need_trade_metrics,
-                                trade_log_ret,
-                                &closed_trades,
-                                &winning_trades,
-                                &losing_trades,
-                                &gross_profit,
-                                &gross_loss);
-                        }
-                        pos = (sign == 0) ? 0 : sign;
-                        trade_log_ret = (pos != 0 && has_commission) ? log_comm : 0.0f;
-                    } else {
-                        if (flags & STRAT_NO_FLIP) {
-                            if (has_commission) {
-                                log_eq += log_comm;
-                                if (need_trade_metrics) trade_log_ret += log_comm;
-                            }
-                            if (need_trades) trades += 1;
-                            record_closed_trade_summary_f32(
-                                need_trade_metrics,
-                                trade_log_ret,
-                                &closed_trades,
-                                &winning_trades,
-                                &losing_trades,
-                                &gross_profit,
-                                &gross_loss);
-                            pos = 0;
-                            trade_log_ret = 0.0f;
-                        } else {
-                            if (has_commission) {
-                                log_eq += 2.0f * log_comm;
-                                if (need_trade_metrics) trade_log_ret += log_comm;
-                            }
-                            if (need_trades) trades += 2;
-                            record_closed_trade_summary_f32(
-                                need_trade_metrics,
-                                trade_log_ret,
-                                &closed_trades,
-                                &winning_trades,
-                                &losing_trades,
-                                &gross_profit,
-                                &gross_loss);
-                            pos = sign;
-                            trade_log_ret = has_commission ? log_comm : 0.0f;
-                        }
-                    }
-                }
-
-                const float step_log = (float)pos * lr_t;
-                log_eq += step_log;
-                if (pos != 0 && need_trade_metrics) {
-                    trade_log_ret += step_log;
-                }
-                obs += 1;
-
-                if (need_max_dd || need_ulcer || need_underwater) {
-                    if (log_eq > log_peak) log_peak = log_eq;
-                    const float dd_log = log_peak - log_eq;
-                    if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;
-                    if (need_underwater) {
-                        if (dd_log > 0.0f) {
-                            underwater_bars += 1;
-                            underwater_run += 1;
-                            if (underwater_run > max_underwater_duration_bars) {
-                                max_underwater_duration_bars = underwater_run;
-                            }
-                        } else {
-                            underwater_run = 0;
-                        }
-                    }
-                    if (need_ulcer) {
-                        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
-                        ulcer_sum_sq += dd * dd;
-                    }
-                }
-
-                if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
-                    if constexpr (!(WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP)) {
-                        ret1_t = ld_ro_1d(ret1, (size_t)t);
-                    }
-                    const float step_r =
-                        (pos == 0) ? 0.0f : (float)pos * ret1_t;
-                    if (need_stats) {
-                        n += 1;
-                        const float delta = step_r - mean;
-                        mean += delta / (float)n;
-                        m2   += delta * (step_r - mean);
-                    }
-                    const float excess_r = step_r - hurdle_tau;
-                    if ((need_downside_dev || need_kappa_tau) && excess_r < 0.0f) {
-                        count_neg += 1;
-                        if (need_downside_dev) {
-                            sum_neg_sq += excess_r * excess_r;
-                        }
-                        if (need_kappa_tau) {
-                            const float neg_mag = -excess_r;
-                            sum_neg_cu += neg_mag * neg_mag * neg_mag;
-                        }
-                    }
-                    if (need_omega) {
-                        if (excess_r > 0.0f) {
-                            sum_pos_r += excess_r;
-                        } else if (excess_r < 0.0f) {
-                            sum_neg_abs_r -= excess_r;
-                        }
-                    }
-
-                    if (need_expo) {
-                        sum_abs_pos += abs(pos);
-                        sum_pos     += pos;
-                    }
-                    if (need_side_means) {
-                        if (pos > 0) {
-                            long_obs += 1;
-                            long_sum_r += step_r;
-                        } else if (pos < 0) {
-                            short_obs += 1;
-                            short_sum_r += step_r;
-                        }
-                    }
-                }
-            }
-        } else {
-            float trade_log_ret = 0.0f;
-            for (int t = loop_start; t < end_t; ++t) {
-                if constexpr (LOCKSTEP_TIME) {
-                    if (t < start_t) {
-                        continue;
-                    }
-                }
-                const int t_sig = t - trade_offset;
-                float f = 0.0f;
-                float s = 0.0f;
-                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                    f = ld_ro_1d(fast_ptr, 0);
-                    s = ld_ro_1d(slow_ptr, 0);
-                } else {
-                    f = FAST_WARP_DEDUP
-                        ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
-                        : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
-                    s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
-                }
-                const float eps = compute_eps_f32<EPS_MODE>(s, eps_rel);
-                int sign = desired_sign_mode_f32<REGIME_MODE>(
-                    f,
-                    s,
-                    eps,
-                    flags,
-                    regime_filter,
-                    use_regime,
-                    use_regime_hybrid,
-                    pos,
-                    t_sig,
-                    regime_range_entry_rel,
-                    regime_range_exit_rel);
-
-                if (sign != pos) {
-                    if (pos == 0 || sign == 0) {
-                        if (has_commission) {
-                            log_eq += log_comm;
-                            if (pos != 0) trade_log_ret += log_comm;
-                        }
-                        if (need_trades) trades += 1;
-                        if (pos != 0) {
-                            record_closed_trade_summary_f32(
-                                need_trade_metrics,
-                                trade_log_ret,
-                                &closed_trades,
-                                &winning_trades,
-                                &losing_trades,
-                                &gross_profit,
-                                &gross_loss);
-                        }
-                        pos = (sign == 0) ? 0 : sign;
-                        trade_log_ret = (pos != 0 && has_commission) ? log_comm : 0.0f;
-                    } else {
-                        if (flags & STRAT_NO_FLIP) {
-                            if (has_commission) {
-                                log_eq += log_comm;
-                                trade_log_ret += log_comm;
-                            }
-                            if (need_trades) trades += 1;
-                            record_closed_trade_summary_f32(
-                                need_trade_metrics,
-                                trade_log_ret,
-                                &closed_trades,
-                                &winning_trades,
-                                &losing_trades,
-                                &gross_profit,
-                                &gross_loss);
-                            pos = 0;
-                            trade_log_ret = 0.0f;
-                        } else {
-                            if (has_commission) {
-                                log_eq += 2.0f * log_comm;
-                                trade_log_ret += log_comm;
-                            }
-                            if (need_trades) trades += 2;
-                            record_closed_trade_summary_f32(
-                                need_trade_metrics,
-                                trade_log_ret,
-                                &closed_trades,
-                                &winning_trades,
-                                &losing_trades,
-                                &gross_profit,
-                                &gross_loss);
-                            pos = sign;
-                            trade_log_ret = has_commission ? log_comm : 0.0f;
-                        }
-                    }
-                }
-
-                const int pos_bar = pos;
-                float lr_t = 0.0f;
-                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                    lr_t = ld_ro_1d(lr_ptr, 0);
-                } else {
-                    lr_t = ld_ro_1d(lr, (size_t)t);
-                }
-                const float step_log = (float)pos_bar * lr_t;
-                log_eq += step_log;
-                obs += 1;
-
-                if (pos_bar != 0) {
-                    trade_log_ret += step_log;
-                    const bool hit_stop = use_stop && (trade_log_ret <= stop_log);
-                    const bool hit_take = use_take && (trade_log_ret >= take_log);
-                    if (hit_stop || hit_take) {
-                        if (has_commission) {
-                            log_eq += log_comm;
-                            trade_log_ret += log_comm;
-                        }
-                        if (need_trades) trades += 1;
-                        record_closed_trade_summary_f32(
-                            need_trade_metrics,
-                            trade_log_ret,
-                            &closed_trades,
-                            &winning_trades,
-                            &losing_trades,
-                            &gross_profit,
-                            &gross_loss);
-                        pos = 0;
-                        trade_log_ret = 0.0f;
-                    }
-                }
-
-                if (need_max_dd || need_ulcer || need_underwater) {
-                    if (log_eq > log_peak) log_peak = log_eq;
-                    const float dd_log = log_peak - log_eq;
-                    if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;
-                    if (need_underwater) {
-                        if (dd_log > 0.0f) {
-                            underwater_bars += 1;
-                            underwater_run += 1;
-                            if (underwater_run > max_underwater_duration_bars) {
-                                max_underwater_duration_bars = underwater_run;
-                            }
-                        } else {
-                            underwater_run = 0;
-                        }
-                    }
-                    if (need_ulcer) {
-                        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
-                        ulcer_sum_sq += dd * dd;
-                    }
-                }
-
-                if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
-                    float ret1_t = 0.0f;
-                    if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
-                        ret1_t = ld_ro_1d(ret1_ptr, 0);
-                    } else {
-                        ret1_t = ld_ro_1d(ret1, (size_t)t);
-                    }
-                    const float step_r =
-                        (pos_bar == 0) ? 0.0f : (float)pos_bar * ret1_t;
-                    if (need_stats) {
-                        n += 1;
-                        const float delta = step_r - mean;
-                        mean += delta / (float)n;
-                        m2 += delta * (step_r - mean);
-                    }
-                    const float excess_r = step_r - hurdle_tau;
-                    if ((need_downside_dev || need_kappa_tau) && excess_r < 0.0f) {
-                        count_neg += 1;
-                        if (need_downside_dev) {
-                            sum_neg_sq += excess_r * excess_r;
-                        }
-                        if (need_kappa_tau) {
-                            const float neg_mag = -excess_r;
-                            sum_neg_cu += neg_mag * neg_mag * neg_mag;
-                        }
-                    }
-                    if (need_omega) {
-                        if (excess_r > 0.0f) {
-                            sum_pos_r += excess_r;
-                        } else if (excess_r < 0.0f) {
-                            sum_neg_abs_r -= excess_r;
-                        }
-                    }
-
-                    if (need_expo) {
-                        sum_abs_pos += abs(pos_bar);
-                        sum_pos += pos_bar;
-                    }
-                    if (need_side_means) {
-                        if (pos_bar > 0) {
-                            long_obs += 1;
-                            long_sum_r += step_r;
-                        } else if (pos_bar < 0) {
-                            short_obs += 1;
-                            short_sum_r += step_r;
-                        }
-                    }
-                }
-                if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
                     fast_ptr += (size_t)fast_stride;
                     slow_ptr += (size_t)slow_stride;
                     lr_ptr += 1;
+                    fast_cur = fast_next;
+                    slow_cur = slow_next;
+                    lr_cur = lr_next;
                     if (ret1_ptr != nullptr) {
                         ret1_ptr += 1;
+                        if (need_step_returns) {
+                            ret1_cur = ret1_next;
+                        }
                     }
+                    PROCESS_NO_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                }
+                if (loop_start < end_t) {
+                    const int t = end_t - 1;
+                    const int t_sig = t - trade_offset;
+                    const float f = fast_cur;
+                    const float s = slow_cur;
+                    const float lr_t = lr_cur;
+                    const float ret1_t = need_step_returns ? ret1_cur : 0.0f;
+                    PROCESS_NO_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                }
+            } else {
+                for (int t = loop_start; t < end_t; ++t) {
+                    if constexpr (LOCKSTEP_TIME) {
+                        if (t < start_t) {
+                            continue;
+                        }
+                    }
+                    const int t_sig = t - trade_offset;
+                    const float f = FAST_WARP_DEDUP
+                        ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
+                        : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
+                    const float s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
+                    const float lr_t = ld_ro_1d(lr, (size_t)t);
+                    float ret1_t = 0.0f;
+                    if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {
+                        ret1_t = ld_ro_1d(ret1, (size_t)t);
+                    }
+                    PROCESS_NO_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
                 }
             }
+#undef PROCESS_NO_RISK_BAR
+        } else {
+            float trade_log_ret = 0.0f;
+#define PROCESS_RISK_BAR(T_SIG_VALUE, F_VALUE, S_VALUE, LR_VALUE, RET1_VALUE)                       \
+            do {                                                                                     \
+                const float eps = compute_eps_f32<EPS_MODE>((S_VALUE), eps_rel);                    \
+                int sign = desired_sign_mode_f32<REGIME_MODE>(                                       \
+                    (F_VALUE),                                                                       \
+                    (S_VALUE),                                                                       \
+                    eps,                                                                             \
+                    flags,                                                                           \
+                    regime_filter,                                                                   \
+                    use_regime,                                                                      \
+                    use_regime_hybrid,                                                               \
+                    pos,                                                                             \
+                    (T_SIG_VALUE),                                                                   \
+                    regime_range_entry_rel,                                                          \
+                    regime_range_exit_rel);                                                          \
+                if (sign != pos) {                                                                   \
+                    if (pos == 0 || sign == 0) {                                                     \
+                        if (has_commission) {                                                        \
+                            log_eq += log_comm;                                                      \
+                            if (pos != 0) trade_log_ret += log_comm;                                \
+                        }                                                                            \
+                        if (need_trades) trades += 1;                                                \
+                        if (pos != 0) {                                                              \
+                            record_closed_trade_summary_f32(                                         \
+                                need_trade_metrics,                                                  \
+                                trade_log_ret,                                                       \
+                                &closed_trades,                                                      \
+                                &winning_trades,                                                     \
+                                &losing_trades,                                                      \
+                                &gross_profit,                                                       \
+                                &gross_loss);                                                        \
+                        }                                                                            \
+                        pos = (sign == 0) ? 0 : sign;                                                \
+                        trade_log_ret = (pos != 0 && has_commission) ? log_comm : 0.0f;             \
+                    } else {                                                                         \
+                        if (flags & STRAT_NO_FLIP) {                                                 \
+                            if (has_commission) {                                                    \
+                                log_eq += log_comm;                                                  \
+                                trade_log_ret += log_comm;                                           \
+                            }                                                                        \
+                            if (need_trades) trades += 1;                                            \
+                            record_closed_trade_summary_f32(                                         \
+                                need_trade_metrics,                                                  \
+                                trade_log_ret,                                                       \
+                                &closed_trades,                                                      \
+                                &winning_trades,                                                     \
+                                &losing_trades,                                                      \
+                                &gross_profit,                                                       \
+                                &gross_loss);                                                        \
+                            pos = 0;                                                                 \
+                            trade_log_ret = 0.0f;                                                    \
+                        } else {                                                                     \
+                            if (has_commission) {                                                    \
+                                log_eq += 2.0f * log_comm;                                           \
+                                trade_log_ret += log_comm;                                           \
+                            }                                                                        \
+                            if (need_trades) trades += 2;                                            \
+                            record_closed_trade_summary_f32(                                         \
+                                need_trade_metrics,                                                  \
+                                trade_log_ret,                                                       \
+                                &closed_trades,                                                      \
+                                &winning_trades,                                                     \
+                                &losing_trades,                                                      \
+                                &gross_profit,                                                       \
+                                &gross_loss);                                                        \
+                            pos = sign;                                                              \
+                            trade_log_ret = has_commission ? log_comm : 0.0f;                       \
+                        }                                                                            \
+                    }                                                                                \
+                }                                                                                    \
+                const int pos_bar = pos;                                                             \
+                const float step_log = (float)pos_bar * (LR_VALUE);                                  \
+                log_eq += step_log;                                                                  \
+                obs += 1;                                                                            \
+                if (pos_bar != 0) {                                                                  \
+                    trade_log_ret += step_log;                                                       \
+                    const bool hit_stop = use_stop && (trade_log_ret <= stop_log);                   \
+                    const bool hit_take = use_take && (trade_log_ret >= take_log);                   \
+                    if (hit_stop || hit_take) {                                                      \
+                        if (has_commission) {                                                        \
+                            log_eq += log_comm;                                                      \
+                            trade_log_ret += log_comm;                                               \
+                        }                                                                            \
+                        if (need_trades) trades += 1;                                                \
+                        record_closed_trade_summary_f32(                                             \
+                            need_trade_metrics,                                                      \
+                            trade_log_ret,                                                           \
+                            &closed_trades,                                                          \
+                            &winning_trades,                                                         \
+                            &losing_trades,                                                          \
+                            &gross_profit,                                                           \
+                            &gross_loss);                                                            \
+                        pos = 0;                                                                     \
+                        trade_log_ret = 0.0f;                                                        \
+                    }                                                                                \
+                }                                                                                    \
+                if (need_max_dd || need_ulcer || need_underwater) {                                  \
+                    if (log_eq > log_peak) log_peak = log_eq;                                        \
+                    const float dd_log = log_peak - log_eq;                                          \
+                    if (need_max_dd && dd_log > max_log_dd) max_log_dd = dd_log;                    \
+                    if (need_underwater) {                                                           \
+                        if (dd_log > 0.0f) {                                                         \
+                            underwater_bars += 1;                                                    \
+                            underwater_run += 1;                                                     \
+                            if (underwater_run > max_underwater_duration_bars) {                     \
+                                max_underwater_duration_bars = underwater_run;                       \
+                            }                                                                        \
+                        } else {                                                                     \
+                            underwater_run = 0;                                                      \
+                        }                                                                            \
+                    }                                                                                \
+                    if (need_ulcer) {                                                                \
+                        const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;                 \
+                        ulcer_sum_sq += dd * dd;                                                     \
+                    }                                                                                \
+                }                                                                                    \
+                if (need_stats || need_downside_dev || need_omega || need_kappa_tau) {              \
+                    const float step_r =                                                             \
+                        (pos_bar == 0) ? 0.0f : (float)pos_bar * (RET1_VALUE);                       \
+                    if (need_stats) {                                                                \
+                        n += 1;                                                                      \
+                        const float delta = step_r - mean;                                           \
+                        mean += delta / (float)n;                                                    \
+                        m2 += delta * (step_r - mean);                                               \
+                    }                                                                                \
+                    const float excess_r = step_r - hurdle_tau;                                      \
+                    if ((need_downside_dev || need_kappa_tau) && excess_r < 0.0f) {                 \
+                        count_neg += 1;                                                              \
+                        if (need_downside_dev) {                                                     \
+                            sum_neg_sq += excess_r * excess_r;                                       \
+                        }                                                                            \
+                        if (need_kappa_tau) {                                                        \
+                            const float neg_mag = -excess_r;                                         \
+                            sum_neg_cu += neg_mag * neg_mag * neg_mag;                               \
+                        }                                                                            \
+                    }                                                                                \
+                    if (need_omega) {                                                                \
+                        if (excess_r > 0.0f) {                                                       \
+                            sum_pos_r += excess_r;                                                   \
+                        } else if (excess_r < 0.0f) {                                                \
+                            sum_neg_abs_r -= excess_r;                                               \
+                        }                                                                            \
+                    }                                                                                \
+                    if (need_expo) {                                                                 \
+                        sum_abs_pos += abs(pos_bar);                                                 \
+                        sum_pos += pos_bar;                                                          \
+                    }                                                                                \
+                    if (need_side_means) {                                                           \
+                        if (pos_bar > 0) {                                                           \
+                            long_obs += 1;                                                           \
+                            long_sum_r += step_r;                                                    \
+                        } else if (pos_bar < 0) {                                                    \
+                            short_obs += 1;                                                          \
+                            short_sum_r += step_r;                                                   \
+                        }                                                                            \
+                    }                                                                                \
+                }                                                                                    \
+            } while (0)
+            if constexpr (WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP) {
+                for (int t = loop_start; (t + 1) < end_t; ++t) {
+                    const int t_sig = t - trade_offset;
+                    const float f = fast_cur;
+                    const float s = slow_cur;
+                    const float lr_t = lr_cur;
+                    float ret1_t = 0.0f;
+                    const float fast_next = ld_ro_1d(fast_ptr + (size_t)fast_stride, 0);
+                    const float slow_next = ld_ro_1d(slow_ptr + (size_t)slow_stride, 0);
+                    const float lr_next = ld_ro_1d(lr_ptr + 1, 0);
+                    float ret1_next = 0.0f;
+                    if (need_step_returns && ret1_ptr != nullptr) {
+                        ret1_t = ret1_cur;
+                        ret1_next = ld_ro_1d(ret1_ptr + 1, 0);
+                    }
+                    fast_ptr += (size_t)fast_stride;
+                    slow_ptr += (size_t)slow_stride;
+                    lr_ptr += 1;
+                    fast_cur = fast_next;
+                    slow_cur = slow_next;
+                    lr_cur = lr_next;
+                    if (ret1_ptr != nullptr) {
+                        ret1_ptr += 1;
+                        if (need_step_returns) {
+                            ret1_cur = ret1_next;
+                        }
+                    }
+                    PROCESS_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                }
+                if (loop_start < end_t) {
+                    const int t = end_t - 1;
+                    const int t_sig = t - trade_offset;
+                    const float f = fast_cur;
+                    const float s = slow_cur;
+                    const float lr_t = lr_cur;
+                    const float ret1_t = need_step_returns ? ret1_cur : 0.0f;
+                    PROCESS_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                }
+            } else {
+                for (int t = loop_start; t < end_t; ++t) {
+                    if constexpr (LOCKSTEP_TIME) {
+                        if (t < start_t) {
+                            continue;
+                        }
+                    }
+                    const int t_sig = t - trade_offset;
+                    const float f = FAST_WARP_DEDUP
+                        ? ld_tm_fast_warp_dedup(fast_ma_T, fast_stride, t_sig, pf_local)
+                        : ld_tm(fast_ma_T, fast_stride, t_sig, pf_local);
+                    const float s = ld_tm(slow_ma_T, slow_stride, t_sig, ps_local);
+                    const float lr_t = ld_ro_1d(lr, (size_t)t);
+                    float ret1_t = 0.0f;
+                    if (need_step_returns) {
+                        ret1_t = ld_ro_1d(ret1, (size_t)t);
+                    }
+                    PROCESS_RISK_BAR(t_sig, f, s, lr_t, ret1_t);
+                }
+            }
+#undef PROCESS_RISK_BAR
         }
 
         const float variance = (need_std && n > 1) ? (m2 / (float)(n - 1)) : 0.0f;
@@ -9955,9 +9971,3 @@ void vemr_backtest_metrics_f32(
         out_metrics[base + 11] = ulcer_index;
     }
 }
-
-
-
-
-
-

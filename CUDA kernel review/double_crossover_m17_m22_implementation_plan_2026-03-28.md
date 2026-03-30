@@ -811,15 +811,17 @@ Current interpretation:
     - single cold runs on this surface can still produce misleading first-iteration outliers well above the warmed steady state, so only the warmed serial measurements above should be treated as the current acceptance anchor
 - a bounded lockstep regime-value broadcast experiment was measured and rejected:
   - change shape:
-    - add warp-uniform `regime_filter[t_sig]` loads only for the compile-time `REGIME_MODE=1` / `REGIME_MODE=2` lockstep routes
+    - let a warp leader load `regime_filter[t_sig]`, then broadcast it with `__shfl_sync`
+    - use that only for the compile-time `REGIME_MODE=1` / `REGIME_MODE=2` lockstep routes
     - leave generic runtime-regime paths and non-lockstep routes unchanged
   - workload: `trend_quality` + `alma/alma` + `xlarge/370750pairs` + objective `sharpe`
   - measured result:
-    - `full17`: `425 / 429 / 430 ms` min / median / max, `428.0 ms` mean across 3 measured iterations after 1 warmup
-    - `trade22`: `436 / 438 / 440 ms` min / median / max, `438.0 ms` mean across 3 measured iterations after 1 warmup
+    - before the probe on `full17`: `406 / 413 / 410 ms` min / median / max across 3 measured iterations after 1 warmup
+    - with the broadcast enabled on `full17`: `436 / 433 / 439 ms` min / median / max across 3 measured iterations after 1 warmup
+    - after immediate revert on `full17`: `413 / 417 / 408 ms` min / median / max across 3 measured iterations after 1 warmup
   - decision:
     - revert immediately
-    - do not carry extra lockstep regime-broadcast complexity without a clear win; the measured result was effectively flat against the prior regime-on anchor
+    - do not carry extra lockstep regime-broadcast complexity without a clear win; this `__shfl_sync` form is a direct regression on the first acceptance surface
 - a later raw-pointer windowed-load probe was also measured and rejected:
   - change shape:
     - replace the retained windowed pointer-walk `__ldg` loads with plain dereferences on the `WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP` path
@@ -904,7 +906,84 @@ Current interpretation:
       - passed
       - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[84.810 ms 85.064 ms 85.303 ms]`
       - dynamic preflight: `77.5 ms` (on) vs `78.5 ms` (off)
-- remaining open work is now centered on source-level investigation of the windowed L1TEX dependency / coalescing hints, deciding whether the windowed family should expand beyond the now-proven `regime_off`, `regime_on`, and `regime_hybrid` hot slices, and only then reconsidering downstream fusion work if the backtest kernel stops dominating
+- the next successful source-level kernel change was a no-risk windowed pointer-walk loop split for the hot direct hybrid exact path:
+  - change shape:
+    - keep the retained windowed pointer-walk loads
+    - split the `WALK_SERIES_PTRS && !LOCKSTEP_TIME && !FAST_WARP_DEDUP` no-risk loop into:
+      - steady-state iterations with unconditional next-load and pointer rotation
+      - one tail iteration with no per-iteration `has_next` branch
+    - leave the math, dispatch contract, and final 17 / 22 row layout unchanged
+  - rejected precursor:
+    - a trade-summary accumulator refactor that tried to compile dead 17-row trade-metric state away
+    - measured result:
+      - direct `full17`: regressed to `405 / 408 / 400 ms`
+      - direct `trade22`: effectively flat at `399 / 397 / 401 ms`
+    - decision:
+      - revert immediately
+      - do not treat dead-state cleanup as the main bottleneck on this path
+  - accepted loop-split measurements on direct `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`:
+    - previous clean anchors:
+      - `full17`: `397 / 398 / 392 ms`
+      - `trade22`: `401 / 403 / 396 ms`
+    - retained loop-split state:
+      - `full17`: `369 / 368 / 371 ms`
+      - `trade22`: `386 / 388 / 388 ms`
+  - broader verification on the retained state:
+    - `cargo test -p ta_app_core backend_for_strategy_keeps_regime_hybrid_on_exact_gpu_kernel_surface --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core exact_gpu_kernel_config_preserves_metric_contract_request --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core fixed_contract_kernel_flavor_covers_full_row_regime_variants --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+      - passed
+      - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[76.981 ms 77.179 ms 77.402 ms]`
+      - dynamic preflight: `71 ms` (on) vs `70.5 ms` (off)
+  - fresh Nsight Compute on the accepted `full17` state:
+    - report: `target/nsight/regime_hybrid_windowed_full17_loopsplit.ncu-rep`
+    - workload: `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe` + `metric_contract=full17`
+    - hot-kernel summary:
+      - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_hybrid_norisk_eps0_nocomm`
+      - duration about `356.94 ms`
+      - compute throughput about `79.51%`
+      - memory throughput about `37.33%`
+      - L1/TEX hit rate about `41.05%`
+      - `56` registers per thread
+      - theoretical occupancy about `75.00%`
+      - achieved occupancy about `66.35%`
+      - scheduler `No Eligible` about `15.87%`
+      - eligible warps per scheduler about `3.56`
+    - comparison vs the earlier clean baseline report `target/nsight/regime_hybrid_windowed_full17_clean.ncu-rep`:
+      - duration improved from about `390.82 ms` to about `356.94 ms`
+      - registers per thread dropped from `61` to `56`
+      - achieved occupancy improved from about `59.76%` to about `66.35%`
+      - L1/TEX hit rate stayed effectively flat
+  - conclusion:
+    - the win is coming from a better dependency / scheduling shape on the steady-state pointer-walk loop, not from a cache-hit miracle or a new occupancy-only trick
+- the next bounded A/B was the analogous risk-enabled windowed pointer-walk loop shape on the same direct exact surface:
+  - measurement surface:
+    - `regime_hybrid` + `alma/alma` + `xlarge/370750pairs` + `eval_range=[1000,199000)` + objective `sharpe`
+    - risk enabled with `stop_loss_pct=0.04` and `take_profit_pct=0.06`
+    - the runner now accepts `--stop-loss-pct` and `--take-profit-pct` so this surface is directly measurable instead of hard-coded
+    - compare the current shared-body risk loop against a detached-`HEAD` baseline build that uses the same runner CLI surface
+  - detached-`HEAD` baseline:
+    - `full17`: `431 / 423 / 432 ms`
+    - `trade22`: `469 / 525 / 476 ms`
+  - current retained risk-loop-split state:
+    - `full17`: `399 / 402 / 401 ms`
+    - `trade22`: `434 / 431 / 433 ms`
+  - conclusion:
+    - keep the risk-enabled steady-state / tail pointer-walk loop split
+    - the same shared-body change now improves both risk-enabled full-row contracts on the direct exact surface
+    - the stronger response is still on `trade22`, but `full17` also moves clearly in the right direction versus detached `HEAD`
+    - no further tuning should be spent here unless fresh Nsight data shows a new hotspot inside the risk-managed path
+  - focused verification on the retained state:
+    - `cargo build -p ta_app_core --bin profile_gpu_dynamic_runner --release --features cuda,cuda-backtest-kernel`
+    - `cargo test -p ta_app_core backend_for_strategy_keeps_regime_hybrid_on_exact_gpu_kernel_surface --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core fixed_contract_kernel_flavor_covers_full_row_regime_variants --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core exact_gpu_kernel_config_preserves_metric_contract_request --features cuda,cuda-backtest-kernel -- --test-threads=1`
+    - `cargo test -p ta_app_core`
+    - `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+      - passed
+      - Criterion `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`: `[77.382 ms 77.557 ms 77.727 ms]`
+      - dynamic preflight: `71.25 ms` (on) vs `73 ms` (off)
 
 ## Implementation Order
 
@@ -1327,11 +1406,13 @@ Guardrails:
 - [x] Benchmark and reject the first warp-uniform lockstep `lr` / `ret1` load experiment after shortlist regressions on both 17-row and 22-row surfaces.
 - [x] Reuse the already-ranked shortlist diagnostics for the active slice mode instead of replaying that same mode a second time on the current top-k shortlist surface.
 - [x] Skip duplicate shortlist-row materialization on the exact slice-only path when there are no extra shortlist heads and no union/confidence rerank stages.
-- [ ] Add warp-uniform regime-value loads for lockstep regime paths.
-- [ ] Investigate windowed L1TEX scoreboard stalls and poor global load/store sector utilization before any further launch-bounds or occupancy experiments.
+- [x] Measure and reject the first bounded lockstep regime-value broadcast experiment after a clear `trend_quality/full17` lockstep regression and a post-revert return to baseline.
+- [x] Investigate windowed L1TEX scoreboard stalls and poor global load/store sector utilization before any further launch-bounds or occupancy experiments.
 - [x] Profile the corrected replay-backed `trade22` hotspot with Nsight Compute and extract the dominant coalescing / L1TEX findings into the tracker.
 - [x] Keep the first positive windowed pointer-walk load experiment after a direct `full17` win, `trade22` neutrality, and a passing GPU perf gate.
 - [x] Reject the first windowed regime-value hoist on top of the retained pointer walk after a direct `full17` regression.
+- [x] Keep the windowed no-risk steady-state / tail pointer-walk loop split after direct `full17` and `trade22` exact-route wins, lower register count, higher achieved occupancy, and a passing GPU perf gate.
+- [x] Keep the analogous risk-enabled windowed steady-state / tail pointer-walk loop split after direct `full17` and `trade22` stop / take exact-route wins plus a passing GPU perf gate.
 - [x] Keep the fixed-row windowed M17 / M22 metrics write specialization after direct `full17` and `trade22` wins plus a passing GPU perf gate.
 - [x] Reject the broad M17 paired-store final-row write experiment after a same-surface `full17` regression.
 - [x] Keep the narrowed M22-only paired-store final-row write specialization after the corrected serial `trade22` shortlist A/B stays favorable.
@@ -1358,11 +1439,11 @@ Guardrails:
 
 ### Verification Checklist
 
-- [ ] Run `cargo test -p ta_app_core` after each specialization wave.
-- [ ] Run targeted exact-route GPU tests for 17-row paths.
+- [x] Run `cargo test -p ta_app_core` after each specialization wave.
+- [x] Run targeted exact-route GPU tests for 17-row paths.
 - [x] Run targeted exact-route GPU tests for 22-row paths.
 - [x] Run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` before handoff.
-- [ ] Run Nsight Compute from an elevated PowerShell session for the benchmark matrix above.
+- [x] Run Nsight Compute from an elevated PowerShell session for the benchmark matrix above.
 - [x] Run Nsight Systems from an elevated PowerShell session if stage dominance changes after specialization.
 
 ## Definition Of Done
