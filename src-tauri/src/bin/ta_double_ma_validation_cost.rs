@@ -221,6 +221,10 @@ struct ValidationCaseSpec {
 
 #[derive(Serialize)]
 struct CostReport {
+    schema_version: u32,
+    timing_boundary: &'static str,
+    timing_boundary_note: &'static str,
+    build_profile: &'static str,
     csv_path: String,
     backend_requested: String,
     total_bars: usize,
@@ -249,7 +253,11 @@ struct ValidationCaseSummary {
     avg_cross_ticker_wall_ms: u64,
     avg_reported_runtime_ms: u64,
     versus_optimization_ratio: f64,
+    main_validation_ratio_vs_optimization: f64,
+    cross_ticker_ratio_vs_optimization: f64,
     cheapness_band: String,
+    main_validation_cheapness_band: String,
+    cross_ticker_cheapness_band: String,
     backend_used: Option<String>,
     backend_route: Option<String>,
     backend_fallback_reason: Option<String>,
@@ -260,6 +268,10 @@ struct ValidationCaseSummary {
     run_verdict_total_count: Option<usize>,
     run_verdict_status: Option<String>,
     execution_profile: Option<ValidationExecutionProfileSummary>,
+    wall_ms_per_candidate: Option<f64>,
+    wall_ms_per_approved_candidate: Option<f64>,
+    main_validation_wall_ms_per_candidate: Option<f64>,
+    cross_ticker_wall_ms_per_dataset: Option<f64>,
     error: Option<String>,
 }
 
@@ -606,6 +618,22 @@ fn cheapness_band(ratio: f64) -> String {
     }
 }
 
+const fn build_profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "dev"
+    } else {
+        "release"
+    }
+}
+
+fn ratio_against_optimization(numerator_ms: u64, optimization_wall_ms: u64) -> f64 {
+    if optimization_wall_ms > 0 {
+        numerator_ms as f64 / optimization_wall_ms as f64
+    } else {
+        0.0
+    }
+}
+
 fn summarize_aux_module_feasibility(
     summaries: &[ValidationCaseSummary],
 ) -> Vec<ModuleFeasibilitySummary> {
@@ -841,6 +869,10 @@ fn main() -> Result<(), String> {
         label: None,
     };
     let cross_cfg = make_cross_config(&cli);
+    let cross_dataset_count = cross_cfg
+        .as_ref()
+        .map(|cfg| cfg.datasets.len().min(cfg.max_datasets))
+        .unwrap_or(0);
     std::fs::create_dir_all(&cli.cache_dir).map_err(|e| e.to_string())?;
 
     let mut summaries = Vec::new();
@@ -1038,11 +1070,9 @@ fn main() -> Result<(), String> {
         let avg_main_wall_ms = (agg.total_main_wall_ms / agg.repeats as u128) as u64;
         let avg_cross_wall_ms = (agg.total_cross_wall_ms / agg.repeats as u128) as u64;
         let avg_reported_runtime_ms = (agg.total_reported_runtime_ms / agg.repeats as u128) as u64;
-        let ratio = if opt_wall_ms > 0 {
-            avg_wall_ms as f64 / opt_wall_ms as f64
-        } else {
-            0.0
-        };
+        let total_ratio = ratio_against_optimization(avg_wall_ms, opt_wall_ms);
+        let main_ratio = ratio_against_optimization(avg_main_wall_ms, opt_wall_ms);
+        let cross_ratio = ratio_against_optimization(avg_cross_wall_ms, opt_wall_ms);
         let avg_u64 = |total: u128, samples: usize| -> Option<u64> {
             if samples > 0 {
                 Some((total / samples as u128) as u64)
@@ -1085,12 +1115,30 @@ fn main() -> Result<(), String> {
             "  status={} avg_wall_ms={} ratio_vs_opt={:.2} backend={} route={} fallback={} error={}",
             if agg.last_error.is_some() { "error" } else { "ok" },
             avg_wall_ms,
-            ratio,
+            total_ratio,
             agg.last_backend_used.as_deref().unwrap_or("<none>"),
             agg.last_backend_route.as_deref().unwrap_or("<none>"),
             agg.last_backend_fallback_reason.as_deref().unwrap_or("<none>"),
             agg.last_error.as_deref().unwrap_or("<none>")
         );
+
+        let wall_ms_per_candidate = agg
+            .last_candidate_count
+            .filter(|count| *count > 0)
+            .map(|count| avg_wall_ms as f64 / count as f64);
+        let wall_ms_per_approved_candidate = agg
+            .last_approved_count
+            .filter(|count| *count > 0)
+            .map(|count| avg_wall_ms as f64 / count as f64);
+        let main_validation_wall_ms_per_candidate = agg
+            .last_candidate_count
+            .filter(|count| *count > 0)
+            .map(|count| avg_main_wall_ms as f64 / count as f64);
+        let cross_ticker_wall_ms_per_dataset = case
+            .cross_ticker_preserved_stack
+            .then_some(cross_dataset_count)
+            .filter(|count| *count > 0)
+            .map(|count| avg_cross_wall_ms as f64 / count as f64);
 
         summaries.push(ValidationCaseSummary {
             label: case.label.to_string(),
@@ -1104,8 +1152,12 @@ fn main() -> Result<(), String> {
             avg_main_validation_wall_ms: avg_main_wall_ms,
             avg_cross_ticker_wall_ms: avg_cross_wall_ms,
             avg_reported_runtime_ms,
-            versus_optimization_ratio: ratio,
-            cheapness_band: cheapness_band(ratio),
+            versus_optimization_ratio: total_ratio,
+            main_validation_ratio_vs_optimization: main_ratio,
+            cross_ticker_ratio_vs_optimization: cross_ratio,
+            cheapness_band: cheapness_band(total_ratio),
+            main_validation_cheapness_band: cheapness_band(main_ratio),
+            cross_ticker_cheapness_band: cheapness_band(cross_ratio),
             backend_used: agg.last_backend_used,
             backend_route: agg.last_backend_route,
             backend_fallback_reason: agg.last_backend_fallback_reason,
@@ -1116,12 +1168,21 @@ fn main() -> Result<(), String> {
             run_verdict_total_count: agg.last_run_verdict_total_count,
             run_verdict_status: agg.last_run_verdict_status,
             execution_profile,
+            wall_ms_per_candidate,
+            wall_ms_per_approved_candidate,
+            main_validation_wall_ms_per_candidate,
+            cross_ticker_wall_ms_per_dataset,
             error: agg.last_error,
         });
     }
 
     let module_feasibility = summarize_aux_module_feasibility(&summaries);
     let report = CostReport {
+        schema_version: 1,
+        timing_boundary: "validation-cost",
+        timing_boundary_note:
+            "wall-time comparison between optimization baseline and validation module stacks",
+        build_profile: build_profile(),
         csv_path: cli.csv.to_string_lossy().to_string(),
         backend_requested: requested_backend_label(&backend).to_string(),
         total_bars: candles.close.len(),
@@ -1149,4 +1210,15 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ratio_against_optimization;
+
+    #[test]
+    fn ratio_against_optimization_handles_zero_baseline() {
+        assert_eq!(ratio_against_optimization(25, 0), 0.0);
+        assert!((ratio_against_optimization(25, 100) - 0.25).abs() < f64::EPSILON);
+    }
 }

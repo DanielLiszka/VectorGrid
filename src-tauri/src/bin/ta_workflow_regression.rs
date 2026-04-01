@@ -33,10 +33,55 @@ struct Cli {
     train_assets: usize,
     #[arg(long, default_value_t = 6)]
     holdout_assets: usize,
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    check_stage_budgets: bool,
+    #[arg(long, default_value_t = 100.0)]
+    optimize_stage_regression_pct: f64,
+    #[arg(long, default_value_t = 100.0)]
+    validate_stage_regression_pct: f64,
+    #[arg(long, default_value_t = 150.0)]
+    meta_stage_regression_pct: f64,
+    #[arg(long, default_value_t = 150.0)]
+    holdout_stage_regression_pct: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct EnvironmentFingerprint {
+    hostname: String,
+    os: String,
+    arch: String,
+    family: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+struct WorkflowStageBreakdown {
+    optimize_ms_total: u64,
+    validate_ms_total: u64,
+    meta_select_ms: u64,
+    holdout_ms: u64,
+}
+
+impl Default for WorkflowStageBreakdown {
+    fn default() -> Self {
+        Self {
+            optimize_ms_total: 0,
+            validate_ms_total: 0,
+            meta_select_ms: 0,
+            holdout_ms: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 struct WorkflowSummary {
+    schema_version: u32,
+    timing_boundary: String,
+    timing_boundary_note: String,
+    build_profile: String,
+    environment: EnvironmentFingerprint,
     candles_len: usize,
     train_assets: usize,
     holdout_assets: usize,
@@ -49,6 +94,63 @@ struct WorkflowSummary {
     holdout_max_dd_p90: f64,
     holdout_pass_rate: f64,
     runtime_ms: u64,
+    stage: WorkflowStageBreakdown,
+}
+
+impl Default for WorkflowSummary {
+    fn default() -> Self {
+        Self {
+            schema_version: workflow_schema_version(),
+            timing_boundary: workflow_timing_boundary().to_string(),
+            timing_boundary_note: workflow_timing_boundary_note().to_string(),
+            build_profile: build_profile().to_string(),
+            environment: environment_fingerprint(),
+            candles_len: 0,
+            train_assets: 0,
+            holdout_assets: 0,
+            artifacts_used: 0,
+            groups: 0,
+            top_meta_score: 0.0,
+            robust_score_p10: 0.0,
+            max_dd_p90: 0.0,
+            holdout_score_p10: 0.0,
+            holdout_max_dd_p90: 0.0,
+            holdout_pass_rate: 0.0,
+            runtime_ms: 0,
+            stage: WorkflowStageBreakdown::default(),
+        }
+    }
+}
+
+const fn workflow_schema_version() -> u32 {
+    1
+}
+
+const fn workflow_timing_boundary() -> &'static str {
+    "workflow-regression"
+}
+
+const fn workflow_timing_boundary_note() -> &'static str {
+    "total deterministic workflow wall time including optimize, validate, meta-select, and holdout"
+}
+
+const fn build_profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "dev"
+    } else {
+        "release"
+    }
+}
+
+fn environment_fingerprint() -> EnvironmentFingerprint {
+    EnvironmentFingerprint {
+        hostname: env::var("COMPUTERNAME")
+            .or_else(|_| env::var("HOSTNAME"))
+            .unwrap_or_default(),
+        os: env::consts::OS.to_string(),
+        arch: env::consts::ARCH.to_string(),
+        family: env::consts::FAMILY.to_string(),
+    }
 }
 
 fn workflow_diag_enabled() -> bool {
@@ -75,6 +177,14 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     let qq = q.clamp(0.0, 1.0);
     let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
+}
+
+fn stage_budget_pass(candidate_ms: u64, baseline_ms: u64, regression_pct: f64) -> Option<bool> {
+    if baseline_ms == 0 {
+        return None;
+    }
+    let multiplier = 1.0 + (regression_pct.max(0.0) / 100.0);
+    Some((candidate_ms as f64) <= (baseline_ms as f64) * multiplier + 1.0)
 }
 
 fn make_synth_candles(len: usize, drift: f64, noise_amp: f64, phase: f64) -> Candles {
@@ -280,6 +390,8 @@ fn run_workflow_once(
     cancel: &AtomicBool,
 ) -> Result<WorkflowSummary, String> {
     let t0 = Instant::now();
+    let mut optimize_ms_total = 0u64;
+    let mut validate_ms_total = 0u64;
 
     let strategy = StrategyConfig {
         long_only: false,
@@ -365,6 +477,7 @@ fn run_workflow_once(
         let opt_res =
             run_composite_cpu_optimization_blocking_with_candles(opt_req, candles, cancel, None)?;
         let opt_elapsed_ms = opt_start.elapsed().as_millis() as u64;
+        optimize_ms_total = optimize_ms_total.saturating_add(opt_elapsed_ms);
 
         let mut candidates: Vec<CompositeParams> = Vec::new();
         for (p, _) in opt_res.top.iter().take(64) {
@@ -430,6 +543,7 @@ fn run_workflow_once(
         let val_res =
             run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;
         let val_elapsed_ms = val_start.elapsed().as_millis() as u64;
+        validate_ms_total = validate_ms_total.saturating_add(val_elapsed_ms);
         let val_candidates = val_res.candidates.len();
         if diag {
             println!(
@@ -499,6 +613,11 @@ fn run_workflow_once(
     let hold = top.and_then(|g| g.holdout.as_ref());
 
     Ok(WorkflowSummary {
+        schema_version: workflow_schema_version(),
+        timing_boundary: workflow_timing_boundary().to_string(),
+        timing_boundary_note: workflow_timing_boundary_note().to_string(),
+        build_profile: build_profile().to_string(),
+        environment: environment_fingerprint(),
         candles_len,
         train_assets: train.len(),
         holdout_assets: holdout.len(),
@@ -511,6 +630,12 @@ fn run_workflow_once(
         holdout_max_dd_p90: hold.map(|h| h.max_dd_p90).unwrap_or(0.0),
         holdout_pass_rate: hold.map(|h| h.pass_rate).unwrap_or(0.0),
         runtime_ms: t0.elapsed().as_millis() as u64,
+        stage: WorkflowStageBreakdown {
+            optimize_ms_total,
+            validate_ms_total,
+            meta_select_ms: meta_elapsed_ms,
+            holdout_ms: holdout_elapsed_ms,
+        },
     })
 }
 
@@ -582,10 +707,92 @@ fn main() -> Result<(), String> {
             format!("{}ms vs baseline {}ms", summary.runtime_ms, base.runtime_ms),
         );
 
+        if cli.check_stage_budgets {
+            let stage_checks = [
+                (
+                    "optimize_stage_not_regressed",
+                    summary.stage.optimize_ms_total,
+                    base.stage.optimize_ms_total,
+                    cli.optimize_stage_regression_pct,
+                ),
+                (
+                    "validate_stage_not_regressed",
+                    summary.stage.validate_ms_total,
+                    base.stage.validate_ms_total,
+                    cli.validate_stage_regression_pct,
+                ),
+                (
+                    "meta_stage_not_regressed",
+                    summary.stage.meta_select_ms,
+                    base.stage.meta_select_ms,
+                    cli.meta_stage_regression_pct,
+                ),
+                (
+                    "holdout_stage_not_regressed",
+                    summary.stage.holdout_ms,
+                    base.stage.holdout_ms,
+                    cli.holdout_stage_regression_pct,
+                ),
+            ];
+            for (name, candidate_ms, baseline_ms, regression_pct) in stage_checks {
+                match stage_budget_pass(candidate_ms, baseline_ms, regression_pct) {
+                    Some(pass) => gate(
+                        &format!("{name}_{}pct", regression_pct.round() as u64),
+                        pass,
+                        format!("{candidate_ms}ms vs baseline {baseline_ms}ms"),
+                    ),
+                    None => gate(
+                        &format!("{name}_skipped_no_baseline"),
+                        true,
+                        format!("candidate={candidate_ms}ms baseline={baseline_ms}ms"),
+                    ),
+                }
+            }
+        }
+
         if !ok {
             return Err("workflow regression gate failed".to_string());
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{stage_budget_pass, WorkflowSummary};
+
+    #[test]
+    fn workflow_summary_deserializes_legacy_payload_without_envelope() {
+        let legacy = r#"{
+            "candles_len": 1000,
+            "train_assets": 10,
+            "holdout_assets": 5,
+            "artifacts_used": 8,
+            "groups": 3,
+            "top_meta_score": 1.5,
+            "robust_score_p10": 1.2,
+            "max_dd_p90": 0.2,
+            "holdout_score_p10": 1.0,
+            "holdout_max_dd_p90": 0.3,
+            "holdout_pass_rate": 0.75,
+            "runtime_ms": 42
+        }"#;
+
+        let parsed: WorkflowSummary = serde_json::from_str(legacy).expect("legacy summary");
+        assert_eq!(parsed.candles_len, 1000);
+        assert_eq!(parsed.runtime_ms, 42);
+        assert_eq!(parsed.schema_version, 1);
+        assert_eq!(parsed.timing_boundary, "workflow-regression");
+        assert_eq!(parsed.build_profile, super::build_profile());
+        assert_eq!(parsed.stage.optimize_ms_total, 0);
+        assert_eq!(parsed.environment.os, std::env::consts::OS);
+    }
+
+    #[test]
+    fn stage_budget_skips_zero_baseline_and_applies_multiplier() {
+        assert_eq!(stage_budget_pass(25, 0, 100.0), None);
+        assert_eq!(stage_budget_pass(210, 100, 100.0), Some(false));
+        assert_eq!(stage_budget_pass(201, 100, 100.0), Some(true));
+    }
 }
