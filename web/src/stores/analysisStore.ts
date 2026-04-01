@@ -1009,23 +1009,43 @@ export const useAnalysisStore = defineStore('analysis', {
     },
 
     saveStage4SavedTags(): void {
-      void metaService.saveStage4SavedTags()
+      void metaService.saveStage5SavedTags()
+    },
+
+    saveStage5SavedTags(): void {
+      void metaService.saveStage5SavedTags()
     },
 
     refreshStage4Saved(): void {
-      void metaService.refreshStage4Saved()
+      void metaService.refreshStage5Saved()
+    },
+
+    refreshStage5Saved(): void {
+      void metaService.refreshStage5Saved()
     },
 
     loadStage4Saved(): void {
-      void metaService.loadStage4Saved()
+      void metaService.loadStage5Saved()
+    },
+
+    loadStage5Saved(): void {
+      void metaService.loadStage5Saved()
     },
 
     revealStage4Saved(): void {
-      void metaService.revealStage4Saved()
+      void metaService.revealStage5Saved()
+    },
+
+    revealStage5Saved(): void {
+      void metaService.revealStage5Saved()
     },
 
     deleteStage4Saved(): void {
-      void metaService.deleteStage4Saved()
+      void metaService.deleteStage5Saved()
+    },
+
+    deleteStage5Saved(): void {
+      void metaService.deleteStage5Saved()
     },
 
     savePolicyEvalSavedTags(): void {
@@ -1065,7 +1085,11 @@ export const useAnalysisStore = defineStore('analysis', {
     },
 
     runStage4(): void {
-      void metaService.runStage4()
+      void metaService.runStage5()
+    },
+
+    runStage5(): void {
+      void metaService.runStage5()
     },
 
     runMlPolicyEvaluation(): void {
@@ -1073,7 +1097,11 @@ export const useAnalysisStore = defineStore('analysis', {
     },
 
     revealStage4(): void {
-      void metaService.revealStage4()
+      void metaService.revealStage5()
+    },
+
+    revealStage5(): void {
+      void metaService.revealStage5()
     },
 
     runMeta(): void {

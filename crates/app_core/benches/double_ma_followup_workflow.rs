@@ -116,6 +116,15 @@ fn followup_requests(
     (drilldown, local_stability)
 }
 
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
 fn bench_followup_case(
     c: &mut Criterion,
     label: &str,
@@ -134,11 +143,21 @@ fn bench_followup_case(
     let best = opt_res.best_params.clone();
     let (cached_drilldown, cached_local_stability) =
         followup_requests(backend.clone(), &best, Some(followup_cache_key));
+    let backend_label = format!("{backend:?}");
     let (cold_drilldown, cold_local_stability) = followup_requests(backend, &best, None);
 
     let mut group = c.benchmark_group(format!("double_ma_followup/{label}/50k"));
     group.measurement_time(Duration::from_secs(6));
     group.sample_size(10);
+    print_bench_metadata(
+        &format!("double_ma_followup/{label}/50k"),
+        &[
+            ("backend", backend_label),
+            ("candles_len", candles.close.len().to_string()),
+            ("surface", "followup_workflow".to_string()),
+            ("phases", "drilldown_then_local_stability".to_string()),
+        ],
+    );
 
     group.bench_function("drilldown_then_local_stability_cold", |b| {
         b.iter(|| {

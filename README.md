@@ -126,6 +126,12 @@ GPU perf gate:
 powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate
 ```
 
+ALMA contract-row GPU perf gate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate
+```
+
 Nsight Compute capture:
 
 ```powershell

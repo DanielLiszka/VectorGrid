@@ -572,15 +572,15 @@ function onSavedMetaActionSelect(actionKey: string): void {
 
 function onSavedStage5ActionSelect(actionKey: string): void {
   if (actionKey === 'refresh') {
-    runAction(() => analysisStore.refreshStage4Saved())
+    runAction(() => analysisStore.refreshStage5Saved())
     return
   }
   if (actionKey === 'reveal') {
-    runAction(() => analysisStore.revealStage4Saved())
+    runAction(() => analysisStore.revealStage5Saved())
     return
   }
   if (actionKey === 'delete') {
-    runAction(() => analysisStore.deleteStage4Saved())
+    runAction(() => analysisStore.deleteStage5Saved())
   }
 }
 
@@ -1005,12 +1005,12 @@ onBeforeUnmount(() => {
                 @input="stage4SavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('stage4SavedTags', stage4SavedTagsLocalDraft)"
                 @change="commitInputValue('stage4SavedTags', stage4SavedTagsLocalDraft)"
               />
-              <button type="button" :disabled="!canSaveStage4SavedTags" @click="runAction(() => analysisStore.saveStage4SavedTags())">Save</button>
+              <button type="button" :disabled="!canSaveStage4SavedTags" @click="runAction(() => analysisStore.saveStage5SavedTags())">Save</button>
             </div>
           </div>
         </div>
         <div class="actions savedArtifactActions">
-          <button type="button" :disabled="!canLoadStage4Saved" @click="runAction(() => analysisStore.loadStage4Saved())">Load</button>
+          <button type="button" :disabled="!canLoadStage4Saved" @click="runAction(() => analysisStore.loadStage5Saved())">Load</button>
           <ContextActionMenu
             aria-label="Saved Stage 5 artifact actions"
             :items="savedStage5SecondaryActions"
@@ -1192,9 +1192,9 @@ onBeforeUnmount(() => {
             />
           </div>
           <div class="actions" style="margin-top: 1.4rem;">
-            <button type="button" :disabled="!canRunMetaStage4" @click="runAction(() => analysisStore.runStage4())">Run Stage 5</button>
+            <button type="button" :disabled="!canRunMetaStage4" @click="runAction(() => analysisStore.runStage5())">Run Stage 5</button>
             <button type="button" :disabled="!canRunMetaPolicyEval" @click="runAction(() => analysisStore.runMlPolicyEvaluation())">Evaluate policy</button>
-            <button type="button" :disabled="!canRevealMetaStage4" @click="runAction(() => analysisStore.revealStage4())">Reveal Stage 5 file</button>
+            <button type="button" :disabled="!canRevealMetaStage4" @click="runAction(() => analysisStore.revealStage5())">Reveal Stage 5 file</button>
           </div>
         </div>
 
@@ -1308,7 +1308,7 @@ onBeforeUnmount(() => {
 
         <div class="metaLine mono">{{ metaStage4Status }}</div>
         <details class="panelDetails">
-          <summary>Stage 4 output preview</summary>
+          <summary>Stage 5 output preview</summary>
           <div class="panelDetailsBody">
             <pre class="mono preview">{{ metaStage4OutputPreview }}</pre>
           </div>

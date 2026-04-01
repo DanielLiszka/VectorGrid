@@ -32,6 +32,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `Frontend Review/workstation_behavior_plan_2026-03-28.md` for the completed workstation UX implementation record (perspectives, compare workflows, provenance, stale-state cues, density, bundle discipline)
 - `Frontend Review/existing_stack_utilization_plan_2026-03-28.md` for the current open plan to get more product value out of the stack already installed in `web/package.json` and the adopted desktop plugins
 - `Frontend Review/startup_animation_plan_2026-03-30.md` for the implemented first-wave in-window startup animation record, verification notes, and remaining optional follow-ups using the existing VectorAlpha brand assets
+- `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md` for the deferred plan to split `MlSignal` into a discrete user mode while keeping the conventional optimization workflow as the default shell mode
 - `Frontend Review/svg_generation_prompts_2026-03-28.md` for the paste-ready GPT-5.4 Pro prompts used to generate the proposed custom SVG asset set
 
 ## How To Use This Map
@@ -73,7 +74,6 @@ Open these first before broad search:
 - `ARCHITECTURE_NOTES.md`
 - `RELEASE.md`
 - `web/README.md`
-- `.github/workflows/ci.yml`
 - `src-tauri/src/lib.rs`
 - `src-tauri/tauri.conf.json`
 - `src-tauri/capabilities/main.json`
@@ -1305,6 +1305,7 @@ Verification in this repo is layered:
 | workflow regression | `powershell -File scripts/run_workflow_gate.ps1 -Mode candidate` |
 | CPU perf-sensitive backend change | `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate` |
 | GPU/CUDA path | `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` |
+| GPU/CUDA ALMA contract rows | `powershell -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate` |
 | GPU profiling | `powershell -File scripts/profile_gpu_backtest_ncu.ps1`, `powershell -File scripts/profile_gpu_backtest_nsys.ps1` |
 | frontend request-builder benchmarking | `npm --prefix web run bench:request-builder` |
 
@@ -1315,6 +1316,7 @@ Gates and profiling:
 - `scripts/run_workflow_gate.ps1`
 - `scripts/run_cpu_perf_gate.ps1`
 - `scripts/run_gpu_perf_gate.ps1`
+- `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
 - `scripts/profile_gpu_backtest_ncu.ps1`
 - `scripts/profile_gpu_backtest_nsys.ps1`
 
@@ -1327,6 +1329,7 @@ Parity and baseline helpers:
 - `scripts/baselines/workflow_regression_baseline.json`
 - `scripts/baselines/cpu_perf_baseline.json`
 - `scripts/baselines/gpu_perf_baseline.json`
+- `scripts/baselines/gpu_alma_contract_rows/`
 
 Benchmark and faceoff helpers:
 
@@ -1346,8 +1349,10 @@ Maintenance and review helpers:
 
 ### CI and release surfaces
 
-- `.github/workflows/ci.yml`
-  - checks formatting, clippy, orchestration-file growth, `ta_app_core` tests, `ta_desktop_demo_app` check, and workflow regression gate
+- `.github/workflows.disabled/ci.yml.disabled`
+  - archived GitHub Actions workflow definition; workflows are currently deactivated and not part of the active repo workflow
+- `.github/workflows.disabled/desktop-smoke.yml.disabled`
+  - archived desktop smoke workflow definition; desktop smoke coverage remains repo-local unless workflows are reactivated
 - `RELEASE.md`
   - Windows build variants, PTX/prebuilt-kernel packaging notes, frontend migration notes, and release-facing validation commands
   - useful for packaging and release posture, but use `src-tauri/src/lib.rs` and request builders as authority for current command counts and request rules

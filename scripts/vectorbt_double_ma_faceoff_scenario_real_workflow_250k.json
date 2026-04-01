@@ -1,0 +1,57 @@
+{
+  "scenario_id": "double_ma_alma_200k_250000pairs_real_workflow",
+  "preset_id": "standard_250k_auto10",
+  "benchmark_mode": "real_workflow_10row",
+  "intended_metric_contract": "auto_product_reduced_10row",
+  "intended_pair_count": 250000,
+  "strategy": "double_ma",
+  "ma_case": "alma_alma",
+  "objective": "Sharpe",
+  "ranges": {
+    "fast": "5:504:1",
+    "slow": "505:1004:1"
+  },
+  "alma": {
+    "offset": 0.85,
+    "sigma": 6.0
+  },
+  "dataset": {
+    "kind": "synthetic_benchmark_harness",
+    "synth_len": 200000
+  },
+  "execution": {
+    "top_k": 10,
+    "heatmap_bins": 0,
+    "include_all": false,
+    "export_all_csv": false
+  },
+  "trials": {
+    "warmup": 1,
+    "measured": 5
+  },
+  "vectorgrid": {
+    "backends": [
+      "gpu-kernel",
+      "cpu"
+    ]
+  },
+  "vectorbt": {
+    "benchmark_mode": "real_workflow_10row",
+    "chunk_size": 256,
+    "cache_max_entries": 1024,
+    "timeout_sec": 0
+  },
+  "strategy_config": {
+    "fees": 0.0,
+    "hurdle_tau": 0.0,
+    "long_only": true,
+    "allow_flip": true,
+    "trade_on_next_bar": true
+  },
+  "notes": [
+    "Primary real-workflow 250k faceoff lane for the VectorBT vs VectorGrid double-MA benchmark.",
+    "Shared dataset is the deterministic synthetic benchmark harness exported to CSV.",
+    "Fast and slow ranges are disjoint so all 500 x 500 period combinations are valid.",
+    "Heatmap is disabled for the timed runs to avoid unrelated UI-style overhead."
+  ]
+}

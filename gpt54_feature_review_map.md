@@ -303,7 +303,7 @@ The highest-signal current themes are:
 - staging/fallback review
 - per-strategy benchmark review
 
-## 6. `CompositeMo` search efficiency and GPU prescan  ********
+## 6. `CompositeMo` search efficiency and GPU prescan  ******** _______
 
 ### Primary files
 
@@ -339,7 +339,7 @@ The highest-signal current themes are:
 - sampler-overhead review
 - request-shape and default-value review
 
-## 7. Benchmark harnesses, perf gates, and timing boundaries  ********
+## 7. Benchmark harnesses, perf gates, and timing boundaries  ******** ___________
 
 ### Primary files
 
@@ -400,7 +400,7 @@ The highest-signal current themes are:
 - perf-gate relevance review
 - stale-benchmark-target review
 
-## 8. Frontend orchestration and defaults
+## 8. Frontend orchestration and defaults  ************* ___________
 
 ### Primary files
 
@@ -429,10 +429,11 @@ The highest-signal current themes are:
 - command-selection and cancellation review
 - benchmark-backed default review
 
-## 9. Frontend validation orchestration and artifact-heavy flows
+## 9. Frontend validation orchestration and artifact-heavy flows *************  ____________
 
 ### Primary files
 
+- `web/src/components/ValidationWorkspacePanel.vue`
 - `web/src/services/validationService.ts`
 - `web/src/services/validationService.test.ts`
 - `web/src/services/validationRequestBuilder.ts`
@@ -442,6 +443,12 @@ The highest-signal current themes are:
 - `src-tauri/src/commands_validation.rs`
 - `src-tauri/src/commands_reports.rs`
 - `src-tauri/src/commands_reports_validation_common.rs`
+
+### Current scope guard
+
+- validation launch/report actions are still canonical in `ValidationWorkspacePanel.vue`
+- `ValidationContextDock.vue`, `AnalysisContextDock.vue`, command-palette entries, and similar shortcuts are context/navigation helpers, not competing primary validation surfaces
+- recent frontend-only status/layout cleanup is already landed; keep this bundle focused on validation execution cost, route-summary fidelity, shortlist shaping, artifact persistence, and saved-run replay drift
 
 ### What this bundle owns
 
@@ -466,12 +473,14 @@ The highest-signal current themes are:
 - shortlist/artifact/replay follow-up review
 - frontend/backend validation drift review
 
-## 10. ML signal dataset export, score-cache validation, and replay flows
+## 10. ML signal dataset export, score-cache validation, and replay flows  ************ _______________
 
 ### Primary files
 
 - `crates/app_core/src/ml_signal.rs`
 - `src-tauri/src/commands_ml_signal.rs`
+- `web/src/stores/optimizeStore.ts`
+- `web/src/components/OptimizeWorkspacePanel.vue`
 - `web/src/services/mlSignalService.ts`
 - `web/src/services/mlSignalService.test.ts`
 - `web/src/components/MlSignalWorkspacePanel.vue`
@@ -483,23 +492,37 @@ The highest-signal current themes are:
 - `crates/app_core/benches/e2e_workflow_ml.rs`
 - `research/ML_SIGNAL_STRATEGY_IMPLEMENTATION_PLAN_2026-03-18.md`
 - `research/ml_signal/README.md`
+- `research/ml_signal/train_catboost.py`
+- `research/ml_signal/calibrate.py`
+- `research/ml_signal/evaluate_walkforward.py`
+- `research/ml_signal/gate_report.py`
+- `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md`
+
+### Current scope guard
+
+- keep this bundle focused on `MlSignal` dataset export, score-cache build/alignment, validation, policy sweep, artifact persistence, and replay cost
+- when the review includes `research/ml_signal/*` files, also include the external CatBoost/calibration/walk-forward bundle flow and its contract with the exported feature schema and score-cache expectations
+- `MlSignal` is still mounted as a special `strategyKind` inside the conventional optimize surface today; if a frontend review mentions shell drift, treat that as adjacent context rather than a request to redesign all optimizer-native views
+- do not treat `MlSignal` as a normal optimizer-native Top/Pareto/heatmap surface; current analysis intentionally keeps those views separate
 
 ### What this bundle owns
 
-- `MlSignal` dataset export, including `pattern_recognition` feature extraction and derived-series shaping
+- `MlSignal` dataset export, including `pattern_recognition` plus trend-indicator feature extraction and derived-series shaping
 - split-manifest and ticker-holdout expansion logic that changes work size and artifact size
 - score-cache build, timestamp alignment, and skipped-row behavior
 - policy-to-position validation and bounded policy-sweep execution
 - model-bundle status checks, artifact persistence, and saved-run replay/rerun behavior
+- external CatBoost/calibration/walk-forward bundle compatibility when the review includes the research harness files
 
 ### Performance review focus
 
 - repeated dynamic-indicator recomputation or avoidable serialization during dataset export
-- `pattern_recognition` matrix density, shape, and cost visibility
+- `pattern_recognition` and trend-indicator matrix/series density, shape, and cost visibility
 - split/holdout settings that silently multiply work or artifact size
 - score-cache alignment waste, skipped-row amplification, and failure transparency
 - policy-sweep combinatorics, `top_k` truncation behavior, and artifact persistence overhead
 - replay/rerun drift between saved ML artifacts and current loaded dataset context
+- dataset-export schema drift versus CatBoost/calibration bundle expectations when the external research harness is in scope
 - keeping offline Python training adjacent but out of the hot path unless the provided files show a concrete blocking cost
 
 ### Ask for
@@ -507,9 +530,11 @@ The highest-signal current themes are:
 - feature-extraction cost review
 - score-cache alignment and sweep-bounds review
 - artifact/replay overhead review
+- external bundle-contract and calibration-handoff review when the research harness files are included
+- current shell-boundary drift note without drifting into a full mode-redesign plan
 - timing-boundary and benchmark-gap review
 
-## 11. `CompositeCpu` optimizer hot paths and request shaping
+## 11. `CompositeCpu` optimizer hot paths and request shaping **************** _______________
 
 ### Primary files
 
@@ -526,29 +551,35 @@ The highest-signal current themes are:
 - `crates/app_core/benches/composite_validation_workflow.rs`
 - `src-tauri/src/bin/ta_workflow_regression.rs`
 
+### Current scope guard
+
+- this bundle now applies to the standalone `CompositeCpu` request family:
+  `CompositeCpu`, `Asr`, `Vcc`, `Vemr`, `Rocb`, `Vcet`, `Kqsr`, `Carm`, `Kvdf`, `Mkcs`, and `Cdmc`
+- do not use this bundle for `CompositeTrend`, `RegimeHybrid`, or `BreakoutMomentum`; those product paths now route through the `double_ma` family
+- frontend capability review should respect the current `CompositeCpu` product surface:
+  `Top-K` and `include_all` are relevant, but Double-MA heatmap/export-all assumptions are stale
+- `gpu_prescan` tuning now belongs to `CompositeMo`, not the standalone `CompositeCpu` frontend path
+
 ### What this bundle owns
 
 - generic `CompositeCpu` request normalization and command selection
-- base composite grid-search work shape, including `top_k`, `include_all`, and heatmap shaping
-- optional GPU-prescan narrowing and its effect on total evaluation cost
+- base composite grid-search work shape, including `top_k` and `include_all`
 - backend selection, fallback reasons, and strategy-config branching inside the shared `CompositeCpu` path
 
 ### Performance review focus
 
-- request shapes that silently explode pair counts or heatmap cost
-- `gpu_prescan` payoff versus added overhead on realistic workloads
+- request shapes that silently explode pair counts or finalist volume
 - repeated indicator/cache work in the shared `CompositeCpu` path
 - frontend/backend drift around backend selection, `signal_mode`, and strategy-specific guardrails
 - benchmark shapes that no longer match the actual `CompositeCpu` product path
 
 ### Ask for
 
-- composite hot-path review
-- GPU-prescan payoff review
+- standalone `CompositeCpu` hot-path review
 - request-shape and route/fallback review
 - benchmark-shape review
 
-## 12. Meta-selection and Stage 5 ML confidence throughput
+## 12. Meta-selection and Stage 5 ML confidence throughput  ***************
 
 ### Primary files
 
@@ -564,6 +595,12 @@ The highest-signal current themes are:
 - `crates/app_core/benches/meta_select_workflow.rs`
 - `crates/app_core/benches/e2e_workflow_ml.rs`
 - `src-tauri/src/bin/ta_workflow_regression.rs`
+
+### Current scope guard
+
+- keep this bundle on artifact scan/load, grouping, holdout evaluation, model-status/train/apply latency, and saved-artifact hydration around the meta pipeline
+- `metaStage4RequestBuilder.ts` and related `stage4*` naming remain compatibility aliases for the current Stage 5 flow in the frontend/runtime surface
+- do not use this bundle for generic Meta UX cleanup, table migration, or already-shipped status-surface consolidation work from the newer frontend review docs
 
 ### What this bundle owns
 
@@ -586,7 +623,7 @@ The highest-signal current themes are:
 - batch/holdout amplification review
 - saved-artifact and workflow-latency review
 
-## 13. Analysis/drilldown and artifact-hydration responsiveness
+## 13. Analysis/drilldown and artifact-hydration responsiveness ****************
 
 ### Primary files
 
@@ -601,6 +638,12 @@ The highest-signal current themes are:
 
 - `crates/app_core/benches/double_ma_followup_workflow.rs`
 - `src-tauri/src/bin/ta_workflow_regression.rs`
+
+### Current scope guard
+
+- keep this bundle on artifact hydration, compare/baseline loading, drilldown/local-stability cache behavior, and heatmap/drill responsiveness
+- do not reopen already-landed frontend-only cleanup around shell-mount helpers, basic chart accessibility/status copy, or a forced migration to another chart/table stack unless the current files show a new regression
+- `MlSignal` still intentionally remains outside the standard optimizer-native analysis surfaces; that is current behavior, not bundle drift
 
 ### What this bundle owns
 
@@ -618,20 +661,28 @@ The highest-signal current themes are:
 ### Ask for
 
 - drilldown/local-stability latency review
-- artifact-hydration overhead review
+- artifact-hydration and sync-boundary review
 - cache and recompute review
 - user-visible responsiveness review
 
-## 14. Data loading, resampling, and cache latency
+## 14. Data loading, resampling, and cache latency  ****************
 
 ### Primary files
 
 - `src-tauri/src/commands_data.rs`
 - `src-tauri/src/data_cache.rs`
 - `src-tauri/src/state.rs`
+- `web/src/stores/dataStore.ts`
+- `web/src/components/DataWorkspacePanel.vue`
 - `web/src/services/dataService.ts`
 - `web/src/services/workflowBootstrap.ts`
 - `web/src/services/settingsBootstrap.ts`
+
+### Current scope guard
+
+- keep this bundle on real load/resample/cache latency and startup dataset-readiness behavior
+- market-data-root management is now intentionally centralized in Settings; do not use this bundle for already-resolved “where should storage controls live?” frontend cleanup
+- startup-shell ordering and boot-truthfulness work already shipped; if startup is reviewed here, focus on dataset readiness and metadata/load work, not the already-fixed shell mount order
 
 ### What this bundle owns
 
@@ -645,16 +696,16 @@ The highest-signal current themes are:
 - cold versus warm load-path mismatch
 - resample duplication, cache invalidation, or redundant parsing
 - metadata scans that add avoidable startup or dataset-switch latency
-- frontend bootstrap work that blocks dataset readiness
+- dataset-restore and bootstrap behavior that delays dataset readiness
 
 ### Ask for
 
 - load/resample latency review
 - cache hit-path review
 - metadata-scan overhead review
-- startup/bootstrap latency review
+- startup dataset-readiness review
 
-## 15. Live execution, Polygon streaming, and runtime-control responsiveness
+## 15. Live execution, Polygon streaming, and runtime-control responsiveness  ***************
 
 ### Primary files
 
@@ -670,6 +721,12 @@ The highest-signal current themes are:
 
 - `web/src/services/executionService.test.ts`
 - `web/src/services/runControlService.test.ts`
+
+### Current scope guard
+
+- keep this bundle on broker command latency, stream/runner lifecycle behavior, snapshot refresh cost, and cancellation/status-refresh responsiveness
+- do not reopen already-landed lifecycle wording, diagnostics-surface, or desktop-notification consistency work unless the current runtime files show a concrete regression
+- event/polling review should stay tied to the current runner/live-status paths, not to speculative missing event systems
 
 ### What this bundle owns
 
@@ -690,9 +747,10 @@ The highest-signal current themes are:
 - command-side latency review
 - polling/event-churn review
 - runner/stream lifecycle review
+- cancellation/status-refresh review
 - user-visible responsiveness review
 
-## 16. Allocation policy, prefix initialization, and copy-elision discipline
+## 16. Allocation policy, prefix initialization, and copy-elision discipline   *************
 
 ### Primary files
 
@@ -713,6 +771,11 @@ The highest-signal current themes are:
 - `crates/app_core/src/vcet_gpu_kernel.rs`
 - `crates/app_core/src/carm_gpu_kernel.rs`
 - `crates/app_core/src/cdmc_gpu_kernel.rs`
+
+### Current scope guard
+
+- this remains a valid backend performance bundle
+- for frontend-focused review passes, treat this bundle as out of scope unless the task explicitly expands into backend allocation/copy behavior
 
 ### What this bundle owns
 
@@ -754,6 +817,7 @@ Use these rules for every bundle.
 - For strategy-local routes, prefer one strategy family per prompt unless two files are tightly coupled.
 - Distinguish `MlSignal` from Stage 5 ML confidence work. Do not turn an `MlSignal` review into a general ML-platform redesign.
 - For `MlSignal`, do not propose replacing score-cache validation with a new trade engine or moving offline training into Tauri unless the provided files show a measured blocking cost.
+- If `research/ml_signal/*` files are included, review the external CatBoost/calibration/walk-forward bundle contract against the exported feature schema and score-cache expectations instead of ignoring that part of the shipped workflow.
 - For bundles 11+, prioritize measured application latency and responsiveness problems over UI redesign or product-surface expansion.
 - For meta and live-execution bundles, focus on throughput, blocking cost, status drift, and cancellation behavior rather than new trading or ML product ideas.
 - Prefer the shared helpers in `crates/app_core/src/alloc_policy.rs` before proposing new local unsafe allocation code.
@@ -997,6 +1061,10 @@ Optionally add:
 
 - `crates/app_core/benches/e2e_workflow_ml.rs`
 - `research/ml_signal/README.md`
+- `research/ml_signal/train_catboost.py`
+- `research/ml_signal/calibrate.py`
+- `research/ml_signal/evaluate_walkforward.py`
+- `research/ml_signal/gate_report.py`
 
 Ask for:
 
@@ -1004,6 +1072,7 @@ Ask for:
 - score-cache alignment / skipped-row review
 - policy-sweep bound review
 - artifact persistence and replay review
+- external CatBoost/calibration bundle-contract review when the research files are included
 
 ### Bundle J: `CompositeCpu` hot path
 

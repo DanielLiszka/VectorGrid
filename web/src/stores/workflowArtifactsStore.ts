@@ -26,11 +26,25 @@ interface WorkflowRunSnapshot {
 }
 
 export interface WorkflowMlSignalArtifact {
+  stage: string;
   bundleId: string;
+  datasetExportPath: string;
+  exportManifestPath: string;
+  splitManifestPath: string;
+  rowCount: number | null;
+  featureCount: number | null;
+  splitCount: number | null;
   scoreCachePath: string;
   scoreManifestPath: string;
   featureSchemaPath: string;
   featureSchemaVersion: string;
+  scoreSpace: string;
+  scoreScope: string;
+  matchedRows: number | null;
+  skippedRows: number | null;
+  barsScored: number | null;
+  coverageRatio: number | null;
+  duplicateTimestamps: number | null;
   policy: Record<string, unknown> | null;
   policySweep: Record<string, unknown> | null;
 }
@@ -55,6 +69,11 @@ function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function normalizeOptionalNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const out: string[] = [];
@@ -77,8 +96,21 @@ function normalizeMlSignalArtifact(
 ): WorkflowMlSignalArtifact | null {
   if (!value || typeof value !== "object") return null;
   const row = value as {
+    stage?: unknown;
     bundle_id?: unknown;
     bundleId?: unknown;
+    dataset_export_path?: unknown;
+    datasetExportPath?: unknown;
+    export_manifest_path?: unknown;
+    exportManifestPath?: unknown;
+    split_manifest_path?: unknown;
+    splitManifestPath?: unknown;
+    row_count?: unknown;
+    rowCount?: unknown;
+    feature_count?: unknown;
+    featureCount?: unknown;
+    split_count?: unknown;
+    splitCount?: unknown;
     score_cache_path?: unknown;
     scoreCachePath?: unknown;
     score_manifest_path?: unknown;
@@ -87,6 +119,20 @@ function normalizeMlSignalArtifact(
     featureSchemaPath?: unknown;
     feature_schema_version?: unknown;
     featureSchemaVersion?: unknown;
+    score_space?: unknown;
+    scoreSpace?: unknown;
+    score_scope?: unknown;
+    scoreScope?: unknown;
+    matched_rows?: unknown;
+    matchedRows?: unknown;
+    skipped_rows?: unknown;
+    skippedRows?: unknown;
+    bars_scored?: unknown;
+    barsScored?: unknown;
+    coverage_ratio?: unknown;
+    coverageRatio?: unknown;
+    duplicate_timestamps?: unknown;
+    duplicateTimestamps?: unknown;
     policy?: unknown;
     policy_sweep?: unknown;
     policySweep?: unknown;
@@ -102,7 +148,22 @@ function normalizeMlSignalArtifact(
         ? (row.policySweep as Record<string, unknown>)
         : null;
   const out = {
+    stage: normalizeText(row.stage),
     bundleId: normalizeText(row.bundle_id ?? row.bundleId),
+    datasetExportPath: normalizeText(
+      row.dataset_export_path ?? row.datasetExportPath,
+    ),
+    exportManifestPath: normalizeText(
+      row.export_manifest_path ?? row.exportManifestPath,
+    ),
+    splitManifestPath: normalizeText(
+      row.split_manifest_path ?? row.splitManifestPath,
+    ),
+    rowCount: normalizeOptionalNumber(row.row_count ?? row.rowCount),
+    featureCount: normalizeOptionalNumber(
+      row.feature_count ?? row.featureCount,
+    ),
+    splitCount: normalizeOptionalNumber(row.split_count ?? row.splitCount),
     scoreCachePath: normalizeText(row.score_cache_path ?? row.scoreCachePath),
     scoreManifestPath: normalizeText(
       row.score_manifest_path ?? row.scoreManifestPath,
@@ -113,15 +174,40 @@ function normalizeMlSignalArtifact(
     featureSchemaVersion: normalizeText(
       row.feature_schema_version ?? row.featureSchemaVersion,
     ),
+    scoreSpace: normalizeText(row.score_space ?? row.scoreSpace),
+    scoreScope: normalizeText(row.score_scope ?? row.scoreScope),
+    matchedRows: normalizeOptionalNumber(row.matched_rows ?? row.matchedRows),
+    skippedRows: normalizeOptionalNumber(row.skipped_rows ?? row.skippedRows),
+    barsScored: normalizeOptionalNumber(row.bars_scored ?? row.barsScored),
+    coverageRatio: normalizeOptionalNumber(
+      row.coverage_ratio ?? row.coverageRatio,
+    ),
+    duplicateTimestamps: normalizeOptionalNumber(
+      row.duplicate_timestamps ?? row.duplicateTimestamps,
+    ),
     policy: markRawUnknown(policy),
     policySweep: markRawUnknown(policySweep),
   };
   if (
+    !out.stage &&
     !out.bundleId &&
+    !out.datasetExportPath &&
+    !out.exportManifestPath &&
+    !out.splitManifestPath &&
+    out.rowCount == null &&
+    out.featureCount == null &&
+    out.splitCount == null &&
     !out.scoreCachePath &&
     !out.scoreManifestPath &&
     !out.featureSchemaPath &&
     !out.featureSchemaVersion &&
+    !out.scoreSpace &&
+    !out.scoreScope &&
+    out.matchedRows == null &&
+    out.skippedRows == null &&
+    out.barsScored == null &&
+    out.coverageRatio == null &&
+    out.duplicateTimestamps == null &&
     !out.policy &&
     !out.policySweep
   ) {

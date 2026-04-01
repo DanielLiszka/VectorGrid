@@ -247,6 +247,22 @@ def main() -> int:
         "score_path": str(output_scores),
         "roll_summary_path": str(bundle_dir / "walkforward_rolls.json"),
         "ticker_summary_path": str(bundle_dir / "walkforward_tickers.json"),
+        "score_contract": {
+            "walkforward_score_scope": "walkforward_test",
+            "walkforward_probability_columns": ["p_long", "p_short"],
+            "raw_margin_columns": ["raw_long", "raw_short"],
+            "validation_scores_scope": "calibration_slice",
+            "validation_scores_preferred_probability_columns": [
+                "p_long_cal",
+                "p_short_cal",
+            ]
+            if calibration_path.exists()
+            else ["p_long", "p_short"],
+        },
+        "parity_notice": {
+            "desktop_parity": "proxy_only",
+            "details": "walkforward_test_scores.csv is a research-side proxy evaluation and not a desktop validation or policy-sweep artifact.",
+        },
     }
 
     dump_json(bundle_dir / "walkforward_rolls.json", {"rolls": roll_summaries})

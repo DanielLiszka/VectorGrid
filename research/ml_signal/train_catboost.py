@@ -222,6 +222,16 @@ def main() -> int:
             "model_format": "cbm",
             "long_model_path": "model_long.cbm",
             "short_model_path": "model_short.cbm",
+            "score_contract": {
+                "validation_scores_scope": "calibration_slice",
+                "validation_scores_probability_columns": ["p_long", "p_short"],
+                "validation_scores_preferred_probability_columns_after_calibration": [
+                    "p_long_cal",
+                    "p_short_cal",
+                ],
+                "raw_margin_columns": ["raw_long", "raw_short"],
+                "desktop_validation_requires_probability_columns": True,
+            },
             "notes": "Trained from exported MlSignal dataset CSV.",
         },
     )
@@ -247,6 +257,11 @@ def main() -> int:
             "learning_rate": args.learning_rate,
             "depth": args.depth,
             "random_seed": args.random_seed,
+            "score_contract": {
+                "validation_scores_scope": "calibration_slice",
+                "walkforward_scores_scope": "walkforward_test",
+                "desktop_policy_validation": "probability_threshold_only",
+            },
         },
     )
 

@@ -178,4 +178,59 @@ describe('strategyOptimizationCapabilities', () => {
       expect(cpuCaps.supportsAdvancedExactKernelControls).toBe(false)
     }
   })
+
+  it('treats legacy standalone GPU aliases as kernel-capable previews', () => {
+    const gpuOnlyCaps = describeStrategyOptimizationCapabilities('Vemr', {
+      requestedBackend: 'GpuOnly',
+    })
+    const hybridAliasCaps = describeStrategyOptimizationCapabilities('Vemr', {
+      requestedBackend: 'GpuHybridKernel',
+    })
+
+    expect(gpuOnlyCaps.supportsExtraShortlistObjectives).toBe(true)
+    expect(gpuOnlyCaps.supportsShortlistConfidenceMode).toBe(true)
+    expect(gpuOnlyCaps.supportsShortlistUnionMode).toBe(true)
+    expect(gpuOnlyCaps.outputSummary).toContain('include_all=true')
+    expect(gpuOnlyCaps.outputSummary).toContain('per-pair CSV export')
+    expect(hybridAliasCaps.supportsExtraShortlistObjectives).toBe(true)
+    expect(hybridAliasCaps.supportsShortlistConfidenceMode).toBe(true)
+    expect(hybridAliasCaps.supportsShortlistUnionMode).toBe(true)
+    expect(hybridAliasCaps.outputSummary).toContain('include_all=true')
+    expect(hybridAliasCaps.outputSummary).toContain('per-pair CSV export')
+  })
+
+  it('describes standalone shortlist prerequisites and export limits explicitly', () => {
+    const kernelCaps = describeStrategyOptimizationCapabilities('Vemr', {
+      requestedBackend: 'GpuOnly',
+    })
+    const cpuCaps = describeStrategyOptimizationCapabilities('Vemr', {
+      requestedBackend: 'CpuOnly',
+    })
+
+    expect(kernelCaps.outputSummary).toContain('include_all=true')
+    expect(kernelCaps.outputSummary).toContain('top_k > 0')
+    expect(kernelCaps.outputSummary).toContain('per-pair CSV export')
+    expect(kernelCaps.outputSummary).toContain('not emit the Double MA heatmap')
+    expect(cpuCaps.outputSummary).toContain('Include-all remains meaningful and not free')
+    expect(cpuCaps.outputSummary).toContain('per-pair CSV export')
+  })
+
+  it('describes CompositeMo as CPU-evaluated with optional GPU prescan and CPU validation limits', () => {
+    const caps = describeStrategyOptimizationCapabilities('CompositeMo')
+
+    expect(caps.kind).toBe('CompositeMo')
+    expect(caps.usesGlobalBackend).toBe(false)
+    expect(caps.usesGlobalMode).toBe(false)
+    expect(caps.supportsHeatmap).toBe(false)
+    expect(caps.supportsExportAll).toBe(false)
+    expect(caps.supportsTopK).toBe(false)
+    expect(caps.supportsIncludeAll).toBe(false)
+    expect(caps.executionSummary).toContain('CPU-side multi-objective evaluator')
+    expect(caps.executionSummary).toContain('optional GPU prescan')
+    expect(caps.modeSummary).toContain('does not use the global backend selector')
+    expect(caps.modeSummary).toContain('stage-0 Double-MA narrowing pass')
+    expect(caps.outputSummary).toContain('Pareto points')
+    expect(caps.outputSummary).toContain('Validation currently uses the CPU route')
+    expect(caps.outputSummary).toContain('CompositeCpu HardGate candidates')
+  })
 })

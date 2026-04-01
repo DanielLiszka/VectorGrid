@@ -2,6 +2,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationMode, OptimizationResult};
 use ta_strategies::composite_cpu::CompositeSignalMode;
@@ -54,8 +55,6 @@ use crate::cdmc_gpu_kernel::{
     eval_cdmc_metrics_gpu_kernel_device_rows, CdmcGpuComboBatch, CdmcGpuDeviceSignalMatrices,
 };
 use crate::composite_mo::CompositeGpuPrescanConfig;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::composite_profile_route::composite_profile_from_strategy;
 use crate::composite_profile_route::composite_profile_gpu_target_label;
 #[cfg(feature = "cuda")]
 use crate::composite_profile_route::composite_profile_runtime_label;
@@ -131,8 +130,6 @@ use crate::rocb::{
 use crate::rocb_gpu_kernel::{
     eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
 };
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::strategy_ir::StrategyProfileKind;
 use crate::vcc::{
     build_vcc_desired_positions, clear_vcc_route_diagnostics, compute_vcc_fast_signals,
     compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods,
@@ -1113,6 +1110,25 @@ fn backend_device_id(backend: &Backend) -> Option<usize> {
         | Backend::GpuHybridKernel { device_id }
         | Backend::GpuKernel { device_id } => Some(*device_id as usize),
         Backend::CpuOnly => None,
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn inherited_prescan_backend(normalized_backend: &Backend) -> Backend {
+    match normalized_backend {
+        Backend::Auto { device_id } => Backend::Auto {
+            device_id: *device_id,
+        },
+        Backend::GpuOnly { device_id } => Backend::GpuOnly {
+            device_id: *device_id,
+        },
+        Backend::GpuHybridKernel { device_id } => Backend::GpuHybridKernel {
+            device_id: *device_id,
+        },
+        Backend::GpuKernel { device_id } => Backend::GpuKernel {
+            device_id: *device_id,
+        },
+        Backend::CpuOnly => Backend::CpuOnly,
     }
 }
 
@@ -10116,6 +10132,13 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
 
     let objective = req.objective;
     let (top_k, include_all) = normalize_topk_include_all(req.top_k, req.include_all);
+    let mut route_diagnostics: Vec<String> = Vec::new();
+    if include_all {
+        route_diagnostics.push(
+            "include_all=true forces serial full-row collection in optimize_composite_cpu_tiled"
+                .to_string(),
+        );
+    }
 
     if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
         return Err("Select exactly one fast MA and one slow MA.".to_string());
@@ -10163,18 +10186,58 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     const AUTO_PRESCAN_MAX_PERIODS: usize = 256;
 
     let mut allowed_pairs: Option<HashSet<(u16, u16)>> = None;
-    if req.gpu_prescan.is_some() || total_pairs > AUTO_PRESCAN_MIN_PAIRS {
+    let explicit_prescan_requested = req.gpu_prescan.is_some();
+    let requested_plain_gpu_kernel = matches!(req.backend, Backend::GpuKernel { .. });
+    let original_total_pairs = total_pairs;
+    let should_run_prescan = explicit_prescan_requested
+        || (total_pairs > AUTO_PRESCAN_MIN_PAIRS && !requested_plain_gpu_kernel);
+    if should_run_prescan {
         let cfg = req.gpu_prescan.as_ref();
         let prescan_top_k = cfg.map(|c| c.top_k).unwrap_or(AUTO_PRESCAN_TOP_K);
         let prescan_window = cfg.map(|c| c.window).unwrap_or(AUTO_PRESCAN_WINDOW);
         let predictive_top_k = cfg.map(|c| c.predictive_top_k).unwrap_or(0);
         let predictive_stride = cfg.map(|c| c.predictive_stride).unwrap_or(8);
-        let device_id = cfg.and_then(|c| c.device_id).unwrap_or(0);
         let require_gpu = cfg.map(|c| c.require_gpu).unwrap_or(false);
         let prescan_mode = cfg.map(|c| c.mode).unwrap_or(OptimizationMode::Auto);
+        #[cfg(feature = "cuda")]
+        let prescan_device_id = cfg.and_then(|c| c.device_id).unwrap_or(0);
+        #[cfg(feature = "cuda")]
+        let dm_backend = if explicit_prescan_requested {
+            Backend::Auto {
+                device_id: prescan_device_id,
+            }
+        } else {
+            inherited_prescan_backend(&normalized_backend)
+        };
+        #[cfg(not(feature = "cuda"))]
+        let dm_backend = Backend::CpuOnly;
+        let prescan_device_label = {
+            #[cfg(feature = "cuda")]
+            {
+                backend_device_id(&dm_backend)
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "n/a".to_string())
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                "n/a".to_string()
+            }
+        };
+        route_diagnostics.push(format!(
+            "stage-0 prescan backend={} (explicit_cfg={} device_id={})",
+            composite_backend_label(&dm_backend),
+            explicit_prescan_requested,
+            prescan_device_label,
+        ));
+        if explicit_prescan_requested && requested_plain_gpu_kernel {
+            route_diagnostics.push(
+                "explicit gpu_prescan may force CPU fallback because the base CompositeCpu GpuKernel path does not yet support allowed_pairs"
+                    .to_string(),
+            );
+        }
 
         let dm_req = DoubleMaRequest {
-            backend: Backend::Auto { device_id },
+            backend: dm_backend,
             data_id: req.data_id.clone(),
             fast_range: req.fast_range,
             slow_range: req.slow_range,
@@ -10216,6 +10279,15 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             // Forward progress so the UI shows the prescan phase too.
             progress,
         )?;
+        route_diagnostics.push(format!(
+            "stage-0 prescan backend_used={:?} route={} fallback={}",
+            dm_res.backend_used,
+            dm_res.backend_route.as_deref().unwrap_or("<none>"),
+            dm_res
+                .backend_fallback_reason
+                .as_deref()
+                .unwrap_or("<none>"),
+        ));
         if require_gpu && matches!(dm_res.backend_used, BackendUsed::Cpu) {
             return Err(
                 "gpu_prescan require_gpu=true but GPU backend was not available (CPU used)"
@@ -10302,7 +10374,16 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         fast_periods = fast_candidates;
         slow_periods = slow_candidates;
         total_pairs = pair_set.len();
+        route_diagnostics.push(format!(
+            "stage-0 prescan narrowed CompositeCpu search from {} to {} allowed pairs",
+            original_total_pairs, total_pairs
+        ));
         allowed_pairs = Some(pair_set);
+    } else if total_pairs > AUTO_PRESCAN_MIN_PAIRS && requested_plain_gpu_kernel {
+        route_diagnostics.push(
+            "auto-prescan skipped to preserve requested plain CompositeCpu GpuKernel route"
+                .to_string(),
+        );
     }
 
     let ma_source = req.ma_source.clone();
@@ -10496,8 +10577,8 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             slow_len: p.slow_len,
             fast_ma_type: fast_ma.clone(),
             slow_ma_type: slow_ma.clone(),
-            fast_ma_params: None,
-            slow_ma_params: None,
+            fast_ma_params: req.fast_ma_params.clone(),
+            slow_ma_params: req.slow_ma_params.clone(),
         }
     };
 
@@ -10560,7 +10641,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         gpu_kernel_timing_ms: None,
         backend_route,
         backend_fallback_reason,
-        route_diagnostics: None,
+        route_diagnostics: (!route_diagnostics.is_empty()).then_some(route_diagnostics),
         indicator_route_plan: None,
         residency: None,
         followup_cache_key: None,
@@ -11302,6 +11383,18 @@ fn emit_progress(
     crate::progress::emit_double_ma_progress(progress, processed_pairs, total_pairs, phase);
 }
 
+fn composite_cpu_timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("VECTORBT_COMPOSITE_CPU_TIMING")
+            .map(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                !(value.is_empty() || value == "0" || value == "false" || value == "off")
+            })
+            .unwrap_or(false)
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn optimize_composite_cpu_tiled(
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -11338,6 +11431,11 @@ fn optimize_composite_cpu_tiled(
     progress: Option<&dyn ProgressSink>,
 ) -> Result<OptimizationResult, String> {
     let run_start = std::time::Instant::now();
+    let timing_enabled = composite_cpu_timing_enabled();
+    let mut fast_tile_ms = 0u128;
+    let mut slow_tile_ms = 0u128;
+    let mut pair_eval_ms = 0u128;
+    let mut finalist_exactify_ms = 0u128;
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
@@ -11429,6 +11527,7 @@ fn optimize_composite_cpu_tiled(
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
+        let fast_tile_start = timing_enabled.then(std::time::Instant::now);
         let (fast_mat, cols) = ma_matrix_with_backend_f64(
             candles,
             fast_ma_type,
@@ -11443,10 +11542,14 @@ fn optimize_composite_cpu_tiled(
             #[cfg(not(feature = "cuda"))]
             None,
         )?;
+        if let Some(start) = fast_tile_start {
+            fast_tile_ms = fast_tile_ms.saturating_add(start.elapsed().as_millis());
+        }
         for s_chunk in slow_periods.chunks(ps_tile) {
             if cancel.load(Ordering::Relaxed) {
                 return Err("cancelled".to_string());
             }
+            let slow_tile_start = timing_enabled.then(std::time::Instant::now);
             let (slow_mat, cols2) = ma_matrix_with_backend_f64(
                 candles,
                 slow_ma_type,
@@ -11461,11 +11564,15 @@ fn optimize_composite_cpu_tiled(
                 #[cfg(not(feature = "cuda"))]
                 None,
             )?;
+            if let Some(start) = slow_tile_start {
+                slow_tile_ms = slow_tile_ms.saturating_add(start.elapsed().as_millis());
+            }
             if cols2 != cols {
                 return Err("MA matrix column mismatch".to_string());
             }
 
             if include_all {
+                let pair_eval_start = timing_enabled.then(std::time::Instant::now);
                 for (i, &fast_len) in f_chunk.iter().enumerate() {
                     let fast_row = &fast_mat[i * cols..(i + 1) * cols];
                     for (j, &slow_len) in s_chunk.iter().enumerate() {
@@ -11540,6 +11647,9 @@ fn optimize_composite_cpu_tiled(
                         }
                     }
                 }
+                if let Some(start) = pair_eval_start {
+                    pair_eval_ms = pair_eval_ms.saturating_add(start.elapsed().as_millis());
+                }
             } else {
                 let compute_sharpe = objective_needs_return_stats(objective);
                 let pf = f_chunk.len();
@@ -11563,6 +11673,7 @@ fn optimize_composite_cpu_tiled(
                     local
                 };
 
+                let pair_eval_start = timing_enabled.then(std::time::Instant::now);
                 let tile = (0..tile_pairs)
                     .into_par_iter()
                     .try_fold(init, |mut local, idx| {
@@ -11682,6 +11793,9 @@ fn optimize_composite_cpu_tiled(
                         a.merge(b);
                         Ok(a)
                     })?;
+                if let Some(start) = pair_eval_start {
+                    pair_eval_ms = pair_eval_ms.saturating_add(start.elapsed().as_millis());
+                }
 
                 processed = processed.saturating_add(tile.num_combos());
                 agg.merge(tile);
@@ -11696,6 +11810,7 @@ fn optimize_composite_cpu_tiled(
         .ok_or_else(|| "grid search produced no result".to_string())?;
 
     if !objective_needs_return_stats(objective) && !include_all {
+        let finalist_exactify_start = timing_enabled.then(std::time::Instant::now);
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
@@ -11796,6 +11911,9 @@ fn optimize_composite_cpu_tiled(
             }
             *m = recompute(p.fast_len, p.slow_len, &mut fast_cache, &mut slow_cache)?;
         }
+        if let Some(start) = finalist_exactify_start {
+            finalist_exactify_ms = finalist_exactify_ms.saturating_add(start.elapsed().as_millis());
+        }
     }
 
     let shadow_sampled = if dynamic_shadow_enabled {
@@ -11828,6 +11946,23 @@ fn optimize_composite_cpu_tiled(
             work_items: processed,
         },
     );
+
+    if timing_enabled {
+        eprintln!(
+            "[composite_cpu_timing] backend={} candles={} fast_tile_ms={} slow_tile_ms={} pair_eval_ms={} finalist_exactify_ms={} processed={} total_pairs={} total_runtime_ms={} fast_tile={} slow_tile={}",
+            composite_backend_label(indicator_backend),
+            n,
+            fast_tile_ms,
+            slow_tile_ms,
+            pair_eval_ms,
+            finalist_exactify_ms,
+            processed,
+            total_pairs,
+            run_start.elapsed().as_millis(),
+            pf_tile,
+            ps_tile
+        );
+    }
 
     Ok(result)
 }
@@ -12912,6 +13047,85 @@ mod tests {
                 .expect("composite cpu run");
         assert_eq!(res.num_combos, 6);
         assert!(!res.top.is_empty());
+    }
+
+    #[test]
+    fn composite_cpu_result_preserves_ma_params() {
+        let candles = make_trending_candles(512);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+
+        req.fast_ma_types = vec!["alma".to_string()];
+        req.slow_ma_types = vec!["alma".to_string()];
+        req.include_all = Some(true);
+        req.fast_ma_params = Some(HashMap::from([
+            ("offset".to_string(), 0.85),
+            ("sigma".to_string(), 6.0),
+        ]));
+        req.slow_ma_params = Some(HashMap::from([
+            ("offset".to_string(), 0.90),
+            ("sigma".to_string(), 7.0),
+        ]));
+
+        let res = run_composite_cpu_optimization_blocking_with_candles(
+            req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("plain CompositeCpu run should succeed");
+
+        assert_eq!(res.best_params.fast_ma_params, req.fast_ma_params);
+        assert_eq!(res.best_params.slow_ma_params, req.slow_ma_params);
+        assert!(res
+            .top
+            .iter()
+            .all(|(params, _)| params.fast_ma_params == req.fast_ma_params
+                && params.slow_ma_params == req.slow_ma_params));
+        let all = res
+            .all
+            .expect("include_all result should preserve resolved params for every row");
+        assert!(all
+            .iter()
+            .all(|(params, _)| params.fast_ma_params == req.fast_ma_params
+                && params.slow_ma_params == req.slow_ma_params));
+    }
+
+    #[test]
+    fn composite_cpu_gpu_kernel_request_skips_implicit_prescan() {
+        let candles = make_trending_candles(128);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+
+        req.backend = Backend::GpuKernel { device_id: 0 };
+        req.halftrend.atr_period = 16;
+        req.objective = ObjectiveKind::Pnl;
+        req.fast_range = (5, 505, 1);
+        req.slow_range = (506, 1005, 1);
+        req.top_k = Some(1);
+        req.include_all = Some(false);
+        req.heatmap_bins = Some(0);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("plain CompositeCpu run should succeed");
+
+        assert_eq!(res.num_combos, 250_500);
+        let route_diagnostics = res.route_diagnostics.unwrap_or_default();
+        assert!(
+            route_diagnostics
+                .iter()
+                .any(|entry| entry.contains("auto-prescan skipped")),
+            "expected auto-prescan skip diagnostic, got {:?}",
+            route_diagnostics
+        );
+        assert!(
+            route_diagnostics
+                .iter()
+                .all(|entry| !entry.contains("narrowed CompositeCpu search")),
+            "did not expect prescan narrowing diagnostics when implicit prescan is skipped: {:?}",
+            route_diagnostics
+        );
     }
 
     #[test]

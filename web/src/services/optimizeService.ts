@@ -13,6 +13,7 @@ import {
   buildDoubleMaOptimizationRequest,
   type MaParamsAndSweeps,
 } from "./optimizeRequestBuilder";
+import { resolveRecommendedOptimizationDefaults } from "./recommendedOptimizationDefaults";
 
 interface GpuStatusResponse {
   built_with_cuda?: unknown;
@@ -46,6 +47,39 @@ interface LegacyOptimizeBuildContext {
   strategy_kind?: unknown;
   data_id?: unknown;
   current_data_meta?: unknown;
+}
+
+interface OptimizeBusyState {
+  runDisabled: boolean;
+  canCancel: boolean;
+  validateDisabled: boolean;
+}
+
+interface RunPhaseTimings {
+  requestBuildMs: number;
+  commandMs: number;
+  artifactMs: number;
+  analysisMs: number;
+  validationMs: number;
+  gpuRefreshMs: number;
+  totalMs: number;
+}
+
+interface ResolvedRunOptimizationRequest {
+  req: Record<string, unknown>;
+  requestBuildMs: number;
+}
+
+interface RunArtifactContext {
+  csvPath: string;
+  datasetMeta: Record<string, unknown> | null;
+  configFingerprint: string;
+}
+
+interface PersistRunArtifactResult {
+  path: string;
+  saved: boolean;
+  warning: string;
 }
 
 type VueStoreId = "data" | "optimize" | "advanced" | "strategy";
@@ -497,6 +531,12 @@ const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   rocbAtrPeriod: { storeId: "strategy", key: "rocbAtrPeriod" },
   rocbAtrStopMult: { storeId: "strategy", key: "rocbAtrStopMult" },
   rocbMaxTradeBars: { storeId: "strategy", key: "rocbMaxTradeBars" },
+  vcetVidyaShortPeriod: { storeId: "strategy", key: "vcetVidyaShortPeriod" },
+  vcetVidyaLongPeriod: { storeId: "strategy", key: "vcetVidyaLongPeriod" },
+  vcetVidyaAlpha: { storeId: "strategy", key: "vcetVidyaAlpha" },
+  vcetCePeriod: { storeId: "strategy", key: "vcetCePeriod" },
+  vcetCeMult: { storeId: "strategy", key: "vcetCeMult" },
+  vcetMaxTradeBars: { storeId: "strategy", key: "vcetMaxTradeBars" },
   vemrZPeriod: { storeId: "strategy", key: "vemrZPeriod" },
   vemrZMaType: { storeId: "strategy", key: "vemrZMaType" },
   vemrZNbdev: { storeId: "strategy", key: "vemrZNbdev" },
@@ -572,6 +612,14 @@ const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
     storeId: "strategy",
     key: "vccRequireMomentumAccel",
   },
+  rocbMapFastToChannelPeriod: {
+    storeId: "strategy",
+    key: "rocbMapFastToChannelPeriod",
+  },
+  rocbMapSlowToAtrPeriod: {
+    storeId: "strategy",
+    key: "rocbMapSlowToAtrPeriod",
+  },
   vemrMapFastToZPeriod: { storeId: "strategy", key: "vemrMapFastToZPeriod" },
   vemrMapFastToBbPeriod: { storeId: "strategy", key: "vemrMapFastToBbPeriod" },
   vemrMapSlowToAtrPeriod: {
@@ -579,6 +627,23 @@ const VUE_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
     key: "vemrMapSlowToAtrPeriod",
   },
   vemrRequireBandTouch: { storeId: "strategy", key: "vemrRequireBandTouch" },
+  vcetMapFastToVidyaShortPeriod: {
+    storeId: "strategy",
+    key: "vcetMapFastToVidyaShortPeriod",
+  },
+  vcetMapSlowToVidyaLongPeriod: {
+    storeId: "strategy",
+    key: "vcetMapSlowToVidyaLongPeriod",
+  },
+  vcetMapSlowToCePeriod: {
+    storeId: "strategy",
+    key: "vcetMapSlowToCePeriod",
+  },
+  vcetCeUseClose: { storeId: "strategy", key: "vcetCeUseClose" },
+  vcetRequireVidyaSlope: {
+    storeId: "strategy",
+    key: "vcetRequireVidyaSlope",
+  },
   vdpsDeterministic: { storeId: "advanced", key: "vdpsDeterministic" },
   moPrescanEnable: { storeId: "advanced", key: "moPrescanEnable" },
   moPrescanRequireGpu: { storeId: "advanced", key: "moPrescanRequireGpu" },
@@ -638,6 +703,7 @@ function parseNonNegativeInt(value: unknown, fallback: number): number {
 const OPTIMIZE_PANEL_SELECTOR = '[data-vue-panel="opt"]';
 const ADVANCED_PANEL_SELECTOR = '[data-vue-panel="advanced"]';
 const VALIDATION_PANEL_SELECTOR = '[data-vue-panel="validate"]';
+const RAW_OUTPUT_PREVIEW_CHARS = 4000;
 
 function dispatchInputLikeEvents(target: EventTarget | null): void {
   if (!target) return;
@@ -653,7 +719,9 @@ function queryDomById<T extends Element>(
   const selector = `[id="${id}"]`;
   if (scopeSelector) {
     if (typeof document.querySelector !== "function") return null;
-    const scopeRoot = document.querySelector(scopeSelector) as HTMLElement | null;
+    const scopeRoot = document.querySelector(
+      scopeSelector,
+    ) as HTMLElement | null;
     if (!scopeRoot) return null;
     return scopeRoot.querySelector(selector) as T | null;
   }
@@ -671,11 +739,18 @@ function queryDomById<T extends Element>(
   return (getById.call(document, id) as T | null) ?? null;
 }
 
+function legacyOptimizeDomBridgeEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return !!(window as Window & { __VTA_LEGACY_BOOTED__?: boolean })
+    .__VTA_LEGACY_BOOTED__;
+}
+
 function writeDomInputValue(
   id: string,
   rawValue: string,
   scopeSelector?: string,
 ): void {
+  if (!legacyOptimizeDomBridgeEnabled()) return;
   const el = queryDomById<
     HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
   >(id, scopeSelector);
@@ -691,6 +766,7 @@ function writeDomCheckboxValue(
   checked: boolean,
   scopeSelector?: string,
 ): void {
+  if (!legacyOptimizeDomBridgeEnabled()) return;
   const el = queryDomById<HTMLInputElement>(id, scopeSelector);
   if (!el) return;
   const next = !!checked;
@@ -704,6 +780,7 @@ function writeDomTextContent(
   value: string,
   scopeSelector?: string,
 ): void {
+  if (!legacyOptimizeDomBridgeEnabled()) return;
   const el = queryDomById<HTMLElement>(id, scopeSelector);
   if (!el) return;
   el.textContent = value;
@@ -951,8 +1028,8 @@ async function requestDynamicStrategyPreview(
 }
 
 export async function applyPreset(): Promise<void> {
+  if (isOptimizeBusy()) return;
   const optimizeStore = readPiniaStoreState("optimize");
-  if (normalizeBoolean(optimizeStore?.canCancel)) return;
 
   const preset = resolvePresetProfile(optimizeStore?.presetProfile);
   const validationStore = readPiniaStoreState("validation");
@@ -1003,7 +1080,11 @@ export async function applyPreset(): Promise<void> {
     String(preset.heatmapBins),
     ADVANCED_PANEL_SELECTOR,
   );
-  writeDomCheckboxValue("valAutoRun", preset.valAutoRun, VALIDATION_PANEL_SELECTOR);
+  writeDomCheckboxValue(
+    "valAutoRun",
+    preset.valAutoRun,
+    VALIDATION_PANEL_SELECTOR,
+  );
   writeDomCheckboxValue(
     "valAutoExportXlsx",
     preset.valAutoExportXlsx,
@@ -1024,7 +1105,11 @@ export async function applyPreset(): Promise<void> {
     String(preset.valCandidates),
     VALIDATION_PANEL_SELECTOR,
   );
-  writeDomCheckboxValue("valWfEnable", preset.valWfEnable, VALIDATION_PANEL_SELECTOR);
+  writeDomCheckboxValue(
+    "valWfEnable",
+    preset.valWfEnable,
+    VALIDATION_PANEL_SELECTOR,
+  );
   writeDomInputValue(
     "valWfWindow",
     String(preset.valWfWindow),
@@ -1055,7 +1140,11 @@ export async function applyPreset(): Promise<void> {
     String(preset.valPerturbMax),
     VALIDATION_PANEL_SELECTOR,
   );
-  writeDomCheckboxValue("valMcEnable", preset.valMcEnable, VALIDATION_PANEL_SELECTOR);
+  writeDomCheckboxValue(
+    "valMcEnable",
+    preset.valMcEnable,
+    VALIDATION_PANEL_SELECTOR,
+  );
   writeDomInputValue(
     "valMcSims",
     String(preset.valMcSims),
@@ -1085,8 +1174,8 @@ export async function applyPreset(): Promise<void> {
 }
 
 export async function presetKernel(): Promise<void> {
+  if (isOptimizeBusy()) return;
   const optimizeStore = readPiniaStoreState("optimize");
-  if (normalizeBoolean(optimizeStore?.canCancel)) return;
 
   let maSupportMap: Record<string, Record<string, unknown>> | null = null;
   try {
@@ -1135,8 +1224,8 @@ export async function refreshGpuStatus(): Promise<GpuStatusSummary> {
 }
 
 export async function runGpuParityCheck(): Promise<void> {
+  if (isOptimizeBusy()) return;
   const optimizeStore = readPiniaStoreState("optimize");
-  if (normalizeBoolean(optimizeStore?.canCancel)) return;
 
   const strategyKind =
     normalizeText(optimizeStore?.strategyKind || "DoubleMa") || "DoubleMa";
@@ -1150,194 +1239,199 @@ export async function runGpuParityCheck(): Promise<void> {
     strategyKind !== "Vfct"
   ) {
     updateParityStatus(
-      "Parity: switch Strategy to Double MA, MARRT, or VFCT to run the check.",
-      "Parity unavailable: switch strategy.",
+      "Parity: switch Strategy to Double MA, PIT, SET, MTS, ORC, MARRT, or VFCT to run the check.",
+      "Parity unavailable: switch to Double MA, PIT, SET, MTS, ORC, MARRT, or VFCT.",
     );
     return;
   }
 
-  updateParityStatus(
-    "Parity: checking GPU availability…",
-    "Checking GPU status for parity…",
-  );
-
-  let statusSummary: GpuStatusSummary;
+  markNonCancelableBusy();
   try {
-    statusSummary = await refreshGpuStatus();
-    applyGpuSummaryToOptimizeStore(statusSummary);
-  } catch (error) {
     updateParityStatus(
-      `Parity: failed (${String(error || "")})`,
-      "Parity check failed.",
+      "Parity: checking GPU availability…",
+      "Checking GPU status for parity…",
     );
-    return;
-  }
 
-  if (!statusSummary.builtWithCuda) {
-    updateParityStatus(
-      "Parity: unavailable (app not built with CUDA).",
-      "Parity unavailable: app not built with CUDA.",
-    );
-    return;
-  }
-  if (!statusSummary.cudaAvailable) {
-    updateParityStatus(
-      "Parity: unavailable (CUDA runtime not available).",
-      "Parity unavailable: CUDA runtime not available.",
-    );
-    return;
-  }
-
-  const maSupportMap = await getMovingAverageSupportMap();
-  const fastMaType = readStoreTextInputValue("fastMaType");
-  const slowMaType = readStoreTextInputValue("slowMaType");
-  const exitMode = readStoreTextInputValue("exitMode") || "cross";
-  const cooldownBars = parseNonNegativeInt(
-    readStoreTextInputValue("cooldownBars"),
-    0,
-  );
-  const signalPersistenceBars = Math.max(
-    1,
-    parseNonNegativeInt(readStoreTextInputValue("signalPersistenceBars"), 1),
-  );
-  const hasExecutionOverlays = cooldownBars > 0 || signalPersistenceBars > 1;
-
-  let gpuBackend: DoubleMaParityBackend | null = null;
-  const supportsKernel =
-    statusSummary.builtWithCudaBacktestKernel &&
-    exitMode === "cross" &&
-    !hasExecutionOverlays &&
-    maSupportsFlag(maSupportMap, fastMaType, "supports_cuda_kernel") &&
-    maSupportsFlag(maSupportMap, slowMaType, "supports_cuda_kernel");
-  const supportsCudaSweep =
-    maSupportsFlag(maSupportMap, fastMaType, "supports_cuda") &&
-    maSupportsFlag(maSupportMap, slowMaType, "supports_cuda");
-  if (supportsKernel || supportsCudaSweep) {
-    gpuBackend = "GpuKernel";
-  }
-
-  if (!gpuBackend) {
-    updateParityStatus(
-      "Parity: unavailable (selected MAs do not support unified GPU path).",
-      "Parity unavailable: selected MAs do not support unified GPU.",
-    );
-    return;
-  }
-
-  const context = readOptimizeBuildContextFromVueStores();
-  if (!context) {
-    updateParityStatus(
-      "Parity: failed (Load CSV first (missing data id).)",
-      "Parity check failed.",
-    );
-    return;
-  }
-
-  const f0 = Math.max(
-    1,
-    parseNonNegativeInt(readStoreTextInputValue("fastStart"), 5),
-  );
-  const s0raw = Math.max(
-    1,
-    parseNonNegativeInt(readStoreTextInputValue("slowStart"), 20),
-  );
-  const s0 = Math.max(s0raw, f0 + 1);
-  const f1 = f0 + 2;
-  const s1 = s0 + 3;
-  let cpuReq: Record<string, unknown> | null = null;
-  let gpuReq: Record<string, unknown> | null = null;
-  try {
-    const tinyRangeOverrides: DoubleMaRequestOverrides = {
-      fastStart: String(f0),
-      fastEnd: String(f1),
-      fastStep: "1",
-      slowStart: String(s0),
-      slowEnd: String(s1),
-      slowStep: "1",
-      mode: "Grid",
-      topK: "8",
-      includeAll: "false",
-      heatmapBins: "0",
-      exportAllCsvPath: "",
-      fastMaParamSweeps: null,
-      slowMaParamSweeps: null,
-    };
-    cpuReq = await buildAutoDoubleMaRequest(context, {
-      ...tinyRangeOverrides,
-      backend: "CpuOnly",
-    });
-    gpuReq = await buildAutoDoubleMaRequest(context, {
-      ...tinyRangeOverrides,
-      backend: gpuBackend,
-    });
-  } catch (error) {
-    updateParityStatus(
-      `Parity: failed (${String(error || "")})`,
-      "Parity check failed.",
-    );
-    return;
-  }
-
-  if (!cpuReq || !gpuReq) {
-    updateParityStatus(
-      "Parity: failed (Unable to build tiny parity requests.)",
-      "Parity check failed.",
-    );
-    return;
-  }
-
-  updateParityStatus(
-    "Parity: running CPU ↔ GPU tiny-grid checks…",
-    "Running CPU ↔ GPU parity check (tiny grid)…",
-  );
-
-  try {
-    const cpuRes = await invokeCommand("run_double_ma_optimization", {
-      req: cpuReq,
-    });
-    const gpuRes = await invokeCommand("run_double_ma_optimization", {
-      req: gpuReq,
-    });
-
-    const dp = Math.abs(
-      readBestMetric(cpuRes, "pnl") - readBestMetric(gpuRes, "pnl"),
-    );
-    const ds = Math.abs(
-      readBestMetric(cpuRes, "sharpe") - readBestMetric(gpuRes, "sharpe"),
-    );
-    const dd = Math.abs(
-      readBestMetric(cpuRes, "max_dd") - readBestMetric(gpuRes, "max_dd"),
-    );
-    const sameParams =
-      JSON.stringify(readBestParams(cpuRes)) ===
-      JSON.stringify(readBestParams(gpuRes));
-    const tol = 1e-4;
-    const ok = dp <= tol && ds <= tol && dd <= tol;
-    const paramsHint = sameParams ? "" : " (best_params differ; may be tie)";
-    const meta =
-      `Parity: ${ok ? "OK" : "CHECK"} • gpu=${gpuBackend} • ` +
-      `|Δpnl|=${formatFixed(dp, 6)} |Δsharpe|=${formatFixed(ds, 6)} |Δdd|=${formatFixed(dd, 6)} tol=${tol}${paramsHint}`;
-    const statusLine = ok
-      ? "Parity check OK."
-      : "Parity check completed (review diffs).";
-    updateParityStatus(meta, statusLine);
-  } catch (error) {
-    if (isCancellationError(error)) {
-      updateParityStatus("Parity: cancelled.", "Parity cancelled.");
+    let statusSummary: GpuStatusSummary;
+    try {
+      statusSummary = await refreshGpuStatus();
+      applyGpuSummaryToOptimizeStore(statusSummary);
+    } catch (error) {
+      updateParityStatus(
+        `Parity: failed (${String(error || "")})`,
+        "Parity check failed.",
+      );
       return;
     }
-    updateParityStatus(
-      `Parity: failed (${String(error || "")})`,
-      "Parity check failed.",
-    );
-    return;
-  }
 
-  try {
-    const summary = await refreshGpuStatus();
-    applyGpuSummaryToOptimizeStore(summary);
-  } catch {
-    // keep parity action completion non-throwing
+    if (!statusSummary.builtWithCuda) {
+      updateParityStatus(
+        "Parity: unavailable (app not built with CUDA).",
+        "Parity unavailable: app not built with CUDA.",
+      );
+      return;
+    }
+    if (!statusSummary.cudaAvailable) {
+      updateParityStatus(
+        "Parity: unavailable (CUDA runtime not available).",
+        "Parity unavailable: CUDA runtime not available.",
+      );
+      return;
+    }
+
+    const maSupportMap = await getMovingAverageSupportMap();
+    const fastMaType = readStoreTextInputValue("fastMaType");
+    const slowMaType = readStoreTextInputValue("slowMaType");
+    const exitMode = readStoreTextInputValue("exitMode") || "cross";
+    const cooldownBars = parseNonNegativeInt(
+      readStoreTextInputValue("cooldownBars"),
+      0,
+    );
+    const signalPersistenceBars = Math.max(
+      1,
+      parseNonNegativeInt(readStoreTextInputValue("signalPersistenceBars"), 1),
+    );
+    const hasExecutionOverlays = cooldownBars > 0 || signalPersistenceBars > 1;
+
+    let gpuBackend: DoubleMaParityBackend | null = null;
+    const supportsKernel =
+      statusSummary.builtWithCudaBacktestKernel &&
+      exitMode === "cross" &&
+      !hasExecutionOverlays &&
+      maSupportsFlag(maSupportMap, fastMaType, "supports_cuda_kernel") &&
+      maSupportsFlag(maSupportMap, slowMaType, "supports_cuda_kernel");
+    const supportsCudaSweep =
+      maSupportsFlag(maSupportMap, fastMaType, "supports_cuda") &&
+      maSupportsFlag(maSupportMap, slowMaType, "supports_cuda");
+    if (supportsKernel || supportsCudaSweep) {
+      gpuBackend = "GpuKernel";
+    }
+
+    if (!gpuBackend) {
+      updateParityStatus(
+        "Parity: unavailable (selected MAs do not support unified GPU path).",
+        "Parity unavailable: selected MAs do not support unified GPU.",
+      );
+      return;
+    }
+
+    const context = readOptimizeBuildContextFromVueStores();
+    if (!context) {
+      updateParityStatus(
+        "Parity: failed (Load CSV first (missing data id).)",
+        "Parity check failed.",
+      );
+      return;
+    }
+
+    const f0 = Math.max(
+      1,
+      parseNonNegativeInt(readStoreTextInputValue("fastStart"), 5),
+    );
+    const s0raw = Math.max(
+      1,
+      parseNonNegativeInt(readStoreTextInputValue("slowStart"), 20),
+    );
+    const s0 = Math.max(s0raw, f0 + 1);
+    const f1 = f0 + 2;
+    const s1 = s0 + 3;
+    let cpuReq: Record<string, unknown> | null = null;
+    let gpuReq: Record<string, unknown> | null = null;
+    try {
+      const tinyRangeOverrides: DoubleMaRequestOverrides = {
+        fastStart: String(f0),
+        fastEnd: String(f1),
+        fastStep: "1",
+        slowStart: String(s0),
+        slowEnd: String(s1),
+        slowStep: "1",
+        mode: "Grid",
+        topK: "8",
+        includeAll: "false",
+        heatmapBins: "0",
+        exportAllCsvPath: "",
+        fastMaParamSweeps: null,
+        slowMaParamSweeps: null,
+      };
+      cpuReq = await buildAutoDoubleMaRequest(context, {
+        ...tinyRangeOverrides,
+        backend: "CpuOnly",
+      });
+      gpuReq = await buildAutoDoubleMaRequest(context, {
+        ...tinyRangeOverrides,
+        backend: gpuBackend,
+      });
+    } catch (error) {
+      updateParityStatus(
+        `Parity: failed (${String(error || "")})`,
+        "Parity check failed.",
+      );
+      return;
+    }
+
+    if (!cpuReq || !gpuReq) {
+      updateParityStatus(
+        "Parity: failed (Unable to build tiny parity requests.)",
+        "Parity check failed.",
+      );
+      return;
+    }
+
+    updateParityStatus(
+      "Parity: running CPU ↔ GPU tiny-grid checks…",
+      "Running CPU ↔ GPU parity check (tiny grid)…",
+    );
+
+    try {
+      const cpuRes = await invokeCommand("run_double_ma_optimization", {
+        req: cpuReq,
+      });
+      const gpuRes = await invokeCommand("run_double_ma_optimization", {
+        req: gpuReq,
+      });
+
+      const dp = Math.abs(
+        readBestMetric(cpuRes, "pnl") - readBestMetric(gpuRes, "pnl"),
+      );
+      const ds = Math.abs(
+        readBestMetric(cpuRes, "sharpe") - readBestMetric(gpuRes, "sharpe"),
+      );
+      const dd = Math.abs(
+        readBestMetric(cpuRes, "max_dd") - readBestMetric(gpuRes, "max_dd"),
+      );
+      const sameParams =
+        JSON.stringify(readBestParams(cpuRes)) ===
+        JSON.stringify(readBestParams(gpuRes));
+      const tol = 1e-4;
+      const ok = dp <= tol && ds <= tol && dd <= tol;
+      const paramsHint = sameParams ? "" : " (best_params differ; may be tie)";
+      const meta =
+        `Parity: ${ok ? "OK" : "CHECK"} • gpu=${gpuBackend} • ` +
+        `|Δpnl|=${formatFixed(dp, 6)} |Δsharpe|=${formatFixed(ds, 6)} |Δdd|=${formatFixed(dd, 6)} tol=${tol}${paramsHint}`;
+      const statusLine = ok
+        ? "Parity check OK."
+        : "Parity check completed (review diffs).";
+      updateParityStatus(meta, statusLine);
+    } catch (error) {
+      if (isCancellationError(error)) {
+        updateParityStatus("Parity: cancelled.", "Parity cancelled.");
+        return;
+      }
+      updateParityStatus(
+        `Parity: failed (${String(error || "")})`,
+        "Parity check failed.",
+      );
+      return;
+    }
+
+    try {
+      const summary = await refreshGpuStatus();
+      applyGpuSummaryToOptimizeStore(summary);
+    } catch {
+      // keep parity action completion non-throwing
+    }
+  } finally {
+    markOptimizeIdle();
   }
 }
 
@@ -2020,6 +2114,59 @@ async function buildDynamicDoubleMaRuntimeRequest(
   return req;
 }
 
+function applyQuietRecommendedDefaultsForRun(): void {
+  const advancedStore = readPiniaStoreState("advanced");
+  if (!advancedStore) return;
+
+  const resolved = resolveRecommendedOptimizationDefaults({
+    topK: advancedStore.topK,
+    heatmapBins: advancedStore.heatmapBins,
+    mode: advancedStore.mode,
+  });
+  const patch: Record<string, unknown> = {};
+  if (resolved.topK != null) patch.topK = resolved.topK;
+  if (resolved.heatmapBins != null) patch.heatmapBins = resolved.heatmapBins;
+  if (Object.keys(patch).length > 0) {
+    patchStoreState("advanced", patch);
+  }
+}
+
+function assertInjectedOptimizationRequestShape(
+  req: Record<string, unknown>,
+): void {
+  const strategyKind = normalizeText(req.strategy_kind ?? req.strategyKind);
+  if (!strategyKind) {
+    throw new Error("Injected optimization request is missing strategy_kind.");
+  }
+  const dataId = normalizeDataId(req.data_id ?? req.dataId);
+  if (!dataId) {
+    throw new Error("Injected optimization request is missing data_id.");
+  }
+}
+
+async function resolveRunOptimizationRequest(
+  options: OptimizeRunOptions,
+): Promise<ResolvedRunOptimizationRequest> {
+  const startedAt = nowMs();
+  if (options.request !== undefined) {
+    const req = normalizeRequestPayload(options.request);
+    if (!req) {
+      throw new Error("Injected optimization request must be an object.");
+    }
+    assertInjectedOptimizationRequestShape(req);
+    return {
+      req,
+      requestBuildMs: elapsedMs(startedAt),
+    };
+  }
+
+  applyQuietRecommendedDefaultsForRun();
+  return {
+    req: await buildOptimizationRequestFromVueStores(),
+    requestBuildMs: elapsedMs(startedAt),
+  };
+}
+
 export async function buildOptimizationRequestFromVueStores(): Promise<
   Record<string, unknown>
 > {
@@ -2113,6 +2260,11 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
       slowMaType,
       maSource: readStoreTextInputValue("maSource"),
       objective: readStoreTextInputValue("objective"),
+      extraShortlistObjectives: readStoreTextInputValue(
+        "extraShortlistObjectives",
+      ),
+      shortlistConfidenceMode: readStoreTextInputValue("shortlistConfidenceMode"),
+      shortlistUnionMode: readStoreTextInputValue("shortlistUnionMode"),
       topK: readStoreTextInputValue("topK"),
       includeAll: readStoreTextInputValue("includeAll"),
       compositeSignalMode: readStoreTextInputValue("compositeSignalMode"),
@@ -2229,6 +2381,31 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
       vemrAtrStopMult: readStoreTextInputValue("vemrAtrStopMult"),
       vemrConfirmBars: readStoreTextInputValue("vemrConfirmBars"),
       vemrMaxTradeBars: readStoreTextInputValue("vemrMaxTradeBars"),
+      rocbMapFastToChannelPeriod: readStoreCheckboxValue(
+        "rocbMapFastToChannelPeriod",
+      ),
+      rocbMapSlowToAtrPeriod: readStoreCheckboxValue(
+        "rocbMapSlowToAtrPeriod",
+      ),
+      rocbChannelPeriod: readStoreTextInputValue("rocbChannelPeriod"),
+      rocbAtrPeriod: readStoreTextInputValue("rocbAtrPeriod"),
+      rocbAtrStopMult: readStoreTextInputValue("rocbAtrStopMult"),
+      rocbMaxTradeBars: readStoreTextInputValue("rocbMaxTradeBars"),
+      vcetMapFastToVidyaShortPeriod: readStoreCheckboxValue(
+        "vcetMapFastToVidyaShortPeriod",
+      ),
+      vcetMapSlowToVidyaLongPeriod: readStoreCheckboxValue(
+        "vcetMapSlowToVidyaLongPeriod",
+      ),
+      vcetMapSlowToCePeriod: readStoreCheckboxValue("vcetMapSlowToCePeriod"),
+      vcetVidyaShortPeriod: readStoreTextInputValue("vcetVidyaShortPeriod"),
+      vcetVidyaLongPeriod: readStoreTextInputValue("vcetVidyaLongPeriod"),
+      vcetVidyaAlpha: readStoreTextInputValue("vcetVidyaAlpha"),
+      vcetCePeriod: readStoreTextInputValue("vcetCePeriod"),
+      vcetCeMult: readStoreTextInputValue("vcetCeMult"),
+      vcetCeUseClose: readStoreCheckboxValue("vcetCeUseClose"),
+      vcetRequireVidyaSlope: readStoreCheckboxValue("vcetRequireVidyaSlope"),
+      vcetMaxTradeBars: readStoreTextInputValue("vcetMaxTradeBars"),
       fastMaParams: fastParamState.params,
       slowMaParams: slowParamState.params,
     });
@@ -2304,6 +2481,7 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
         "moPrescanPredictiveStride",
       ),
       moPrescanRequireGpu: readStoreCheckboxValue("moPrescanRequireGpu"),
+      moPrescanDeviceId: readStoreTextInputValue("moPrescanDeviceId"),
       moPrescanObjectives: readStoreTextInputValue("moPrescanObjectives"),
       moPrescanMode: readStoreTextInputValue("moPrescanMode"),
       moPrescanMaPairs: readStoreTextInputValue("moPrescanMaPairs"),
@@ -2357,12 +2535,74 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
   return null;
 }
 
-function safePrettyJson(value: unknown): string {
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, nowMs() - startedAt);
+}
+
+function appendProgressNote(base: string, note: string): string {
+  const next = normalizeText(note);
+  if (!next) return base;
+  return base ? `${base} • ${next}` : next;
+}
+
+function buildCommandCompletionStatus(
+  commandMs: number,
+  backendSummary: string,
+): string {
+  const base = `Optimization command completed in ${commandMs.toFixed(0)}ms`;
+  return backendSummary ? `${base} • ${backendSummary}` : base;
+}
+
+function buildRunPhaseSummary(
+  strategyKind: string,
+  timings: RunPhaseTimings,
+): string {
+  return (
+    `${strategyKind} • build ${timings.requestBuildMs.toFixed(0)}ms` +
+    ` • command ${timings.commandMs.toFixed(0)}ms` +
+    ` • artifact ${timings.artifactMs.toFixed(0)}ms` +
+    ` • analysis ${timings.analysisMs.toFixed(0)}ms` +
+    ` • validation ${timings.validationMs.toFixed(0)}ms` +
+    ` • gpu ${timings.gpuRefreshMs.toFixed(0)}ms` +
+    ` • total ${timings.totalMs.toFixed(0)}ms`
+  );
+}
+
+function safePrettyJson(
+  value: unknown,
+  maxChars = RAW_OUTPUT_PREVIEW_CHARS,
+): string {
+  let text = "";
   try {
-    return JSON.stringify(value ?? null, null, 2);
+    text = JSON.stringify(value ?? null, null, 2);
   } catch {
-    return String(value ?? "");
+    text = String(value ?? "");
   }
+  if (text.length <= maxChars) return text;
+  const suffix = "\n... [truncated]";
+  return `${text.slice(0, Math.max(0, maxChars - suffix.length))}${suffix}`;
+}
+
+function buildOptimizationOutputPreview(value: unknown): string {
+  const row = asRecord(value);
+  if (!row) return safePrettyJson(value);
+  const preview: Record<string, unknown> = {
+    best_params: row.best_params ?? null,
+    best_metrics: row.best_metrics ?? null,
+    backend_used: row.backend_used ?? null,
+    backend_route: row.backend_route ?? null,
+    backend_fallback_reason: row.backend_fallback_reason ?? null,
+    indicator_route_plan: row.indicator_route_plan ?? null,
+    mode_used: row.mode_used ?? null,
+  };
+  const hasFocusedFields = Object.values(preview).some(
+    (entry) => entry != null,
+  );
+  return safePrettyJson(hasFocusedFields ? preview : value);
 }
 
 function selectWorkflowResultsTab(
@@ -2420,50 +2660,60 @@ function buildRunArtifactPayload(
   req: Record<string, unknown>,
   res: unknown,
   ts: string,
-): {
-  artifact: Record<string, unknown>;
-  csvPath: string;
-} {
-  const dataStore = readPiniaStoreState("data");
-  const csvPath = normalizeText(dataStore?.csvPath);
-  const datasetMeta = buildDatasetMetaForArtifact(
-    csvPath,
-    buildRunDatasetContextState(),
-  );
-  const configFingerprint = computeConfigFingerprint(req, null);
+  context: RunArtifactContext,
+): Record<string, unknown> {
   const artifact: Record<string, unknown> = {
     version: 1,
     kind: "vectorgrid_run_artifact",
     ts,
-    config_fingerprint: configFingerprint,
+    config_fingerprint: context.configFingerprint,
     run: { req, res },
     validation: null,
     report_xlsx_path: "",
-    data: { csv_path: csvPath },
-    dataset_meta: datasetMeta,
+    data: { csv_path: context.csvPath },
+    dataset_meta: context.datasetMeta,
     tags: [],
   };
-  return { artifact, csvPath };
+  return artifact;
+}
+
+function buildRunArtifactContext(
+  req: Record<string, unknown>,
+): RunArtifactContext {
+  const dataStore = readPiniaStoreState("data");
+  const csvPath = normalizeText(dataStore?.csvPath);
+  return {
+    csvPath,
+    datasetMeta: buildDatasetMetaForArtifact(
+      csvPath,
+      buildRunDatasetContextState(),
+    ),
+    configFingerprint: computeConfigFingerprint(req, null),
+  };
 }
 
 async function persistRunArtifact(
   req: Record<string, unknown>,
   res: unknown,
   ts: string,
-): Promise<{ path: string; csvPath: string }> {
-  const { artifact, csvPath } = buildRunArtifactPayload(req, res, ts);
+  context: RunArtifactContext,
+): Promise<PersistRunArtifactResult> {
+  const artifact = buildRunArtifactPayload(req, res, ts, context);
   try {
     const saved = (await invokeCommand("save_run_artifact", {
       artifact,
     })) as SaveRunArtifactResponse;
+    const path = normalizeText(saved?.path);
     return {
-      path: normalizeText(saved?.path),
-      csvPath,
+      path,
+      saved: path.length > 0,
+      warning: path.length > 0 ? "" : "artifact=unsaved",
     };
   } catch {
     return {
       path: "",
-      csvPath,
+      saved: false,
+      warning: "artifact=unsaved",
     };
   }
 }
@@ -2472,21 +2722,17 @@ function applyVueRunArtifacts(
   ts: string,
   req: Record<string, unknown>,
   res: unknown,
-  artifactPath: string,
-  csvPath: string,
+  context: RunArtifactContext,
+  persisted: PersistRunArtifactResult,
 ): void {
-  const datasetMeta = buildDatasetMetaForArtifact(
-    csvPath,
-    buildRunDatasetContextState(),
-  );
   applyWorkflowArtifactsPayload(
     {
       currentRun: {
         ts,
-        artifact_path: artifactPath,
+        artifact_path: persisted.saved ? persisted.path : "",
         report_xlsx_path: "",
-        csv_path: csvPath,
-        dataset_meta: datasetMeta,
+        csv_path: context.csvPath,
+        dataset_meta: context.datasetMeta,
         tags: [],
         req,
         res,
@@ -2497,40 +2743,95 @@ function applyVueRunArtifacts(
   );
 }
 
-function markOptimizationRunning(running: boolean): void {
+function setOptimizeBusyState(state: OptimizeBusyState): void {
   patchStoreState("optimize", {
-    runDisabled: running,
-    canCancel: running,
-    validateDisabled: running,
+    runDisabled: state.runDisabled,
+    canCancel: state.canCancel,
+    validateDisabled: state.validateDisabled,
   });
+}
+
+function markOptimizationCommandRunning(): void {
+  setOptimizeBusyState({
+    runDisabled: true,
+    canCancel: true,
+    validateDisabled: true,
+  });
+}
+
+function markOptimizationPostRunBusy(): void {
+  setOptimizeBusyState({
+    runDisabled: true,
+    canCancel: false,
+    validateDisabled: true,
+  });
+}
+
+function markNonCancelableBusy(): void {
+  setOptimizeBusyState({
+    runDisabled: true,
+    canCancel: false,
+    validateDisabled: true,
+  });
+}
+
+function markOptimizeIdle(): void {
+  setOptimizeBusyState({
+    runDisabled: false,
+    canCancel: false,
+    validateDisabled: false,
+  });
+}
+
+function isOptimizeBusy(): boolean {
+  const optimizeStore = readPiniaStoreState("optimize");
+  return (
+    normalizeBoolean(optimizeStore?.runDisabled) ||
+    normalizeBoolean(optimizeStore?.validateDisabled) ||
+    normalizeBoolean(optimizeStore?.canCancel)
+  );
 }
 
 export async function runOptimization(
   options: OptimizeRunOptions = {},
 ): Promise<void> {
-  let req = normalizeRequestPayload(options.request);
-  if (!req) {
-    try {
-      req = await tryBuildAutoOptimizationRequest();
-    } catch {
-      req = null;
-    }
-  }
-  if (!req) {
+  if (isOptimizeBusy()) return;
+
+  let requestResolution: ResolvedRunOptimizationRequest;
+  try {
+    requestResolution = await resolveRunOptimizationRequest(options);
+  } catch (error) {
     const message =
+      String(error instanceof Error ? error.message : (error ?? "")).trim() ||
       "Load data first, then configure strategy/optimization settings.";
     patchStoreState("optimize", { statusLine: message });
     writeDomTextContent("status", message, OPTIMIZE_PANEL_SELECTOR);
     return;
   }
 
+  const { req } = requestResolution;
   const command = resolveOptimizationCommand(
     req.strategy_kind ?? req.strategyKind,
   );
   const switchTab = options.switchTab !== false;
   const runTs = new Date().toISOString();
+  const runStartedAt = nowMs();
+  const timings: RunPhaseTimings = {
+    requestBuildMs: requestResolution.requestBuildMs,
+    commandMs: 0,
+    artifactMs: 0,
+    analysisMs: 0,
+    validationMs: 0,
+    gpuRefreshMs: 0,
+    totalMs: 0,
+  };
+  const strategyKind = normalizeStrategyKindRaw(
+    req.strategy_kind ?? req.strategyKind,
+  );
+  const artifactContext = buildRunArtifactContext(req);
+  const progressNotes: string[] = [];
 
-  markOptimizationRunning(true);
+  markOptimizationCommandRunning();
   patchStoreState("optimize", {
     progressMeta: "Running optimization…",
     statusLine: "Running optimization…",
@@ -2540,23 +2841,23 @@ export async function runOptimization(
     "Running optimization…",
     OPTIMIZE_PANEL_SELECTOR,
   );
-  writeDomTextContent("status", "Running optimization…", OPTIMIZE_PANEL_SELECTOR);
+  writeDomTextContent(
+    "status",
+    "Running optimization…",
+    OPTIMIZE_PANEL_SELECTOR,
+  );
 
   try {
-    const startedAt =
-      typeof performance !== "undefined" ? performance.now() : Date.now();
+    const commandStartedAt = nowMs();
     const res = await invokeCommand(command, { req });
-    const finishedAt =
-      typeof performance !== "undefined" ? performance.now() : Date.now();
-    const elapsedMs = Math.max(0, finishedAt - startedAt);
-    const strategyKind = normalizeStrategyKindRaw(
-      req.strategy_kind ?? req.strategyKind,
-    );
-    const progressMeta = `${strategyKind} • ${elapsedMs.toFixed(0)}ms`;
+    timings.commandMs = elapsedMs(commandStartedAt);
+    markOptimizationPostRunBusy();
     const backendSummary = summarizeBackendExecution(res);
-    const statusLine = backendSummary
-      ? `Done in ${elapsedMs.toFixed(0)}ms (frontend) • ${backendSummary}`
-      : `Done in ${elapsedMs.toFixed(0)}ms (frontend)`;
+    const statusLine = buildCommandCompletionStatus(
+      timings.commandMs,
+      backendSummary,
+    );
+    let progressMeta = buildRunPhaseSummary(strategyKind, timings);
 
     patchStoreState("optimize", {
       progressMeta,
@@ -2564,33 +2865,68 @@ export async function runOptimization(
     });
     writeDomTextContent("progressMeta", progressMeta, OPTIMIZE_PANEL_SELECTOR);
     writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
-    writeDomTextContent("output", safePrettyJson(res), OPTIMIZE_PANEL_SELECTOR);
+    writeDomTextContent(
+      "output",
+      buildOptimizationOutputPreview(res),
+      OPTIMIZE_PANEL_SELECTOR,
+    );
 
-    const persisted = await persistRunArtifact(req, res, runTs);
-    applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);
+    const artifactStartedAt = nowMs();
+    const persisted = await persistRunArtifact(
+      req,
+      res,
+      runTs,
+      artifactContext,
+    );
+    timings.artifactMs = elapsedMs(artifactStartedAt);
+    if (!persisted.saved) {
+      progressNotes.push(persisted.warning);
+    }
+
+    applyVueRunArtifacts(runTs, req, res, artifactContext, persisted);
+
+    const analysisStartedAt = nowMs();
     refreshAnalysisFromWorkflowRun();
+    timings.analysisMs = elapsedMs(analysisStartedAt);
 
-    if (switchTab) selectWorkflowResultsTab("top", false);
-
+    let finalResultsTab: "top" | "overview" = "top";
     if (readValidationAutoRunEnabled()) {
+      const validationStartedAt = nowMs();
       try {
         await runValidationAction({ useFiltered: false, switchTab: false });
-        if (switchTab) selectWorkflowResultsTab("overview", true);
+        timings.validationMs = elapsedMs(validationStartedAt);
+        finalResultsTab = "overview";
+        progressNotes.push("validation=ok");
       } catch (error) {
-        const message = isCancellationError(error)
-          ? "Auto-validation cancelled."
-          : `Auto-validation failed: ${String(error || "")}`;
-        patchStoreState("optimize", { statusLine: message });
-        writeDomTextContent("status", message, OPTIMIZE_PANEL_SELECTOR);
+        timings.validationMs = elapsedMs(validationStartedAt);
+        const note = isCancellationError(error)
+          ? "validation=cancelled"
+          : `validation=failed (${String(error || "")})`;
+        progressNotes.push(note);
       }
     }
 
+    if (switchTab) {
+      selectWorkflowResultsTab(finalResultsTab, finalResultsTab === "overview");
+    }
+
     try {
+      const gpuRefreshStartedAt = nowMs();
       const summary = await refreshGpuStatus();
+      timings.gpuRefreshMs = elapsedMs(gpuRefreshStartedAt);
       applyGpuSummaryToOptimizeStore(summary);
     } catch {
       // Keep run completion non-throwing if status refresh is unavailable.
     }
+
+    timings.totalMs = elapsedMs(runStartedAt);
+    progressMeta = buildRunPhaseSummary(strategyKind, timings);
+    for (const note of progressNotes) {
+      progressMeta = appendProgressNote(progressMeta, note);
+    }
+    patchStoreState("optimize", { progressMeta, statusLine });
+    writeDomTextContent("progressMeta", progressMeta, OPTIMIZE_PANEL_SELECTOR);
+    writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
   } catch (error) {
     const statusLine = isCancellationError(error)
       ? "Cancelled."
@@ -2599,7 +2935,7 @@ export async function runOptimization(
     writeDomTextContent("status", statusLine, OPTIMIZE_PANEL_SELECTOR);
     throw error;
   } finally {
-    markOptimizationRunning(false);
+    markOptimizeIdle();
   }
 }
 

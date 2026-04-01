@@ -1,22 +1,107 @@
 ﻿{
-    "generated_at_utc":  "2026-03-19T18:32:51.6655283Z",
+    "schema_version":  1,
+    "case_registry_version":  1,
+    "generated_at_utc":  "2026-04-01T01:09:02.5070109Z",
     "mode":  "baseline",
-    "workflow_runtime_ms":  1721,
+    "environment":  {
+                        "hostname":  "LISZKA",
+                        "os":  "Microsoft Windows NT 10.0.26200.0",
+                        "architecture":  "X64",
+                        "powershell_edition":  "Desktop",
+                        "powershell_version":  "5.1.26100.7462"
+                    },
+    "workflow":  {
+                     "schema_version":  1,
+                     "timing_boundary":  "workflow-regression",
+                     "timing_boundary_note":  "total deterministic workflow wall time including optimize, validate, meta-select, and holdout",
+                     "build_profile":  "release",
+                     "summary_path":  "target/workflow_regression_summary.json",
+                     "baseline_path":  "scripts/baselines/workflow_regression_baseline.json",
+                     "runtime_ms":  230,
+                     "result":  {
+                                    "schema_version":  1,
+                                    "timing_boundary":  "workflow-regression",
+                                    "timing_boundary_note":  "total deterministic workflow wall time including optimize, validate, meta-select, and holdout",
+                                    "build_profile":  "release",
+                                    "environment":  {
+                                                        "hostname":  "LISZKA",
+                                                        "os":  "windows",
+                                                        "arch":  "x86_64",
+                                                        "family":  "windows"
+                                                    },
+                                    "candles_len":  10000,
+                                    "train_assets":  10,
+                                    "holdout_assets":  6,
+                                    "artifacts_used":  5,
+                                    "groups":  14,
+                                    "top_meta_score":  0.7532747578867784,
+                                    "robust_score_p10":  0.5225337268168695,
+                                    "max_dd_p90":  0.0,
+                                    "holdout_score_p10":  0.0,
+                                    "holdout_max_dd_p90":  0.0,
+                                    "holdout_pass_rate":  0.5,
+                                    "runtime_ms":  230,
+                                    "stage":  {
+                                                  "optimize_ms_total":  21,
+                                                  "validate_ms_total":  117,
+                                                  "meta_select_ms":  14,
+                                                  "holdout_ms":  56
+                                              }
+                                }
+                 },
+    "workflow_runtime_ms":  230,
     "criterion":  {
+                      "id":  "cpu_sma_small",
+                      "schema_version":  1,
+                      "timing_boundary":  "Criterion",
+                      "timing_boundary_note":  "Criterion bench profile estimate for a single deterministic CPU optimization case.",
+                      "build_profile":  "bench",
                       "bench_filter":  "double_ma/cpu/sma_sma/200k/small",
                       "estimates_json":  "target/criterion/double_ma_cpu_sma_sma_200k/small_1590pairs/new/estimates.json",
-                      "mean_ms":  125.30684,
-                      "mean_ci_lower_ms":  124.131445,
-                      "mean_ci_upper_ms":  126.681614,
-                      "median_ms":  124.822388
+                      "mean_ms":  153.768358,
+                      "mean_ci_lower_ms":  152.597807,
+                      "mean_ci_upper_ms":  155.333753,
+                      "median_ms":  152.8586
                   },
+    "criterion_cases":  [
+                            {
+                                "id":  "cpu_sma_small",
+                                "schema_version":  1,
+                                "timing_boundary":  "Criterion",
+                                "timing_boundary_note":  "Criterion bench profile estimate for a single deterministic CPU optimization case.",
+                                "build_profile":  "bench",
+                                "bench_filter":  "double_ma/cpu/sma_sma/200k/small",
+                                "estimates_json":  "target/criterion/double_ma_cpu_sma_sma_200k/small_1590pairs/new/estimates.json",
+                                "mean_ms":  153.768358,
+                                "mean_ci_lower_ms":  152.597807,
+                                "mean_ci_upper_ms":  155.333753,
+                                "median_ms":  152.8586
+                            },
+                            {
+                                "id":  "cpu_alma_large",
+                                "schema_version":  1,
+                                "timing_boundary":  "Criterion",
+                                "timing_boundary_note":  "Criterion bench profile estimate for a single deterministic CPU optimization case.",
+                                "build_profile":  "bench",
+                                "bench_filter":  "double_ma/cpu/alma_alma/200k/large",
+                                "estimates_json":  "target/criterion/double_ma_cpu_alma_alma_200k/large_58300pairs/new/estimates.json",
+                                "mean_ms":  5075.45078,
+                                "mean_ci_lower_ms":  5019.011253,
+                                "mean_ci_upper_ms":  5136.08009,
+                                "median_ms":  5079.1282
+                            }
+                        ],
     "dynamic_strategy_cpu":  {
                                  "checked":  true,
+                                 "schema_version":  1,
+                                 "timing_boundary":  "Criterion",
+                                 "timing_boundary_note":  "Criterion bench profile ratio between dynamic-strategy CPU full-run variants.",
+                                 "build_profile":  "bench",
                                  "bench_filter":  "dynamic_strategy_cpu/full_run/2k/composite_mo",
                                  "static_estimates_json":  "target/criterion/dynamic_strategy_cpu_full_run_2k/composite_mo_static_env_off/new/estimates.json",
                                  "dynamic_estimates_json":  "target/criterion/dynamic_strategy_cpu_full_run_2k/composite_mo_dynamic_env_on/new/estimates.json",
-                                 "static_mean_ms":  0.348521,
-                                 "dynamic_mean_ms":  0.37304,
-                                 "ratio_dynamic_over_static":  1.070352
+                                 "static_mean_ms":  0.350313,
+                                 "dynamic_mean_ms":  0.371414,
+                                 "ratio_dynamic_over_static":  1.060235
                              }
 }

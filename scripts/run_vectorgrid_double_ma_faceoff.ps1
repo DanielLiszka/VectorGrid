@@ -11,6 +11,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Write-JsonUtf8 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        $Value,
+        [int]$Depth = 12
+    )
+
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+    $Value | ConvertTo-Json -Depth $Depth | Set-Content -Encoding UTF8 $Path
+}
+
+function Read-JsonFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+}
+
 function Invoke-LoggedProcess {
     param(
         [string]$Exe,
@@ -46,65 +67,65 @@ function Invoke-LoggedProcess {
     return $combined
 }
 
-function Convert-ToMilliseconds {
-    param(
-        [double]$Value,
-        [string]$Unit
-    )
+function Resolve-CriterionEstimatePathFromBenchmarkId {
+    param([Parameter(Mandatory = $true)][string]$Id)
 
-    switch ($Unit) {
-        "ns" { return $Value / 1000000.0 }
-        "us" { return $Value / 1000.0 }
-        "µs" { return $Value / 1000.0 }
-        "ms" { return $Value }
-        "s"  { return $Value * 1000.0 }
-        default { throw "Unsupported Criterion unit '$Unit'." }
+    $normalizedId = ($Id -replace '[\\/]+', '_').Trim('_')
+    $matches = @(Get-ChildItem -Path "target/criterion" -Recurse -File -Filter "estimates.json" | Where-Object {
+            $newDir = Split-Path -Parent $_.FullName
+            $leafDir = Split-Path -Parent $newDir
+            $rootDir = Split-Path -Parent $leafDir
+            $key = "{0}_{1}" -f (Split-Path -Leaf $rootDir), (Split-Path -Leaf $leafDir)
+            $key -eq $normalizedId
+        })
+
+    if ($matches.Count -eq 0) {
+        throw "Could not resolve Criterion estimates.json for benchmark id '$Id' (normalized '$normalizedId')."
     }
-}
-
-function Parse-TimeLine {
-    param([string]$Text)
-
-    $re = [regex]'time:\s*\[(?<low>[\d\.]+)\s*(?<unit>[a-zµ]+)\s+(?<mid>[\d\.]+)\s*[a-zµ]+\s+(?<high>[\d\.]+)\s*[a-zµ]+\]'
-    $m = $re.Match($Text)
-    if (-not $m.Success) {
-        throw "Unable to parse Criterion time line."
+    if ($matches.Count -gt 1) {
+        $paths = ($matches | ForEach-Object { $_.FullName }) -join "; "
+        throw "Ambiguous Criterion estimates for benchmark id '$Id': $paths"
     }
-
-    $unit = $m.Groups["unit"].Value
-    return @{
-        low_ms = Convert-ToMilliseconds ([double]$m.Groups["low"].Value) $unit
-        point_estimate_ms = Convert-ToMilliseconds ([double]$m.Groups["mid"].Value) $unit
-        high_ms = Convert-ToMilliseconds ([double]$m.Groups["high"].Value) $unit
-    }
+    return $matches[0].FullName
 }
 
 function Parse-BenchmarkMetadata {
     param([string]$Id)
 
-    $pairs = $null
+    $segments = @($Id.Split('/', [System.StringSplitOptions]::RemoveEmptyEntries))
+    $pairCount = $null
     $bars = $null
+    $pairIndex = -1
+    $barsIndex = -1
 
-    $pairsMatch = [regex]::Match($Id, '(?<pairs>\d+)pairs')
-    if ($pairsMatch.Success) {
-        $pairs = [int64]$pairsMatch.Groups["pairs"].Value
-    }
-
-    $barsMatch = [regex]::Match($Id, '/(?<bars>\d+)(?<suffix>k|m)(/|$)')
-    if ($barsMatch.Success) {
-        $base = [int64]$barsMatch.Groups["bars"].Value
-        $suffix = $barsMatch.Groups["suffix"].Value
-        if ($suffix -eq "k") {
-            $bars = $base * 1000
-        } elseif ($suffix -eq "m") {
-            $bars = $base * 1000000
+    for ($i = 0; $i -lt $segments.Count; $i += 1) {
+        if ($segments[$i] -match '^(?<pairs>\d+)pairs$') {
+            $pairCount = [int64]$matches["pairs"]
+            $pairIndex = $i
+        }
+        if ($segments[$i] -match '^(?<bars>\d+)(?<suffix>k|m)$') {
+            $base = [int64]$matches["bars"]
+            $bars = if ($matches["suffix"] -eq "k") { $base * 1000 } else { $base * 1000000 }
+            $barsIndex = $i
         }
     }
 
-    return @{
-        pair_count = $pairs
+    $variantSegments = @()
+    if ($pairIndex -ge 0 -and $pairIndex + 1 -lt $segments.Count) {
+        $variantSegments = @($segments[($pairIndex + 1)..($segments.Count - 1)])
+    }
+
+    return [ordered]@{
+        strategy = if ($segments.Count -ge 1) { $segments[0] } else { "" }
+        backend = if ($segments.Count -ge 2) { $segments[1] } else { "" }
+        ma_case = if ($segments.Count -ge 3) { $segments[2] } else { "" }
+        bars_segment = if ($barsIndex -ge 0) { $segments[$barsIndex] } else { "" }
+        workload = if ($barsIndex -ge 0 -and $barsIndex + 1 -lt $segments.Count) { $segments[$barsIndex + 1] } else { "" }
+        pair_segment = if ($pairIndex -ge 0) { $segments[$pairIndex] } else { "" }
+        variant_segments = $variantSegments
+        pair_count = $pairCount
         bars = $bars
-        pair_bars = if ($pairs -and $bars) { $pairs * $bars } else { $null }
+        pair_bars = if ($null -ne $pairCount -and $null -ne $bars) { $pairCount * $bars } else { $null }
     }
 }
 
@@ -131,23 +152,35 @@ $cargoArgs = @(
     "--warm-up-time", "$WarmUpTimeSec"
 )
 
-$joined = Invoke-LoggedProcess -Exe "cargo" -CmdArgs $cargoArgs -OutputPath $RawOutputPath
-$time = Parse-TimeLine -Text $joined
+$null = Invoke-LoggedProcess -Exe "cargo" -CmdArgs $cargoArgs -OutputPath $RawOutputPath
+$estimatePath = Resolve-CriterionEstimatePathFromBenchmarkId -Id $BenchmarkId
+$criterion = Read-JsonFile -Path $estimatePath
 $meta = Parse-BenchmarkMetadata -Id $BenchmarkId
 
 $result = [ordered]@{
     engine = "vectorgrid"
-    mode = "gpu_kernel"
     benchmark_id = $BenchmarkId
-    strategy = "double_ma"
-    ma_case = "alma_alma"
-    objective = "sharpe"
+    timing_boundary = "Criterion"
+    timing_boundary_note = "Criterion bench-profile estimate for a single VectorGrid benchmark id."
+    build_profile = "bench"
+    strategy = $meta.strategy
+    backend = $meta.backend
+    ma_case = $meta.ma_case
+    bars_segment = $meta.bars_segment
+    workload = $meta.workload
+    pair_segment = $meta.pair_segment
+    variant_segments = $meta.variant_segments
     exact_search = $true
-    backend = "GpuKernel"
     pair_count = $meta.pair_count
     bars = $meta.bars
     pair_bars = $meta.pair_bars
-    runtime = $time
+    criterion = [ordered]@{
+        estimates_json = $estimatePath
+        mean_ms = [math]::Round(([double]$criterion.mean.point_estimate) / 1000000.0, 6)
+        mean_ci_lower_ms = [math]::Round(([double]$criterion.mean.confidence_interval.lower_bound) / 1000000.0, 6)
+        mean_ci_upper_ms = [math]::Round(([double]$criterion.mean.confidence_interval.upper_bound) / 1000000.0, 6)
+        median_ms = [math]::Round(([double]$criterion.median.point_estimate) / 1000000.0, 6)
+    }
     features = $Features
     sample_size = $SampleSize
     measurement_time_sec = $MeasurementTimeSec
@@ -156,6 +189,5 @@ $result = [ordered]@{
     generated_at_utc = [DateTime]::UtcNow.ToString("o")
 }
 
-$json = $result | ConvertTo-Json -Depth 6
-Set-Content -Path $OutputJson -Value $json
-$json
+Write-JsonUtf8 -Path $OutputJson -Value $result
+Get-Content -Raw -LiteralPath $OutputJson

@@ -32,6 +32,8 @@ export interface MetaStage4RunOptions {
   request?: unknown
 }
 
+export interface MetaStage5RunOptions extends MetaStage4RunOptions {}
+
 export interface MetaMlPolicyEvaluationRunOptions {
   request?: unknown
 }
@@ -2270,7 +2272,9 @@ export async function deleteSaved(): Promise<void> {
   }
 }
 
-export async function saveStage4SavedTags(): Promise<void> {
+// Stage 4 names remain as compatibility aliases while the conventional ML
+// finalizer is presented as Stage 5 in the UI.
+export async function saveStage5SavedTags(): Promise<void> {
   try {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
@@ -2289,7 +2293,11 @@ export async function saveStage4SavedTags(): Promise<void> {
   }
 }
 
-export async function refreshStage4Saved(): Promise<void> {
+export async function saveStage4SavedTags(): Promise<void> {
+  await saveStage5SavedTags()
+}
+
+export async function refreshStage5Saved(): Promise<void> {
   try {
     const store = getAnalysisStore()
     await refreshStage4SavedInternal(normalizePath(store?.stage4SavedSelected))
@@ -2299,7 +2307,11 @@ export async function refreshStage4Saved(): Promise<void> {
   }
 }
 
-export async function loadStage4Saved(): Promise<void> {
+export async function refreshStage4Saved(): Promise<void> {
+  await refreshStage5Saved()
+}
+
+export async function loadStage5Saved(): Promise<void> {
   try {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
@@ -2328,7 +2340,11 @@ export async function loadStage4Saved(): Promise<void> {
   }
 }
 
-export async function revealStage4Saved(): Promise<void> {
+export async function loadStage4Saved(): Promise<void> {
+  await loadStage5Saved()
+}
+
+export async function revealStage5Saved(): Promise<void> {
   try {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
@@ -2343,7 +2359,11 @@ export async function revealStage4Saved(): Promise<void> {
   }
 }
 
-export async function deleteStage4Saved(): Promise<void> {
+export async function revealStage4Saved(): Promise<void> {
+  await revealStage5Saved()
+}
+
+export async function deleteStage5Saved(): Promise<void> {
   try {
     const entry = selectedStage4SavedEntry()
     const path = normalizePath(entry?.path)
@@ -2362,6 +2382,10 @@ export async function deleteStage4Saved(): Promise<void> {
   } catch (error) {
     setErrorStatus(error)
   }
+}
+
+export async function deleteStage4Saved(): Promise<void> {
+  await deleteStage5Saved()
 }
 
 export async function savePolicyEvalSavedTags(): Promise<void> {
@@ -2582,7 +2606,7 @@ export async function mlDelete(options: MetaMlActionOptions = {}): Promise<void>
   }
 }
 
-export async function runStage4(options: MetaStage4RunOptions = {}): Promise<void> {
+export async function runStage5(options: MetaStage5RunOptions = {}): Promise<void> {
   try {
     let req = normalizeRequestPayload(options.request)
     if (!req) {
@@ -2616,7 +2640,11 @@ export async function runStage4(options: MetaStage4RunOptions = {}): Promise<voi
   }
 }
 
-export async function revealStage4(): Promise<void> {
+export async function runStage4(options: MetaStage4RunOptions = {}): Promise<void> {
+  await runStage5(options)
+}
+
+export async function revealStage5(): Promise<void> {
   try {
     const path = responseStage5Path(LAST_META_STAGE4_RUN)
     if (!path) {
@@ -2628,6 +2656,10 @@ export async function revealStage4(): Promise<void> {
   } catch (error) {
     setErrorStatus(error)
   }
+}
+
+export async function revealStage4(): Promise<void> {
+  await revealStage5()
 }
 
 export async function runMlPolicyEvaluation(options: MetaMlPolicyEvaluationRunOptions = {}): Promise<void> {

@@ -43,8 +43,10 @@ vi.mock('../services/metaService', () => ({
   batchStop: vi.fn(async () => undefined),
   deleteSaved: vi.fn(async () => undefined),
   deleteStage4Saved: vi.fn(async () => undefined),
+  deleteStage5Saved: vi.fn(async () => undefined),
   loadSaved: vi.fn(async () => undefined),
   loadStage4Saved: vi.fn(async () => undefined),
+  loadStage5Saved: vi.fn(async () => undefined),
   mlApply: vi.fn(async () => undefined),
   mlDelete: vi.fn(async () => undefined),
   mlRefresh: vi.fn(async () => undefined),
@@ -53,16 +55,21 @@ vi.mock('../services/metaService', () => ({
   openSavedReport: vi.fn(async () => undefined),
   refreshSaved: vi.fn(async () => undefined),
   refreshStage4Saved: vi.fn(async () => undefined),
+  refreshStage5Saved: vi.fn(async () => undefined),
   revealMetaFiles: vi.fn(async () => undefined),
   revealSaved: vi.fn(async () => undefined),
   revealStage4: vi.fn(async () => undefined),
+  revealStage5: vi.fn(async () => undefined),
   revealStage4Saved: vi.fn(async () => undefined),
+  revealStage5Saved: vi.fn(async () => undefined),
   runBatch: vi.fn(async () => undefined),
   runMeta: vi.fn(async () => undefined),
   runStage4: vi.fn(async () => undefined),
+  runStage5: vi.fn(async () => undefined),
   refreshBatchDatasetView: vi.fn(() => undefined),
   saveSavedTags: vi.fn(async () => undefined),
   saveStage4SavedTags: vi.fn(async () => undefined),
+  saveStage5SavedTags: vi.fn(async () => undefined),
   toggleBatchDataset: vi.fn(async () => undefined),
 }))
 
@@ -108,8 +115,10 @@ const batchSelectNoneMock = vi.mocked(metaService.batchSelectNone)
 const batchStopMock = vi.mocked(metaService.batchStop)
 const deleteSavedMock = vi.mocked(metaService.deleteSaved)
 const deleteStage4SavedMock = vi.mocked(metaService.deleteStage4Saved)
+const deleteStage5SavedMock = vi.mocked(metaService.deleteStage5Saved)
 const loadSavedMock = vi.mocked(metaService.loadSaved)
 const loadStage4SavedMock = vi.mocked(metaService.loadStage4Saved)
+const loadStage5SavedMock = vi.mocked(metaService.loadStage5Saved)
 const mlApplyMock = vi.mocked(metaService.mlApply)
 const mlDeleteMock = vi.mocked(metaService.mlDelete)
 const mlRefreshMock = vi.mocked(metaService.mlRefresh)
@@ -118,15 +127,20 @@ const openMetaReportMock = vi.mocked(metaService.openMetaReport)
 const openSavedReportMock = vi.mocked(metaService.openSavedReport)
 const refreshSavedMock = vi.mocked(metaService.refreshSaved)
 const refreshStage4SavedMock = vi.mocked(metaService.refreshStage4Saved)
+const refreshStage5SavedMock = vi.mocked(metaService.refreshStage5Saved)
 const revealMetaFilesMock = vi.mocked(metaService.revealMetaFiles)
 const revealSavedMock = vi.mocked(metaService.revealSaved)
 const revealStage4Mock = vi.mocked(metaService.revealStage4)
+const revealStage5Mock = vi.mocked(metaService.revealStage5)
 const revealStage4SavedMock = vi.mocked(metaService.revealStage4Saved)
+const revealStage5SavedMock = vi.mocked(metaService.revealStage5Saved)
 const runBatchMock = vi.mocked(metaService.runBatch)
 const runMetaMock = vi.mocked(metaService.runMeta)
 const runStage4Mock = vi.mocked(metaService.runStage4)
+const runStage5Mock = vi.mocked(metaService.runStage5)
 const saveSavedTagsMock = vi.mocked(metaService.saveSavedTags)
 const saveStage4SavedTagsMock = vi.mocked(metaService.saveStage4SavedTags)
+const saveStage5SavedTagsMock = vi.mocked(metaService.saveStage5SavedTags)
 const toggleBatchDatasetMock = vi.mocked(metaService.toggleBatchDataset)
 
 const browseCsvMock = vi.mocked(dataService.browseCsv)
@@ -234,7 +248,7 @@ describe('analysis store actions', () => {
     expect(drillNextTradeMock).toHaveBeenCalled()
   })
 
-  it('routes meta/stage4/ml actions through metaService', () => {
+  it('routes meta/stage5/ml actions through metaService', () => {
     const store = useAnalysisStore()
     store.batchDatasets = [
       { path: 'C:/dataset.csv', label: 'dataset', meta: '—', checked: false, disabled: false },
@@ -260,12 +274,19 @@ describe('analysis store actions', () => {
     store.loadStage4Saved()
     store.revealStage4Saved()
     store.deleteStage4Saved()
+    store.saveStage5SavedTags()
+    store.refreshStage5Saved()
+    store.loadStage5Saved()
+    store.revealStage5Saved()
+    store.deleteStage5Saved()
     store.mlRefresh()
     store.mlTrain()
     store.mlApply()
     store.mlDelete()
     store.runStage4()
     store.revealStage4()
+    store.runStage5()
+    store.revealStage5()
     store.runMeta()
     store.openMetaReport()
     store.revealMetaFiles()
@@ -284,17 +305,24 @@ describe('analysis store actions', () => {
     expect(openSavedReportMock).toHaveBeenCalled()
     expect(revealSavedMock).toHaveBeenCalled()
     expect(deleteSavedMock).toHaveBeenCalled()
-    expect(saveStage4SavedTagsMock).toHaveBeenCalled()
-    expect(refreshStage4SavedMock).toHaveBeenCalled()
-    expect(loadStage4SavedMock).toHaveBeenCalled()
-    expect(revealStage4SavedMock).toHaveBeenCalled()
-    expect(deleteStage4SavedMock).toHaveBeenCalled()
+    expect(saveStage4SavedTagsMock).not.toHaveBeenCalled()
+    expect(refreshStage4SavedMock).not.toHaveBeenCalled()
+    expect(loadStage4SavedMock).not.toHaveBeenCalled()
+    expect(revealStage4SavedMock).not.toHaveBeenCalled()
+    expect(deleteStage4SavedMock).not.toHaveBeenCalled()
+    expect(saveStage5SavedTagsMock).toHaveBeenCalledTimes(2)
+    expect(refreshStage5SavedMock).toHaveBeenCalledTimes(2)
+    expect(loadStage5SavedMock).toHaveBeenCalledTimes(2)
+    expect(revealStage5SavedMock).toHaveBeenCalledTimes(2)
+    expect(deleteStage5SavedMock).toHaveBeenCalledTimes(2)
     expect(mlRefreshMock).toHaveBeenCalled()
     expect(mlTrainMock).toHaveBeenCalled()
     expect(mlApplyMock).toHaveBeenCalled()
     expect(mlDeleteMock).toHaveBeenCalled()
-    expect(runStage4Mock).toHaveBeenCalled()
-    expect(revealStage4Mock).toHaveBeenCalled()
+    expect(runStage4Mock).not.toHaveBeenCalled()
+    expect(revealStage4Mock).not.toHaveBeenCalled()
+    expect(runStage5Mock).toHaveBeenCalledTimes(2)
+    expect(revealStage5Mock).toHaveBeenCalledTimes(2)
     expect(runMetaMock).toHaveBeenCalled()
     expect(openMetaReportMock).toHaveBeenCalled()
     expect(revealMetaFilesMock).toHaveBeenCalled()

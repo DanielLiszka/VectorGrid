@@ -778,8 +778,8 @@ describe('validationRequestBuilder', () => {
       vcc: { squeeze_period: 20, trend_period: 6 }
     })
     const summary = buildValidationCapabilitySummary(req)
-    expect(summary.routeSummary).toContain('expected CPU-preferred composite route (VCC)')
-    expect(summary.warningSummary).toContain('Auto composite validation currently prefers CPU for VCC')
+    expect(summary.routeSummary).toContain('expected GPU composite route (VCC)')
+    expect(summary.warningSummary).toContain('VCC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
   })
 
   it('summarizes double-ma gpu preserved-finalists capability expectations', () => {
@@ -1075,7 +1075,9 @@ describe('validationRequestBuilder', () => {
     })
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected GPU composite route (VCET)')
-    expect(summary.warningSummary).toContain('VCET')
+    expect(summary.categorySummary).toContain('GPU-native: base reruns + hard gates')
+    expect(summary.categorySummary).not.toContain('GPU main + CPU tail:')
+    expect(summary.warningSummary).toContain('Walk-forward and reopt walk-forward currently use the generic validation path')
   })
 
   it('treats Carm Auto composite validation as CPU-preferred in previews', () => {
@@ -1143,7 +1145,7 @@ describe('validationRequestBuilder', () => {
     expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
     expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
     expect(summary.categorySummary).toContain('GPU main + CPU tail: base reruns + hard gates')
-    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
   })
 
   it('defaults Cdmc composite validation to Auto so the measured GPU-preferred policy remains active', () => {
@@ -1178,7 +1180,7 @@ describe('validationRequestBuilder', () => {
     expect(summary.routeSummary).toContain('expected GPU composite route (CDMC)')
     expect(summary.moduleSummary).toContain('Expected GPU composite route (CDMC)')
     expect(summary.categorySummary).toContain('GPU main + CPU tail: base reruns + hard gates')
-    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation')
+    expect(summary.warningSummary).toContain('CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics')
   })
 
   it('treats CompositeMo GPU fixed-candidate validation as CpuOnly fallback in previews', () => {

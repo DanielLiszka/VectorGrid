@@ -3236,6 +3236,37 @@ describe("optimizeRequestBuilder", () => {
     ).toThrow(/standalone unified-GPU GpuKernel routes/i);
   });
 
+  it("rejects standalone shortlist extras on plain CompositeCpu even when a GPU backend is requested", () => {
+    expect(() =>
+      buildCompositeCpuOptimizationRequest({
+        context: {
+          strategy_kind: "CompositeCpu",
+          data_id: "data-plain-composite",
+          current_data_meta: {
+            has_open: true,
+            has_high: true,
+            has_low: true,
+            has_close: true,
+            has_volume: true,
+          },
+        },
+        backend: "GpuKernel",
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        includeAll: "true",
+        extraShortlistObjectives: "Pnl",
+      }),
+    ).toThrow(/standalone unified-GPU GpuKernel routes/i);
+  });
+
   it("returns null for non-CompositeCpu strategy kind", () => {
     const req = buildCompositeCpuOptimizationRequest({
       context: {
@@ -3255,8 +3286,10 @@ describe("optimizeRequestBuilder", () => {
     expect(req).toBeNull();
   });
 
-  it("builds a CompositeMo optimization request from typed inputs", () => {
-    const req = buildCompositeMoOptimizationRequest({
+  function baseCompositeMoInputs(): Parameters<
+    typeof buildCompositeMoOptimizationRequest
+  >[0] {
+    return {
       context: {
         strategy_kind: "CompositeMo",
         data_id: "data-mo",
@@ -3308,7 +3341,63 @@ describe("optimizeRequestBuilder", () => {
       tradeOnNext: false,
       fastMaParams: { alpha: 2 },
       slowMaParams: { alpha: 3 },
-    });
+    };
+  }
+
+  function baseCompositeMoRangeBuilderInputs(): Parameters<
+    typeof buildCompositeMoOptimizationRequest
+  >[0] {
+    return {
+      ...baseCompositeMoInputs(),
+      moSampler: "Random",
+      moUseRangeBuilder: true,
+      moHtAmpLow: "2",
+      moHtAmpHigh: "2",
+      moHtAmpStep: "1",
+      moHtDevLow: "1.5",
+      moHtDevHigh: "2.5",
+      moHtDevStep: "0.5",
+      moHtAtrLow: "20",
+      moHtAtrHigh: "20",
+      moHtAtrStep: "1",
+      moMaczFastLow: "5",
+      moMaczFastHigh: "5",
+      moMaczFastStep: "1",
+      moMaczSlowLow: "10",
+      moMaczSlowHigh: "10",
+      moMaczSlowStep: "1",
+      moMaczSignalLow: "3",
+      moMaczSignalHigh: "3",
+      moMaczSignalStep: "1",
+      moMaczLengthZLow: "5",
+      moMaczLengthZHigh: "5",
+      moMaczLengthZStep: "1",
+      moMaczLengthStdevLow: "8",
+      moMaczLengthStdevHigh: "8",
+      moMaczLengthStdevStep: "1",
+      moMaczGammaLow: "0.01",
+      moMaczGammaHigh: "0.01",
+      moMaczGammaStep: "0.01",
+      moMaczALow: "1",
+      moMaczAHigh: "1",
+      moMaczAStep: "0.1",
+      moMaczBLow: "1",
+      moMaczBHigh: "1",
+      moMaczBStep: "0.1",
+      moMaczUseLagMode: "true",
+      moMaczUseVolumeMode: "false",
+      moOttPeriodLow: "2",
+      moOttPeriodHigh: "2",
+      moOttPeriodStep: "1",
+      moOttPercentLow: "1",
+      moOttPercentHigh: "1",
+      moOttPercentStep: "0.1",
+      moOttMaTypes: "SMA,EMA",
+    };
+  }
+
+  it("builds a CompositeMo optimization request from typed inputs", () => {
+    const req = buildCompositeMoOptimizationRequest(baseCompositeMoInputs());
 
     expect(req).toBeTruthy();
     expect(req).toMatchObject({
@@ -3322,17 +3411,227 @@ describe("optimizeRequestBuilder", () => {
       sampler: {
         sampler: "Nsga2",
       },
-      strategy: {
+      base_strategy: {
         long_only: true,
         allow_flip: true,
         trade_on_next_bar: true,
       },
     });
+    expect(req).not.toHaveProperty("strategy");
     expect(
       Array.isArray(
         (req as { search_space?: { params?: unknown[] } }).search_space?.params,
       ),
     ).toBe(true);
+  });
+
+  it("stringifies CompositeMo discrete numeric and bool categorical choices", () => {
+    const req = buildCompositeMoOptimizationRequest(
+      baseCompositeMoRangeBuilderInputs(),
+    );
+
+    const params = ((req?.search_space as { params?: Array<{ name: string; domain: unknown }> })
+      ?.params ?? []) as Array<{ name: string; domain: unknown }>;
+    const findDomain = (name: string) =>
+      params.find((param) => String(param.name || "").toLowerCase() === name)
+        ?.domain as Record<string, unknown> | undefined;
+
+    expect(findDomain("halftrend_channel_deviation")).toEqual({
+      Categorical: { choices: ["1.5", "2", "2.5"] },
+    });
+    expect(findDomain("macz_use_lag")).toEqual({
+      Categorical: { choices: ["true"] },
+    });
+    expect(findDomain("macz_use_volume")).toEqual({
+      Categorical: { choices: ["false"] },
+    });
+    expect(findDomain("ott_ma_type")).toEqual({
+      Categorical: { choices: ["SMA", "EMA"] },
+    });
+  });
+
+  it("rejects unsupported CompositeMo custom search-space params", () => {
+    expect(() =>
+      buildCompositeMoOptimizationRequest({
+        ...baseCompositeMoInputs(),
+        moSampler: "Random",
+        moUseRangeBuilder: false,
+        moSearchSpace: JSON.stringify({
+          params: [{ name: "not_real", domain: { Bool: {} } }],
+        }),
+      }),
+    ).toThrow(/Unsupported Composite MO search-space param/i);
+  });
+
+  it("rejects duplicate CompositeMo custom search-space params", () => {
+    expect(() =>
+      buildCompositeMoOptimizationRequest({
+        ...baseCompositeMoInputs(),
+        moSampler: "Random",
+        moUseRangeBuilder: false,
+        moSearchSpace: JSON.stringify({
+          params: [
+            { name: "ott_ma_type", domain: { Categorical: { choices: ["sma"] } } },
+            { name: "ott_ma_type", domain: { Categorical: { choices: ["ema"] } } },
+          ],
+        }),
+      }),
+    ).toThrow(/Duplicate Composite MO search-space param/i);
+  });
+
+  it("caps default CompositeMo random trials for tiny discrete spaces", () => {
+    const req = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      fastStart: "5",
+      fastEnd: "5",
+      fastStep: "1",
+      slowStart: "20",
+      slowEnd: "20",
+      slowStep: "1",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      moObjectiveMin: "MaxDrawdown",
+      compositeSignalMode: "hard_gate",
+      moSampler: "Random",
+      moRandomTrials: "",
+      moUseRangeBuilder: false,
+      moSearchSpace: JSON.stringify({
+        params: [
+          { name: "ott_ma_type", domain: { Categorical: { choices: ["sma", "ema"] } } },
+          { name: "macz_use_lag", domain: "Bool" },
+        ],
+      }),
+    });
+
+    expect(req?.sampler).toEqual({
+      sampler: "Random",
+      config: { seed: 1, trials: 1 },
+    });
+  });
+
+  it("omits default CompositeMo prescan device id and auto-expands MA pairs", () => {
+    const req = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      moSampler: "Random",
+      moUseRangeBuilder: false,
+      moSearchSpace: JSON.stringify({
+        params: [
+          {
+            name: "fast_ma_type",
+            domain: { Categorical: { choices: ["sma", "ema"] } },
+          },
+          {
+            name: "slow_ma_type",
+            domain: { Categorical: { choices: ["ema", "wma"] } },
+          },
+          {
+            name: "ott_ma_type",
+            domain: { Categorical: { choices: ["sma"] } },
+          },
+        ],
+      }),
+      moPrescanEnable: true,
+      moPrescanMaPairs: "",
+    });
+
+    const gpuPrescan = req?.gpu_prescan as
+      | {
+          device_id?: number;
+          ma_pairs?: Array<{ fast_ma_type: string; slow_ma_type: string }>;
+        }
+      | undefined;
+    expect(gpuPrescan).not.toHaveProperty("device_id");
+    expect(gpuPrescan?.ma_pairs).toEqual([
+      { fast_ma_type: "sma", slow_ma_type: "ema" },
+      { fast_ma_type: "sma", slow_ma_type: "wma" },
+      { fast_ma_type: "ema", slow_ma_type: "ema" },
+      { fast_ma_type: "ema", slow_ma_type: "wma" },
+    ]);
+  });
+
+  it("fails clearly when CompositeMo MA-pair auto-expansion would exceed eight pairs", () => {
+    expect(() =>
+      buildCompositeMoOptimizationRequest({
+        ...baseCompositeMoInputs(),
+        moSampler: "Random",
+        moUseRangeBuilder: false,
+        moSearchSpace: JSON.stringify({
+          params: [
+            {
+              name: "fast_ma_type",
+              domain: { Categorical: { choices: ["sma", "ema", "wma"] } },
+            },
+            {
+              name: "slow_ma_type",
+              domain: { Categorical: { choices: ["ema", "wma", "alma"] } },
+            },
+          ],
+        }),
+        moPrescanEnable: true,
+        moPrescanMaPairs: "",
+      }),
+    ).toThrow(/more than 8 MA pairs/i);
+  });
+
+  it("caps tiny-space CompositeMo defaults without overriding explicit budgets", () => {
+    const tinySpace = JSON.stringify({ params: [] });
+
+    const randomDefault = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      moSampler: "Random",
+      fastStart: "5",
+      fastEnd: "5",
+      fastStep: "1",
+      slowStart: "20",
+      slowEnd: "20",
+      slowStep: "1",
+      moUseRangeBuilder: false,
+      moSearchSpace: tinySpace,
+    });
+    const randomExplicit = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      moSampler: "Random",
+      fastStart: "5",
+      fastEnd: "5",
+      fastStep: "1",
+      slowStart: "20",
+      slowEnd: "20",
+      slowStep: "1",
+      moUseRangeBuilder: false,
+      moSearchSpace: tinySpace,
+      moRandomTrials: "333",
+    });
+    const tpeDefault = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      moSampler: "Tpe",
+      fastStart: "5",
+      fastEnd: "5",
+      fastStep: "1",
+      slowStart: "20",
+      slowEnd: "20",
+      slowStep: "1",
+      moUseRangeBuilder: false,
+      moSearchSpace: tinySpace,
+    });
+
+    expect(
+      (randomDefault?.sampler as { config?: { trials?: number } })?.config
+        ?.trials,
+    ).toBe(1);
+    expect(
+      (randomExplicit?.sampler as { config?: { trials?: number } })?.config
+        ?.trials,
+    ).toBe(333);
+    expect(
+      (tpeDefault?.sampler as {
+        config?: { trials?: number; startup_trials?: number };
+      })?.config,
+    ).toMatchObject({
+      trials: 1,
+      startup_trials: 0,
+    });
   });
 
   it("returns null for non-CompositeMo strategy kind", () => {

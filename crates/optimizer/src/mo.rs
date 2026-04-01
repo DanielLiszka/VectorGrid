@@ -3,7 +3,10 @@ use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sobol::{params::JoeKuoD6, Sobol};
-use std::{cmp::Ordering, collections::HashSet};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ParamDomain {
@@ -51,7 +54,7 @@ pub enum ParamValue {
     Cat(usize),
 }
 
-fn values_hash(values: &[ParamValue]) -> u64 {
+pub fn param_values_hash(values: &[ParamValue]) -> u64 {
     let mut h: u64 = 0x9E37_79B9_7F4A_7C15;
     for v in values {
         let (tag, x): (u64, u64) = match v {
@@ -75,10 +78,15 @@ impl SearchSpace {
         if self.params.is_empty() {
             return Err("search space has no params".to_string());
         }
+        let mut seen_names: HashSet<String> = HashSet::with_capacity(self.params.len());
         for p in &self.params {
             let name = p.name.trim();
             if name.is_empty() {
                 return Err("param name cannot be empty".to_string());
+            }
+            let key = name.to_ascii_lowercase();
+            if !seen_names.insert(key) {
+                return Err(format!("duplicate param name '{name}'"));
             }
             match &p.domain {
                 ParamDomain::IntRange {
@@ -193,6 +201,73 @@ impl SearchSpace {
         let len = grid_len_checked(&axes, max_combos)?;
         SearchSpaceGrid::new(axes, len)
     }
+}
+
+pub fn bounded_exact_grid(
+    space: &SearchSpace,
+    max_axis_values: usize,
+    max_combos: usize,
+) -> Result<Option<SearchSpaceGrid>, String> {
+    let max_axis_values = max_axis_values.max(1);
+    let max_combos = max_combos.max(1);
+    space.validate()?;
+
+    let mut total = 1usize;
+    for p in &space.params {
+        let axis_len = match &p.domain {
+            ParamDomain::IntRange {
+                low,
+                high,
+                step,
+                log: _,
+            } => {
+                let step = *step;
+                if step <= 0 {
+                    return Err(format!("param '{}': step must be > 0", p.name));
+                }
+                let (lo, hi) = if low <= high {
+                    (*low, *high)
+                } else {
+                    (*high, *low)
+                };
+                let span = hi
+                    .checked_sub(lo)
+                    .ok_or_else(|| format!("param '{}': range overflow", p.name))?;
+                let steps = (span / step).saturating_add(1);
+                let steps_usize = usize::try_from(steps)
+                    .map_err(|_| format!("param '{}': integer grid too large", p.name))?;
+                if steps_usize > max_axis_values {
+                    return Ok(None);
+                }
+                steps_usize
+            }
+            ParamDomain::FloatRange { low, high, log: _ } => {
+                if low == high {
+                    1
+                } else {
+                    return Ok(None);
+                }
+            }
+            ParamDomain::Categorical { choices } => {
+                if choices.is_empty() {
+                    return Err(format!("param '{}': categorical has no choices", p.name));
+                }
+                if choices.len() > max_axis_values {
+                    return Ok(None);
+                }
+                choices.len()
+            }
+            ParamDomain::Bool => 2,
+        };
+        total = total
+            .checked_mul(axis_len)
+            .ok_or_else(|| "exact grid combination count overflow".to_string())?;
+        if total > max_combos {
+            return Ok(None);
+        }
+    }
+
+    space.grid(max_axis_values, max_combos).map(Some)
 }
 
 fn domain_grid_values(
@@ -599,6 +674,23 @@ pub struct Nsga2Result<T> {
     pub population: Vec<MoPoint<T>>,
     pub pareto: Vec<MoPoint<T>>,
     pub total_evaluations: usize,
+    pub unique_evaluations: usize,
+    pub duplicate_evaluations_avoided: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct MoSearchStats {
+    pub requested_evaluations: usize,
+    pub actual_evaluations: usize,
+    pub unique_evaluations: usize,
+    pub duplicate_evaluations_avoided: usize,
+    pub exact_grid_used: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MoSearchResult<T> {
+    pub pareto: Vec<MoPoint<T>>,
+    pub stats: MoSearchStats,
 }
 
 fn constrained_dominates<T>(a: &MoPoint<T>, b: &MoPoint<T>) -> bool {
@@ -823,6 +915,122 @@ fn select_parent<T, R: Rng + ?Sized>(pop: &[MoPoint<T>], rng: &mut R) -> usize {
     }
 }
 
+type PointCache<T> = HashMap<u64, Vec<MoPoint<T>>>;
+
+#[derive(Clone, Debug)]
+struct BatchEvalResult<T> {
+    points: Vec<MoPoint<T>>,
+    newly_evaluated: Vec<MoPoint<T>>,
+    actual_evaluations: usize,
+    duplicate_evaluations_avoided: usize,
+}
+
+fn cached_point_clone<T: Clone>(
+    cache: &PointCache<T>,
+    values: &[ParamValue],
+) -> Option<MoPoint<T>> {
+    let key = param_values_hash(values);
+    cache
+        .get(&key)
+        .and_then(|points| points.iter().find(|point| point.values == values).cloned())
+}
+
+fn insert_cached_point<T>(cache: &mut PointCache<T>, point: MoPoint<T>) {
+    let key = param_values_hash(&point.values);
+    cache.entry(key).or_default().push(point);
+}
+
+fn extend_frontier<T: Clone>(frontier: &mut Vec<MoPoint<T>>, new_points: Vec<MoPoint<T>>) {
+    if new_points.is_empty() {
+        return;
+    }
+    frontier.extend(new_points);
+    *frontier = pareto_front_constrained(frontier);
+}
+
+fn evaluate_batch_with_cache<T, F>(
+    values_batch: Vec<Vec<ParamValue>>,
+    cache: &mut PointCache<T>,
+    eval: &F,
+) -> BatchEvalResult<T>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+{
+    let mut points: Vec<Option<MoPoint<T>>> = vec![None; values_batch.len()];
+    let mut pending_unique: Vec<Vec<ParamValue>> = Vec::new();
+    let mut pending_origins: Vec<Vec<usize>> = Vec::new();
+    let mut pending_by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut duplicate_evaluations_avoided = 0usize;
+
+    for (idx, values) in values_batch.iter().enumerate() {
+        if let Some(point) = cached_point_clone(cache, values) {
+            points[idx] = Some(point);
+            duplicate_evaluations_avoided = duplicate_evaluations_avoided.saturating_add(1);
+            continue;
+        }
+
+        let key = param_values_hash(values);
+        let mut matched_pending = None;
+        if let Some(candidates) = pending_by_hash.get(&key) {
+            for &pending_idx in candidates {
+                if pending_unique
+                    .get(pending_idx)
+                    .is_some_and(|candidate| candidate == values)
+                {
+                    matched_pending = Some(pending_idx);
+                    break;
+                }
+            }
+        }
+
+        if let Some(pending_idx) = matched_pending {
+            pending_origins[pending_idx].push(idx);
+            duplicate_evaluations_avoided = duplicate_evaluations_avoided.saturating_add(1);
+            continue;
+        }
+
+        let pending_idx = pending_unique.len();
+        pending_unique.push(values.clone());
+        pending_origins.push(vec![idx]);
+        pending_by_hash.entry(key).or_default().push(pending_idx);
+    }
+
+    let newly_evaluated: Vec<MoPoint<T>> = pending_unique
+        .par_iter()
+        .map(|values| {
+            let out = eval(values);
+            let violation = overall_violation(&out.constraints);
+            MoPoint {
+                values: values.clone(),
+                objectives: out.objectives,
+                violation,
+                payload: out.payload,
+            }
+        })
+        .collect();
+
+    for (pending_idx, point) in newly_evaluated.iter().cloned().enumerate() {
+        insert_cached_point(cache, point.clone());
+        if let Some(origins) = pending_origins.get(pending_idx) {
+            for &origin_idx in origins {
+                if let Some(slot) = points.get_mut(origin_idx) {
+                    *slot = Some(point.clone());
+                }
+            }
+        }
+    }
+
+    let points: Vec<MoPoint<T>> = points.into_iter().flatten().collect();
+
+    BatchEvalResult {
+        points,
+        actual_evaluations: newly_evaluated.len(),
+        newly_evaluated,
+        duplicate_evaluations_avoided,
+    }
+}
+
 pub fn nsga2_optimize<T, F, Repair>(
     space: &SearchSpace,
     cfg: Nsga2Config,
@@ -847,7 +1055,9 @@ where
         .clamp(0.0, 1.0);
 
     let mut total_evaluations = 0usize;
-    let mut all_seen: Vec<MoPoint<T>> = Vec::new();
+    let mut duplicate_evaluations_avoided = 0usize;
+    let mut cache: PointCache<T> = HashMap::new();
+    let mut all_seen_unique: Vec<MoPoint<T>> = Vec::new();
 
     // Initial population (random).
     let mut population_values: Vec<Vec<ParamValue>> = (0..cfg.population_size)
@@ -856,22 +1066,12 @@ where
     for v in &mut population_values {
         repair(v);
     }
-
-    let mut population: Vec<MoPoint<T>> = population_values
-        .par_iter()
-        .map(|values| {
-            let out = eval(values);
-            let violation = overall_violation(&out.constraints);
-            MoPoint {
-                values: values.clone(),
-                objectives: out.objectives,
-                violation,
-                payload: out.payload,
-            }
-        })
-        .collect();
-    total_evaluations = total_evaluations.saturating_add(population.len());
-    all_seen.extend(population.clone());
+    let initial = evaluate_batch_with_cache(population_values, &mut cache, &eval);
+    duplicate_evaluations_avoided =
+        duplicate_evaluations_avoided.saturating_add(initial.duplicate_evaluations_avoided);
+    total_evaluations = total_evaluations.saturating_add(initial.actual_evaluations);
+    all_seen_unique.extend(initial.newly_evaluated.clone());
+    let mut population: Vec<MoPoint<T>> = initial.points;
 
     for _gen in 0..cfg.generations {
         // Generate offspring.
@@ -910,22 +1110,12 @@ where
             repair(&mut child);
             offspring_values.push(child);
         }
-
-        let offspring: Vec<MoPoint<T>> = offspring_values
-            .par_iter()
-            .map(|values| {
-                let out = eval(values);
-                let violation = overall_violation(&out.constraints);
-                MoPoint {
-                    values: values.clone(),
-                    objectives: out.objectives,
-                    violation,
-                    payload: out.payload,
-                }
-            })
-            .collect();
-        total_evaluations = total_evaluations.saturating_add(offspring.len());
-        all_seen.extend(offspring.clone());
+        let offspring_eval = evaluate_batch_with_cache(offspring_values, &mut cache, &eval);
+        duplicate_evaluations_avoided = duplicate_evaluations_avoided
+            .saturating_add(offspring_eval.duplicate_evaluations_avoided);
+        total_evaluations = total_evaluations.saturating_add(offspring_eval.actual_evaluations);
+        all_seen_unique.extend(offspring_eval.newly_evaluated.clone());
+        let offspring = offspring_eval.points;
 
         let mut combined = population;
         combined.extend(offspring);
@@ -934,20 +1124,14 @@ where
         population = elites.into_iter().map(|i| combined[i].clone()).collect();
     }
 
-    // Pareto front (rank-0) from all evaluated points.
-    let fronts = non_dominated_sort(&all_seen);
-    let pareto = fronts
-        .first()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|idx| all_seen[idx].clone())
-        .collect::<Vec<_>>();
+    let pareto = pareto_front_constrained(&all_seen_unique);
 
     Ok(Nsga2Result {
         population,
         pareto,
         total_evaluations,
+        unique_evaluations: all_seen_unique.len(),
+        duplicate_evaluations_avoided,
     })
 }
 
@@ -1023,33 +1207,71 @@ where
     F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
     Repair: Fn(&mut [ParamValue]) + Send + Sync,
 {
+    Ok(random_mo_search_with_stats(space, cfg, repair, eval)?.pareto)
+}
+
+pub fn random_mo_search_with_stats<T, F, Repair>(
+    space: &SearchSpace,
+    cfg: RandomMoConfig,
+    repair: Repair,
+    eval: F,
+) -> Result<MoSearchResult<T>, String>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+    Repair: Fn(&mut [ParamValue]) + Send + Sync,
+{
     space.validate()?;
     if cfg.trials == 0 {
-        return Ok(Vec::new());
+        return Ok(MoSearchResult {
+            pareto: Vec::new(),
+            stats: MoSearchStats {
+                requested_evaluations: 0,
+                ..MoSearchStats::default()
+            },
+        });
     }
 
+    const CHUNK_SIZE: usize = 256;
     let mut rng = StdRng::seed_from_u64(cfg.seed);
-    let mut values: Vec<Vec<ParamValue>> =
-        (0..cfg.trials).map(|_| space.sample(&mut rng)).collect();
-    for v in &mut values {
-        repair(v);
+    let mut cache: PointCache<T> = HashMap::new();
+    let mut frontier: Vec<MoPoint<T>> = Vec::new();
+    let mut stats = MoSearchStats {
+        requested_evaluations: cfg.trials,
+        ..MoSearchStats::default()
+    };
+    let mut batch_values: Vec<Vec<ParamValue>> = Vec::with_capacity(CHUNK_SIZE);
+
+    let mut flush_batch = |batch: &mut Vec<Vec<ParamValue>>| {
+        if batch.is_empty() {
+            return;
+        }
+        let eval_batch = std::mem::take(batch);
+        let result = evaluate_batch_with_cache(eval_batch, &mut cache, &eval);
+        stats.actual_evaluations = stats
+            .actual_evaluations
+            .saturating_add(result.actual_evaluations);
+        stats.duplicate_evaluations_avoided = stats
+            .duplicate_evaluations_avoided
+            .saturating_add(result.duplicate_evaluations_avoided);
+        extend_frontier(&mut frontier, result.newly_evaluated);
+    };
+
+    for _ in 0..cfg.trials {
+        let mut values = space.sample(&mut rng);
+        repair(&mut values);
+        batch_values.push(values);
+        if batch_values.len() >= CHUNK_SIZE {
+            flush_batch(&mut batch_values);
+        }
     }
+    flush_batch(&mut batch_values);
+    stats.unique_evaluations = stats.actual_evaluations;
 
-    let evaluated: Vec<MoPoint<T>> = values
-        .par_iter()
-        .map(|v| {
-            let out = eval(v);
-            let violation = overall_violation(&out.constraints);
-            MoPoint {
-                values: v.clone(),
-                objectives: out.objectives,
-                violation,
-                payload: out.payload,
-            }
-        })
-        .collect();
-
-    Ok(pareto_front_constrained(&evaluated))
+    Ok(MoSearchResult {
+        pareto: frontier,
+        stats,
+    })
 }
 
 fn is_prime(x: u32) -> bool {
@@ -1191,12 +1413,52 @@ where
     F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
     Repair: Fn(&mut [ParamValue]) + Send + Sync,
 {
+    Ok(qmc_mo_search_with_stats(space, cfg, repair, eval)?.pareto)
+}
+
+pub fn qmc_mo_search_with_stats<T, F, Repair>(
+    space: &SearchSpace,
+    cfg: QmcMoConfig,
+    repair: Repair,
+    eval: F,
+) -> Result<MoSearchResult<T>, String>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+    Repair: Fn(&mut [ParamValue]) + Send + Sync,
+{
     space.validate()?;
     if cfg.trials == 0 {
-        return Ok(Vec::new());
+        return Ok(MoSearchResult {
+            pareto: Vec::new(),
+            stats: MoSearchStats::default(),
+        });
     }
+    const CHUNK_SIZE: usize = 256;
     let dim = space.params.len();
-    let mut values: Vec<Vec<ParamValue>> = Vec::with_capacity(cfg.trials);
+    let mut cache: PointCache<T> = HashMap::new();
+    let mut frontier: Vec<MoPoint<T>> = Vec::new();
+    let mut stats = MoSearchStats {
+        requested_evaluations: cfg.trials,
+        ..MoSearchStats::default()
+    };
+    let mut batch_values: Vec<Vec<ParamValue>> = Vec::with_capacity(CHUNK_SIZE);
+
+    let mut flush_batch = |batch: &mut Vec<Vec<ParamValue>>| {
+        if batch.is_empty() {
+            return;
+        }
+        let eval_batch = std::mem::take(batch);
+        let result = evaluate_batch_with_cache(eval_batch, &mut cache, &eval);
+        stats.actual_evaluations = stats
+            .actual_evaluations
+            .saturating_add(result.actual_evaluations);
+        stats.duplicate_evaluations_avoided = stats
+            .duplicate_evaluations_avoided
+            .saturating_add(result.duplicate_evaluations_avoided);
+        extend_frontier(&mut frontier, result.newly_evaluated);
+    };
+
     match cfg.sequence {
         QmcSequence::Halton => {
             let bases = first_primes(dim);
@@ -1208,7 +1470,10 @@ where
                     v.push(qmc_sample_one(&p.domain, u));
                 }
                 repair(&mut v);
-                values.push(v);
+                batch_values.push(v);
+                if batch_values.len() >= CHUNK_SIZE {
+                    flush_batch(&mut batch_values);
+                }
             }
         }
         QmcSequence::Sobol => {
@@ -1237,26 +1502,20 @@ where
                     v.push(qmc_sample_one(&p.domain, u));
                 }
                 repair(&mut v);
-                values.push(v);
+                batch_values.push(v);
+                if batch_values.len() >= CHUNK_SIZE {
+                    flush_batch(&mut batch_values);
+                }
             }
         }
     }
+    flush_batch(&mut batch_values);
+    stats.unique_evaluations = stats.actual_evaluations;
 
-    let evaluated: Vec<MoPoint<T>> = values
-        .par_iter()
-        .map(|v| {
-            let out = eval(v);
-            let violation = overall_violation(&out.constraints);
-            MoPoint {
-                values: v.clone(),
-                objectives: out.objectives,
-                violation,
-                payload: out.payload,
-            }
-        })
-        .collect();
-
-    Ok(pareto_front_constrained(&evaluated))
+    Ok(MoSearchResult {
+        pareto: frontier,
+        stats,
+    })
 }
 
 fn log_sum_exp(xs: &[f64]) -> f64 {
@@ -1747,7 +2006,18 @@ fn build_tpe_models<T: Clone>(
 
     // Rank points using constrained Pareto fronts on the subset (small enough for O(n^2)),
     // then prioritize diversity via crowding distance within each front.
-    let subset: Vec<MoPoint<T>> = idxs.iter().map(|&i| evaluated[i].clone()).collect();
+    let subset: Vec<MoPoint<()>> = idxs
+        .iter()
+        .map(|&i| {
+            let point = &evaluated[i];
+            MoPoint {
+                values: Vec::new(),
+                objectives: point.objectives,
+                violation: point.violation,
+                payload: (),
+            }
+        })
+        .collect();
     let fronts = non_dominated_sort(&subset);
     let mut ranked: Vec<usize> = Vec::with_capacity(subset.len());
     for front in fronts {
@@ -1971,9 +2241,26 @@ where
     F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
     Repair: Fn(&mut [ParamValue]) + Send + Sync,
 {
+    Ok(tpe_mo_search_with_stats(space, cfg, repair, eval)?.pareto)
+}
+
+pub fn tpe_mo_search_with_stats<T, F, Repair>(
+    space: &SearchSpace,
+    cfg: TpeMoConfig,
+    repair: Repair,
+    eval: F,
+) -> Result<MoSearchResult<T>, String>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+    Repair: Fn(&mut [ParamValue]) + Send + Sync,
+{
     space.validate()?;
     if cfg.trials == 0 {
-        return Ok(Vec::new());
+        return Ok(MoSearchResult {
+            pareto: Vec::new(),
+            stats: MoSearchStats::default(),
+        });
     }
     if cfg.gamma <= 0.0 || cfg.gamma >= 1.0 || !cfg.gamma.is_finite() {
         return Err("tpe_mo_search: gamma must be in (0, 1)".to_string());
@@ -1988,6 +2275,8 @@ where
     let mut rng = StdRng::seed_from_u64(cfg.seed);
     let mut evaluated: Vec<MoPoint<T>> = Vec::with_capacity(cfg.trials);
     let mut seen: HashSet<u64> = HashSet::with_capacity(cfg.trials.saturating_mul(2));
+    let mut unique_evaluations = 0usize;
+    let mut duplicate_evaluations_avoided = 0usize;
 
     let startup = cfg.startup_trials.min(cfg.trials);
     let mut remaining = cfg.trials;
@@ -2015,12 +2304,13 @@ where
                     space.sample(&mut rng)
                 };
                 repair(&mut v);
-                let key = values_hash(&v);
+                let key = param_values_hash(&v);
                 if seen.insert(key) || tries >= max_tries {
                     values.push(v);
                     next_idx = next_idx.saturating_add(1);
                     break;
                 }
+                duplicate_evaluations_avoided = duplicate_evaluations_avoided.saturating_add(1);
                 tries = tries.saturating_add(1);
             }
         }
@@ -2039,15 +2329,190 @@ where
             })
             .collect();
         evaluated.extend(batch_eval);
+        unique_evaluations = seen.len();
         remaining = remaining.saturating_sub(batch);
     }
 
-    Ok(pareto_front_constrained(&evaluated))
+    Ok(MoSearchResult {
+        pareto: pareto_front_constrained(&evaluated),
+        stats: MoSearchStats {
+            requested_evaluations: cfg.trials,
+            actual_evaluations: evaluated.len(),
+            unique_evaluations,
+            duplicate_evaluations_avoided,
+            exact_grid_used: false,
+        },
+    })
+}
+
+pub fn exact_grid_mo_search_with_stats<T, F, Repair>(
+    space: &SearchSpace,
+    max_axis_values: usize,
+    max_combos: usize,
+    chunk_size: usize,
+    repair: Repair,
+    eval: F,
+) -> Result<MoSearchResult<T>, String>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+    Repair: Fn(&mut [ParamValue]) + Send + Sync,
+{
+    space.validate()?;
+    let grid = space.grid(max_axis_values, max_combos)?;
+    exact_grid_mo_search_with_grid(grid, chunk_size, repair, eval)
+}
+
+pub fn bounded_exact_grid_mo_search_with_stats<T, F, Repair>(
+    space: &SearchSpace,
+    max_axis_values: usize,
+    max_combos: usize,
+    chunk_size: usize,
+    repair: Repair,
+    eval: F,
+) -> Result<Option<MoSearchResult<T>>, String>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+    Repair: Fn(&mut [ParamValue]) + Send + Sync,
+{
+    space.validate()?;
+    let Some(grid) = bounded_exact_grid(space, max_axis_values, max_combos)? else {
+        return Ok(None);
+    };
+    exact_grid_mo_search_with_grid(grid, chunk_size, repair, eval).map(Some)
+}
+
+pub fn candidate_set_mo_search_with_stats<T, F, Repair>(
+    candidates: Vec<Vec<ParamValue>>,
+    chunk_size: usize,
+    repair: Repair,
+    eval: F,
+) -> Result<MoSearchResult<T>, String>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+    Repair: Fn(&mut [ParamValue]) + Send + Sync,
+{
+    let requested = candidates.len();
+    if requested == 0 {
+        return Ok(MoSearchResult {
+            pareto: Vec::new(),
+            stats: MoSearchStats {
+                exact_grid_used: true,
+                ..MoSearchStats::default()
+            },
+        });
+    }
+
+    let chunk_size = chunk_size.max(1);
+    let mut cache: PointCache<T> = HashMap::new();
+    let mut frontier: Vec<MoPoint<T>> = Vec::new();
+    let mut stats = MoSearchStats {
+        requested_evaluations: requested,
+        exact_grid_used: true,
+        ..MoSearchStats::default()
+    };
+
+    for chunk in candidates.chunks(chunk_size) {
+        let mut repaired: Vec<Vec<ParamValue>> = Vec::with_capacity(chunk.len());
+        for values in chunk {
+            let mut repaired_values = values.clone();
+            repair(&mut repaired_values);
+            repaired.push(repaired_values);
+        }
+        let result = evaluate_batch_with_cache(repaired, &mut cache, &eval);
+        stats.actual_evaluations = stats
+            .actual_evaluations
+            .saturating_add(result.actual_evaluations);
+        stats.duplicate_evaluations_avoided = stats
+            .duplicate_evaluations_avoided
+            .saturating_add(result.duplicate_evaluations_avoided);
+        extend_frontier(&mut frontier, result.newly_evaluated);
+    }
+
+    stats.unique_evaluations = stats.actual_evaluations;
+    Ok(MoSearchResult {
+        pareto: frontier,
+        stats,
+    })
+}
+
+fn exact_grid_mo_search_with_grid<T, F, Repair>(
+    grid: SearchSpaceGrid,
+    chunk_size: usize,
+    repair: Repair,
+    eval: F,
+) -> Result<MoSearchResult<T>, String>
+where
+    T: Clone + Send + Sync,
+    F: Fn(&[ParamValue]) -> EvalOutcome<T> + Send + Sync,
+    Repair: Fn(&mut [ParamValue]) + Send + Sync,
+{
+    let requested = grid.len();
+    if requested == 0 {
+        return Ok(MoSearchResult {
+            pareto: Vec::new(),
+            stats: MoSearchStats {
+                exact_grid_used: true,
+                ..MoSearchStats::default()
+            },
+        });
+    }
+
+    let chunk_size = chunk_size.max(1);
+    let mut cache: PointCache<T> = HashMap::new();
+    let mut frontier: Vec<MoPoint<T>> = Vec::new();
+    let mut stats = MoSearchStats {
+        requested_evaluations: requested,
+        exact_grid_used: true,
+        ..MoSearchStats::default()
+    };
+
+    for chunk in grid.chunks(chunk_size) {
+        let mut repaired: Vec<Vec<ParamValue>> = Vec::with_capacity(chunk.len());
+        for mut values in chunk {
+            repair(&mut values);
+            repaired.push(values);
+        }
+        let result = evaluate_batch_with_cache(repaired, &mut cache, &eval);
+        stats.actual_evaluations = stats
+            .actual_evaluations
+            .saturating_add(result.actual_evaluations);
+        stats.duplicate_evaluations_avoided = stats
+            .duplicate_evaluations_avoided
+            .saturating_add(result.duplicate_evaluations_avoided);
+        extend_frontier(&mut frontier, result.newly_evaluated);
+    }
+
+    stats.unique_evaluations = stats.actual_evaluations;
+    Ok(MoSearchResult {
+        pareto: frontier,
+        stats,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        Arc,
+    };
+
+    #[derive(Debug)]
+    struct CountedPayload {
+        clone_counter: Arc<AtomicUsize>,
+    }
+
+    impl Clone for CountedPayload {
+        fn clone(&self) -> Self {
+            self.clone_counter.fetch_add(1, AtomicOrdering::Relaxed);
+            Self {
+                clone_counter: Arc::clone(&self.clone_counter),
+            }
+        }
+    }
 
     #[test]
     fn constrained_domination_prefers_feasible() {
@@ -2112,6 +2577,40 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_duplicate_param_names_case_insensitively() {
+        let space = SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "Fast_Len".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 1,
+                        high: 5,
+                        step: 1,
+                        log: false,
+                    },
+                },
+                ParamDef {
+                    name: "fast_len".to_string(),
+                    domain: ParamDomain::Bool,
+                },
+            ],
+        };
+
+        let err = space.validate().unwrap_err();
+        assert!(err.contains("duplicate param name"));
+    }
+
+    #[test]
+    fn param_values_hash_distinguishes_value_kinds() {
+        let a = vec![ParamValue::Int(1), ParamValue::Bool(true)];
+        let b = vec![ParamValue::Int(1), ParamValue::Bool(true)];
+        let c = vec![ParamValue::Float(1.0), ParamValue::Bool(true)];
+
+        assert_eq!(param_values_hash(&a), param_values_hash(&b));
+        assert_ne!(param_values_hash(&a), param_values_hash(&c));
+    }
+
+    #[test]
     fn nsga2_smoke_runs() {
         let space = SearchSpace {
             params: vec![
@@ -2166,6 +2665,48 @@ mod tests {
     }
 
     #[test]
+    fn nsga2_dedups_repaired_values() {
+        let space = SearchSpace {
+            params: vec![ParamDef {
+                name: "x".to_string(),
+                domain: ParamDomain::IntRange {
+                    low: 1,
+                    high: 8,
+                    step: 1,
+                    log: false,
+                },
+            }],
+        };
+        let cfg = Nsga2Config {
+            seed: 42,
+            population_size: 12,
+            generations: 4,
+            crossover_prob: 0.9,
+            swapping_prob: 0.5,
+            mutation_prob: Some(1.0),
+        };
+        let repair = |values: &mut [ParamValue]| values[0] = ParamValue::Int(3);
+        let eval = |values: &[ParamValue]| EvalOutcome {
+            objectives: [
+                match values[0] {
+                    ParamValue::Int(v) => v as f64,
+                    _ => 0.0,
+                },
+                1.0,
+            ],
+            constraints: vec![],
+            payload: (),
+        };
+
+        let res = nsga2_optimize(&space, cfg, repair, eval).expect("nsga2 ok");
+        assert_eq!(res.total_evaluations, 1);
+        assert_eq!(res.unique_evaluations, 1);
+        assert!(res.duplicate_evaluations_avoided > 0);
+        assert_eq!(res.pareto.len(), 1);
+        assert_eq!(res.pareto[0].values, vec![ParamValue::Int(3)]);
+    }
+
+    #[test]
     fn qmc_halton_smoke_runs() {
         let space = SearchSpace {
             params: vec![
@@ -2205,6 +2746,78 @@ mod tests {
         };
         let pareto = qmc_mo_search(&space, cfg, repair, eval).expect("qmc ok");
         assert!(!pareto.is_empty());
+    }
+
+    #[test]
+    fn random_search_dedups_repaired_values() {
+        let space = SearchSpace {
+            params: vec![ParamDef {
+                name: "x".to_string(),
+                domain: ParamDomain::IntRange {
+                    low: 0,
+                    high: 100,
+                    step: 1,
+                    log: false,
+                },
+            }],
+        };
+        let cfg = RandomMoConfig {
+            seed: 9,
+            trials: 32,
+        };
+        let repair = |values: &mut [ParamValue]| values[0] = ParamValue::Int(7);
+        let eval = |values: &[ParamValue]| EvalOutcome {
+            objectives: [
+                match values[0] {
+                    ParamValue::Int(v) => v as f64,
+                    _ => 0.0,
+                },
+                0.0,
+            ],
+            constraints: vec![],
+            payload: (),
+        };
+
+        let res = random_mo_search_with_stats(&space, cfg, repair, eval).expect("random ok");
+        assert_eq!(res.stats.requested_evaluations, 32);
+        assert_eq!(res.stats.actual_evaluations, 1);
+        assert_eq!(res.stats.unique_evaluations, 1);
+        assert_eq!(res.pareto.len(), 1);
+        assert_eq!(res.pareto[0].values, vec![ParamValue::Int(7)]);
+        assert_eq!(res.stats.duplicate_evaluations_avoided, 31);
+    }
+
+    #[test]
+    fn qmc_search_dedups_repaired_values() {
+        let space = SearchSpace {
+            params: vec![ParamDef {
+                name: "x".to_string(),
+                domain: ParamDomain::FloatRange {
+                    low: 0.0,
+                    high: 1.0,
+                    log: false,
+                },
+            }],
+        };
+        let cfg = QmcMoConfig {
+            seed: 7,
+            trials: 40,
+            sequence: QmcSequence::Sobol,
+        };
+        let repair = |values: &mut [ParamValue]| values[0] = ParamValue::Float(0.25);
+        let eval = |_values: &[ParamValue]| EvalOutcome {
+            objectives: [1.0, 0.0],
+            constraints: vec![],
+            payload: (),
+        };
+
+        let res = qmc_mo_search_with_stats(&space, cfg, repair, eval).expect("qmc ok");
+        assert_eq!(res.stats.requested_evaluations, 40);
+        assert_eq!(res.stats.actual_evaluations, 1);
+        assert_eq!(res.stats.unique_evaluations, 1);
+        assert_eq!(res.stats.duplicate_evaluations_avoided, 39);
+        assert_eq!(res.pareto.len(), 1);
+        assert_eq!(res.pareto[0].values, vec![ParamValue::Float(0.25)]);
     }
 
     #[test]
@@ -2301,6 +2914,91 @@ mod tests {
         };
         let pareto = tpe_mo_search(&space, cfg, repair, eval).expect("tpe ok");
         assert!(!pareto.is_empty());
+    }
+
+    #[test]
+    fn tpe_search_reports_duplicate_avoidance() {
+        let space = SearchSpace {
+            params: vec![ParamDef {
+                name: "x".to_string(),
+                domain: ParamDomain::IntRange {
+                    low: 0,
+                    high: 7,
+                    step: 1,
+                    log: false,
+                },
+            }],
+        };
+        let cfg = TpeMoConfig {
+            seed: 1,
+            trials: 8,
+            startup_trials: 2,
+            n_ei_candidates: 8,
+            gamma: 0.25,
+            batch_size: 2,
+            max_model_points: 8,
+        };
+        let repair = |values: &mut [ParamValue]| {
+            if let Some(first) = values.first_mut() {
+                *first = ParamValue::Int(0);
+            }
+        };
+        let eval = |values: &[ParamValue]| {
+            let x = match values.first() {
+                Some(ParamValue::Int(v)) => *v as f64,
+                _ => 0.0,
+            };
+            EvalOutcome {
+                objectives: [x, -x],
+                constraints: vec![],
+                payload: (),
+            }
+        };
+
+        let res = tpe_mo_search_with_stats(&space, cfg, repair, eval).expect("tpe ok");
+        assert_eq!(res.stats.requested_evaluations, 8);
+        assert_eq!(res.stats.unique_evaluations, 1);
+        assert!(res.stats.actual_evaluations >= res.stats.unique_evaluations);
+        assert!(res.stats.duplicate_evaluations_avoided > 0);
+    }
+
+    #[test]
+    fn build_tpe_models_does_not_clone_payloads_for_ranking() {
+        let clone_counter = Arc::new(AtomicUsize::new(0));
+        let evaluated: Vec<MoPoint<CountedPayload>> = (0..8)
+            .map(|i| MoPoint {
+                values: vec![ParamValue::Int(i)],
+                objectives: [i as f64, (7 - i) as f64],
+                violation: 0.0,
+                payload: CountedPayload {
+                    clone_counter: Arc::clone(&clone_counter),
+                },
+            })
+            .collect();
+        let space = SearchSpace {
+            params: vec![ParamDef {
+                name: "x".to_string(),
+                domain: ParamDomain::IntRange {
+                    low: 0,
+                    high: 7,
+                    step: 1,
+                    log: false,
+                },
+            }],
+        };
+        let cfg = TpeMoConfig {
+            seed: 1,
+            trials: 16,
+            startup_trials: 4,
+            n_ei_candidates: 8,
+            gamma: 0.25,
+            batch_size: 4,
+            max_model_points: 8,
+        };
+
+        let models = build_tpe_models(&space, &evaluated, &cfg);
+        assert_eq!(models.len(), 1);
+        assert_eq!(clone_counter.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[test]
@@ -2476,5 +3174,97 @@ mod tests {
         assert_eq!(all.len(), grid.len());
         assert_eq!(all[0], grid.get(0).unwrap());
         assert_eq!(all[all.len() - 1], grid.get(grid.len() - 1).unwrap());
+    }
+
+    #[test]
+    fn bounded_exact_grid_mo_search_uses_chunked_grid_evaluation() {
+        let space = SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "x".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 1,
+                        high: 3,
+                        step: 1,
+                        log: false,
+                    },
+                },
+                ParamDef {
+                    name: "flag".to_string(),
+                    domain: ParamDomain::Bool,
+                },
+            ],
+        };
+        let call_counter = Arc::new(AtomicUsize::new(0));
+        let repair = |values: &mut [ParamValue]| {
+            if matches!(values.get(1), Some(ParamValue::Bool(true))) {
+                values[1] = ParamValue::Bool(false);
+            }
+        };
+        let eval_calls = Arc::clone(&call_counter);
+        let eval = move |values: &[ParamValue]| {
+            eval_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            let x = match values[0] {
+                ParamValue::Int(v) => v as f64,
+                _ => 0.0,
+            };
+            EvalOutcome {
+                objectives: [x, 10.0 - x],
+                constraints: vec![],
+                payload: (),
+            }
+        };
+
+        let res = bounded_exact_grid_mo_search_with_stats(&space, 8, 16, 2, repair, eval)
+            .expect("bounded exact grid result")
+            .expect("grid should fit");
+        assert!(res.stats.exact_grid_used);
+        assert_eq!(res.stats.requested_evaluations, 6);
+        assert_eq!(res.stats.actual_evaluations, 3);
+        assert_eq!(res.stats.unique_evaluations, 3);
+        assert_eq!(res.stats.duplicate_evaluations_avoided, 3);
+        assert_eq!(call_counter.load(AtomicOrdering::Relaxed), 3);
+        assert!(!res.pareto.is_empty());
+    }
+
+    #[test]
+    fn bounded_exact_grid_mo_search_returns_none_when_grid_too_large() {
+        let space = SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "x".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 0,
+                        high: 99,
+                        step: 1,
+                        log: false,
+                    },
+                },
+                ParamDef {
+                    name: "y".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 0,
+                        high: 99,
+                        step: 1,
+                        log: false,
+                    },
+                },
+            ],
+        };
+
+        let res = bounded_exact_grid_mo_search_with_stats(
+            &space,
+            16,
+            64,
+            8,
+            |_values| {},
+            |_values| EvalOutcome {
+                objectives: [0.0, 0.0],
+                constraints: vec![],
+                payload: (),
+            },
+        )
+        .expect("bounded helper should not error");
+        assert!(res.is_none());
     }
 }

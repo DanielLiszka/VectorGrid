@@ -183,7 +183,6 @@ const METRIC_IDX_LOSING_TRADES: usize = 19;
 const METRIC_IDX_GROSS_PROFIT: usize = 20;
 const METRIC_IDX_GROSS_LOSS: usize = 21;
 const TOPK_BLOCK_ITEMS: usize = 512;
-
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DeviceLaunchCaps {
     pub(crate) sm_count: u32,
@@ -4205,7 +4204,7 @@ fn build_gpu_kernel_route_diagnostics(
         "host_merge_topk"
     };
 
-    let blockers = if score_first_blockers.is_empty() {
+    let score_first_blockers = if score_first_blockers.is_empty() {
         "none".to_string()
     } else {
         score_first_blockers.join(",")
@@ -4221,7 +4220,7 @@ fn build_gpu_kernel_route_diagnostics(
         format!("gpu_kernel.score_first_env_enabled={score_first_env_enabled}"),
         format!("gpu_kernel.score_first_symbols_available={score_first_symbols_available}"),
         format!("gpu_kernel.score_first_mode={score_first_topk_mode}"),
-        format!("gpu_kernel.score_first_blockers={blockers}"),
+        format!("gpu_kernel.score_first_blockers={score_first_blockers}"),
         format!("gpu_kernel.metrics_count={metrics_count}"),
         format!("gpu_kernel.tile_metrics_stride={tile_metrics_stride}"),
     ]
@@ -5064,6 +5063,7 @@ fn compute_shortlist_slice_mode_records(
         strategy,
         true,
         ranges.as_slice(),
+        None,
     )?;
     if range_metrics.len() != combo_count.saturating_mul(slice_count) {
         return Err(format!(
@@ -8061,6 +8061,205 @@ fn select_tile_topk_scores_for_objective(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn select_tile_topk_scalar_scores(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    pairs: usize,
+    launch_pairs: usize,
+    pf: usize,
+    ps: usize,
+    topk_select: usize,
+    compact_valid_pair_output: bool,
+    pair_index_map_ptr: u64,
+    pair_fast_rows_ptr: u64,
+    pair_slow_rows_ptr: u64,
+    select_rows: &cust::function::Function<'_>,
+    select_rows_candidates: &cust::function::Function<'_>,
+    gather_scalar_pairs: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+) -> Result<(), String> {
+    let row_count = if pair_index_map_ptr != 0 && launch_pairs > 0 {
+        launch_pairs
+    } else {
+        pairs
+    };
+    if row_count == 0 || topk_select == 0 {
+        return Ok(());
+    }
+
+    let blocks1 = (row_count + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+    let cand_len1 = blocks1.saturating_mul(topk_select).max(topk_select);
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_a, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_cand_b, cand_len1, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_top_fast, topk_select, bt_stream)?;
+    KernelScratch::ensure_len_i32(&mut scratch.d_top_slow, topk_select, bt_stream)?;
+    KernelScratch::ensure_len_f32(&mut scratch.d_top_scores, topk_select, bt_stream)?;
+
+    unsafe {
+        let mut scores_ptr = scratch
+            .d_tile_scores
+            .as_ref()
+            .ok_or_else(|| "missing shadow score tile buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut rows_i = row_count as i32;
+        let mut topk_i = topk_select as i32;
+        let mut out_ptr = scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = blocks1 as u32;
+        let args: &mut [*mut c_void] = &mut [
+            &mut scores_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut out_ptr as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            select_rows,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    let mut blocks_prev = blocks1;
+    let mut in_len = cand_len1;
+    let mut in_is_a = true;
+    while blocks_prev > 1 {
+        let blocks_next = (in_len + TOPK_BLOCK_ITEMS - 1) / TOPK_BLOCK_ITEMS;
+        let out_len = blocks_next.saturating_mul(topk_select).max(topk_select);
+        unsafe {
+            let mut scores_ptr = scratch
+                .d_tile_scores
+                .as_ref()
+                .ok_or_else(|| "missing shadow score tile buffer".to_string())?
+                .as_device_ptr()
+                .as_raw();
+            let mut rows_i = row_count as i32;
+            let mut topk_i = topk_select as i32;
+            let mut in_ptr = if in_is_a {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+            let mut in_len_i = in_len as i32;
+            let mut out_ptr = if in_is_a {
+                scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+            } else {
+                scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+            };
+
+            let block_x: u32 = 256;
+            let grid_x: u32 = blocks_next as u32;
+            let args: &mut [*mut c_void] = &mut [
+                &mut scores_ptr as *mut _ as *mut c_void,
+                &mut rows_i as *mut _ as *mut c_void,
+                &mut topk_i as *mut _ as *mut c_void,
+                &mut in_ptr as *mut _ as *mut c_void,
+                &mut in_len_i as *mut _ as *mut c_void,
+                &mut out_ptr as *mut _ as *mut c_void,
+            ];
+            launch_kernel_timed(
+                bt_stream,
+                select_rows_candidates,
+                (grid_x, 1, 1),
+                (block_x, 1, 1),
+                0,
+                args,
+                launch_submit_elapsed,
+            )?;
+        }
+        in_is_a = !in_is_a;
+        blocks_prev = blocks_next;
+        in_len = out_len;
+    }
+
+    unsafe {
+        let mut scores_ptr = scratch
+            .d_tile_scores
+            .as_ref()
+            .ok_or_else(|| "missing shadow score tile buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut rows_i = row_count as i32;
+        let mut pairs_i = pairs as i32;
+        let mut pf_i = pf as i32;
+        let mut ps_i = ps as i32;
+        let mut f_per = scratch.d_fast_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut s_per = scratch.d_slow_p.as_ref().unwrap().as_device_ptr().as_raw();
+        let mut top_rows = if in_is_a {
+            scratch.d_cand_a.as_ref().unwrap().as_device_ptr().as_raw()
+        } else {
+            scratch.d_cand_b.as_ref().unwrap().as_device_ptr().as_raw()
+        };
+        let mut topk_i = topk_select as i32;
+        let mut pair_map_ptr = pair_index_map_ptr;
+        let mut pair_fast_rows = pair_fast_rows_ptr;
+        let mut pair_slow_rows = pair_slow_rows_ptr;
+        let mut pair_count_i = launch_pairs as i32;
+        let mut compact_output_i = if compact_valid_pair_output {
+            1i32
+        } else {
+            0i32
+        };
+        let mut out_f = scratch
+            .d_top_fast
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_s = scratch
+            .d_top_slow
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+        let mut out_scores = scratch
+            .d_top_scores
+            .as_ref()
+            .unwrap()
+            .as_device_ptr()
+            .as_raw();
+
+        let block_x: u32 = 256;
+        let grid_x: u32 = ((topk_select as u32) + block_x - 1) / block_x;
+        let args: &mut [*mut c_void] = &mut [
+            &mut scores_ptr as *mut _ as *mut c_void,
+            &mut rows_i as *mut _ as *mut c_void,
+            &mut pairs_i as *mut _ as *mut c_void,
+            &mut pf_i as *mut _ as *mut c_void,
+            &mut ps_i as *mut _ as *mut c_void,
+            &mut f_per as *mut _ as *mut c_void,
+            &mut s_per as *mut _ as *mut c_void,
+            &mut top_rows as *mut _ as *mut c_void,
+            &mut topk_i as *mut _ as *mut c_void,
+            &mut pair_map_ptr as *mut _ as *mut c_void,
+            &mut pair_fast_rows as *mut _ as *mut c_void,
+            &mut pair_slow_rows as *mut _ as *mut c_void,
+            &mut pair_count_i as *mut _ as *mut c_void,
+            &mut compact_output_i as *mut _ as *mut c_void,
+            &mut out_f as *mut _ as *mut c_void,
+            &mut out_s as *mut _ as *mut c_void,
+            &mut out_scores as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            gather_scalar_pairs,
+            (grid_x, 1, 1),
+            (block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    Ok(())
+}
+
 pub fn eval_double_ma_batch_gpu_kernel(
     candles: &Candles,
     combos: &[DoubleMaParams],
@@ -8227,6 +8426,7 @@ pub(crate) fn eval_double_ma_batch_gpu_kernel_multi_range_with_precomputed_and_r
             strategy,
             false,
             ranges,
+            None,
         )
     })
 }
@@ -8249,6 +8449,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     strategy: &StrategyConfig,
     prefer_low_pair_m7_dispatch: bool,
     ranges: &[(usize, usize)],
+    metrics_count_override: Option<usize>,
 ) -> Result<Vec<Metrics>, String> {
     if combos.is_empty() {
         return Err("no parameter combinations".to_string());
@@ -8489,6 +8690,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         && kernel_fast_path_enabled(fast_ma.as_str(), slow_ma.as_str());
     let transpose = load_bt_fn("transpose_row_to_tm")?;
     let backtest = load_bt_fn("double_cross_backtest_tm_flex_f32")?;
+    let _backtest_shadow_sharpe = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_shadow_sharpe_score")
+        .ok();
     let backtest_windowed = load_bt_fn("double_cross_backtest_tm_flex_f32_windowed")?;
     let backtest_windowed_m17 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_windowed_m17")
@@ -8593,6 +8797,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .ok();
     let backtest_lockstep = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
+        .ok();
+    let _backtest_lockstep_shadow_sharpe = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_shadow_sharpe_score")
         .ok();
     let backtest_lockstep_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
@@ -8861,7 +9068,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let use_windowed_eval = ranges
         .iter()
         .any(|&(eval_start_t, eval_end_t_raw)| eval_start_t != 0 || eval_end_t_raw.min(n) != n);
-    let metrics_count = exact_eval_metrics_count(cfg);
+    let metrics_count = metrics_count_override.unwrap_or_else(|| exact_eval_metrics_count(cfg));
     let (pf_tile, ps_tile) = choose_tiles(
         f_total,
         s_total,
@@ -8904,6 +9111,9 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .checked_mul(ps_tile)
         .and_then(|v| v.checked_mul(tile_metrics_stride))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
+    let tile_score_cap = pf_tile
+        .checked_mul(ps_tile)
+        .ok_or_else(|| "pf_tile*ps_tile score overflow".to_string())?;
 
     KernelScratch::ensure_len_i32(&mut scratch.d_fast_p, pf_tile_tm, bt_stream)?;
     if use_fast_path || fast_precomputed.is_some() {
@@ -8920,6 +9130,11 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     }
     KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
+    KernelScratch::ensure_len_f32(
+        &mut scratch.d_tile_scores,
+        pf_tile.saturating_mul(ps_tile).max(1),
+        bt_stream,
+    )?;
 
     host_exact_combo.host_p_fast.clear();
     host_exact_combo.host_p_slow.clear();
@@ -10163,6 +10378,353 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     Ok(out_metrics)
 }
 
+/*
+#[allow(clippy::too_many_arguments)]
+fn replay_shadow_finalists_reduced_on_current_tile(
+    bt_stream: &Stream,
+    scratch: &mut KernelScratch,
+    host_exact_combo: &mut HostExactComboScratch,
+    finalists: &[DoubleMaParams],
+    fast_periods: &[u16],
+    slow_periods: &[u16],
+    n: usize,
+    fast_tm_rows: usize,
+    slow_tm_rows: usize,
+    regime_ptr: u64,
+    regime_use: i32,
+    regime_use_hybrid: i32,
+    regime_entry_rel: f32,
+    regime_exit_rel: f32,
+    first_valid: usize,
+    regime_first_valid: usize,
+    commission: f32,
+    eps_rel: f32,
+    hurdle_tau: f32,
+    stop_log: f32,
+    take_log: f32,
+    flags: u32,
+    metrics_count: usize,
+    device_launch_caps: DeviceLaunchCaps,
+    backtest_launch_caps: KernelLaunchCaps,
+    backtest_fn: &cust::function::Function<'_>,
+    launch_submit_elapsed: &mut Duration,
+    d2h_copy_elapsed: &mut Duration,
+    explicit_sync_elapsed: &mut Duration,
+) -> Result<Vec<Metrics>, String> {
+    if finalists.is_empty() {
+        return Ok(Vec::new());
+    }
+    let f_total = fast_periods.len();
+    let s_total = slow_periods.len();
+    if f_total == 0 || s_total == 0 {
+        return Err("shadow reduced replay requires non-empty period ranges".to_string());
+    }
+
+    let mut fast_idx: HashMap<u16, usize> = HashMap::with_capacity(f_total);
+    for (i, &p) in fast_periods.iter().enumerate() {
+        fast_idx.insert(p, i);
+    }
+    let mut slow_idx: HashMap<u16, usize> = HashMap::with_capacity(s_total);
+    for (i, &p) in slow_periods.iter().enumerate() {
+        slow_idx.insert(p, i);
+    }
+
+    host_exact_combo.tile_combo_indices.clear();
+    host_exact_combo.tile_pair_index_map.clear();
+    host_exact_combo.tile_fast_period_rows.clear();
+    host_exact_combo.tile_slow_period_rows.clear();
+    host_exact_combo.tile_fast_local_rows.clear();
+    host_exact_combo.tile_slow_local_rows.clear();
+
+    #[derive(Clone, Copy)]
+    struct ReplayTileRow {
+        combo_idx: usize,
+        pair_index: i32,
+        fast_period: i32,
+        slow_period: i32,
+        fast_local: i32,
+        slow_local: i32,
+    }
+
+    let mut replay_tile_rows: Vec<ReplayTileRow> = Vec::with_capacity(finalists.len());
+    for (combo_idx, params) in finalists.iter().enumerate() {
+        let fi = *fast_idx
+            .get(&params.fast_len)
+            .ok_or_else(|| format!("shadow replay fast_len {} missing from range", params.fast_len))?;
+        let si = *slow_idx
+            .get(&params.slow_len)
+            .ok_or_else(|| format!("shadow replay slow_len {} missing from range", params.slow_len))?;
+        replay_tile_rows.push(ReplayTileRow {
+            combo_idx,
+            pair_index: i32::try_from(fi.saturating_mul(s_total).saturating_add(si))
+                .map_err(|_| "shadow replay pair index exceeds i32::MAX".to_string())?,
+            fast_period: i32::from(params.fast_len),
+            slow_period: i32::from(params.slow_len),
+            fast_local: i32::try_from(fi)
+                .map_err(|_| "shadow replay fast local row exceeds i32::MAX".to_string())?,
+            slow_local: i32::try_from(si)
+                .map_err(|_| "shadow replay slow local row exceeds i32::MAX".to_string())?,
+        });
+    }
+    replay_tile_rows.sort_unstable_by_key(|row| (row.fast_local, row.slow_local));
+    for row in replay_tile_rows {
+        host_exact_combo.tile_combo_indices.push(row.combo_idx);
+        host_exact_combo.tile_pair_index_map.push(row.pair_index);
+        host_exact_combo.tile_fast_period_rows.push(row.fast_period);
+        host_exact_combo.tile_slow_period_rows.push(row.slow_period);
+        host_exact_combo.tile_fast_local_rows.push(row.fast_local);
+        host_exact_combo.tile_slow_local_rows.push(row.slow_local);
+    }
+
+    let launch_pairs = host_exact_combo.tile_combo_indices.len();
+    let out_len = launch_pairs
+        .checked_mul(metrics_count)
+        .ok_or_else(|| "shadow replay launch_pairs*metrics overflow".to_string())?;
+    host_exact_combo.ensure_tile_host_buf_len(out_len)?;
+
+    let pair_index_upload_signature = period_upload_signature(&host_exact_combo.tile_pair_index_map);
+    if host_exact_combo.last_pair_index_upload != Some(pair_index_upload_signature) {
+        KernelScratch::ensure_len_i32(&mut scratch.d_valid_pair_index, launch_pairs, bt_stream)?;
+        scratch
+            .d_valid_pair_index
+            .as_mut()
+            .ok_or_else(|| "missing shadow replay pair index buffer".to_string())?
+            .copy_from(&host_exact_combo.tile_pair_index_map)
+            .map_err(|e| e.to_string())?;
+        KernelScratch::ensure_len_i32(
+            &mut scratch.d_valid_pair_fast_period,
+            launch_pairs,
+            bt_stream,
+        )?;
+        scratch
+            .d_valid_pair_fast_period
+            .as_mut()
+            .ok_or_else(|| "missing shadow replay fast period buffer".to_string())?
+            .copy_from(&host_exact_combo.tile_fast_period_rows)
+            .map_err(|e| e.to_string())?;
+        KernelScratch::ensure_len_i32(
+            &mut scratch.d_valid_pair_slow_period,
+            launch_pairs,
+            bt_stream,
+        )?;
+        scratch
+            .d_valid_pair_slow_period
+            .as_mut()
+            .ok_or_else(|| "missing shadow replay slow period buffer".to_string())?
+            .copy_from(&host_exact_combo.tile_slow_period_rows)
+            .map_err(|e| e.to_string())?;
+        KernelScratch::ensure_len_i32(
+            &mut scratch.d_valid_pair_fast_local,
+            launch_pairs,
+            bt_stream,
+        )?;
+        scratch
+            .d_valid_pair_fast_local
+            .as_mut()
+            .ok_or_else(|| "missing shadow replay fast local buffer".to_string())?
+            .copy_from(&host_exact_combo.tile_fast_local_rows)
+            .map_err(|e| e.to_string())?;
+        KernelScratch::ensure_len_i32(
+            &mut scratch.d_valid_pair_slow_local,
+            launch_pairs,
+            bt_stream,
+        )?;
+        scratch
+            .d_valid_pair_slow_local
+            .as_mut()
+            .ok_or_else(|| "missing shadow replay slow local buffer".to_string())?
+            .copy_from(&host_exact_combo.tile_slow_local_rows)
+            .map_err(|e| e.to_string())?;
+        host_exact_combo.last_pair_index_upload = Some(pair_index_upload_signature);
+    }
+
+    KernelScratch::ensure_len_f32(&mut scratch.d_tile, out_len.max(1), bt_stream)?;
+
+    unsafe {
+        let mut f_ma_tm = scratch
+            .d_fast_ma_tm
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay fast TM buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut s_ma_tm = scratch
+            .d_slow_ma_tm
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay slow TM buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut lr = scratch
+            .d_lr
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay lr buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut ret1 = scratch
+            .d_ret1
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay ret1 buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut t_i = n as i32;
+        let mut pf_tile_i = f_total as i32;
+        let mut ps_tile_i = s_total as i32;
+        let mut fast_tm_stride_i = fast_tm_rows as i32;
+        let mut slow_tm_stride_i = slow_tm_rows as i32;
+        let mut pf_total_i = f_total as i32;
+        let mut ps_total_i = s_total as i32;
+        let mut f_off = 0i32;
+        let mut s_off = 0i32;
+        let mut f_per = scratch
+            .d_fast_p
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay fast period buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut s_per = scratch
+            .d_slow_p
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay slow period buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut regime_ptr = regime_ptr;
+        let mut use_regime_i = regime_use;
+        let mut use_regime_hybrid_i = regime_use_hybrid;
+        let mut regime_entry = regime_entry_rel;
+        let mut regime_exit = regime_exit_rel;
+        let mut fv = first_valid as i32;
+        let mut regime_fv = regime_first_valid as i32;
+        let mut commission = commission;
+        let mut eps_rel = eps_rel;
+        let mut hurdle_tau_f = hurdle_tau;
+        let mut stop_log = stop_log;
+        let mut take_log = take_log;
+        let mut flags_u = flags;
+        let mut m_i = metrics_count as i32;
+        let mut metrics_stride_i = metrics_count as i32;
+        let mut pair_map_ptr = scratch
+            .d_valid_pair_index
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay pair index buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut pair_fast_rows = scratch
+            .d_valid_pair_fast_period
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay fast period buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut pair_slow_rows = scratch
+            .d_valid_pair_slow_period
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay slow period buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut pair_fast_local_rows = scratch
+            .d_valid_pair_fast_local
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay fast local buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut pair_slow_local_rows = scratch
+            .d_valid_pair_slow_local
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay slow local buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+        let mut pair_count_i = launch_pairs as i32;
+        let mut compact_output_i = 1i32;
+        let mut out_ptr = scratch
+            .d_tile
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay output buffer".to_string())?
+            .as_device_ptr()
+            .as_raw();
+
+        let launch = choose_backtest_launch_shape_1d(
+            launch_pairs,
+            device_launch_caps,
+            backtest_launch_caps,
+        );
+        let args: &mut [*mut c_void] = &mut [
+            &mut f_ma_tm as *mut _ as *mut c_void,
+            &mut s_ma_tm as *mut _ as *mut c_void,
+            &mut lr as *mut _ as *mut c_void,
+            &mut ret1 as *mut _ as *mut c_void,
+            &mut t_i as *mut _ as *mut c_void,
+            &mut pf_tile_i as *mut _ as *mut c_void,
+            &mut ps_tile_i as *mut _ as *mut c_void,
+            &mut fast_tm_stride_i as *mut _ as *mut c_void,
+            &mut slow_tm_stride_i as *mut _ as *mut c_void,
+            &mut pf_total_i as *mut _ as *mut c_void,
+            &mut ps_total_i as *mut _ as *mut c_void,
+            &mut f_off as *mut _ as *mut c_void,
+            &mut s_off as *mut _ as *mut c_void,
+            &mut f_per as *mut _ as *mut c_void,
+            &mut s_per as *mut _ as *mut c_void,
+            &mut regime_ptr as *mut _ as *mut c_void,
+            &mut use_regime_i as *mut _ as *mut c_void,
+            &mut use_regime_hybrid_i as *mut _ as *mut c_void,
+            &mut regime_entry as *mut _ as *mut c_void,
+            &mut regime_exit as *mut _ as *mut c_void,
+            &mut fv as *mut _ as *mut c_void,
+            &mut regime_fv as *mut _ as *mut c_void,
+            &mut commission as *mut _ as *mut c_void,
+            &mut eps_rel as *mut _ as *mut c_void,
+            &mut hurdle_tau_f as *mut _ as *mut c_void,
+            &mut stop_log as *mut _ as *mut c_void,
+            &mut take_log as *mut _ as *mut c_void,
+            &mut flags_u as *mut _ as *mut c_void,
+            &mut m_i as *mut _ as *mut c_void,
+            &mut metrics_stride_i as *mut _ as *mut c_void,
+            &mut pair_map_ptr as *mut _ as *mut c_void,
+            &mut pair_fast_rows as *mut _ as *mut c_void,
+            &mut pair_slow_rows as *mut _ as *mut c_void,
+            &mut pair_fast_local_rows as *mut _ as *mut c_void,
+            &mut pair_slow_local_rows as *mut _ as *mut c_void,
+            &mut pair_count_i as *mut _ as *mut c_void,
+            &mut compact_output_i as *mut _ as *mut c_void,
+            &mut out_ptr as *mut _ as *mut c_void,
+        ];
+        launch_kernel_timed(
+            bt_stream,
+            backtest_fn,
+            (launch.grid_x, 1, 1),
+            (launch.block_x, 1, 1),
+            0,
+            args,
+            launch_submit_elapsed,
+        )?;
+    }
+
+    let copy_t0 = Instant::now();
+    let host_metrics = host_exact_combo.tile_host_buf.copy_device_prefix_to_host(
+        scratch
+            .d_tile
+            .as_ref()
+            .ok_or_else(|| "missing shadow replay output buffer".to_string())?,
+        out_len,
+        bt_stream,
+        explicit_sync_elapsed,
+    )?;
+    *d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(copy_t0.elapsed());
+
+    let mut out_metrics = vec![Metrics::default(); finalists.len()];
+    for (row_idx, &combo_idx) in host_exact_combo.tile_combo_indices.iter().enumerate() {
+        let base = row_idx
+            .checked_mul(metrics_count)
+            .ok_or_else(|| "shadow replay metrics base overflow".to_string())?;
+        out_metrics[combo_idx] = decode_tm_flex_metrics_row(
+            host_metrics,
+            base,
+            metrics_count,
+            flags,
+            metrics_count,
+        );
+    }
+    Ok(out_metrics)
+}
+
+*/
 #[allow(clippy::too_many_arguments)]
 fn rerank_shortlist_by_slice_robustness(
     rt: &mut CudaKernelRuntime,
@@ -10442,6 +11004,7 @@ fn exact_eval_metrics_for_params(
         strategy,
         true,
         ranges.as_slice(),
+        None,
     )?;
     if recomputed.len() != unique_params.len() {
         return Err(format!(
@@ -11254,6 +11817,9 @@ fn optimize_double_ma_gpu_kernel_impl(
 
     let transpose = load_bt_fn("transpose_row_to_tm")?;
     let backtest = load_bt_fn("double_cross_backtest_tm_flex_f32")?;
+    let backtest_shadow_sharpe = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_shadow_sharpe_score")
+        .ok();
     let backtest_windowed = load_bt_fn("double_cross_backtest_tm_flex_f32_windowed")?;
     let backtest_windowed_m17 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_windowed_m17")
@@ -11358,6 +11924,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         .ok();
     let backtest_lockstep = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time")
+        .ok();
+    let backtest_lockstep_shadow_sharpe = bt_module
+        .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_shadow_sharpe_score")
         .ok();
     let backtest_lockstep_m7 = bt_module
         .get_function("double_cross_backtest_tm_flex_f32_lockstep_time_m7")
@@ -11511,6 +12080,9 @@ fn optimize_double_ma_gpu_kernel_impl(
     let gather_topk_scored_pairs = bt_module
         .get_function("gather_topk_scored_pairs_tm_f32")
         .ok();
+    let _gather_topk_scored_scalar_pairs = bt_module
+        .get_function("gather_topk_scored_scalar_pairs_tm_f32")
+        .ok();
     let select_topk_rows_legacy = bt_module.get_function("select_topk_metric_rows_f32").ok();
     let select_topk_rows_candidates_legacy = bt_module
         .get_function("select_topk_metric_rows_from_candidates_f32")
@@ -11528,6 +12100,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         rt.launch_caps_for_kernel(CachedKernelKey::TransposeRowToTm, &transpose);
     let backtest_launch_caps =
         rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktest, &backtest);
+    let _backtest_shadow_launch_caps = backtest_shadow_sharpe
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktest, f));
     let backtest_m7_launch_caps = backtest_m7
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM7, f));
@@ -11538,6 +12113,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestM22, f));
     let backtest_lockstep_launch_caps = backtest_lockstep
+        .as_ref()
+        .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
+    let _backtest_lockstep_shadow_launch_caps = backtest_lockstep_shadow_sharpe
         .as_ref()
         .map(|f| rt.launch_caps_for_kernel(CachedKernelKey::DoubleCrossBacktestLockstep, f));
     let backtest_lockstep_m7_launch_caps = backtest_lockstep_m7
@@ -11748,6 +12326,11 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
     KernelScratch::ensure_len_f32(&mut scratch.d_slow_ma_tm, slow_ma_cap, bt_stream)?;
     KernelScratch::ensure_len_f32(&mut scratch.d_tile, tile_out_cap, bt_stream)?;
+    KernelScratch::ensure_len_f32(
+        &mut scratch.d_tile_scores,
+        pf_tile.saturating_mul(ps_tile).max(1),
+        bt_stream,
+    )?;
 
     let constraints_on_device = constraints.is_some() && !device_include_all && select_v2_supported;
     let host_filter_mode = constraints.is_some() && !device_include_all && !constraints_on_device;
@@ -13685,7 +14268,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 }
 
                 if global_topk_mode {
-                    if score_first_topk_mode {
+                    if global_score_rows.is_some() {
                         let global_fast = global_fast_rows
                             .as_ref()
                             .ok_or_else(|| "missing global fast-row buffer".to_string())?;
@@ -14067,7 +14650,11 @@ fn optimize_double_ma_gpu_kernel_impl(
             Vec::new()
         };
 
-    if !score_first_topk_mode && global_topk_mode && !device_include_all && global_rows_len > 0 {
+    if global_topk_mode
+        && !device_include_all
+        && global_rows_len > 0
+        && global_metrics_rows.is_some()
+    {
         let mut shortlisted_pairs: HashSet<(u16, u16)> = HashSet::new();
         let mut push_global_head_rows = |rows_fast: &DeviceBuffer<i32>,
                                          rows_slow: &DeviceBuffer<i32>,
@@ -14224,7 +14811,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         None
     };
 
-    if score_first_topk_mode && global_rows_len > 0 {
+    if global_rows_len > 0 && global_score_rows.is_some() {
         let global_fast = global_fast_rows
             .as_ref()
             .ok_or_else(|| "missing global fast-row buffer".to_string())?;
@@ -14260,7 +14847,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         }
 
         if finalists.is_empty() {
-            return Err("score-first exact shortlist produced no valid finalists".to_string());
+            return Err("scored-candidate exact shortlist produced no valid finalists".to_string());
         }
 
         let decode_t0 = Instant::now();
@@ -14283,6 +14870,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             strategy,
             false,
             &ranges,
+            None,
         )?;
         let mut exact_rows: Vec<(DoubleMaParams, Metrics)> = finalists
             .into_iter()

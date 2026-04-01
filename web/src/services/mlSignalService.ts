@@ -40,6 +40,46 @@ interface SweepAxisUsize {
   step: number;
 }
 
+interface MlSignalArtifactLike {
+  stage?: unknown;
+  bundle_id?: unknown;
+  bundleId?: unknown;
+  dataset_export_path?: unknown;
+  datasetExportPath?: unknown;
+  export_manifest_path?: unknown;
+  exportManifestPath?: unknown;
+  split_manifest_path?: unknown;
+  splitManifestPath?: unknown;
+  row_count?: unknown;
+  rowCount?: unknown;
+  feature_count?: unknown;
+  featureCount?: unknown;
+  split_count?: unknown;
+  splitCount?: unknown;
+  score_cache_path?: unknown;
+  scoreCachePath?: unknown;
+  score_manifest_path?: unknown;
+  scoreManifestPath?: unknown;
+  feature_schema_path?: unknown;
+  featureSchemaPath?: unknown;
+  feature_schema_version?: unknown;
+  featureSchemaVersion?: unknown;
+  score_space?: unknown;
+  scoreSpace?: unknown;
+  score_scope?: unknown;
+  scoreScope?: unknown;
+  matched_rows?: unknown;
+  matchedRows?: unknown;
+  skipped_rows?: unknown;
+  skippedRows?: unknown;
+  bars_scored?: unknown;
+  barsScored?: unknown;
+  coverage_ratio?: unknown;
+  coverageRatio?: unknown;
+  duplicate_timestamps?: unknown;
+  duplicateTimestamps?: unknown;
+}
+
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
@@ -67,6 +107,11 @@ function parseOptionalInteger(value: unknown): number | null {
   if (!Number.isFinite(parsed)) return null;
   const floored = Math.floor(parsed);
   return floored >= 0 ? floored : null;
+}
+
+function parseOptionalNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function basename(path: string): string {
@@ -339,23 +384,152 @@ function buildMlSignalArtifactPayload(
   validationReq?: Record<string, unknown> | null,
   validationRes?: unknown,
 ): Record<string, unknown> {
+  const pinia = resolveRuntimePinia();
+  const priorMlSignal = pinia
+    ? (useWorkflowArtifactsStore(pinia).currentRun?.mlSignal as
+        | WorkflowRunArtifact["mlSignal"]
+        | null)
+    : null;
   const runResRecord =
     runRes && typeof runRes === "object"
       ? (runRes as Record<string, unknown>)
       : null;
+  const validationResRecord =
+    validationRes && typeof validationRes === "object"
+      ? (validationRes as Record<string, unknown>)
+      : null;
+  const validationScoreSummary = resolveMlScoreSummaryRecord(validationResRecord);
+  const prior = (priorMlSignal ?? {}) as MlSignalArtifactLike;
+  const stage =
+    validationReq && validationRes
+      ? Array.isArray(validationReq.candidates)
+        ? "validation"
+        : "policy_sweep"
+      : normalizeText(runReq.ma_source ?? runReq.maSource) ||
+          parseOptionalInteger(runReq.horizon_bars ?? runReq.horizonBars) !=
+            null
+        ? "dataset_export"
+        : "score_cache";
+  const rowCount = parseOptionalInteger(
+    runResRecord?.row_count ?? prior.row_count ?? prior.rowCount,
+  );
+  const featureCount = parseOptionalInteger(
+    runResRecord?.feature_count ?? prior.feature_count ?? prior.featureCount,
+  );
+  const splitCount = parseOptionalInteger(
+    runResRecord?.split_count ?? prior.split_count ?? prior.splitCount,
+  );
+  const matchedRows = parseOptionalInteger(
+    validationScoreSummary?.matched_rows ??
+      runResRecord?.matched_rows ??
+      prior.matched_rows ??
+      prior.matchedRows,
+  );
+  const skippedRows = parseOptionalInteger(
+    validationScoreSummary?.skipped_rows ??
+      runResRecord?.skipped_rows ??
+      prior.skipped_rows ??
+      prior.skippedRows,
+  );
+  const barsScored = parseOptionalInteger(
+    validationScoreSummary?.bars_scored ??
+      runResRecord?.bars_scored ??
+      prior.bars_scored ??
+      prior.barsScored,
+  );
+  const coverageRatio = parseOptionalNumber(
+    validationScoreSummary?.coverage_ratio ??
+      runResRecord?.coverage_ratio ??
+      prior.coverage_ratio ??
+      prior.coverageRatio,
+  );
+  const duplicateTimestamps = parseOptionalInteger(
+    validationScoreSummary?.duplicate_timestamps ??
+      runResRecord?.duplicate_timestamps ??
+      prior.duplicate_timestamps ??
+      prior.duplicateTimestamps,
+  );
+  const scoreCachePath =
+    stage === "dataset_export"
+      ? normalizeText(prior.score_cache_path ?? prior.scoreCachePath ?? "")
+      : normalizeText(validationReq?.score_cache_path) ||
+        normalizeText(
+          runResRecord?.output_path ?? runReq.output_path ?? runReq.outputPath ?? "",
+        ) ||
+        normalizeText(prior.score_cache_path ?? prior.scoreCachePath ?? "");
   return {
+    stage,
     bundle_id:
       normalizeText(runReq.model_bundle_id) ||
-      normalizeText(runResRecord?.model_bundle_id ?? ""),
+      normalizeText(runResRecord?.model_bundle_id ?? prior.bundle_id ?? prior.bundleId ?? ""),
+    dataset_export_path:
+      stage === "dataset_export"
+        ? normalizeText(
+            runResRecord?.output_path ??
+              runReq.output_path ??
+              runReq.outputPath ??
+              prior.dataset_export_path ??
+              prior.datasetExportPath ??
+              "",
+          )
+        : normalizeText(
+            prior.dataset_export_path ?? prior.datasetExportPath ?? "",
+          ),
+    export_manifest_path: normalizeText(
+      runResRecord?.export_manifest_path ??
+        prior.export_manifest_path ??
+        prior.exportManifestPath ??
+        "",
+    ),
+    split_manifest_path: normalizeText(
+      runResRecord?.split_manifest_path ??
+        prior.split_manifest_path ??
+        prior.splitManifestPath ??
+        "",
+    ),
+    row_count: rowCount,
+    feature_count: featureCount,
+    split_count: splitCount,
     feature_schema_version: parseNumber(
-      runResRecord?.feature_schema_version ?? 1,
+      runResRecord?.feature_schema_version ??
+        prior.feature_schema_version ??
+        prior.featureSchemaVersion ??
+        1,
       1,
     ),
-    feature_schema_path: normalizeText(runResRecord?.feature_schema_path ?? ""),
-    score_cache_path:
-      normalizeText(validationReq?.score_cache_path) ||
-      normalizeText(runResRecord?.output_path ?? ""),
-    score_manifest_path: normalizeText(runResRecord?.manifest_path ?? ""),
+    feature_schema_path: normalizeText(
+      runResRecord?.feature_schema_path ??
+        prior.feature_schema_path ??
+        prior.featureSchemaPath ??
+        "",
+    ),
+    score_cache_path: scoreCachePath,
+    score_manifest_path: normalizeText(
+      runResRecord?.manifest_path ??
+        validationScoreSummary?.score_manifest_path ??
+        prior.score_manifest_path ??
+        prior.scoreManifestPath ??
+        "",
+    ),
+    score_space: normalizeText(
+      validationScoreSummary?.score_space ??
+        runResRecord?.score_space ??
+        prior.score_space ??
+        prior.scoreSpace ??
+        "",
+    ),
+    score_scope: normalizeText(
+      validationScoreSummary?.score_scope ??
+        runResRecord?.score_scope ??
+        prior.score_scope ??
+        prior.scoreScope ??
+        "",
+    ),
+    matched_rows: matchedRows,
+    skipped_rows: skippedRows,
+    bars_scored: barsScored,
+    coverage_ratio: coverageRatio,
+    duplicate_timestamps: duplicateTimestamps,
     policy:
       validationReq && validationRes
         ? extractMlPolicy(validationReq, validationRes)
@@ -543,6 +717,54 @@ function currentRunSnapshot(): {
   return { req: run.req as Record<string, unknown>, res: run.res };
 }
 
+function resolveMlScoreSummaryRecord(
+  row: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!row) return null;
+  const direct =
+    row.score_summary && typeof row.score_summary === "object"
+      ? (row.score_summary as Record<string, unknown>)
+      : null;
+  if (direct) return direct;
+  const validation =
+    row.validation && typeof row.validation === "object"
+      ? (row.validation as Record<string, unknown>)
+      : null;
+  return validation?.score_summary &&
+    typeof validation.score_summary === "object"
+    ? (validation.score_summary as Record<string, unknown>)
+    : row;
+}
+
+function formatMlScoreCoverageMeta(row: Record<string, unknown> | null): string {
+  const summary = resolveMlScoreSummaryRecord(row);
+  if (!summary) return "";
+  const parts: string[] = [];
+  const coverageRatio = parseOptionalNumber(
+    summary.coverage_ratio ?? summary.coverageRatio,
+  );
+  const scoreScope = normalizeText(summary.score_scope ?? summary.scoreScope);
+  const scoreSpace = normalizeText(summary.score_space ?? summary.scoreSpace);
+  const duplicates = parseOptionalInteger(
+    summary.duplicate_timestamps ?? summary.duplicateTimestamps,
+  );
+  if (coverageRatio != null) {
+    parts.push(`coverage ${(coverageRatio * 100).toFixed(1)}%`);
+  }
+  if (scoreScope) parts.push(`scope ${scoreScope}`);
+  if (scoreSpace) parts.push(`space ${scoreSpace}`);
+  if (duplicates != null) parts.push(`duplicates ${duplicates}`);
+  return parts.join(" • ");
+}
+
+function formatMlStageStatus(
+  base: string,
+  row: Record<string, unknown> | null,
+): string {
+  const suffix = formatMlScoreCoverageMeta(row);
+  return suffix ? `${base} • ${suffix}` : base;
+}
+
 export async function exportMlSignalDataset(): Promise<unknown> {
   const pinia = resolveRuntimePinia();
   if (!pinia) throw new Error("Pinia is not active.");
@@ -603,29 +825,28 @@ export async function exportMlSignalDataset(): Promise<unknown> {
   setMlBusy("Exporting ML feature dataset…");
   try {
     const res = await invokeCommand("export_ml_signal_dataset", { req });
+    const runTs = new Date().toISOString();
+    const resRecord =
+      res && typeof res === "object" ? (res as Record<string, unknown>) : null;
     const rowCount = parseNumber(
-      (res as Record<string, unknown>)?.row_count,
+      resRecord?.row_count,
       0,
     );
-    const splitCount = parseOptionalInteger(
-      (res as Record<string, unknown>)?.split_count,
-    );
-    const splitManifestPath = normalizeText(
-      (res as Record<string, unknown>)?.split_manifest_path,
-    );
-    const tickerHoldoutEnabled = Boolean(
-      (res as Record<string, unknown>)?.ticker_holdout,
-    );
+    const splitCount = parseOptionalInteger(resRecord?.split_count);
+    const splitManifestPath = normalizeText(resRecord?.split_manifest_path);
+    const tickerHoldoutEnabled = Boolean(resRecord?.ticker_holdout);
     const metaParts = [
       `Dataset export: ${rowCount.toFixed(0)} rows -> ${outputPath}`,
       splitCount && splitCount > 0 ? `splits ${splitCount}` : "",
       tickerHoldoutEnabled ? "ticker holdout on" : "",
       splitManifestPath ? basename(splitManifestPath) : "",
     ].filter((part) => part);
+    const persisted = await persistRunArtifact(req, res, runTs);
+    applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);
     patchOptimizeState({
       mlSignalDatasetMeta: metaParts.join(" • "),
       progressMeta: `ML dataset export • ${rowCount.toFixed(0)} rows`,
-      statusLine: "ML feature dataset exported.",
+      statusLine: formatMlStageStatus("ML feature dataset exported.", resRecord),
     });
     return res;
   } catch (error) {
@@ -660,14 +881,22 @@ export async function generateMlSignalScoreCache(): Promise<unknown> {
   setMlBusy("Generating ML score cache…");
   try {
     const res = await invokeCommand("generate_ml_signal_score_cache", { req });
+    const resRecord =
+      res && typeof res === "object" ? (res as Record<string, unknown>) : null;
     const matchedRows = parseNumber(
-      (res as Record<string, unknown>)?.matched_rows,
+      resRecord?.matched_rows,
       0,
     );
+    const scoreCoverageMeta = formatMlScoreCoverageMeta(resRecord);
     patchOptimizeState({
-      mlSignalScoreMeta: `Score cache: ${matchedRows.toFixed(0)} matched rows -> ${outputPath}`,
+      mlSignalScoreMeta: [
+        `Score cache: ${matchedRows.toFixed(0)} matched rows -> ${outputPath}`,
+        scoreCoverageMeta,
+      ]
+        .filter((part) => part)
+        .join(" • "),
       progressMeta: `ML score cache • ${matchedRows.toFixed(0)} rows`,
-      statusLine: "ML score cache generated.",
+      statusLine: formatMlStageStatus("ML score cache generated.", resRecord),
     });
     const persisted = await persistRunArtifact(req, res, runTs);
     applyVueRunArtifacts(runTs, req, res, persisted.path, persisted.csvPath);
@@ -728,15 +957,28 @@ export async function runMlSignalValidation(): Promise<unknown> {
     const validationRes = await invokeCommand("run_ml_signal_validation", {
       req: validationReq,
     });
+    const validationRecord =
+      validationRes && typeof validationRes === "object"
+        ? (validationRes as Record<string, unknown>)
+        : null;
     const candidates = Array.isArray(
-      (validationRes as Record<string, unknown>)?.candidates,
+      validationRecord?.candidates,
     )
-      ? ((validationRes as Record<string, unknown>).candidates as unknown[])
+      ? ((validationRecord as Record<string, unknown>).candidates as unknown[])
       : [];
+    const scoreCoverageMeta = formatMlScoreCoverageMeta(validationRecord);
     patchOptimizeState({
-      mlSignalValidationMeta: `ML validation: ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} tested`,
+      mlSignalValidationMeta: [
+        `ML validation: ${candidates.length} candidate${candidates.length === 1 ? "" : "s"} tested`,
+        scoreCoverageMeta,
+      ]
+        .filter((part) => part)
+        .join(" • "),
       progressMeta: `ML validation • ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`,
-      statusLine: "ML validation completed.",
+      statusLine: formatMlStageStatus(
+        "ML validation completed.",
+        validationRecord,
+      ),
     });
 
     const runSnapshot = currentRunSnapshot();
@@ -842,17 +1084,24 @@ export async function runMlSignalPolicySweep(): Promise<unknown> {
         ? (best.params as Record<string, unknown>).label
         : "",
     );
+    const scoreCoverageMeta = formatMlScoreCoverageMeta(sweepRow);
     patchOptimizeState({
       mlSignalSweepMeta: [
         `ML policy sweep: ${sweepSize.toFixed(0)} candidates`,
         Number.isFinite(bestScore) ? `best ${bestScore.toFixed(4)}` : "",
         bestLabel || "",
+        scoreCoverageMeta,
       ]
         .filter((part) => part)
         .join(" • "),
-      mlSignalValidationMeta: `ML validation: ${candidates.length} sweep candidate${candidates.length === 1 ? "" : "s"} retained`,
+      mlSignalValidationMeta: [
+        `ML validation: ${candidates.length} sweep candidate${candidates.length === 1 ? "" : "s"} retained`,
+        scoreCoverageMeta,
+      ]
+        .filter((part) => part)
+        .join(" • "),
       progressMeta: `ML policy sweep • ${sweepSize.toFixed(0)} candidate${sweepSize === 1 ? "" : "s"}`,
-      statusLine: "ML policy sweep completed.",
+      statusLine: formatMlStageStatus("ML policy sweep completed.", sweepRow),
     });
 
     const runSnapshot = currentRunSnapshot();

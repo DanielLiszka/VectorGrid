@@ -84,6 +84,15 @@ fn make_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_asr_candidates(n: usize) -> Vec<CompositeParams> {
     make_asr_candidates_with_config(n, "sma", 0, StrategyConfig::default())
@@ -474,6 +483,18 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
     let mut group = c.benchmark_group("composite_validate/workflow/50k/32candidates");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        "composite_validate/workflow/50k/32candidates",
+        &[
+            ("backend", "CpuOnly".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("candidate_count", candidates.len().to_string()),
+            (
+                "surfaces",
+                "wf_only,wf_perturb64,wf_perturb64_mc250,wf_perturb64_mc250_cscv8_2k".to_string(),
+            ),
+        ],
+    );
 
     let base = CompositeValidationRequest {
         data_id: "bench".to_string(),
@@ -604,6 +625,18 @@ fn bench_composite_validation_workflow(c: &mut Criterion) {
         ));
         group.measurement_time(Duration::from_secs(6));
         group.sample_size(10);
+        print_bench_metadata(
+            &format!(
+                "composite_validate/cpu/{name}/{candles_len}/{}candidates",
+                candidate_count
+            ),
+            &[
+                ("backend", "CpuOnly".to_string()),
+                ("candles_len", candles_len.to_string()),
+                ("candidate_count", candidate_count.to_string()),
+                ("surface", "wf_reopt_cscv_spa".to_string()),
+            ],
+        );
 
         let base = CompositeValidationRequest {
             data_id: format!("bench-cpu-{name}"),
@@ -734,6 +767,15 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
     let mut group = c.benchmark_group("composite_validate/gpu_kernel/asr/100k/64candidates");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        "composite_validate/gpu_kernel/asr/100k/64candidates",
+        &[
+            ("backend", "GpuKernel".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("candidate_count", candidates.len().to_string()),
+            ("surfaces", "wf_cscv,in_sample_192candidates".to_string()),
+        ],
+    );
 
     let base = CompositeValidationRequest {
         data_id: "bench-gpu".to_string(),
@@ -845,6 +887,18 @@ fn bench_composite_validation_gpu_workflow(c: &mut Criterion) {
         ));
         group.measurement_time(Duration::from_secs(6));
         group.sample_size(10);
+        print_bench_metadata(
+            &format!(
+                "composite_validate/gpu_kernel/{name}/{candles_len}/{}candidates",
+                candidate_count
+            ),
+            &[
+                ("backend", "GpuKernel".to_string()),
+                ("candles_len", candles_len.to_string()),
+                ("candidate_count", candidate_count.to_string()),
+                ("surface", "wf_reopt_cscv_spa".to_string()),
+            ],
+        );
 
         let base = CompositeValidationRequest {
             data_id: format!("bench-gpu-{name}"),

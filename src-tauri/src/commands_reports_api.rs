@@ -10,9 +10,9 @@ pub struct SaveReportXlsxResponse {
 }
 
 #[tauri::command]
-pub async fn build_report_xlsx(report: Value) -> Result<String, String> {
+pub async fn build_report_xlsx(report: Value, max_rows: Option<u32>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        commands_reports::build_report_xlsx_blocking(report)
+        commands_reports::build_report_xlsx_blocking(report, max_rows)
     })
     .await
     .map_err(|e| e.to_string())?

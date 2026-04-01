@@ -182,9 +182,7 @@ fn canonical_run_index_for_wall_ms(values: &[u64]) -> usize {
         .min_by(|(idx_a, wall_a), (idx_b, wall_b)| {
             let delta_a = ((**wall_a as f64) - median).abs();
             let delta_b = ((**wall_b as f64) - median).abs();
-            delta_a
-                .total_cmp(&delta_b)
-                .then_with(|| idx_a.cmp(idx_b))
+            delta_a.total_cmp(&delta_b).then_with(|| idx_a.cmp(idx_b))
         })
         .map(|(idx, _)| idx)
         .unwrap_or(0)
@@ -419,7 +417,10 @@ fn run_case(
         &measured.iter().map(|run| run.wall_ms).collect::<Vec<_>>(),
     );
     let canonical = &measured[canonical_index];
-    let mut runtime_values = measured.iter().map(|run| run.runtime_ms).collect::<Vec<_>>();
+    let mut runtime_values = measured
+        .iter()
+        .map(|run| run.runtime_ms)
+        .collect::<Vec<_>>();
     let mut wall_values = measured.iter().map(|run| run.wall_ms).collect::<Vec<_>>();
 
     Ok(RouteMatrixCase {

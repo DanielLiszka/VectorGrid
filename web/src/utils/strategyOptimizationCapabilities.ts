@@ -105,7 +105,12 @@ function normalizeKind(value: unknown): StrategyOptimizationKind {
 }
 
 function requestedGlobalBackendIsGpuKernel(value: unknown): boolean {
-  return String(value ?? '').trim() === 'GpuKernel'
+  const backend = String(value ?? '').trim()
+  return (
+    backend === 'GpuKernel'
+    || backend === 'GpuOnly'
+    || backend === 'GpuHybridKernel'
+  )
 }
 
 function describeCompositeExecutionSummary(
@@ -340,8 +345,8 @@ export function describeStrategyOptimizationCapabilities(
                     : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
       outputSummary: standaloneGpuKernelPreview
-        ? `${kind} supports Top-K and include-all native candidate returns. On the requested standalone GpuKernel route it also supports host-side extra shortlist heads, union reranking, and retained-shortlist confidence reranking, but it does not emit the Double MA heatmap or per-pair CSV export.`
-        : `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export.`,
+        ? `${kind} supports Top-K and include-all native candidate returns. On requested standalone kernel-capable previews it also supports host-side extra shortlist heads, union reranking, and retained-shortlist confidence reranking. Extra shortlist heads and union reranking currently require include_all=true, confidence reranking requires top_k > 0, include-all is meaningful and not free, and this route does not emit the Double MA heatmap or per-pair CSV export.`
+        : `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface.`,
     }
   }
   if (kind === 'CompositeCpu') {
@@ -379,11 +384,11 @@ export function describeStrategyOptimizationCapabilities(
       supportsShortlistUnionMode: false,
       supportsAdvancedExactKernelControls: false,
       executionSummary:
-        'Composite MO manages execution through its own sampler and optional GPU prescan settings.',
+        'Composite MO runs a CPU-side multi-objective evaluator with its own sampler settings. An optional GPU prescan can narrow MA domains before the CPU search begins.',
       modeSummary:
-        'Composite MO does not use the global optimization-mode selector.',
+        'Composite MO does not use the global backend selector or the global optimization-mode selector. Prescan mode only affects the stage-0 Double-MA narrowing pass.',
       outputSummary:
-        'Composite MO uses its own search-space and prescan settings instead of Top-K, heatmap, include-all, or export-all shaping.',
+        'Composite MO returns Pareto points from its own search-space and prescan settings rather than Double-MA Top-K, heatmap, include-all, or export-all outputs. Validation currently uses the CPU route; GPU fixed-candidate validation only supports plain CompositeCpu HardGate candidates.',
     }
   }
   return {

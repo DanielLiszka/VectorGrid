@@ -14,7 +14,9 @@ use ta_app_core::{
     SignalBindings, SignalProgramGraph, StrategyIr, StrategyPlanBackend, StrategyProfileKind,
     ValueRef, STRATEGY_IR_SCHEMA_VERSION,
 };
-use ta_optimizer::mo::{ParamDef, ParamDomain, RandomMoConfig, SearchSpace};
+use ta_optimizer::mo::{
+    Nsga2Config, ParamDef, ParamDomain, RandomMoConfig, SearchSpace, TpeMoConfig,
+};
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::indicators::moving_averages::ma::{ma, MaData};
@@ -219,6 +221,47 @@ fn build_cpu_only_route_plan() -> Option<ta_app_core::CompiledStrategyPlan> {
     compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None).ok()
 }
 
+fn bench_env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn quick_local_bench_settings(default_secs: u64, default_samples: usize) -> (u64, usize) {
+    if bench_env_flag("VTA_DYNAMIC_CPU_BENCH_QUICK_LOCAL") {
+        (default_secs.min(3), default_samples.min(6))
+    } else {
+        (default_secs, default_samples)
+    }
+}
+
+fn print_bench_metadata(
+    group_name: &str,
+    default_secs: u64,
+    default_samples: usize,
+    details: &[(&str, String)],
+) {
+    let (measurement_secs, sample_size) = quick_local_bench_settings(default_secs, default_samples);
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+        format!("measurement_secs={measurement_secs}"),
+        format!("sample_size={sample_size}"),
+        format!(
+            "quick_local={}",
+            bench_env_flag("VTA_DYNAMIC_CPU_BENCH_QUICK_LOCAL")
+        ),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
 fn bench_dynamic_cpu_eval(c: &mut Criterion) {
     let candles = make_synth_candles(50_000);
     let strategy = StrategyConfig::default();
@@ -355,8 +398,22 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
         .expect("prepare dynamic composite context");
 
     let mut group = c.benchmark_group("dynamic_strategy_cpu/eval/50k");
-    group.measurement_time(Duration::from_secs(8));
-    group.sample_size(12);
+    let (measurement_secs, sample_size) = quick_local_bench_settings(8, 12);
+    group.measurement_time(Duration::from_secs(measurement_secs));
+    group.sample_size(sample_size);
+    print_bench_metadata(
+        "dynamic_strategy_cpu/eval/50k",
+        8,
+        12,
+        &[
+            ("candles_len", candles.close.len().to_string()),
+            (
+                "surfaces",
+                "double/static_eval,double/dynamic_adapter_eval,composite/static_eval,composite/dynamic_adapter_eval"
+                    .to_string(),
+            ),
+        ],
+    );
 
     group.bench_function("double/static_eval", |b| {
         b.iter(|| {
@@ -423,8 +480,18 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
 
     if let Some(mixed_route_plan) = build_mixed_route_plan() {
         let mut staging_group = c.benchmark_group("dynamic_strategy_cpu/staging/50k");
-        staging_group.measurement_time(Duration::from_secs(8));
-        staging_group.sample_size(10);
+        let (measurement_secs, sample_size) = quick_local_bench_settings(8, 10);
+        staging_group.measurement_time(Duration::from_secs(measurement_secs));
+        staging_group.sample_size(sample_size);
+        print_bench_metadata(
+            "dynamic_strategy_cpu/staging/50k",
+            8,
+            10,
+            &[
+                ("candles_len", candles.close.len().to_string()),
+                ("surface", "dynamic_indicator_slot_staging".to_string()),
+            ],
+        );
         staging_group.bench_function("mixed_route_slot_prep_cpu", |b| {
             b.iter(|| {
                 let slot_outputs = prepare_dynamic_indicator_slot_series_cpu(
@@ -442,8 +509,18 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
     #[cfg(feature = "cuda")]
     if let Some(cpu_only_route_plan) = build_cpu_only_route_plan() {
         let mut staging_group = c.benchmark_group("dynamic_strategy_cpu/staging_cuda_build/50k");
-        staging_group.measurement_time(Duration::from_secs(8));
-        staging_group.sample_size(10);
+        let (measurement_secs, sample_size) = quick_local_bench_settings(8, 10);
+        staging_group.measurement_time(Duration::from_secs(measurement_secs));
+        staging_group.sample_size(sample_size);
+        print_bench_metadata(
+            "dynamic_strategy_cpu/staging_cuda_build/50k",
+            8,
+            10,
+            &[
+                ("candles_len", candles.close.len().to_string()),
+                ("surface", "dynamic_indicator_cuda_build".to_string()),
+            ],
+        );
         staging_group.bench_function("cpu_route_slot_prep", |b| {
             b.iter(|| {
                 let slot_outputs = prepare_dynamic_indicator_slot_series(
@@ -513,8 +590,19 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
     };
 
     let mut full_group = c.benchmark_group("dynamic_strategy_cpu/full_run/2k");
-    full_group.measurement_time(Duration::from_secs(8));
-    full_group.sample_size(10);
+    let (measurement_secs, sample_size) = quick_local_bench_settings(8, 10);
+    full_group.measurement_time(Duration::from_secs(measurement_secs));
+    full_group.sample_size(sample_size);
+    print_bench_metadata(
+        "dynamic_strategy_cpu/full_run/2k",
+        8,
+        10,
+        &[
+            ("candles_len", candles_mo.close.len().to_string()),
+            ("surface", "composite_mo_full_run".to_string()),
+            ("dynamic_env_modes", "off,on".to_string()),
+        ],
+    );
 
     full_group.bench_function("composite_mo/static_env_off", |b| {
         let key = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
@@ -557,6 +645,269 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
     });
 
     full_group.finish();
+
+    let req_mo_prescan_off = CompositeMoRequest {
+        search_space: SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "fast_len".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 5,
+                        high: 270,
+                        step: 1,
+                        log: false,
+                    },
+                },
+                ParamDef {
+                    name: "slow_len".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 10,
+                        high: 300,
+                        step: 1,
+                        log: false,
+                    },
+                },
+            ],
+        },
+        sampler: CompositeMoSampler::Random {
+            config: RandomMoConfig {
+                seed: 1,
+                trials: 20,
+            },
+        },
+        ..req_mo.clone()
+    };
+    let req_mo_prescan_on = CompositeMoRequest {
+        gpu_prescan: Some(ta_app_core::CompositeGpuPrescanConfig {
+            top_k: 8,
+            window: 2,
+            predictive_top_k: 0,
+            predictive_stride: 8,
+            device_id: None,
+            require_gpu: false,
+            objectives: ta_app_core::CompositeGpuPrescanObjectives::Both,
+            ma_pairs: None,
+            mode: OptimizationMode::Grid,
+        }),
+        ..req_mo_prescan_off.clone()
+    };
+    let mut prescan_group = c.benchmark_group("dynamic_strategy_cpu/composite_mo_prescan/2k");
+    let (measurement_secs, sample_size) = quick_local_bench_settings(8, 10);
+    prescan_group.measurement_time(Duration::from_secs(measurement_secs));
+    prescan_group.sample_size(sample_size);
+    print_bench_metadata(
+        "dynamic_strategy_cpu/composite_mo_prescan/2k",
+        8,
+        10,
+        &[
+            ("candles_len", candles_mo.close.len().to_string()),
+            ("surface", "composite_mo_prescan".to_string()),
+            (
+                "variants",
+                "random_large_ranges_no_prescan,random_large_ranges_with_prescan".to_string(),
+            ),
+        ],
+    );
+    prescan_group.bench_function("random_large_ranges_no_prescan", |b| {
+        b.iter(|| {
+            let out = run_composite_mo_optimization_blocking_with_candles(
+                req_mo_prescan_off.clone(),
+                &candles_mo,
+                &cancel,
+                None,
+            )
+            .expect("composite_mo no-prescan run");
+            black_box(out.total_evaluations);
+        });
+    });
+    prescan_group.bench_function("random_large_ranges_with_prescan", |b| {
+        b.iter(|| {
+            let out = run_composite_mo_optimization_blocking_with_candles(
+                req_mo_prescan_on.clone(),
+                &candles_mo,
+                &cancel,
+                None,
+            )
+            .expect("composite_mo prescan run");
+            black_box(out.total_evaluations);
+        });
+    });
+    prescan_group.finish();
+
+    let req_mo_sparse_bank = CompositeMoRequest {
+        search_space: SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "fast_len".to_string(),
+                    domain: ParamDomain::Categorical {
+                        choices: vec!["5".into(), "8".into(), "13".into(), "21".into()],
+                    },
+                },
+                ParamDef {
+                    name: "slow_len".to_string(),
+                    domain: ParamDomain::Categorical {
+                        choices: vec!["34".into(), "55".into(), "89".into(), "144".into()],
+                    },
+                },
+                ParamDef {
+                    name: "fast_ma_type".to_string(),
+                    domain: ParamDomain::Categorical {
+                        choices: vec!["sma".into(), "ema".into()],
+                    },
+                },
+                ParamDef {
+                    name: "slow_ma_type".to_string(),
+                    domain: ParamDomain::Categorical {
+                        choices: vec!["ema".into(), "wma".into()],
+                    },
+                },
+            ],
+        },
+        sampler: CompositeMoSampler::Random {
+            config: RandomMoConfig {
+                seed: 5,
+                trials: 64,
+            },
+        },
+        ..req_mo.clone()
+    };
+    let mut sparse_group = c.benchmark_group("dynamic_strategy_cpu/composite_mo_sparse_bank/2k");
+    let (measurement_secs, sample_size) = quick_local_bench_settings(8, 10);
+    sparse_group.measurement_time(Duration::from_secs(measurement_secs));
+    sparse_group.sample_size(sample_size);
+    print_bench_metadata(
+        "dynamic_strategy_cpu/composite_mo_sparse_bank/2k",
+        8,
+        10,
+        &[
+            ("candles_len", candles_mo.close.len().to_string()),
+            ("surface", "composite_mo_sparse_bank".to_string()),
+            ("variants", "random_nonuniform_periods".to_string()),
+        ],
+    );
+    sparse_group.bench_function("random_nonuniform_periods", |b| {
+        b.iter(|| {
+            let out = run_composite_mo_optimization_blocking_with_candles(
+                req_mo_sparse_bank.clone(),
+                &candles_mo,
+                &cancel,
+                None,
+            )
+            .expect("composite_mo sparse-bank run");
+            black_box(out.total_evaluations);
+        });
+    });
+    sparse_group.finish();
+
+    let req_mo_sampler_random = CompositeMoRequest {
+        search_space: SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "fast_len".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 5,
+                        high: 25,
+                        step: 1,
+                        log: false,
+                    },
+                },
+                ParamDef {
+                    name: "slow_len".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 30,
+                        high: 80,
+                        step: 1,
+                        log: false,
+                    },
+                },
+            ],
+        },
+        sampler: CompositeMoSampler::Random {
+            config: RandomMoConfig {
+                seed: 11,
+                trials: 512,
+            },
+        },
+        ..req_mo.clone()
+    };
+    let req_mo_sampler_nsga2 = CompositeMoRequest {
+        sampler: CompositeMoSampler::Nsga2 {
+            config: Nsga2Config {
+                seed: 11,
+                population_size: 32,
+                generations: 15,
+                crossover_prob: 0.9,
+                swapping_prob: 0.5,
+                mutation_prob: None,
+            },
+        },
+        ..req_mo_sampler_random.clone()
+    };
+    let req_mo_sampler_tpe = CompositeMoRequest {
+        sampler: CompositeMoSampler::Tpe {
+            config: TpeMoConfig {
+                seed: 11,
+                trials: 512,
+                startup_trials: 32,
+                n_ei_candidates: 24,
+                gamma: 0.25,
+                batch_size: 64,
+                max_model_points: 512,
+            },
+        },
+        ..req_mo_sampler_random.clone()
+    };
+    let mut sampler_group = c.benchmark_group("dynamic_strategy_cpu/composite_mo_sampler/2k");
+    let (measurement_secs, sample_size) = quick_local_bench_settings(8, 10);
+    sampler_group.measurement_time(Duration::from_secs(measurement_secs));
+    sampler_group.sample_size(sample_size);
+    print_bench_metadata(
+        "dynamic_strategy_cpu/composite_mo_sampler/2k",
+        8,
+        10,
+        &[
+            ("candles_len", candles_mo.close.len().to_string()),
+            ("surface", "composite_mo_sampler".to_string()),
+            ("samplers", "random,nsga2,tpe".to_string()),
+        ],
+    );
+    sampler_group.bench_function("random_medium_space", |b| {
+        b.iter(|| {
+            let out = run_composite_mo_optimization_blocking_with_candles(
+                req_mo_sampler_random.clone(),
+                &candles_mo,
+                &cancel,
+                None,
+            )
+            .expect("composite_mo random run");
+            black_box(out.total_evaluations);
+        });
+    });
+    sampler_group.bench_function("nsga2_medium_space", |b| {
+        b.iter(|| {
+            let out = run_composite_mo_optimization_blocking_with_candles(
+                req_mo_sampler_nsga2.clone(),
+                &candles_mo,
+                &cancel,
+                None,
+            )
+            .expect("composite_mo nsga2 run");
+            black_box(out.total_evaluations);
+        });
+    });
+    sampler_group.bench_function("tpe_medium_space", |b| {
+        b.iter(|| {
+            let out = run_composite_mo_optimization_blocking_with_candles(
+                req_mo_sampler_tpe.clone(),
+                &candles_mo,
+                &cancel,
+                None,
+            )
+            .expect("composite_mo tpe run");
+            black_box(out.total_evaluations);
+        });
+    });
+    sampler_group.finish();
 }
 
 criterion_group!(benches, bench_dynamic_cpu_eval);

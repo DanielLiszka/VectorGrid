@@ -32,7 +32,12 @@ import {
 } from "./dataService";
 import { runOptimization } from "./optimizeService";
 import { refreshAnalysisFromWorkflowRun } from "./analysisService";
-import { generateMlSignalScoreCache } from "./mlSignalService";
+import {
+  exportMlSignalDataset,
+  generateMlSignalScoreCache,
+  runMlSignalPolicySweep,
+  runMlSignalValidation,
+} from "./mlSignalService";
 
 vi.mock("../tauri/invoke", () => ({
   invokeCommand: vi.fn(async () => undefined),
@@ -88,9 +93,13 @@ vi.mock("./analysisService", () => ({
 }));
 
 vi.mock("./mlSignalService", () => ({
+  exportMlSignalDataset: vi.fn(async () => undefined),
   generateMlSignalScoreCache: vi.fn(async () => undefined),
+  runMlSignalValidation: vi.fn(async () => undefined),
+  runMlSignalPolicySweep: vi.fn(async () => undefined),
 }));
 
+const exportMlSignalDatasetMock = vi.mocked(exportMlSignalDataset);
 const invokeCommandMock = vi.mocked(invokeCommand);
 const loadDataCsvMock = vi.mocked(loadDataCsv);
 const applyDataTimeframeMock = vi.mocked(applyDataTimeframe);
@@ -99,6 +108,8 @@ const refreshAnalysisFromWorkflowRunMock = vi.mocked(
   refreshAnalysisFromWorkflowRun,
 );
 const generateMlSignalScoreCacheMock = vi.mocked(generateMlSignalScoreCache);
+const runMlSignalValidationMock = vi.mocked(runMlSignalValidation);
+const runMlSignalPolicySweepMock = vi.mocked(runMlSignalPolicySweep);
 
 function installStorageHarness(
   seed: Record<string, string> = {},
@@ -170,6 +181,10 @@ describe("historyService", () => {
     runOptimizationMock.mockResolvedValue(undefined);
     refreshAnalysisFromWorkflowRunMock.mockClear();
     refreshAnalysisFromWorkflowRunMock.mockReturnValue(true);
+    exportMlSignalDatasetMock.mockResolvedValue(undefined);
+    generateMlSignalScoreCacheMock.mockResolvedValue(undefined);
+    runMlSignalValidationMock.mockResolvedValue(undefined);
+    runMlSignalPolicySweepMock.mockResolvedValue(undefined);
   });
 
   it("exports preset from settings storage through browser download flow", async () => {
@@ -327,6 +342,12 @@ describe("historyService", () => {
       ts: "2026-02-25T00:00:00Z",
       report_xlsx_path: "C:/runs/run1.xlsx",
       tags: ["holdout", " 1m "],
+      dataset_meta: {
+        csv_path: "C:/data/aapl.csv",
+        timeframe: "15m",
+        symbol: "AAPL",
+        label: "AAPL",
+      },
       data: { csv_path: "C:/data/aapl.csv" },
       run: {
         req: { strategy_kind: "DoubleMa", data_id: "data-1" },
@@ -347,6 +368,12 @@ describe("historyService", () => {
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/run1.json");
     expect(artifacts.currentRun?.reportXlsxPath).toBe("C:/runs/run1.xlsx");
     expect(artifacts.currentRun?.csvPath).toBe("C:/data/aapl.csv");
+    expect(artifacts.currentRun?.datasetMeta).toEqual({
+      csv_path: "C:/data/aapl.csv",
+      timeframe: "15m",
+      symbol: "AAPL",
+      label: "AAPL",
+    });
     expect(artifacts.currentRun?.tags).toEqual(["holdout", "1m"]);
     expect(artifacts.currentValidation?.ts).toBe("2026-02-25T00:00:00Z");
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalled();
@@ -356,6 +383,12 @@ describe("historyService", () => {
     invokeCommandMock.mockResolvedValueOnce({
       ts: "2026-03-20T00:00:00Z",
       data: { csv_path: "C:/data/spy.csv" },
+      ml_signal: {
+        stage: "validation",
+        score_cache_path: "C:/runs/ml_score_cache.json",
+        score_scope: "CalibrationSlice",
+        coverage_ratio: 0.75,
+      },
       run: {
         req: {
           strategy_kind: "MlSignal",
@@ -380,6 +413,10 @@ describe("historyService", () => {
 
     const artifacts = useWorkflowArtifactsStore(pinia);
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/ml_signal.json");
+    expect(artifacts.currentRun?.mlSignal?.stage).toBe("validation");
+    expect(artifacts.currentRun?.mlSignal?.scoreScope).toBe(
+      "CalibrationSlice",
+    );
     expect(
       (artifacts.currentRun?.req as { strategy_kind?: string } | null)
         ?.strategy_kind,
@@ -427,6 +464,29 @@ describe("historyService", () => {
     invokeCommandMock.mockResolvedValueOnce({
       data: { csv_path: "C:/data/spy.csv" },
       dataset_meta: { timeframe: "1d" },
+      validation: {
+        req: {
+          candidates: [
+            {
+              t_long: 0.63,
+              t_short: 0.58,
+              delta: 0.07,
+              max_hold_bars: 11,
+              exit_on_flat: true,
+              exit_on_opposite: false,
+              strategy: {
+                long_only: true,
+                allow_flip: false,
+                trade_on_next_bar: false,
+                cooldown_bars: 2,
+                signal_persistence_bars: 3,
+              },
+            },
+          ],
+          min_psr: 0.55,
+          min_dsr: 0.4,
+        },
+      },
       run: {
         req: {
           strategy_kind: "MlSignal",
@@ -446,6 +506,12 @@ describe("historyService", () => {
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
     expect(optimize.mlSignalModelBundleId).toBe("bundle-a");
+    expect(optimize.mlSignalLongThreshold).toBe("0.63");
+    expect(optimize.mlSignalShortThreshold).toBe("0.58");
+    expect(optimize.mlSignalDelta).toBe("0.07");
+    expect(optimize.mlSignalMaxHoldBars).toBe("11");
+    expect(optimize.mlSignalMinPsr).toBe("0.55");
+    expect(optimize.mlSignalMinDsr).toBe("0.4");
     expect(data.csvPath).toBe("C:/data/spy.csv");
     expect(data.dataTimeframe).toBe("1d");
   });
@@ -482,10 +548,22 @@ describe("historyService", () => {
     });
   });
 
-  it("reruns MlSignal saved run through the dedicated ML service", async () => {
+  it("reruns MlSignal saved validation artifact through score-cache build then validation", async () => {
     invokeCommandMock.mockResolvedValueOnce({
       data: { csv_path: "C:/data/spy.csv" },
       dataset_meta: { timeframe: "1d" },
+      validation: {
+        req: {
+          candidates: [
+            {
+              t_long: 0.6,
+              t_short: 0.55,
+              delta: 0.1,
+              max_hold_bars: 10,
+            },
+          ],
+        },
+      },
       run: {
         req: {
           strategy_kind: "MlSignal",
@@ -502,10 +580,41 @@ describe("historyService", () => {
     expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/spy.csv");
     expect(runOptimizationMock).not.toHaveBeenCalled();
     expect(generateMlSignalScoreCacheMock).toHaveBeenCalledTimes(1);
+    expect(runMlSignalValidationMock).toHaveBeenCalledTimes(1);
+    expect(runMlSignalPolicySweepMock).not.toHaveBeenCalled();
     const optimize = useOptimizeStore(pinia);
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
     expect(optimize.mlSignalModelBundleId).toBe("bundle-a");
+  });
+
+  it("reruns MlSignal dataset-export artifact through dataset export only", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      data: { csv_path: "C:/data/spy.csv" },
+      dataset_meta: { timeframe: "1d" },
+      ml_signal: {
+        stage: "dataset_export",
+      },
+      run: {
+        req: {
+          strategy_kind: "MlSignal",
+          data_id: "stale-id",
+          output_path: "C:/runs/ml_dataset.csv",
+          ma_source: "close",
+          horizon_bars: 10,
+        },
+      },
+    });
+
+    await rerunSavedRun(" C:/runs/ml_export.json ");
+
+    expect(exportMlSignalDatasetMock).toHaveBeenCalledTimes(1);
+    expect(generateMlSignalScoreCacheMock).not.toHaveBeenCalled();
+    expect(runMlSignalValidationMock).not.toHaveBeenCalled();
+    expect(runMlSignalPolicySweepMock).not.toHaveBeenCalled();
+    const optimize = useOptimizeStore(pinia);
+    expect(optimize.mlSignalDatasetExportPath).toBe("C:/runs/ml_dataset.csv");
+    expect(optimize.mlSignalScoreCachePath).not.toBe("C:/runs/ml_dataset.csv");
   });
 
   it("uses direct reveal command for saved-run reveal", async () => {

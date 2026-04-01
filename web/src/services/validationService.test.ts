@@ -1345,7 +1345,7 @@ describe('validationService', () => {
     expect(summary.categorySummary).toContain('GPU main + CPU tail: walk_forward + reopt_walk_forward + perturb + trade_bootstrap')
   })
 
-  it('auto-exports XLSX after successful validation when enabled and persists the report path', async () => {
+  it('reports validation timing truthfully and persists auto-export artifacts once', async () => {
     ;(pinia.state.value as Record<string, unknown>).validation = {
       candidates: '12',
       seed: '1',
@@ -1395,16 +1395,95 @@ describe('validationService', () => {
       max_rows: 7,
       report: expect.any(Object),
     }))
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('build_report_xlsx', expect.anything())
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
       path: 'runs/vectorgrid_report_validation_test.xlsx',
     })
     expect(invokeCommandMock).not.toHaveBeenCalledWith('reveal_path', expect.anything())
+    expect(
+      invokeCommandMock.mock.calls.filter(([command]) => command === 'save_run_artifact')
+    ).toHaveLength(1)
 
     const workflowStore = useWorkflowArtifactsStore(pinia)
     expect(workflowStore.currentRun?.reportXlsxPath).toBe('runs/vectorgrid_report_validation_test.xlsx')
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
-    expect(validationState.statusLine).toBe('Saved XLSX report: runs/vectorgrid_report_validation_test.xlsx')
+    expect(String(validationState.statusLine || '')).toMatch(
+      /^Validation completed in \d+ms end-to-end \(\d+ms command\)\. Saved XLSX report: runs\/vectorgrid_report_validation_test\.xlsx$/,
+    )
+  })
+
+  it('reuses artifact-backed dataset metadata when persisting validation artifacts', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '8',
+      seed: '2',
+      minPsr: '',
+      minDsr: '',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/AAPL.csv',
+      dataTimeframe: '1h',
+      baseDataMeta: { timeframe: '1h' },
+      datasetLabel: 'AAPL live',
+      datasetContext: 'source=live',
+      dataFields: ['open', 'close'],
+      dataLen: '1000',
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-09T18:00:00Z',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/AAPL.csv',
+          timeframe: '1h',
+          label: 'AAPL artifact',
+          symbol: 'AAPL',
+          len: 4321,
+          source: 'artifact-source',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-aapl-artifact',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [{ params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 10, slow_len: 40 } }],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const saveCall = invokeCommandMock.mock.calls.find(([command]) => command === 'save_run_artifact')
+    const artifact = (saveCall?.[1] as { artifact?: Record<string, unknown> } | undefined)?.artifact
+    expect(artifact?.dataset_meta).toMatchObject({
+      csv_path: 'C:/data/AAPL.csv',
+      timeframe: '1h',
+      label: 'AAPL artifact',
+      symbol: 'AAPL',
+      len: 4321,
+      source: 'artifact-source',
+    })
+
+    const workflowStore = useWorkflowArtifactsStore(pinia)
+    expect(workflowStore.currentRun?.datasetMeta).toMatchObject({
+      csv_path: 'C:/data/AAPL.csv',
+      timeframe: '1h',
+      label: 'AAPL artifact',
+      symbol: 'AAPL',
+      len: 4321,
+      source: 'artifact-source',
+    })
   })
 
   it('rejects validation when the current dataset does not match the optimization artifact', async () => {
@@ -1757,9 +1836,21 @@ describe('validationService', () => {
     const workflowStore = useWorkflowArtifactsStore(pinia)
     expect(workflowStore.currentValidation?.res).toBeTruthy()
     expect(workflowStore.currentRun?.reportXlsxPath).toBe('')
+    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx', expect.objectContaining({
+      max_rows: 5,
+      report: expect.any(Object),
+    }))
+    expect(invokeCommandMock).toHaveBeenCalledWith('build_report_xlsx', expect.objectContaining({
+      max_rows: 5,
+      report: expect.any(Object),
+    }))
+    expect(
+      invokeCommandMock.mock.calls.filter(([command]) => command === 'save_run_artifact')
+    ).toHaveLength(1)
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
-    expect(String(validationState.statusLine || '')).toContain('auto-export XLSX failed')
+    expect(String(validationState.statusLine || '')).toContain('Validation completed in')
+    expect(String(validationState.statusLine || '')).toContain('Auto-export XLSX failed')
     expect(String(validationState.statusLine || '')).toContain('save failed')
   })
 
@@ -1901,6 +1992,94 @@ describe('validationService', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('build_validation_shortlist_csv', expect.any(Object))
     expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx', expect.any(Object))
     expect(invokeCommandMock).toHaveBeenCalledWith('open_reports_dir')
+  })
+
+  it('builds report exports from artifact-backed dataset metadata instead of current live dataset state', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      autoRevealReport: false,
+      autoExportTopN: '9',
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/MSFT.csv',
+      dataTimeframe: '15m',
+      baseDataMeta: { timeframe: '15m' },
+      datasetLabel: 'MSFT live',
+      datasetContext: 'source=live',
+      dataFields: ['open', 'high', 'low', 'close', 'volume'],
+      dataLen: '1000',
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-10T12:34:56Z',
+        artifact_path: 'runs/vectorgrid_run_validation_test.json',
+        report_xlsx_path: '',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/AAPL.csv',
+          timeframe: '1h',
+          label: 'AAPL artifact',
+          symbol: 'AAPL',
+          len: 4321,
+          min_ts: 111,
+          max_ts: 222,
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-export-artifact',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: {
+        ts: '2026-03-10T12:34:56Z',
+        req: {
+          data_id: 'data-export-artifact',
+          candidates: [
+            {
+              fast_ma_type: 'sma',
+              slow_ma_type: 'ema',
+              fast_len: 10,
+              slow_len: 40,
+            },
+          ],
+        },
+        res: {
+          candidates: [{ score: 1 }],
+        },
+      },
+    })
+
+    await exportReportXlsx()
+
+    const saveCall = invokeCommandMock.mock.calls.find(([command]) => command === 'save_report_xlsx')
+    const saveArgs = (saveCall?.[1] ?? {}) as { max_rows?: number | null; report?: Record<string, unknown> }
+    const reportData = (saveArgs.report?.data ?? {}) as Record<string, unknown>
+    const meta = (reportData.meta ?? {}) as Record<string, unknown>
+    const ctx = (reportData.ctx ?? {}) as Record<string, unknown>
+
+    expect(saveArgs.max_rows).toBe(9)
+    expect(meta.timeframe).toBe('1h')
+    expect(meta.len).toBe(4321)
+    expect(meta.min_ts).toBe(111)
+    expect(meta.max_ts).toBe(222)
+    expect(ctx.label).toBe('AAPL artifact')
+    expect(ctx.symbol).toBe('AAPL')
+    expect(ctx.csv_path).toBe('C:/data/AAPL.csv')
   })
 
   it('preserves Stage 3 meta XLSX fallback when no validation artifact exists', async () => {

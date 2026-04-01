@@ -109,6 +109,7 @@ Current capabilities:
 - `calibrate.py`
   - fits sigmoid calibration from validation raw scores
   - writes `calibration.json`
+  - rewrites `validation_scores.csv` with preferred calibrated probability columns `p_long_cal` / `p_short_cal`
   - updates `manifest.json`
 - `evaluate_walkforward.py`
   - loads the saved bundle
@@ -147,3 +148,11 @@ Still open:
 - deterministic baseline comparison is still manual
 - automatic ticker-holdout reporting still requires either a preserved holdout column or explicit modulus/residue inputs
 - native in-app threshold-stability review is still a separate step from the Python research reports
+
+## Score Contract Notes
+
+- `validation_scores.csv` is a calibration-slice artifact produced from the calibration rows used by the offline training harness.
+- After `calibrate.py` runs, `p_long_cal` / `p_short_cal` are the preferred probability columns for `validation_scores.csv`.
+- `raw_long` / `raw_short` remain diagnostic raw-margin columns; they are not the preferred desktop validation contract.
+- `walkforward_test_scores.csv` is a walk-forward proxy artifact produced by the Python harness. It is useful for research review, but it is not itself a desktop validation or policy-sweep artifact.
+- Desktop `MlSignal` validation/policy sweep is still a separate score-cache-backed runtime surface and should be reviewed separately when parity matters.

@@ -74,7 +74,7 @@ describe('AdvancedWorkspacePanel', () => {
     expect(document.querySelector('#vueTopK')).toBeNull()
     expect(document.querySelector('#vueIncludeAll')).toBeNull()
     expect(document.querySelector('#vueExportAllCsvPath')).toBeNull()
-    expect(document.body.textContent || '').toContain('Composite MO uses its own search-space and prescan settings')
+    expect(document.body.textContent || '').toContain('Composite MO returns Pareto points from its own search-space and prescan settings')
 
     wrapper.unmount()
   })

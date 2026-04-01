@@ -16,6 +16,8 @@ const MAX_HEATMAP_BINS = 512;
 const MAX_INCLUDE_ALL_ROWS = 2_000_000;
 const MAX_GPU_KERNEL_TOP_K = 256;
 const MAX_EXTRA_SHORTLIST_OBJECTIVES = 3;
+const COMPOSITE_CPU_PRODUCT_MODE = "Grid" as const;
+const COMPOSITE_CPU_PRODUCT_HEATMAP_BINS = 0;
 
 export interface OptimizeBuildContext {
   strategy_kind?: unknown;
@@ -346,6 +348,7 @@ export interface CompositeMoOptimizationBuildInputs extends StrategyConfigBuildI
   moPrescanPredictiveTopK?: unknown;
   moPrescanPredictiveStride?: unknown;
   moPrescanRequireGpu?: unknown;
+  moPrescanDeviceId?: unknown;
   moPrescanObjectives?: unknown;
   moPrescanMode?: unknown;
   moPrescanMaPairs?: unknown;
@@ -715,6 +718,19 @@ function parseOptionalNonNegativeNumber(
   if (parsed == null) return null;
   if (parsed < 0) throw new Error(`${label} must be >= 0.`);
   return parsed;
+}
+
+function parseOptionalNonNegativeU32(
+  value: unknown,
+  label: string,
+): number | null {
+  const parsed = parseOptionalFinite(value);
+  if (parsed == null) return null;
+  const integer = Math.floor(parsed);
+  if (!Number.isFinite(integer) || integer < 0 || integer > 0xffff_ffff) {
+    throw new Error(`${label} must be in [0, 4294967295].`);
+  }
+  return integer;
 }
 
 function normalizeMaParams(value: unknown): Record<string, number> | null {
@@ -1461,6 +1477,46 @@ function defaultCompositeMoSearchSpace(): Record<string, unknown> {
   };
 }
 
+const COMPOSITE_MO_ALLOWED_PARAMS = new Set([
+  "fast_ma_type",
+  "slow_ma_type",
+  "fast_len",
+  "slow_len",
+  "halftrend_amplitude",
+  "halftrend_channel_deviation",
+  "halftrend_atr_period",
+  "macz_fast_length",
+  "macz_slow_length",
+  "macz_signal_length",
+  "macz_lengthz",
+  "macz_length_stdev",
+  "macz_a",
+  "macz_b",
+  "macz_gamma",
+  "macz_use_lag",
+  "macz_use_volume",
+  "ott_period",
+  "ott_percent",
+  "ott_ma_type",
+  "strategy_commission",
+  "strategy_eps_rel",
+  "strategy_long_only",
+  "strategy_allow_flip",
+]);
+
+interface CompositeMoDiscreteSearchEstimate {
+  fullyDiscrete: boolean;
+  combos: number | null;
+}
+
+function hasExplicitCompositeMoInput(value: unknown): boolean {
+  return normalizeText(value).length > 0;
+}
+
+function serializeCompositeMoChoiceNumber(value: number): string {
+  return String(Number(value.toFixed(10)));
+}
+
 function parseCompositeMoSearchSpace(raw: unknown): Record<string, unknown> {
   const text = normalizeText(raw);
   if (!text) return defaultCompositeMoSearchSpace();
@@ -1493,14 +1549,27 @@ function normalizeCompositeMoSearchSpace(
   const params: Array<{ name: string; domain: unknown }> = [];
   const seen = new Set<string>();
   for (const entry of paramsIn) {
-    if (!entry || typeof entry !== "object") continue;
+    if (!entry || typeof entry !== "object") {
+      throw new Error("Composite MO search space params must be objects.");
+    }
     const row = entry as Record<string, unknown>;
     const name = normalizeText(row.name);
-    if (!name) continue;
+    if (!name) throw new Error("Composite MO search space params require names.");
     const key = name.toLowerCase();
-    if (key === "fast_len" || key === "slow_len") continue;
-    if (seen.has(key)) continue;
-    if (row.domain == null) continue;
+    if (!COMPOSITE_MO_ALLOWED_PARAMS.has(key)) {
+      throw new Error(`Unsupported Composite MO search-space param "${name}".`);
+    }
+    if (key === "fast_len" || key === "slow_len") {
+      throw new Error(
+        `Composite MO search-space param "${name}" is controlled by the main fast/slow range inputs and should not be included in custom JSON.`,
+      );
+    }
+    if (seen.has(key)) {
+      throw new Error(`Duplicate Composite MO search-space param "${name}".`);
+    }
+    if (row.domain == null) {
+      throw new Error(`Composite MO search-space param "${name}" is missing a domain.`);
+    }
     params.push({ name, domain: row.domain });
     seen.add(key);
   }
@@ -1511,6 +1580,111 @@ function normalizeCompositeMoSearchSpace(
       ...params,
     ],
   };
+}
+
+function estimateCompositeMoDiscreteCombos(
+  searchSpace: Record<string, unknown>,
+  comboLimit = 200_000,
+): CompositeMoDiscreteSearchEstimate {
+  const params = Array.isArray(searchSpace.params)
+    ? (searchSpace.params as Array<Record<string, unknown>>)
+    : [];
+
+  let combos = 1;
+  for (const param of params) {
+    const domain = param?.domain;
+    let axisCount: number | null = null;
+
+    if (domain === "Bool") {
+      axisCount = 2;
+    } else if (domain && typeof domain === "object") {
+      const row = domain as Record<string, unknown>;
+      if (row.Categorical && typeof row.Categorical === "object") {
+        const choices = (row.Categorical as Record<string, unknown>).choices;
+        if (Array.isArray(choices)) axisCount = choices.length;
+      } else if (row.IntRange && typeof row.IntRange === "object") {
+        const range = row.IntRange as Record<string, unknown>;
+        axisCount = countF64RangeValues(
+          num(range.low, Number.NaN),
+          num(range.high, Number.NaN),
+          num(range.step, Number.NaN),
+        );
+      }
+    }
+
+    if (!Number.isFinite(axisCount) || axisCount == null || axisCount < 1) {
+      return { fullyDiscrete: false, combos: null };
+    }
+
+    combos *= Math.max(1, Math.floor(axisCount));
+    if (!Number.isFinite(combos) || combos > comboLimit) {
+      return { fullyDiscrete: true, combos: comboLimit + 1 };
+    }
+  }
+
+  return { fullyDiscrete: true, combos };
+}
+
+function extractCategoricalStringChoices(
+  searchSpace: Record<string, unknown>,
+  paramName: string,
+): string[] | null {
+  const params = Array.isArray(searchSpace.params)
+    ? (searchSpace.params as Array<Record<string, unknown>>)
+    : [];
+  const target = normalizeText(paramName).toLowerCase();
+  if (!target) return null;
+
+  for (const param of params) {
+    const name = normalizeText(param.name).toLowerCase();
+    if (name !== target) continue;
+    const domain = param.domain;
+    if (!domain || typeof domain !== "object") return null;
+    const row = domain as Record<string, unknown>;
+    const cat = row.Categorical;
+    if (!cat || typeof cat !== "object") return null;
+    const choices = (cat as Record<string, unknown>).choices;
+    if (!Array.isArray(choices)) return null;
+    const dedup = Array.from(
+      new Set(
+        choices
+          .map((choice) => normalizeText(choice).toLowerCase())
+          .filter((choice) => !!choice),
+      ),
+    );
+    return dedup.length ? dedup : null;
+  }
+
+  return null;
+}
+
+function buildCompositeMoDefaultPrescanPairs(
+  searchSpace: Record<string, unknown>,
+  fastFallback: string,
+  slowFallback: string,
+  maxPairs = 8,
+): Array<{ fast_ma_type: string; slow_ma_type: string }> | null {
+  const fastChoices =
+    extractCategoricalStringChoices(searchSpace, "fast_ma_type") ?? [
+      fastFallback.toLowerCase(),
+    ];
+  const slowChoices =
+    extractCategoricalStringChoices(searchSpace, "slow_ma_type") ?? [
+      slowFallback.toLowerCase(),
+    ];
+
+  const out: Array<{ fast_ma_type: string; slow_ma_type: string }> = [];
+  for (const fast of fastChoices) {
+    for (const slow of slowChoices) {
+      out.push({ fast_ma_type: fast, slow_ma_type: slow });
+      if (out.length > maxPairs) {
+        throw new Error(
+          `Composite MO prescan would need more than ${maxPairs} MA pairs. Narrow fast/slow MA type choices or specify prescan pairs explicitly.`,
+        );
+      }
+    }
+  }
+  return out.length ? out : null;
 }
 
 function parseCompositeMoPrescanMaPairs(
@@ -1579,24 +1753,27 @@ function parseMoRangeFloat(
   }
   if (stepNum <= 0) throw new Error(`${label}: step must be > 0.`);
   if (lowNum > highNum) throw new Error(`${label}: low must be <= high.`);
-  if (lowNum === highNum) return { Categorical: { choices: [lowNum] } };
+  if (lowNum === highNum) {
+    return {
+      Categorical: { choices: [serializeCompositeMoChoiceNumber(lowNum)] },
+    };
+  }
 
   const count = Math.floor((highNum - lowNum) / stepNum) + 1;
   if (Number.isFinite(count) && count >= 2 && count <= 400) {
-    const choices: number[] = [];
+    const choices: string[] = [];
     for (let idx = 0; idx < count; idx += 1) {
       const value = lowNum + idx * stepNum;
       if (value > highNum + stepNum * 1e-9) break;
-      choices.push(Number(value.toFixed(10)));
+      choices.push(serializeCompositeMoChoiceNumber(value));
     }
     const last = choices.length ? choices[choices.length - 1] : undefined;
     if (
       choices.length >= 2 &&
-      typeof last === "number" &&
-      Number.isFinite(last) &&
-      Math.abs(last - highNum) > stepNum * 0.55
+      typeof last === "string" &&
+      Math.abs(Number(last) - highNum) > stepNum * 0.55
     ) {
-      choices.push(Number(highNum.toFixed(10)));
+      choices.push(serializeCompositeMoChoiceNumber(highNum));
     }
     if (choices.length >= 2) return { Categorical: { choices } };
   }
@@ -1605,10 +1782,10 @@ function parseMoRangeFloat(
 
 function parseMoBoolDomain(
   mode: unknown,
-): "Bool" | { Categorical: { choices: boolean[] } } {
+): "Bool" | { Categorical: { choices: string[] } } {
   const normalized = normalizeText(mode).toLowerCase() || "both";
-  if (normalized === "true") return { Categorical: { choices: [true] } };
-  if (normalized === "false") return { Categorical: { choices: [false] } };
+  if (normalized === "true") return { Categorical: { choices: ["true"] } };
+  if (normalized === "false") return { Categorical: { choices: ["false"] } };
   return "Bool";
 }
 
@@ -1782,28 +1959,50 @@ function buildCompositeMoSearchSpaceFromInputs(
 
 function buildCompositeMoSampler(
   inputs: CompositeMoOptimizationBuildInputs,
+  searchStats: CompositeMoDiscreteSearchEstimate,
 ): Record<string, unknown> {
   const samplerKind = normalizeText(inputs.moSampler || "Nsga2") || "Nsga2";
+  const discreteCap =
+    searchStats.fullyDiscrete && searchStats.combos != null
+      ? Math.max(1, Math.floor(searchStats.combos))
+      : null;
   if (samplerKind === "Random") {
     const seed = Math.max(0, Math.floor(num(inputs.moRandomSeed, 1)));
-    const trials = Math.max(1, Math.floor(num(inputs.moRandomTrials, 2000)));
+    const defaultTrials =
+      discreteCap == null ? 2000 : Math.min(2000, discreteCap);
+    const trials = Math.max(
+      1,
+      Math.floor(num(inputs.moRandomTrials, defaultTrials)),
+    );
     if (trials > 200_000)
       throw new Error("Random trials too large (max 200000).");
     return { sampler: "Random", config: { seed, trials } };
   }
   if (samplerKind === "Tpe") {
     const seed = Math.max(0, Math.floor(num(inputs.moTpeSeed, 1)));
-    const trials = Math.max(1, Math.floor(num(inputs.moTpeTrials, 5000)));
+    const defaultTrials =
+      discreteCap == null ? 5000 : Math.min(5000, discreteCap);
+    const trials = Math.max(
+      1,
+      Math.floor(num(inputs.moTpeTrials, defaultTrials)),
+    );
+    const defaultStartupTrials = Math.max(0, Math.min(10, trials - 1));
     const startupTrials = Math.max(
       0,
-      Math.floor(num(inputs.moTpeStartupTrials, 10)),
+      Math.floor(num(inputs.moTpeStartupTrials, defaultStartupTrials)),
     );
+    const defaultEiCandidates =
+      discreteCap == null ? 24 : Math.min(24, Math.max(1, discreteCap));
     const eiCandidates = Math.max(
       1,
-      Math.floor(num(inputs.moTpeCandidates, 24)),
+      Math.floor(num(inputs.moTpeCandidates, defaultEiCandidates)),
     );
     const gamma = num(inputs.moTpeGamma, 0.25);
-    const batchSize = Math.max(1, Math.floor(num(inputs.moTpeBatchSize, 64)));
+    const defaultBatchSize = Math.max(1, Math.min(64, trials));
+    const batchSize = Math.max(
+      1,
+      Math.floor(num(inputs.moTpeBatchSize, defaultBatchSize)),
+    );
     const maxModelPoints = Math.max(
       32,
       Math.floor(num(inputs.moTpeMaxModelPoints, 2048)),
@@ -1828,20 +2027,38 @@ function buildCompositeMoSampler(
   }
   if (samplerKind === "Qmc") {
     const seed = Math.max(0, Math.floor(num(inputs.moQmcSeed, 1)));
-    const trials = Math.max(1, Math.floor(num(inputs.moQmcTrials, 5000)));
+    const defaultTrials =
+      discreteCap == null ? 5000 : Math.min(5000, discreteCap);
+    const trials = Math.max(
+      1,
+      Math.floor(num(inputs.moQmcTrials, defaultTrials)),
+    );
     const sequence =
       normalizeText(inputs.moQmcSequence || "sobol").toLowerCase() || "sobol";
     if (trials > 200_000) throw new Error("QMC trials too large (max 200000).");
     return { sampler: "Qmc", config: { seed, trials, sequence } };
   }
   const seed = Math.max(0, Math.floor(num(inputs.moNsga2Seed, 1)));
+  const explicitPopulation = hasExplicitCompositeMoInput(inputs.moNsga2Population);
+  const defaultPopulation =
+    discreteCap == null
+      ? 80
+      : Math.min(80, Math.max(2, Math.ceil(discreteCap / 2)));
   const populationSize = Math.max(
     2,
-    Math.floor(num(inputs.moNsga2Population, 80)),
+    Math.floor(num(inputs.moNsga2Population, defaultPopulation)),
   );
+  const explicitGenerations = hasExplicitCompositeMoInput(inputs.moNsga2Generations);
+  const defaultGenerations =
+    discreteCap == null
+      ? 40
+      : Math.max(
+          1,
+          Math.ceil(Math.max(2, discreteCap) / populationSize) - 1,
+        );
   const generations = Math.max(
     1,
-    Math.floor(num(inputs.moNsga2Generations, 40)),
+    Math.floor(num(inputs.moNsga2Generations, defaultGenerations)),
   );
   const crossoverProb = num(inputs.moNsga2CrossoverProb, 0.9);
   const swappingProb = num(inputs.moNsga2SwappingProb, 0.5);
@@ -1865,15 +2082,32 @@ function buildCompositeMoSampler(
   ) {
     throw new Error("NSGA-II mutation_prob must be blank or in [0, 1].");
   }
-  const evals = populationSize * (generations + 1);
+  let effectivePopulationSize = populationSize;
+  let effectiveGenerations = generations;
+  if (
+    discreteCap != null &&
+    !explicitPopulation &&
+    !explicitGenerations &&
+    effectivePopulationSize * (effectiveGenerations + 1) > discreteCap
+  ) {
+    effectivePopulationSize = Math.max(
+      2,
+      Math.min(effectivePopulationSize, discreteCap),
+    );
+    effectiveGenerations = Math.max(
+      1,
+      Math.ceil(Math.max(2, discreteCap) / effectivePopulationSize) - 1,
+    );
+  }
+  const evals = effectivePopulationSize * (effectiveGenerations + 1);
   if (evals > 200_000)
     throw new Error(`NSGA-II budget too large (${evals} evals; max 200000).`);
   return {
     sampler: "Nsga2",
     config: {
       seed,
-      population_size: populationSize,
-      generations,
+      population_size: effectivePopulationSize,
+      generations: effectiveGenerations,
       crossover_prob: crossoverProb,
       swapping_prob: swappingProb,
       mutation_prob: mutationProb == null ? null : mutationProb,
@@ -3133,10 +3367,12 @@ export function buildCompositeCpuOptimizationRequest(
     extra_shortlist_objectives: extraShortlistObjectives,
     shortlist_confidence_mode: shortlistConfidenceMode,
     shortlist_union_mode: shortlistUnionMode,
-    mode: "Grid",
+    // Standalone CompositeCpu-family product requests stay Grid-only and do not
+    // emit the Double-MA heatmap/export-all surface.
+    mode: COMPOSITE_CPU_PRODUCT_MODE,
     top_k: topK,
     include_all: includeAll,
-    heatmap_bins: 0,
+    heatmap_bins: COMPOSITE_CPU_PRODUCT_HEATMAP_BINS,
   };
 }
 
@@ -3203,7 +3439,6 @@ export function buildCompositeMoOptimizationRequest(
   const maximize = normalizeText(inputs.objective || "Sharpe") || "Sharpe";
   const minimize =
     normalizeText(inputs.moObjectiveMin || "MaxDrawdown") || "MaxDrawdown";
-  const sampler = buildCompositeMoSampler(inputs);
 
   const minTrades = parseOptionalRawNumber(inputs.moConstraintMinTrades);
   const maxDd = parseOptionalRawNumber(inputs.moConstraintMaxDd);
@@ -3232,35 +3467,6 @@ export function buildCompositeMoOptimizationRequest(
     }
   }
 
-  let gpuPrescan: Record<string, unknown> | null = null;
-  if (normalizeBoolean(inputs.moPrescanEnable)) {
-    const topK = Math.max(1, Math.floor(num(inputs.moPrescanTopK, 128)));
-    const window = Math.max(0, Math.floor(num(inputs.moPrescanWindow, 8)));
-    const predictiveTopK = Math.max(
-      0,
-      Math.floor(num(inputs.moPrescanPredictiveTopK, 12)),
-    );
-    const predictiveStride = Math.max(
-      1,
-      Math.min(65535, Math.floor(num(inputs.moPrescanPredictiveStride, 8))),
-    );
-    const objectives =
-      normalizeText(inputs.moPrescanObjectives || "both") || "both";
-    const mode = normalizeText(inputs.moPrescanMode || "Auto") || "Auto";
-    const maPairs = parseCompositeMoPrescanMaPairs(inputs.moPrescanMaPairs);
-    gpuPrescan = {
-      top_k: topK,
-      window,
-      predictive_top_k: predictiveTopK,
-      predictive_stride: predictiveStride,
-      device_id: 0,
-      require_gpu: normalizeBoolean(inputs.moPrescanRequireGpu),
-      objectives,
-      ma_pairs: maPairs,
-      mode,
-    };
-  }
-
   const useRangeBuilder = normalizeBoolean(inputs.moUseRangeBuilder);
   const space = useRangeBuilder
     ? buildCompositeMoSearchSpaceFromInputs(inputs)
@@ -3287,6 +3493,47 @@ export function buildCompositeMoOptimizationRequest(
     fastDomain,
     slowDomain,
   );
+  const searchStats = estimateCompositeMoDiscreteCombos(searchSpace);
+  const sampler = buildCompositeMoSampler(inputs, searchStats);
+
+  const prescanDeviceId = parseOptionalNonNegativeU32(
+    inputs.moPrescanDeviceId,
+    "Composite MO prescan device id",
+  );
+  let gpuPrescan: Record<string, unknown> | null = null;
+  if (normalizeBoolean(inputs.moPrescanEnable)) {
+    const topK = Math.max(1, Math.floor(num(inputs.moPrescanTopK, 128)));
+    const window = Math.max(0, Math.floor(num(inputs.moPrescanWindow, 8)));
+    const predictiveTopK = Math.max(
+      0,
+      Math.floor(num(inputs.moPrescanPredictiveTopK, 12)),
+    );
+    const predictiveStride = Math.max(
+      1,
+      Math.min(65535, Math.floor(num(inputs.moPrescanPredictiveStride, 8))),
+    );
+    const objectives =
+      normalizeText(inputs.moPrescanObjectives || "both") || "both";
+    const mode = normalizeText(inputs.moPrescanMode || "Auto") || "Auto";
+    const maPairs =
+      parseCompositeMoPrescanMaPairs(inputs.moPrescanMaPairs) ??
+      buildCompositeMoDefaultPrescanPairs(
+        searchSpace,
+        fastMaType,
+        slowMaType,
+      );
+    gpuPrescan = {
+      top_k: topK,
+      window,
+      predictive_top_k: predictiveTopK,
+      predictive_stride: predictiveStride,
+      ...(prescanDeviceId == null ? {} : { device_id: prescanDeviceId }),
+      require_gpu: normalizeBoolean(inputs.moPrescanRequireGpu),
+      objectives,
+      ma_pairs: maPairs,
+      mode,
+    };
+  }
 
   return {
     strategy_kind: "CompositeMo",
@@ -3299,7 +3546,6 @@ export function buildCompositeMoOptimizationRequest(
     slow_ma_params: normalizeMaParams(inputs.slowMaParams),
     base_strategy: baseStrategy,
     signal_mode: signalMode,
-    strategy: baseStrategy,
     search_space: searchSpace,
     objective: maximize,
     objectives: { maximize, minimize },

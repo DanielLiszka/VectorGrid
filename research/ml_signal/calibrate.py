@@ -65,6 +65,16 @@ def main() -> int:
             manifest = json.load(handle)
         if isinstance(manifest, dict):
             manifest["calibration_path"] = "calibration.json"
+            manifest["score_contract"] = {
+                "validation_scores_scope": "calibration_slice",
+                "validation_scores_probability_columns": ["p_long", "p_short"],
+                "validation_scores_preferred_probability_columns": [
+                    "p_long_cal",
+                    "p_short_cal",
+                ],
+                "raw_margin_columns": ["raw_long", "raw_short"],
+                "desktop_validation_requires_probability_columns": True,
+            }
             with manifest_path.open("w", encoding="utf-8") as handle:
                 json.dump(manifest, handle, indent=2, sort_keys=True)
                 handle.write("\n")

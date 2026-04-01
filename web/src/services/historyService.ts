@@ -465,10 +465,77 @@ function asNumber(value: unknown): number {
   return parsed;
 }
 
+function firstBooleanFromList(value: unknown): boolean | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  return parseBooleanLike(value[0]);
+}
+
+function applyMlStrategyConfigToStores(
+  optimizeStore: ReturnType<typeof useOptimizeStore>,
+  settingsStore: ReturnType<typeof useSettingsStore> | null,
+  executionStore: ReturnType<typeof useExecutionStore> | null,
+  strategyStore: ReturnType<typeof useStrategyStore>,
+  config: Record<string, unknown> | null,
+): void {
+  if (!config) return;
+  const longOnly = parseBooleanLike(config.long_only);
+  const allowFlip = parseBooleanLike(config.allow_flip);
+  const tradeOnNext = parseBooleanLike(
+    config.trade_on_next_bar ?? config.tradeOnNextBar,
+  );
+  const costPreset = normalizeText(config.cost_preset ?? config.costPreset);
+  const feeBps = asNumber(config.fee_bps ?? config.feeBps);
+  const spreadBps = asNumber(config.spread_bps ?? config.spreadBps);
+  const slippageBps = asNumber(config.slippage_bps ?? config.slippageBps);
+  const stopLossPct = asNumber(config.stop_loss_pct ?? config.stopLossPct);
+  const takeProfitPct = asNumber(
+    config.take_profit_pct ?? config.takeProfitPct,
+  );
+  const cooldownBars = asNumber(config.cooldown_bars ?? config.cooldownBars);
+  const persistenceBars = asNumber(
+    config.signal_persistence_bars ?? config.signalPersistenceBars,
+  );
+  const epsRel = asNumber(config.eps_rel ?? config.epsRel);
+  if (longOnly != null) strategyStore.longOnly = longOnly;
+  if (allowFlip != null) strategyStore.allowFlip = allowFlip;
+  if (tradeOnNext != null) strategyStore.tradeOnNext = tradeOnNext;
+  if (costPreset) strategyStore.costPreset = costPreset;
+  if (Number.isFinite(feeBps)) strategyStore.feeBps = String(feeBps);
+  if (Number.isFinite(spreadBps)) strategyStore.spreadBps = String(spreadBps);
+  if (Number.isFinite(slippageBps))
+    strategyStore.slippageBps = String(slippageBps);
+  if (Number.isFinite(stopLossPct)) {
+    strategyStore.stopLossPct = String(stopLossPct);
+  }
+  if (Number.isFinite(takeProfitPct)) {
+    strategyStore.takeProfitPct = String(takeProfitPct);
+  }
+  if (Number.isFinite(cooldownBars)) {
+    strategyStore.cooldownBars = String(Math.floor(cooldownBars));
+  }
+  if (Number.isFinite(persistenceBars)) {
+    strategyStore.signalPersistenceBars = String(
+      Math.max(1, Math.floor(persistenceBars)),
+    );
+  }
+  if (Number.isFinite(epsRel)) strategyStore.epsRel = String(epsRel);
+  if (settingsStore) {
+    settingsStore.source = "vue";
+    settingsStore.updatedAtUnixMs = Date.now();
+  }
+  if (executionStore) {
+    executionStore.source = "vue";
+    executionStore.updatedAtUnixMs = Date.now();
+  }
+  optimizeStore.source = "vue";
+  optimizeStore.updatedAtUnixMs = Date.now();
+}
+
 function updateStoresFromRunRequest(
   req: Record<string, unknown>,
   csvPath: string,
   timeframe: string,
+  validationReq: Record<string, unknown> | null = null,
 ): void {
   const pinia = resolveRuntimePinia();
   if (!pinia) return;
@@ -476,6 +543,9 @@ function updateStoresFromRunRequest(
   const optimizeStore = useOptimizeStore(pinia);
   const advancedStore = useAdvancedStore(pinia);
   const dataStore = useDataStore(pinia);
+  const strategyStore = useStrategyStore(pinia);
+  const settingsStore = useSettingsStore(pinia);
+  const executionStore = useExecutionStore(pinia);
 
   const strategyKind = normalizeText(req.strategy_kind ?? req.strategyKind);
   const objective = normalizeText(req.objective);
@@ -500,6 +570,20 @@ function updateStoresFromRunRequest(
     );
     const splitPlan = asRecord(req.split_plan ?? req.splitPlan);
     const tickerHoldout = asRecord(req.ticker_holdout ?? req.tickerHoldout);
+    const validationStrategy = asRecord(
+      validationReq?.base_strategy ??
+        (Array.isArray(validationReq?.candidates)
+          ? asRecord(
+              (validationReq?.candidates as Array<unknown>)[0] &&
+                typeof (validationReq?.candidates as Array<unknown>)[0] ===
+                  "object"
+                ? (
+                    validationReq?.candidates as Array<Record<string, unknown>>
+                  )[0]?.strategy
+                : null,
+            )
+          : null),
+    );
     const hasDatasetExportShape =
       normalizeText(req.ma_source ?? req.maSource).length > 0 ||
       Number.isFinite(Number(req.horizon_bars ?? req.horizonBars));
@@ -548,6 +632,79 @@ function updateStoresFromRunRequest(
       if (Number.isFinite(residue))
         optimizeStore.mlSignalHoldoutResidue = String(Math.floor(residue));
     }
+    const firstCandidate =
+      Array.isArray(validationReq?.candidates) &&
+      validationReq?.candidates[0] &&
+      typeof validationReq.candidates[0] === "object"
+        ? (validationReq.candidates[0] as Record<string, unknown>)
+        : null;
+    if (firstCandidate) {
+      const tLong = asNumber(firstCandidate.t_long);
+      const tShort = asNumber(firstCandidate.t_short);
+      const delta = asNumber(firstCandidate.delta);
+      const maxHoldBars = asNumber(firstCandidate.max_hold_bars);
+      const exitOnFlat = parseBooleanLike(firstCandidate.exit_on_flat);
+      const exitOnOpposite = parseBooleanLike(firstCandidate.exit_on_opposite);
+      if (Number.isFinite(tLong)) optimizeStore.mlSignalLongThreshold = String(tLong);
+      if (Number.isFinite(tShort))
+        optimizeStore.mlSignalShortThreshold = String(tShort);
+      if (Number.isFinite(delta)) optimizeStore.mlSignalDelta = String(delta);
+      if (Number.isFinite(maxHoldBars)) {
+        optimizeStore.mlSignalMaxHoldBars = String(Math.floor(maxHoldBars));
+      }
+      if (exitOnFlat != null) optimizeStore.mlSignalExitOnFlat = exitOnFlat;
+      if (exitOnOpposite != null) {
+        optimizeStore.mlSignalExitOnOpposite = exitOnOpposite;
+      }
+    } else if (validationReq) {
+      const tLong = asRecord(validationReq.t_long);
+      const tShort = asRecord(validationReq.t_short);
+      const delta = asRecord(validationReq.delta);
+      const hold = asRecord(validationReq.max_hold_bars);
+      const topK = asNumber(validationReq.top_k);
+      const exitOnFlat = firstBooleanFromList(validationReq.exit_on_flat_values);
+      const exitOnOpposite = firstBooleanFromList(
+        validationReq.exit_on_opposite_values,
+      );
+      if (tLong) {
+        optimizeStore.mlSignalSweepLongStart = normalizeText(tLong.start);
+        optimizeStore.mlSignalSweepLongEnd = normalizeText(tLong.end);
+        optimizeStore.mlSignalSweepLongStep = normalizeText(tLong.step);
+      }
+      if (tShort) {
+        optimizeStore.mlSignalSweepShortStart = normalizeText(tShort.start);
+        optimizeStore.mlSignalSweepShortEnd = normalizeText(tShort.end);
+        optimizeStore.mlSignalSweepShortStep = normalizeText(tShort.step);
+      }
+      if (delta) {
+        optimizeStore.mlSignalSweepDeltaStart = normalizeText(delta.start);
+        optimizeStore.mlSignalSweepDeltaEnd = normalizeText(delta.end);
+        optimizeStore.mlSignalSweepDeltaStep = normalizeText(delta.step);
+      }
+      if (hold) {
+        optimizeStore.mlSignalSweepHoldStart = normalizeText(hold.start);
+        optimizeStore.mlSignalSweepHoldEnd = normalizeText(hold.end);
+        optimizeStore.mlSignalSweepHoldStep = normalizeText(hold.step);
+      }
+      if (Number.isFinite(topK) && topK > 0) {
+        optimizeStore.mlSignalSweepTopK = String(Math.floor(topK));
+      }
+      if (exitOnFlat != null) optimizeStore.mlSignalExitOnFlat = exitOnFlat;
+      if (exitOnOpposite != null) {
+        optimizeStore.mlSignalExitOnOpposite = exitOnOpposite;
+      }
+    }
+    const minPsr = asNumber(validationReq?.min_psr ?? validationReq?.minPsr);
+    const minDsr = asNumber(validationReq?.min_dsr ?? validationReq?.minDsr);
+    if (Number.isFinite(minPsr)) optimizeStore.mlSignalMinPsr = String(minPsr);
+    if (Number.isFinite(minDsr)) optimizeStore.mlSignalMinDsr = String(minDsr);
+    applyMlStrategyConfigToStores(
+      optimizeStore,
+      settingsStore,
+      executionStore,
+      strategyStore,
+      validationStrategy,
+    );
     if (csvPath) dataStore.csvPath = csvPath;
     dataStore.dataTimeframe = timeframe;
     optimizeStore.statusLine = "Applied saved ML signal run settings to form.";
@@ -863,6 +1020,14 @@ export async function loadSavedRun(path: string): Promise<void> {
   const reportXlsxPath = normalizeText(
     record.report_xlsx_path ?? record.reportXlsxPath,
   );
+  const datasetMeta =
+    record.dataset_meta && typeof record.dataset_meta === "object"
+      ? (record.dataset_meta as Record<string, unknown>)
+      : null;
+  const mlSignal =
+    record.ml_signal && typeof record.ml_signal === "object"
+      ? (record.ml_signal as Record<string, unknown>)
+      : null;
   const tags = normalizeStringList(record.tags);
   const validationReq = validationRecord?.req ?? null;
   const validationRes = validationRecord?.res ?? null;
@@ -874,6 +1039,8 @@ export async function loadSavedRun(path: string): Promise<void> {
         artifact_path: nextPath,
         report_xlsx_path: reportXlsxPath,
         csv_path: csvPath,
+        dataset_meta: datasetMeta,
+        ml_signal: mlSignal,
         tags,
         req: runReq,
         res: runRes,
@@ -906,13 +1073,14 @@ export async function applySavedRun(path: string): Promise<void> {
   const record = loaded.record;
   const runRecord = asRecord(record.run);
   const req = asRecord(runRecord?.req);
+  const validationReq = asRecord(asRecord(record.validation)?.req);
   if (!req) throw new Error("Saved run artifact is missing run.req.");
 
   const csvPath =
     normalizeText(record.csv_path ?? record.csvPath) ||
     normalizeText(asRecord(record.data)?.csv_path);
   const timeframe = normalizeText(asRecord(record.dataset_meta)?.timeframe);
-  updateStoresFromRunRequest(req, csvPath, timeframe);
+  updateStoresFromRunRequest(req, csvPath, timeframe, validationReq);
 }
 
 export async function rerunSavedRun(path: string): Promise<void> {
@@ -920,6 +1088,8 @@ export async function rerunSavedRun(path: string): Promise<void> {
   const record = loaded.record;
   const runRecord = asRecord(record.run);
   const req = asRecord(runRecord?.req);
+  const validationReq = asRecord(asRecord(record.validation)?.req);
+  const mlSignal = asRecord(record.ml_signal);
   if (!req) throw new Error("Saved run artifact is missing run.req.");
 
   const csvPath =
@@ -941,7 +1111,7 @@ export async function rerunSavedRun(path: string): Promise<void> {
     }
   }
 
-  updateStoresFromRunRequest(req, csvPath, timeframe);
+  updateStoresFromRunRequest(req, csvPath, timeframe, validationReq);
 
   const request: Record<string, unknown> = { ...req };
   if (currentDataId) {
@@ -949,8 +1119,17 @@ export async function rerunSavedRun(path: string): Promise<void> {
     request.dataId = currentDataId;
   }
   if (isMlSignalStrategyKind(req.strategy_kind ?? req.strategyKind)) {
-    const { generateMlSignalScoreCache } = await import("./mlSignalService");
+    const {
+      exportMlSignalDataset,
+      generateMlSignalScoreCache,
+      runMlSignalPolicySweep,
+      runMlSignalValidation,
+    } = await import("./mlSignalService");
     const pinia = resolveRuntimePinia();
+    const isDatasetExportStage =
+      normalizeText(mlSignal?.stage) === "dataset_export" ||
+      (!!normalizeText(request.ma_source ?? request.maSource) &&
+        !normalizeText(request.input_path ?? request.inputPath));
     if (pinia) {
       const optimizeStore = useOptimizeStore(pinia);
       if (normalizeText(request.input_path ?? request.inputPath)) {
@@ -959,9 +1138,15 @@ export async function rerunSavedRun(path: string): Promise<void> {
         );
       }
       if (normalizeText(request.output_path ?? request.outputPath)) {
-        optimizeStore.mlSignalScoreCachePath = normalizeText(
-          request.output_path ?? request.outputPath,
-        );
+        if (isDatasetExportStage) {
+          optimizeStore.mlSignalDatasetExportPath = normalizeText(
+            request.output_path ?? request.outputPath,
+          );
+        } else {
+          optimizeStore.mlSignalScoreCachePath = normalizeText(
+            request.output_path ?? request.outputPath,
+          );
+        }
       }
       if (normalizeText(request.model_bundle_id ?? request.modelBundleId)) {
         optimizeStore.mlSignalModelBundleId = normalizeText(
@@ -969,7 +1154,30 @@ export async function rerunSavedRun(path: string): Promise<void> {
         );
       }
     }
+    const hasSweepReq =
+      !!validationReq &&
+      !Array.isArray(validationReq.candidates) &&
+      (validationReq.t_long != null ||
+        validationReq.t_short != null ||
+        validationReq.delta != null ||
+        validationReq.max_hold_bars != null);
+    const hasValidationReq =
+      !!validationReq && Array.isArray(validationReq.candidates);
+
+    if (isDatasetExportStage) {
+      await exportMlSignalDataset();
+      return;
+    }
+
     await generateMlSignalScoreCache();
+    if (hasValidationReq) {
+      await runMlSignalValidation();
+      return;
+    }
+    if (hasSweepReq) {
+      await runMlSignalPolicySweep();
+      return;
+    }
     return;
   }
   await runOptimization({ request, switchTab: true });

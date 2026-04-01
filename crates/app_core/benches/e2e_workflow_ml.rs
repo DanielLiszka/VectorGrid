@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use serde_json::{json, Value};
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ta_app_core::composite_cpu::{MaczGateParams, OttGateParams};
 use ta_app_core::double_ma::HalfTrendRegimeFilter;
@@ -52,6 +52,27 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     let qq = q.clamp(0.0, 1.0);
     let idx = (qq * (sorted.len().saturating_sub(1) as f64)).round() as usize;
     sorted[idx.min(sorted.len() - 1)]
+}
+
+fn bench_env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
 }
 
 fn evaluate_holdout_light(
@@ -249,6 +270,11 @@ fn run_full_workflow_once(
     holdout_assets: usize,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
+    let stage_diagnostics = bench_env_flag("VTA_E2E_BENCH_STAGE_DIAGNOSTICS");
+    let total_started = Instant::now();
+    let mut optimize_total = Duration::ZERO;
+    let mut validate_total = Duration::ZERO;
+
     // This benchmark intentionally uses small inputs by default. The composite CPU path and
     // validation are roughly linear in bar count on CPU, so you can re-run with larger candle
     // counts to empirically validate scaling.
@@ -343,8 +369,10 @@ fn run_full_workflow_once(
             heatmap_bins: Some(0),
         };
 
+        let optimize_started = Instant::now();
         let opt_res =
             run_composite_cpu_optimization_blocking_with_candles(opt_req, candles, cancel, None)?;
+        optimize_total += optimize_started.elapsed();
 
         let mut candidates: Vec<CompositeParams> = Vec::new();
         candidates.reserve(opt_res.top.len().min(64).max(1));
@@ -400,8 +428,10 @@ fn run_full_workflow_once(
             max_pbo: None,
             validation_context: None,
         };
+        let validate_started = Instant::now();
         let val_res =
             run_composite_validation_blocking_with_candles(val_req, candles, cancel, None)?;
+        validate_total += validate_started.elapsed();
 
         artifacts.push(json!({
             "kind": "vectorgrid_run_artifact",
@@ -436,13 +466,17 @@ fn run_full_workflow_once(
         cluster_representatives: 1,
     };
 
+    let meta_select_started = Instant::now();
     let mut meta_res = meta_select_from_artifacts(&meta_req, &artifacts, None);
+    let meta_select_total = meta_select_started.elapsed();
 
     // 3) Optional: holdout evaluation (light) to create labels.
     let holdout_pairs: Vec<(&str, &Candles)> =
         holdout.iter().map(|(l, c)| (l.as_str(), c)).collect();
+    let holdout_started = Instant::now();
     let holdout_summary =
         evaluate_holdout_light(&meta_req, &mut meta_res.groups, &holdout_pairs, cancel)?;
+    let holdout_total = holdout_started.elapsed();
     meta_res.holdout = Some(holdout_summary);
 
     // 4) Optional: ML training + apply (confidence ranking).
@@ -470,6 +504,7 @@ fn run_full_workflow_once(
 
     let mut last_err: Option<String> = None;
     let mut model_opt = None;
+    let ml_train_started = Instant::now();
     for &(min_pass, min_p10) in attempts {
         let mut cfg = base_cfg.clone();
         cfg.label.min_holdout_pass_rate = min_pass;
@@ -486,6 +521,7 @@ fn run_full_workflow_once(
             Err(e) => last_err = Some(e),
         }
     }
+    let ml_train_total = ml_train_started.elapsed();
 
     let model = model_opt.ok_or_else(|| {
         format!(
@@ -500,10 +536,33 @@ fn run_full_workflow_once(
         .and_then(|v| v.as_array())
         .ok_or_else(|| "missing meta groups".to_string())?;
     let mut _sum = 0.0f64;
+    let ml_apply_started = Instant::now();
     for g in groups {
         if let Some(p) = predict_ml_confidence_for_group(&model, g) {
             _sum += p;
         }
+    }
+    let ml_apply_total = ml_apply_started.elapsed();
+
+    if stage_diagnostics {
+        println!(
+            concat!(
+                "benchmark stage diagnostics e2e/composite_cpu_validate_meta_holdout_ml: ",
+                "candles_len={} train_assets={} holdout_assets={} ",
+                "optimize_ms={:.3} validate_ms={:.3} meta_select_ms={:.3} holdout_ms={:.3} ",
+                "ml_train_ms={:.3} ml_apply_ms={:.3} total_ms={:.3}"
+            ),
+            candles_len,
+            train_assets,
+            holdout_assets,
+            optimize_total.as_secs_f64() * 1_000.0,
+            validate_total.as_secs_f64() * 1_000.0,
+            meta_select_total.as_secs_f64() * 1_000.0,
+            holdout_total.as_secs_f64() * 1_000.0,
+            ml_train_total.as_secs_f64() * 1_000.0,
+            ml_apply_total.as_secs_f64() * 1_000.0,
+            total_started.elapsed().as_secs_f64() * 1_000.0,
+        );
     }
 
     Ok(())
@@ -529,21 +588,43 @@ fn parse_bench_lens() -> Vec<usize> {
     }
 }
 
+fn parse_bench_asset_count(var_name: &str, default_value: usize) -> usize {
+    std::env::var(var_name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_value)
+}
+
 fn bench_e2e_workflow_with_ml(c: &mut Criterion) {
     let lens = parse_bench_lens();
 
     // Keep defaults small so `cargo bench` stays reasonable. Increase via VTA_E2E_BENCH_LENS.
-    let train_assets = 12usize;
-    let holdout_assets = 8usize;
+    let train_assets = parse_bench_asset_count("VTA_E2E_BENCH_TRAIN_ASSETS", 12);
+    let holdout_assets = parse_bench_asset_count("VTA_E2E_BENCH_HOLDOUT_ASSETS", 8);
+    let stage_diagnostics = bench_env_flag("VTA_E2E_BENCH_STAGE_DIAGNOSTICS");
 
     let cancel = AtomicBool::new(false);
 
     for len in lens {
+        let group_name = format!(
+            "e2e/composite_cpu_validate_meta_holdout_ml/len{len}/train{train_assets}/holdout{holdout_assets}"
+        );
         let mut group = c.benchmark_group(format!(
             "e2e/composite_cpu_validate_meta_holdout_ml/len{len}/train{train_assets}/holdout{holdout_assets}"
         ));
         group.measurement_time(Duration::from_secs(8));
         group.sample_size(10);
+        print_bench_metadata(
+            &group_name,
+            &[
+                ("candles_len", len.to_string()),
+                ("train_assets", train_assets.to_string()),
+                ("holdout_assets", holdout_assets.to_string()),
+                ("surface", "optimize_validate_meta_holdout_ml".to_string()),
+                ("stage_diagnostics", stage_diagnostics.to_string()),
+            ],
+        );
 
         group.bench_function("workflow", |b| {
             b.iter(|| {

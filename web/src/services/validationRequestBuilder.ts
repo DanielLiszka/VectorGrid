@@ -355,7 +355,7 @@ function compositeProfileGpuRouteNote(profile: CompositeProfileKey): string {
     case 'asr':
       return 'ASR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'vcc':
-      return 'VCC GPU validation currently falls back on the measured 50k/8 advanced-stack workload because the requested momentum rows are not fp32-stable.'
+      return 'VCC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. This removes the old fp32 momentum roundtrip fallback while keeping strict validation parity.'
     case 'vemr':
       return 'VEMR GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'rocb':
@@ -369,9 +369,9 @@ function compositeProfileGpuRouteNote(profile: CompositeProfileKey): string {
     case 'kvdf':
       return 'KVDF GPU validation currently keeps the GPU metric route, but current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'carm':
-      return 'CARM GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
+      return 'CARM GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads.'
     case 'cdmc':
-      return 'CDMC GPU validation currently uses CPU-reference signal prep with GPU metric evaluation. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads, and the remaining small walk-forward / CSCV / SPA metric drift is currently accepted because candidate ordering and verdict semantics still match on the fixture.'
+      return 'CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route. Fresh advanced-stack benches show GPU faster than CPU on the measured 50k/8 and 100k/32 workloads.'
     default:
       return ''
   }
@@ -382,7 +382,7 @@ function compositeProfileAutoCpuPreferenceNote(profile: CompositeProfileKey): st
     case 'asr':
       return 'Auto composite validation currently prefers CPU for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'vcc':
-      return 'Auto composite validation currently prefers CPU for VCC because the measured 50k/8 advanced-stack GPU route falls back on the current fp32-stability check.'
+      return ''
     case 'vemr':
       return 'Auto composite validation currently prefers CPU for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.'
     case 'rocb':

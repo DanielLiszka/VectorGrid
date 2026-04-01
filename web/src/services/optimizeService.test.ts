@@ -17,6 +17,8 @@ import { invokeCommand } from "../tauri/invoke";
 import { runValidation as runValidationAction } from "./validationService";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
+import { useWorkflowStore } from "../stores/workflowStore";
+import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
 
 vi.mock("./runControlService", () => ({
   requestCancelCurrentRun: vi.fn(async () => ({
@@ -43,6 +45,16 @@ const runValidationActionMock = vi.mocked(runValidationAction);
 const requestCancelCurrentRunMock = vi.mocked(requestCancelCurrentRun);
 const invokeCommandMock = vi.mocked(invokeCommand);
 let pinia: ReturnType<typeof createPinia>;
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 function installDefaultInvokeCommandMock(): void {
   invokeCommandMock.mockImplementation(async (command: string) => {
@@ -156,6 +168,7 @@ describe("optimizeService", () => {
     pinia = createPinia();
     setActivePinia(pinia);
     bindRuntimePinia(pinia);
+    useOptimizeStore(pinia);
     vi.clearAllMocks();
     installDefaultInvokeCommandMock();
     if (typeof window !== "undefined") {
@@ -336,6 +349,149 @@ describe("optimizeService", () => {
     expect(invokeCommandMock).toHaveBeenCalledWith(
       "run_double_ma_optimization",
       expect.any(Object),
+    );
+  });
+
+  it("marks parity runs busy without exposing cancel state and restores idle afterward", async () => {
+    const gpuStatusDeferred = createDeferred<Record<string, unknown>>();
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "DoubleMa",
+      canCancel: false,
+      runDisabled: false,
+      validateDisabled: false,
+      backend: "Auto",
+      fastStart: "5",
+      fastEnd: "9",
+      fastStep: "2",
+      slowStart: "20",
+      slowEnd: "30",
+      slowStep: "5",
+      fastMaType: "sma",
+      slowMaType: "alma",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "64",
+      exportAllCsvPath: "",
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      startingEquity: "10000",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-parity-busy",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "200000",
+      dataTimeframe: "1m",
+    };
+
+    let gpuStatusCalls = 0;
+    invokeCommandMock.mockImplementation(
+      async (command: string, args?: unknown) => {
+        if (command === "get_gpu_status") {
+          gpuStatusCalls += 1;
+          if (gpuStatusCalls === 1) return gpuStatusDeferred.promise;
+          return {
+            built_with_cuda: true,
+            built_with_cuda_backtest_kernel: true,
+            cuda_available: true,
+            auto_device_name: "NVIDIA RTX 4090",
+            auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+          };
+        }
+        if (command === "list_moving_averages") {
+          return [
+            {
+              id: "sma",
+              supports_cpu: true,
+              supports_cuda: true,
+              supports_cuda_kernel: true,
+            },
+            {
+              id: "alma",
+              supports_cpu: true,
+              supports_cuda: true,
+              supports_cuda_kernel: true,
+            },
+          ];
+        }
+        if (command === "run_double_ma_optimization") {
+          const req = (args as { req?: Record<string, unknown> } | undefined)
+            ?.req;
+          const backend = (req?.backend as Record<string, unknown> | null)
+            ?.backend;
+          if (backend === "CpuOnly") {
+            return {
+              best_metrics: { pnl: 100, sharpe: 1.2345, max_dd: 12.5 },
+              best_params: { fast_len: 5, slow_len: 20 },
+            };
+          }
+          return {
+            best_metrics: { pnl: 100, sharpe: 1.2345, max_dd: 12.5 },
+            best_params: { fast_len: 5, slow_len: 20 },
+          };
+        }
+        return {};
+      },
+    );
+
+    const parityPromise = runGpuParityCheck();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const optimizeDuring = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(optimizeDuring.runDisabled).toBe(true);
+    expect(optimizeDuring.validateDisabled).toBe(true);
+    expect(optimizeDuring.canCancel).toBe(false);
+
+    gpuStatusDeferred.resolve({
+      built_with_cuda: true,
+      built_with_cuda_backtest_kernel: true,
+      cuda_available: true,
+      auto_device_name: "NVIDIA RTX 4090",
+      auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+    });
+
+    await parityPromise;
+
+    const optimizeAfter = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(optimizeAfter.runDisabled).toBe(false);
+    expect(optimizeAfter.validateDisabled).toBe(false);
+    expect(optimizeAfter.canCancel).toBe(false);
+  });
+
+  it("reports the full supported parity strategy set in the unsupported-strategy message", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "CompositeCpu",
+      canCancel: false,
+      runDisabled: false,
+      validateDisabled: false,
+    };
+
+    await runGpuParityCheck();
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.gpuParityMeta || "")).toContain(
+      "Double MA, PIT, SET, MTS, ORC, MARRT, or VFCT",
+    );
+    expect(String(optimize.statusLine || "")).toContain(
+      "Double MA, PIT, SET, MTS, ORC, MARRT, or VFCT",
     );
   });
 
@@ -719,6 +875,303 @@ describe("optimizeService", () => {
         expect(statusLine).toContain(`fallback=${row.backend_fallback_reason}`);
       }
     }
+  });
+
+  it("surfaces DynamicDoubleMa preview failures instead of collapsing them to the generic load-data message", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "DynamicDoubleMa",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      dynamicStrategyIrJson: '{"profile":"double_ma"}',
+      statusLine: "Ready.",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      objective: "Sharpe",
+      topK: "20",
+      includeAll: "false",
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-dyn",
+      dataFields: ["close"],
+      dataLen: 256,
+    };
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "preview_dynamic_double_ma_strategy_ir_json") {
+        throw new Error("Dynamic preview exploded.");
+      }
+      return {};
+    });
+
+    await runOptimization({ switchTab: false });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.statusLine || "")).toContain(
+      "Dynamic preview exploded.",
+    );
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "run_double_ma_optimization",
+      expect.anything(),
+    );
+  });
+
+  it("keeps route summary in statusLine when auto-validation fails", async () => {
+    (pinia.state.value as Record<string, unknown>).validation = {
+      autoRun: true,
+    };
+    runValidationActionMock.mockRejectedValueOnce(new Error("Validation boom"));
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+          backend_used: "Cpu",
+          backend_route: "GpuHybridKernel->CpuOnly",
+          backend_fallback_reason: "Hybrid phase-1 fallback to CpuOnly.",
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_test.json", bytes: 128 };
+      }
+      if (command === "get_gpu_status") {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+          auto_device_name: "NVIDIA RTX 4090",
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+        };
+      }
+      return {};
+    });
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-1" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.statusLine || "")).toContain("backend=Cpu");
+    expect(String(optimize.statusLine || "")).toContain(
+      "route=GpuHybridKernel->CpuOnly",
+    );
+    expect(String(optimize.progressMeta || "")).toContain("validation=failed");
+    expect(String(optimize.progressMeta || "")).toContain("Validation boom");
+  });
+
+  it("surfaces thrown artifact save failures as non-fatal unsaved warnings", async () => {
+    const artifacts = useWorkflowArtifactsStore(pinia);
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+        };
+      }
+      if (command === "save_run_artifact") {
+        throw new Error("disk full");
+      }
+      if (command === "get_gpu_status") {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+          auto_device_name: "NVIDIA RTX 4090",
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+        };
+      }
+      return {};
+    });
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-save-error" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.statusLine || "")).toContain(
+      "Optimization command completed in",
+    );
+    expect(String(optimize.progressMeta || "")).toContain("artifact=unsaved");
+    expect(artifacts.currentRun?.res).toBeTruthy();
+    expect(artifacts.currentRun?.artifactPath).toBe("");
+  });
+
+  it("treats blank artifact save paths as non-fatal unsaved warnings", async () => {
+    const artifacts = useWorkflowArtifactsStore(pinia);
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return {
+          best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+          best_params: { fast_len: 5, slow_len: 20 },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "   ", bytes: 0 };
+      }
+      if (command === "get_gpu_status") {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+          auto_device_name: "NVIDIA RTX 4090",
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+        };
+      }
+      return {};
+    });
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-save-blank" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.progressMeta || "")).toContain("artifact=unsaved");
+    expect(artifacts.currentRun?.res).toBeTruthy();
+    expect(artifacts.currentRun?.artifactPath).toBe("");
+  });
+
+  it.each([
+    [
+      "strategy_kind",
+      { data_id: "data-123" },
+      "Injected optimization request is missing strategy_kind.",
+    ],
+    [
+      "data_id",
+      { strategy_kind: "DoubleMa" },
+      "Injected optimization request is missing data_id.",
+    ],
+  ])(
+    "rejects injected requests missing %s",
+    async (
+      _field: string,
+      request: Record<string, unknown>,
+      message: string,
+    ) => {
+      await runOptimization({ request, switchTab: false });
+
+      const optimize = (pinia.state.value as Record<string, unknown>)
+        .optimize as Record<string, unknown>;
+      expect(String(optimize.statusLine || "")).toBe(message);
+      expect(invokeCommandMock).not.toHaveBeenCalledWith(
+        "run_double_ma_optimization",
+        expect.anything(),
+      );
+      expect(invokeCommandMock).not.toHaveBeenCalledWith(
+        "run_composite_cpu_optimization",
+        expect.anything(),
+      );
+      expect(invokeCommandMock).not.toHaveBeenCalledWith(
+        "run_composite_mo_optimization",
+        expect.anything(),
+      );
+    },
+  );
+
+  it("uses truthful command-boundary completion wording and richer progressMeta", async () => {
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-123" },
+      switchTab: false,
+    });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.statusLine || "")).toContain(
+      "Optimization command completed in",
+    );
+    expect(String(optimize.statusLine || "")).not.toContain("(frontend)");
+    expect(String(optimize.progressMeta || "")).toContain("build ");
+    expect(String(optimize.progressMeta || "")).toContain("command ");
+    expect(String(optimize.progressMeta || "")).toContain("total ");
+  });
+
+  it("keeps optimize post-run follow-up busy but non-cancelable after the command returns", async () => {
+    const commandDeferred = createDeferred<Record<string, unknown>>();
+    const saveDeferred = createDeferred<Record<string, unknown>>();
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "run_double_ma_optimization") {
+        return commandDeferred.promise;
+      }
+      if (command === "save_run_artifact") {
+        return saveDeferred.promise;
+      }
+      if (command === "get_gpu_status") {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+          auto_device_name: "NVIDIA RTX 4090",
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+        };
+      }
+      return {};
+    });
+
+    const runPromise = runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-busy" },
+      switchTab: false,
+    });
+    await Promise.resolve();
+
+    const optimizeDuringCommand = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(optimizeDuringCommand.runDisabled).toBe(true);
+    expect(optimizeDuringCommand.validateDisabled).toBe(true);
+    expect(optimizeDuringCommand.canCancel).toBe(true);
+
+    commandDeferred.resolve({
+      best_metrics: { pnl: 1, sharpe: 0.5, max_dd: 0.2 },
+      best_params: { fast_len: 5, slow_len: 20 },
+    });
+    await vi.waitFor(() => {
+      const optimizeDuringPostRun = useOptimizeStore(pinia);
+      expect(optimizeDuringPostRun.runDisabled).toBe(true);
+      expect(optimizeDuringPostRun.validateDisabled).toBe(true);
+      expect(optimizeDuringPostRun.canCancel).toBe(false);
+    });
+
+    saveDeferred.resolve({
+      path: "runs/vectorgrid_run_test.json",
+      bytes: 128,
+    });
+    await runPromise;
+
+    const optimizeAfter = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(optimizeAfter.runDisabled).toBe(false);
+    expect(optimizeAfter.validateDisabled).toBe(false);
+    expect(optimizeAfter.canCancel).toBe(false);
+  });
+
+  it("switches results tabs only once after auto-validation succeeds", async () => {
+    (pinia.state.value as Record<string, unknown>).validation = {
+      autoRun: true,
+    };
+    const workflowStore = useWorkflowStore(pinia);
+    const selectResultsTabSpy = vi.spyOn(workflowStore, "selectResultsTab");
+
+    await runOptimization({
+      request: { strategy_kind: "DoubleMa", data_id: "data-tab" },
+      switchTab: true,
+    });
+
+    expect(selectResultsTabSpy).toHaveBeenCalledTimes(1);
+    expect(selectResultsTabSpy).toHaveBeenCalledWith("overview", {
+      persist: true,
+    });
   });
 
   it("runs optimization via injected request when request payload is provided", async () => {
@@ -1762,6 +2215,277 @@ describe("optimizeService", () => {
       atr_stop_mult: 2.1,
       confirm_bars: 2,
       max_trade_bars: 130,
+    });
+  });
+
+  it("passes standalone shortlist controls through the composite CPU optimization command", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "Vemr",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      extraShortlistObjectives: "Pnl, Omega",
+      shortlistConfidenceMode: "DSR",
+      shortlistUnionMode: "weighted-rank",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "true",
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      compositeSignalMode: "hard_gate",
+      halfTrendAmplitude: "2",
+      halfTrendAtrPeriod: "100",
+      halfTrendChannelDev: "2.0",
+      maczFastLength: "12",
+      maczSlowLength: "25",
+      maczSignalLength: "9",
+      maczLengthZ: "20",
+      maczLengthStdev: "25",
+      maczGamma: "0.02",
+      maczA: "1",
+      maczB: "1",
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: "2",
+      ottPercent: "1.4",
+      ottMaType: "VAR",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "1",
+      spreadBps: "2",
+      slippageBps: "0",
+      epsRel: "0",
+      stopLossPct: "",
+      takeProfitPct: "",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      kaufmanStopPeriod: "22",
+      kaufmanStopMult: "2.0",
+      kaufmanStopMaType: "sma",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+      vemrMapFastToZPeriod: false,
+      vemrMapFastToBbPeriod: true,
+      vemrMapSlowToAtrPeriod: false,
+      vemrRequireBandTouch: true,
+      vemrZPeriod: "18",
+      vemrZMaType: "sma",
+      vemrZNbdev: "1.2",
+      vemrZDevtype: "0",
+      vemrZEntry: "2.4",
+      vemrZExit: "0.7",
+      vemrBbPeriod: "21",
+      vemrBbMult: "2.3",
+      vemrAtrPeriod: "17",
+      vemrAtrStopMult: "2.1",
+      vemrConfirmBars: "2",
+      vemrMaxTradeBars: "130",
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-vemr-shortlist",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "10000",
+      dataTimeframe: "1m",
+    };
+
+    await runOptimization({ switchTab: false });
+
+    const req = firstOptimizationRunRequest();
+    expect(req.strategy_kind).toBe("Vemr");
+    expect(req.backend).toEqual({ backend: "GpuKernel", device_id: 0 });
+    expect(req.include_all).toBe(true);
+    expect(req.extra_shortlist_objectives).toEqual(["Pnl", "Omega"]);
+    expect(req.shortlist_confidence_mode).toBe("dsr");
+    expect(req.shortlist_union_mode).toBe("weighted_rank");
+  });
+
+  it("routes ROCB custom parameters through the composite CPU optimization command", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "Rocb",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      compositeSignalMode: "hard_gate",
+      halfTrendAmplitude: "2",
+      halfTrendAtrPeriod: "100",
+      halfTrendChannelDev: "2.0",
+      maczFastLength: "12",
+      maczSlowLength: "25",
+      maczSignalLength: "9",
+      maczLengthZ: "20",
+      maczLengthStdev: "25",
+      maczGamma: "0.02",
+      maczA: "1",
+      maczB: "1",
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: "2",
+      ottPercent: "1.4",
+      ottMaType: "VAR",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "1",
+      spreadBps: "2",
+      slippageBps: "0",
+      epsRel: "0",
+      stopLossPct: "",
+      takeProfitPct: "",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      kaufmanStopPeriod: "22",
+      kaufmanStopMult: "2.0",
+      kaufmanStopMaType: "sma",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+      rocbMapFastToChannelPeriod: false,
+      rocbMapSlowToAtrPeriod: false,
+      rocbChannelPeriod: "37",
+      rocbAtrPeriod: "21",
+      rocbAtrStopMult: "2.75",
+      rocbMaxTradeBars: "95",
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-rocb-1",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "10000",
+      dataTimeframe: "1m",
+    };
+
+    await runOptimization({ switchTab: false });
+
+    const req = firstOptimizationRunRequest();
+    expect(req.strategy_kind).toBe("Rocb");
+    expect(req.backend).toEqual({ backend: "GpuKernel", device_id: 0 });
+    expect(req.rocb).toMatchObject({
+      map_fast_to_channel_period: false,
+      map_slow_to_atr_period: false,
+      channel_period: 37,
+      atr_period: 21,
+      atr_stop_mult: 2.75,
+      max_trade_bars: 95,
+    });
+  });
+
+  it("routes VCET custom parameters through the composite CPU optimization command", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "Vcet",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      maSource: "close",
+      objective: "Sharpe",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+    };
+    (pinia.state.value as Record<string, unknown>).strategy = {
+      compositeSignalMode: "hard_gate",
+      halfTrendAmplitude: "2",
+      halfTrendAtrPeriod: "100",
+      halfTrendChannelDev: "2.0",
+      maczFastLength: "12",
+      maczSlowLength: "25",
+      maczSignalLength: "9",
+      maczLengthZ: "20",
+      maczLengthStdev: "25",
+      maczGamma: "0.02",
+      maczA: "1",
+      maczB: "1",
+      maczUseVolume: false,
+      maczUseLag: false,
+      ottPeriod: "2",
+      ottPercent: "1.4",
+      ottMaType: "VAR",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "1",
+      spreadBps: "2",
+      slippageBps: "0",
+      epsRel: "0",
+      stopLossPct: "",
+      takeProfitPct: "",
+      cooldownBars: "0",
+      signalPersistenceBars: "1",
+      exitMode: "cross",
+      kaufmanStopPeriod: "22",
+      kaufmanStopMult: "2.0",
+      kaufmanStopMaType: "sma",
+      longOnly: true,
+      allowFlip: true,
+      tradeOnNext: false,
+      vcetMapFastToVidyaShortPeriod: false,
+      vcetMapSlowToVidyaLongPeriod: false,
+      vcetMapSlowToCePeriod: false,
+      vcetVidyaShortPeriod: "7",
+      vcetVidyaLongPeriod: "31",
+      vcetVidyaAlpha: "0.24",
+      vcetCePeriod: "18",
+      vcetCeMult: "2.6",
+      vcetCeUseClose: false,
+      vcetRequireVidyaSlope: false,
+      vcetMaxTradeBars: "77",
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-vcet-1",
+      dataFields: ["timestamp", "open", "high", "low", "close", "volume"],
+      dataLen: "10000",
+      dataTimeframe: "1m",
+    };
+
+    await runOptimization({ switchTab: false });
+
+    const req = firstOptimizationRunRequest();
+    expect(req.strategy_kind).toBe("Vcet");
+    expect(req.backend).toEqual({ backend: "GpuKernel", device_id: 0 });
+    expect(req.vcet).toMatchObject({
+      map_fast_to_vidya_short_period: false,
+      map_slow_to_vidya_long_period: false,
+      map_slow_to_ce_period: false,
+      vidya_short_period: 7,
+      vidya_long_period: 31,
+      vidya_alpha: 0.24,
+      ce_period: 18,
+      ce_mult: 2.6,
+      ce_use_close: false,
+      require_vidya_slope: false,
+      max_trade_bars: 77,
     });
   });
 
@@ -3007,7 +3731,9 @@ describe("optimizeService", () => {
       predictive_top_k: 13,
       predictive_stride: 6,
       require_gpu: true,
+      ma_pairs: [{ fast_ma_type: "sma", slow_ma_type: "ema" }],
     });
+    expect(gpuPrescan).not.toHaveProperty("device_id");
   });
 
   it("requests cancellation via runControlService", async () => {

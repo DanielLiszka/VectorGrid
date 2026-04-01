@@ -24378,7 +24378,6 @@ mod tests {
         let prev_global = std::env::var("VECTORBT_KERNEL_GLOBAL_TOPK").ok();
         let prev_legacy = std::env::var("VECTORBT_KERNEL_FORCE_LEGACY_TOPK").ok();
         let prev_score_first = std::env::var("VECTORBT_KERNEL_SCORE_FIRST_TOPK").ok();
-
         let candles = make_trending_candles(6000);
         let cancel = AtomicBool::new(false);
         let base_req = DoubleMaRequest {

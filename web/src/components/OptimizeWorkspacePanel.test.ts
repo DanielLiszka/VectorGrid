@@ -64,7 +64,7 @@ describe("OptimizeWorkspacePanel", () => {
     expect(document.querySelector("#vueBackend")).toBeNull();
     expect(document.querySelector("#vueMode")).toBeNull();
     expect(document.body.textContent || "").toContain(
-      "Composite MO manages execution through its own sampler",
+      "Composite MO runs a CPU-side multi-objective evaluator",
     );
 
     wrapper.unmount();

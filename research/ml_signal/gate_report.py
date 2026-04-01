@@ -171,6 +171,8 @@ def main() -> int:
             "This report is a research gate only. It does not replace deterministic baseline comparison.",
             "Ticker-holdout comparison remains a separate research step.",
             "Threshold-stability review still requires comparing multiple policy outputs across rolls.",
+            "validation_scores.csv is a calibration-slice artifact, while walkforward_test_scores.csv is a walk-forward proxy artifact with a different scope.",
+            "Research walk-forward outputs do not prove desktop parity by themselves; desktop validation and policy sweep remain separate surfaces.",
         ],
     }
     if isinstance(baseline_comparison, dict):
@@ -210,6 +212,8 @@ def main() -> int:
             "notes:",
             "- This report is a research gate only.",
             "- Deterministic baseline and ticker-holdout comparisons are still required.",
+            "- validation_scores.csv covers calibration-slice scoring, while walkforward_test_scores.csv covers walk-forward proxy scoring.",
+            "- Research walk-forward artifacts are not desktop validation or policy-sweep parity evidence on their own.",
         ],
     )
     if isinstance(holdout_report, dict):

@@ -10,7 +10,7 @@ use crate::validation_pipeline::{
 };
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
@@ -59,6 +59,45 @@ fn default_split_gap_bars() -> usize {
 
 fn default_top_k() -> usize {
     25
+}
+
+fn default_ml_signal_score_space() -> MlSignalScoreSpace {
+    MlSignalScoreSpace::Probability
+}
+
+fn default_ml_signal_score_scope() -> MlSignalScoreScope {
+    MlSignalScoreScope::CustomPartial
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlSignalScoreSpace {
+    Probability,
+    RawMargin,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MlSignalScoreScope {
+    FullDataset,
+    CalibrationSlice,
+    WalkforwardTest,
+    CustomPartial,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MlSignalScoreCacheSummary {
+    pub matched_rows: usize,
+    pub skipped_rows: usize,
+    pub bars_scored: usize,
+    pub duplicate_timestamps: usize,
+    pub coverage_ratio: f64,
+    pub score_space: MlSignalScoreSpace,
+    pub score_scope: MlSignalScoreScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_timestamp: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_timestamp: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -177,6 +216,15 @@ pub struct MlSignalScoreCacheBuildResult {
     pub manifest_path: String,
     pub matched_rows: usize,
     pub skipped_rows: usize,
+    pub bars_scored: usize,
+    pub duplicate_timestamps: usize,
+    pub coverage_ratio: f64,
+    pub score_space: MlSignalScoreSpace,
+    pub score_scope: MlSignalScoreScope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_timestamp: Option<i64>,
     pub model_bundle_id: Option<String>,
     pub version: u32,
 }
@@ -387,6 +435,7 @@ pub struct MlSignalValidationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend_fallback_reason: Option<String>,
     pub score_cache_path: String,
+    pub score_summary: MlSignalScoreCacheSummary,
     pub candidates: Vec<MlSignalValidationCandidateResult>,
     pub run_verdict: ValidationRunVerdict,
 }
@@ -399,6 +448,10 @@ pub struct MlSignalScoreCacheManifest {
     pub data_id: String,
     pub input_path: String,
     pub feature_schema_version: u32,
+    #[serde(default = "default_ml_signal_score_space")]
+    pub score_space: MlSignalScoreSpace,
+    #[serde(default = "default_ml_signal_score_scope")]
+    pub score_scope: MlSignalScoreScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature_schema_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -406,6 +459,10 @@ pub struct MlSignalScoreCacheManifest {
     pub matched_rows: usize,
     pub skipped_rows: usize,
     pub bars_scored: usize,
+    #[serde(default)]
+    pub duplicate_timestamps: usize,
+    #[serde(default)]
+    pub coverage_ratio: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_timestamp: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -478,6 +535,13 @@ struct ParsedScoreRow {
     p_short: Option<f64>,
     raw_long: Option<f64>,
     raw_short: Option<f64>,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedScoreCsv {
+    rows: Vec<ParsedScoreRow>,
+    score_space: MlSignalScoreSpace,
+    score_scope: Option<MlSignalScoreScope>,
 }
 
 fn log_returns_from_close(close: &[f64]) -> Vec<f64> {
@@ -720,6 +784,44 @@ fn stddev(values: &[f64]) -> f64 {
         .sum::<f64>()
         / values.len() as f64;
     var.sqrt()
+}
+
+fn prefix_sum(values: &[f64]) -> Vec<f64> {
+    let mut prefix = vec![0.0; values.len() + 1];
+    for (idx, value) in values.iter().enumerate() {
+        prefix[idx + 1] = prefix[idx] + *value;
+    }
+    prefix
+}
+
+fn prefix_sum_squares(values: &[f64]) -> Vec<f64> {
+    let mut prefix = vec![0.0; values.len() + 1];
+    for (idx, value) in values.iter().enumerate() {
+        prefix[idx + 1] = prefix[idx] + (*value * *value);
+    }
+    prefix
+}
+
+fn rolling_sum(prefix: &[f64], start: usize, end_exclusive: usize) -> f64 {
+    if prefix.is_empty() || end_exclusive >= prefix.len() || start >= end_exclusive {
+        0.0
+    } else {
+        prefix[end_exclusive] - prefix[start]
+    }
+}
+
+fn rolling_stddev(prefix: &[f64], prefix_sq: &[f64], start: usize, end_exclusive: usize) -> f64 {
+    if end_exclusive <= start || end_exclusive >= prefix.len() || end_exclusive >= prefix_sq.len() {
+        return 0.0;
+    }
+    let count = (end_exclusive - start) as f64;
+    if count <= 0.0 {
+        return 0.0;
+    }
+    let sum = rolling_sum(prefix, start, end_exclusive);
+    let sum_sq = rolling_sum(prefix_sq, start, end_exclusive);
+    let mean = sum / count;
+    ((sum_sq / count) - (mean * mean)).max(0.0).sqrt()
 }
 
 fn feature_names_for_schema(pattern_ids: &[String]) -> Vec<String> {
@@ -977,6 +1079,8 @@ pub fn export_ml_signal_dataset_with_candles(
         .map_err(|e| format!("write dataset header: {e}"))?;
 
     let log_returns = log_returns_from_close(&candles.close);
+    let log_return_prefix = prefix_sum(&log_returns);
+    let log_return_sq_prefix = prefix_sum_squares(&log_returns);
     let mut pattern_prefix: Vec<Vec<usize>> = Vec::with_capacity(frame.pattern_hits.len());
     for row in &frame.pattern_hits {
         let mut prefix = vec![0usize; row.len() + 1];
@@ -995,6 +1099,7 @@ pub fn export_ml_signal_dataset_with_candles(
     }
 
     let mut row_count = 0usize;
+    let mut record: Vec<String> = Vec::with_capacity(4 + feature_names.len() + 6);
     for t in frame.first_valid_bar..=last_label_bar {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
@@ -1071,36 +1176,23 @@ pub fn export_ml_signal_dataset_with_candles(
         };
 
         let log_ret_1 = log_returns[t];
-        let log_ret_2 = if t >= 1 {
-            log_returns[(t - 1)..=t].iter().sum()
-        } else {
-            0.0
-        };
-        let log_ret_3 = if t >= 2 {
-            log_returns[(t - 2)..=t].iter().sum()
-        } else {
-            0.0
-        };
-        let log_ret_5 = if t >= 4 {
-            log_returns[(t - 4)..=t].iter().sum()
-        } else {
-            0.0
-        };
-        let log_ret_h = if t >= h.saturating_sub(1) {
-            log_returns[(t + 1 - h)..=t].iter().sum()
-        } else {
-            0.0
-        };
-        let realized_vol_h = if t >= h.saturating_sub(1) {
-            stddev(&log_returns[(t + 1 - h)..=t])
-        } else {
-            0.0
-        };
-        let realized_vol_3h = if t >= h.saturating_mul(3).saturating_sub(1) {
-            stddev(&log_returns[(t + 1 - h.saturating_mul(3))..=t])
-        } else {
-            0.0
-        };
+        let log_ret_2 = rolling_sum(&log_return_prefix, t.saturating_sub(1), t + 1);
+        let log_ret_3 = rolling_sum(&log_return_prefix, t.saturating_sub(2), t + 1);
+        let log_ret_5 = rolling_sum(&log_return_prefix, t.saturating_sub(4), t + 1);
+        let log_ret_h = rolling_sum(&log_return_prefix, t + 1 - h.min(t + 1), t + 1);
+        let realized_vol_h = rolling_stddev(
+            &log_return_prefix,
+            &log_return_sq_prefix,
+            t + 1 - h.min(t + 1),
+            t + 1,
+        );
+        let three_h = h.saturating_mul(3);
+        let realized_vol_3h = rolling_stddev(
+            &log_return_prefix,
+            &log_return_sq_prefix,
+            t + 1 - three_h.min(t + 1),
+            t + 1,
+        );
         let atr_h_over_close = if close.is_finite() && close != 0.0 {
             atr_h / close
         } else {
@@ -1131,7 +1223,7 @@ pub fn export_ml_signal_dataset_with_candles(
             .map(|window| window.split_id.clone())
             .unwrap_or_default();
 
-        let mut record: Vec<String> = Vec::with_capacity(4 + feature_names.len() + 6);
+        record.clear();
         record.push(candles.timestamp[t].to_string());
         record.push(req.data_id.clone());
         record.push(split_id);
@@ -1256,16 +1348,35 @@ struct MlSignalScoreCacheFile {
     feature_schema_version: u32,
     data_id: String,
     input_path: String,
+    #[serde(default = "default_ml_signal_score_space")]
+    score_space: MlSignalScoreSpace,
+    #[serde(default = "default_ml_signal_score_scope")]
+    score_scope: MlSignalScoreScope,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model_bundle_id: Option<String>,
     matched_rows: usize,
     skipped_rows: usize,
     bars_scored: usize,
+    #[serde(default)]
+    duplicate_timestamps: usize,
+    #[serde(default)]
+    coverage_ratio: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     first_timestamp: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_timestamp: Option<i64>,
     scores: Vec<MlSignalScoreCacheRow>,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedScoreCache {
+    points: Vec<Option<ScorePoint>>,
+    summary: MlSignalScoreCacheSummary,
+    has_probability_long: bool,
+    has_probability_short: bool,
+    rows_with_probability: usize,
+    rows_missing_long_probability: usize,
+    rows_missing_short_probability: usize,
 }
 
 fn find_header_index(headers: &StringRecord, names: &[&str]) -> Option<usize> {
@@ -1277,6 +1388,15 @@ fn find_header_index(headers: &StringRecord, names: &[&str]) -> Option<usize> {
             None
         }
     })
+}
+
+fn find_preferred_header(headers: &StringRecord, names: &[&str]) -> Option<(usize, String)> {
+    for name in names {
+        if let Some(idx) = find_header_index(headers, &[*name]) {
+            return Some((idx, (*name).to_string()));
+        }
+    }
+    None
 }
 
 fn parse_i64_cell(record: &StringRecord, idx: Option<usize>) -> Result<Option<i64>, String> {
@@ -1317,7 +1437,62 @@ fn parse_f64_cell(record: &StringRecord, idx: Option<usize>) -> Result<Option<f6
     }
 }
 
-fn read_score_rows_csv(input_path: &str) -> Result<Vec<ParsedScoreRow>, String> {
+fn parse_text_cell(record: &StringRecord, idx: Option<usize>) -> Option<String> {
+    let idx = idx?;
+    let raw = record.get(idx)?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_score_scope_text(raw: &str) -> Option<MlSignalScoreScope> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "full_dataset" | "full-dataset" | "fulldataset" | "full dataset" => {
+            Some(MlSignalScoreScope::FullDataset)
+        }
+        "calibration_slice" | "calibration-slice" | "calibrationslice" | "calibration slice" => {
+            Some(MlSignalScoreScope::CalibrationSlice)
+        }
+        "walkforward_test" | "walkforward-test" | "walkforwardtest" | "walkforward test"
+        | "walk_forward_test" | "walk-forward-test" => Some(MlSignalScoreScope::WalkforwardTest),
+        "custom_partial" | "custom-partial" | "custompartial" | "custom partial" => {
+            Some(MlSignalScoreScope::CustomPartial)
+        }
+        _ => None,
+    }
+}
+
+fn infer_score_scope(
+    input_path: &str,
+    requested_scope: Option<MlSignalScoreScope>,
+    matched_rows: usize,
+    total_bars: usize,
+) -> MlSignalScoreScope {
+    if let Some(scope) = requested_scope {
+        return scope;
+    }
+    let lower = Path::new(input_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(input_path)
+        .to_ascii_lowercase();
+    if lower.contains("validation_scores") {
+        return MlSignalScoreScope::CalibrationSlice;
+    }
+    if lower.contains("walkforward_test_scores") {
+        return MlSignalScoreScope::WalkforwardTest;
+    }
+    if total_bars > 0 && matched_rows == total_bars {
+        return MlSignalScoreScope::FullDataset;
+    }
+    MlSignalScoreScope::CustomPartial
+}
+
+fn read_score_rows_csv(input_path: &str) -> Result<ParsedScoreCsv, String> {
     let file = File::open(input_path).map_err(|e| format!("open score csv: {e}"))?;
     let mut reader = ReaderBuilder::new()
         .has_headers(true)
@@ -1329,10 +1504,19 @@ fn read_score_rows_csv(input_path: &str) -> Result<Vec<ParsedScoreRow>, String> 
 
     let ts_idx = find_header_index(&headers, &["timestamp", "ts", "time"])
         .ok_or_else(|| "score csv requires a timestamp column".to_string())?;
-    let p_long_idx = find_header_index(&headers, &["p_long", "prob_long", "long_probability"]);
-    let p_short_idx = find_header_index(&headers, &["p_short", "prob_short", "short_probability"]);
+    let p_long_match = find_preferred_header(
+        &headers,
+        &["p_long_cal", "p_long", "prob_long", "long_probability"],
+    );
+    let p_short_match = find_preferred_header(
+        &headers,
+        &["p_short_cal", "p_short", "prob_short", "short_probability"],
+    );
+    let p_long_idx = p_long_match.as_ref().map(|(idx, _)| *idx);
+    let p_short_idx = p_short_match.as_ref().map(|(idx, _)| *idx);
     let raw_long_idx = find_header_index(&headers, &["raw_long", "score_long", "margin_long"]);
     let raw_short_idx = find_header_index(&headers, &["raw_short", "score_short", "margin_short"]);
+    let scope_idx = find_header_index(&headers, &["score_scope", "scope"]);
 
     if p_long_idx.is_none()
         && p_short_idx.is_none()
@@ -1344,7 +1528,13 @@ fn read_score_rows_csv(input_path: &str) -> Result<Vec<ParsedScoreRow>, String> 
         );
     }
 
+    let score_space = if p_long_idx.is_some() || p_short_idx.is_some() {
+        MlSignalScoreSpace::Probability
+    } else {
+        MlSignalScoreSpace::RawMargin
+    };
     let mut rows = Vec::new();
+    let mut score_scope = None;
     for (line_idx, row) in reader.records().enumerate() {
         let record = row.map_err(|e| format!("read score csv row {}: {e}", line_idx + 2))?;
         let timestamp = parse_i64_cell(&record, Some(ts_idx))
@@ -1358,6 +1548,11 @@ fn read_score_rows_csv(input_path: &str) -> Result<Vec<ParsedScoreRow>, String> 
             .map_err(|e| format!("score csv row {} raw_long: {e}", line_idx + 2))?;
         let raw_short = parse_f64_cell(&record, raw_short_idx)
             .map_err(|e| format!("score csv row {} raw_short: {e}", line_idx + 2))?;
+        if score_scope.is_none() {
+            score_scope = parse_text_cell(&record, scope_idx)
+                .as_deref()
+                .and_then(normalize_score_scope_text);
+        }
 
         if p_long.is_none() && p_short.is_none() && raw_long.is_none() && raw_short.is_none() {
             continue;
@@ -1371,7 +1566,11 @@ fn read_score_rows_csv(input_path: &str) -> Result<Vec<ParsedScoreRow>, String> 
             raw_short,
         });
     }
-    Ok(rows)
+    Ok(ParsedScoreCsv {
+        rows,
+        score_space,
+        score_scope,
+    })
 }
 
 pub fn build_ml_signal_score_cache_from_csv(
@@ -1389,7 +1588,7 @@ pub fn build_ml_signal_score_cache_from_csv(
         return Err("output_path is required".to_string());
     }
 
-    let parsed_rows = read_score_rows_csv(&req.input_path)?;
+    let parsed = read_score_rows_csv(&req.input_path)?;
     let timestamp_to_index: HashMap<i64, usize> = candles
         .timestamp
         .iter()
@@ -1398,10 +1597,15 @@ pub fn build_ml_signal_score_cache_from_csv(
         .collect();
     let mut matched: HashMap<i64, MlSignalScoreCacheRow> = HashMap::new();
     let mut skipped_rows = 0usize;
+    let mut duplicate_timestamps = 0usize;
+    let mut seen_timestamps = HashSet::new();
 
-    for row in parsed_rows {
+    for row in parsed.rows {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
+        }
+        if !seen_timestamps.insert(row.timestamp) {
+            duplicate_timestamps = duplicate_timestamps.saturating_add(1);
         }
         if !timestamp_to_index.contains_key(&row.timestamp) {
             skipped_rows = skipped_rows.saturating_add(1);
@@ -1421,6 +1625,18 @@ pub fn build_ml_signal_score_cache_from_csv(
 
     let mut scores: Vec<MlSignalScoreCacheRow> = matched.into_values().collect();
     scores.sort_by_key(|row| row.timestamp);
+    let bars_scored = scores.len();
+    let coverage_ratio = if candles.close.is_empty() {
+        0.0
+    } else {
+        (bars_scored as f64 / candles.close.len() as f64).clamp(0.0, 1.0)
+    };
+    let score_scope = infer_score_scope(
+        &req.input_path,
+        parsed.score_scope,
+        bars_scored,
+        candles.close.len(),
+    );
     let cache = MlSignalScoreCacheFile {
         version: ML_SIGNAL_SCORE_CACHE_VERSION,
         kind: "vectorgrid_ml_signal_score_cache".to_string(),
@@ -1428,10 +1644,14 @@ pub fn build_ml_signal_score_cache_from_csv(
         feature_schema_version: ML_SIGNAL_FEATURE_SCHEMA_VERSION,
         data_id: req.data_id.clone(),
         input_path: req.input_path.clone(),
+        score_space: parsed.score_space,
+        score_scope,
         model_bundle_id: req.model_bundle_id.clone(),
-        matched_rows: scores.len(),
+        matched_rows: bars_scored,
         skipped_rows,
-        bars_scored: scores.len(),
+        bars_scored,
+        duplicate_timestamps,
+        coverage_ratio,
         first_timestamp: scores.first().map(|row| row.timestamp),
         last_timestamp: scores.last().map(|row| row.timestamp),
         scores,
@@ -1448,11 +1668,15 @@ pub fn build_ml_signal_score_cache_from_csv(
         data_id: cache.data_id.clone(),
         input_path: cache.input_path.clone(),
         feature_schema_version: cache.feature_schema_version,
+        score_space: cache.score_space,
+        score_scope: cache.score_scope,
         feature_schema_path: None,
         model_bundle_id: cache.model_bundle_id.clone(),
         matched_rows: cache.matched_rows,
         skipped_rows: cache.skipped_rows,
         bars_scored: cache.bars_scored,
+        duplicate_timestamps: cache.duplicate_timestamps,
+        coverage_ratio: cache.coverage_ratio,
         first_timestamp: cache.first_timestamp,
         last_timestamp: cache.last_timestamp,
     };
@@ -1466,6 +1690,13 @@ pub fn build_ml_signal_score_cache_from_csv(
         manifest_path,
         matched_rows: cache.matched_rows,
         skipped_rows: cache.skipped_rows,
+        bars_scored: cache.bars_scored,
+        duplicate_timestamps: cache.duplicate_timestamps,
+        coverage_ratio: cache.coverage_ratio,
+        score_space: cache.score_space,
+        score_scope: cache.score_scope,
+        first_timestamp: cache.first_timestamp,
+        last_timestamp: cache.last_timestamp,
         model_bundle_id: req.model_bundle_id,
         version: cache.version,
     })
@@ -1475,7 +1706,7 @@ fn load_score_cache(
     score_cache_path: &str,
     expected_data_id: &str,
     candles: &Candles,
-) -> Result<Vec<Option<ScorePoint>>, String> {
+) -> Result<LoadedScoreCache, String> {
     let file = File::open(score_cache_path).map_err(|e| format!("open score cache: {e}"))?;
     let cache: MlSignalScoreCacheFile = serde_json::from_reader(BufReader::new(file))
         .map_err(|e| format!("parse score cache json: {e}"))?;
@@ -1508,16 +1739,37 @@ fn load_score_cache(
         ));
     }
 
-    let timestamp_to_index: HashMap<i64, usize> = candles
-        .timestamp
-        .iter()
-        .enumerate()
-        .map(|(idx, ts)| (*ts, idx))
-        .collect();
     let mut out = vec![None; candles.close.len()];
+    let mut has_probability_long = false;
+    let mut has_probability_short = false;
+    let mut rows_with_probability = 0usize;
+    let mut rows_missing_long_probability = 0usize;
+    let mut rows_missing_short_probability = 0usize;
+    let mut candle_idx = 0usize;
     for row in cache.scores {
-        if let Some(&idx) = timestamp_to_index.get(&row.timestamp) {
-            out[idx] = Some(ScorePoint {
+        let has_long = row.p_long.filter(|value| value.is_finite()).is_some();
+        let has_short = row.p_short.filter(|value| value.is_finite()).is_some();
+        if has_long {
+            has_probability_long = true;
+        }
+        if has_short {
+            has_probability_short = true;
+        }
+        if has_long || has_short {
+            rows_with_probability = rows_with_probability.saturating_add(1);
+            if !has_long {
+                rows_missing_long_probability = rows_missing_long_probability.saturating_add(1);
+            }
+            if !has_short {
+                rows_missing_short_probability = rows_missing_short_probability.saturating_add(1);
+            }
+        }
+        while candle_idx < candles.timestamp.len() && candles.timestamp[candle_idx] < row.timestamp
+        {
+            candle_idx = candle_idx.saturating_add(1);
+        }
+        if candle_idx < candles.timestamp.len() && candles.timestamp[candle_idx] == row.timestamp {
+            out[candle_idx] = Some(ScorePoint {
                 p_long: row.p_long,
                 p_short: row.p_short,
                 raw_long: row.raw_long,
@@ -1525,56 +1777,163 @@ fn load_score_cache(
             });
         }
     }
-    Ok(out)
+    let coverage_ratio = if cache.coverage_ratio.is_finite() && cache.coverage_ratio > 0.0 {
+        cache.coverage_ratio
+    } else if candles.close.is_empty() {
+        0.0
+    } else {
+        (cache.bars_scored as f64 / candles.close.len() as f64).clamp(0.0, 1.0)
+    };
+    Ok(LoadedScoreCache {
+        points: out,
+        summary: MlSignalScoreCacheSummary {
+            matched_rows: cache.matched_rows,
+            skipped_rows: cache.skipped_rows,
+            bars_scored: cache.bars_scored,
+            duplicate_timestamps: cache.duplicate_timestamps,
+            coverage_ratio,
+            score_space: cache.score_space,
+            score_scope: cache.score_scope,
+            first_timestamp: cache.first_timestamp,
+            last_timestamp: cache.last_timestamp,
+        },
+        has_probability_long,
+        has_probability_short,
+        rows_with_probability,
+        rows_missing_long_probability,
+        rows_missing_short_probability,
+    })
 }
 
 fn score_target(point: Option<ScorePoint>, params: &MlSignalPolicyParams) -> Option<i32> {
     let point = point?;
-    let p_long = point.p_long.or(point.raw_long).filter(|v| v.is_finite())?;
-    let p_short = point
-        .p_short
-        .or(point.raw_short)
-        .filter(|v| v.is_finite())?;
+    let p_long = point.p_long.filter(|v| v.is_finite())?;
+    let p_short = point.p_short.filter(|v| v.is_finite());
 
-    if p_long >= params.t_long && (p_long - p_short) >= params.delta {
+    let p_short_cmp = p_short.unwrap_or(0.0);
+    if p_long >= params.t_long && (p_long - p_short_cmp) >= params.delta {
         return Some(1);
     }
-    if !params.strategy.long_only && p_short >= params.t_short && (p_short - p_long) >= params.delta
-    {
-        return Some(-1);
+    if !params.strategy.long_only {
+        let p_short = p_short?;
+        if p_short >= params.t_short && (p_short - p_long) >= params.delta {
+            return Some(-1);
+        }
     }
     Some(0)
 }
 
-fn build_desired_positions(
+const ML_SIGNAL_NO_REQUEST: i32 = i32::MIN;
+
+#[derive(Clone, Copy, Default)]
+struct MlSignalOverlayState {
+    cooldown_left: usize,
+    pending_sign: i32,
+    pending_count: usize,
+}
+
+#[inline]
+fn ml_signal_overlay_on_bar_start(state: &mut MlSignalOverlayState) {
+    if state.cooldown_left > 0 {
+        state.cooldown_left = state.cooldown_left.saturating_sub(1);
+    }
+}
+
+#[inline]
+fn ml_signal_overlay_reset_pending(state: &mut MlSignalOverlayState) {
+    state.pending_sign = 0;
+    state.pending_count = 0;
+}
+
+#[inline]
+fn ml_signal_apply_signal_persistence(
+    raw_sign: i32,
+    current_pos: i32,
+    persistence_bars: usize,
+    state: &mut MlSignalOverlayState,
+) -> i32 {
+    if persistence_bars <= 1 {
+        if raw_sign == 0 {
+            ml_signal_overlay_reset_pending(state);
+        } else {
+            state.pending_sign = raw_sign;
+            state.pending_count = 1;
+        }
+        return raw_sign;
+    }
+    if raw_sign == 0 {
+        ml_signal_overlay_reset_pending(state);
+        return 0;
+    }
+    if raw_sign == state.pending_sign {
+        state.pending_count = state.pending_count.saturating_add(1);
+    } else {
+        state.pending_sign = raw_sign;
+        state.pending_count = 1;
+    }
+    if state.pending_count >= persistence_bars {
+        raw_sign
+    } else if current_pos != 0 {
+        current_pos
+    } else {
+        0
+    }
+}
+
+#[inline]
+fn fill_requested_targets(
     score_points: &[Option<ScorePoint>],
     params: &MlSignalPolicyParams,
-) -> Vec<i32> {
-    let n = score_points.len();
-    let mut requested = vec![None; n];
+    requested: &mut [i32],
+) {
+    requested.fill(ML_SIGNAL_NO_REQUEST);
     for (idx, point) in score_points.iter().copied().enumerate() {
-        let target = score_target(point, params);
+        let Some(target) = score_target(point, params) else {
+            continue;
+        };
         let apply_idx = if params.strategy.trade_on_next_bar {
             idx.saturating_add(1)
         } else {
             idx
         };
-        if apply_idx < n {
+        if apply_idx < requested.len() {
             requested[apply_idx] = target;
         }
     }
+}
 
-    let mut desired = vec![0i32; n];
+fn fill_desired_positions(requested: &[i32], params: &MlSignalPolicyParams, desired: &mut [i32]) {
+    desired.fill(0);
     let mut current = 0i32;
     let mut held_bars = 0usize;
+    let mut overlays = MlSignalOverlayState::default();
+    let cooldown_bars = params.strategy.cooldown_bars();
+    let persistence_bars = params.strategy.signal_persistence_bars().max(1);
 
-    for bar in 0..n {
+    for (bar, desired_slot) in desired.iter_mut().enumerate() {
+        ml_signal_overlay_on_bar_start(&mut overlays);
         if current != 0 && params.max_hold_bars > 0 && held_bars >= params.max_hold_bars {
             current = 0;
             held_bars = 0;
+            if cooldown_bars > 0 {
+                overlays.cooldown_left = cooldown_bars;
+            }
         }
 
-        if let Some(target) = requested[bar] {
+        if requested[bar] != ML_SIGNAL_NO_REQUEST {
+            let mut target = requested[bar].clamp(-1, 1);
+            if params.strategy.long_only && target < 0 {
+                target = 0;
+            }
+            target = ml_signal_apply_signal_persistence(
+                target,
+                current,
+                persistence_bars,
+                &mut overlays,
+            );
+            if current == 0 && target != 0 && overlays.cooldown_left > 0 {
+                target = 0;
+            }
             if current == 0 {
                 if target != 0 {
                     current = target;
@@ -1584,25 +1943,57 @@ fn build_desired_positions(
                 if params.exit_on_flat {
                     current = 0;
                     held_bars = 0;
+                    if cooldown_bars > 0 {
+                        overlays.cooldown_left = cooldown_bars;
+                    }
                 }
             } else if target != current && params.exit_on_opposite {
-                current = target;
-                held_bars = 0;
+                if params.strategy.allow_flip {
+                    current = target;
+                    held_bars = 0;
+                } else {
+                    current = 0;
+                    held_bars = 0;
+                    if cooldown_bars > 0 {
+                        overlays.cooldown_left = cooldown_bars;
+                    }
+                }
             }
+        } else {
+            ml_signal_overlay_reset_pending(&mut overlays);
         }
 
-        desired[bar] = current;
+        *desired_slot = current;
         if current != 0 {
             held_bars = held_bars.saturating_add(1);
         }
     }
+}
 
+#[cfg(test)]
+fn build_desired_positions(
+    score_points: &[Option<ScorePoint>],
+    params: &MlSignalPolicyParams,
+) -> Vec<i32> {
+    let mut requested = vec![ML_SIGNAL_NO_REQUEST; score_points.len()];
+    fill_requested_targets(score_points, params, &mut requested);
+    let mut desired = vec![0i32; score_points.len()];
+    fill_desired_positions(&requested, params, &mut desired);
     desired
+}
+
+fn neutralize_ml_signal_execution_overlays(strategy: &StrategyConfig) -> StrategyConfig {
+    let mut normalized = strategy.clone();
+    normalized.allow_flip = true;
+    normalized.cooldown_bars = 0;
+    normalized.signal_persistence_bars = 1;
+    normalized
 }
 
 fn validate_ml_signal_candidates(
     data_id: String,
     score_cache_path: String,
+    score_summary: MlSignalScoreCacheSummary,
     score_points: &[Option<ScorePoint>],
     candidates: Vec<MlSignalPolicyParams>,
     candles: &Candles,
@@ -1619,18 +2010,17 @@ fn validate_ml_signal_candidates(
         .max(2);
     let gates = sanitize_hard_gates(min_psr, min_dsr, None, None, None);
     let lr = log_returns_from_close(&candles.close);
+    let mut requested = vec![ML_SIGNAL_NO_REQUEST; score_points.len()];
+    let mut desired = vec![0i32; score_points.len()];
 
     let mut out = Vec::with_capacity(candidates.len());
     for params in candidates {
         if cancel.load(Ordering::Relaxed) {
             return Err("cancelled".to_string());
         }
-        let desired = build_desired_positions(score_points, &params);
-        let start_t = if params.strategy.trade_on_next_bar {
-            1
-        } else {
-            0
-        };
+        fill_requested_targets(score_points, &params, &mut requested);
+        fill_desired_positions(&requested, &params, &mut desired);
+        let strategy = neutralize_ml_signal_execution_overlays(&params.strategy);
         let metrics = simulate_iterative_from_signals(
             &lr,
             OhlcSlice {
@@ -1640,8 +2030,8 @@ fn validate_ml_signal_candidates(
                 close: &candles.close,
             },
             &desired,
-            start_t.min(lr.len().saturating_sub(1)),
-            &params.strategy,
+            0,
+            &strategy,
             iterative,
         );
         let robust_score = robust_score_from_metrics(&metrics, None);
@@ -1672,6 +2062,7 @@ fn validate_ml_signal_candidates(
         backend_route: Some("ml_signal_score_cache_iterative".to_string()),
         backend_fallback_reason: None,
         score_cache_path,
+        score_summary,
         candidates: out,
         run_verdict,
     })
@@ -1737,6 +2128,46 @@ fn expand_axis_usize(
     Ok(values)
 }
 
+fn validate_score_cache_contract(
+    cache: &LoadedScoreCache,
+    candidates: &[MlSignalPolicyParams],
+) -> Result<(), String> {
+    if cache.summary.score_space != MlSignalScoreSpace::Probability {
+        return Err(
+            "score cache only contains raw margin columns; probability-threshold validation requires p_long/p_short or calibrated probability columns"
+                .to_string(),
+        );
+    }
+    let needs_short = candidates
+        .iter()
+        .any(|candidate| !candidate.strategy.long_only);
+    if !cache.has_probability_long {
+        return Err("score cache is missing long probability scores".to_string());
+    }
+    if needs_short && !cache.has_probability_short {
+        return Err(
+            "score cache is missing short probability scores required for non-long-only validation"
+                .to_string(),
+        );
+    }
+    if cache.rows_with_probability == 0 {
+        return Err("score cache does not contain any usable probability rows".to_string());
+    }
+    if cache.rows_missing_long_probability > 0 {
+        return Err(format!(
+            "score cache has {} probability rows missing long scores",
+            cache.rows_missing_long_probability
+        ));
+    }
+    if needs_short && cache.rows_missing_short_probability > 0 {
+        return Err(format!(
+            "score cache has {} probability rows missing short scores required for non-long-only validation",
+            cache.rows_missing_short_probability
+        ));
+    }
+    Ok(())
+}
+
 pub fn run_ml_signal_validation_blocking_with_candles(
     req: MlSignalValidationRequest,
     candles: &Candles,
@@ -1755,11 +2186,13 @@ pub fn run_ml_signal_validation_blocking_with_candles(
         return Err("not enough candles for ML validation".to_string());
     }
 
-    let score_points = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
+    let score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
+    validate_score_cache_contract(&score_cache, &req.candidates)?;
     validate_ml_signal_candidates(
         req.data_id,
         req.score_cache_path,
-        &score_points,
+        score_cache.summary,
+        &score_cache.points,
         req.candidates,
         candles,
         &req.iterative,
@@ -1795,7 +2228,18 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
         .filter(|values| !values.is_empty())
         .unwrap_or_else(|| vec![true]);
 
-    let mut candidates = Vec::new();
+    let candidate_budget = t_long_values
+        .len()
+        .saturating_mul(t_short_values.len())
+        .saturating_mul(delta_values.len())
+        .saturating_mul(max_hold_values.len())
+        .saturating_mul(exit_on_flat_values.len())
+        .saturating_mul(exit_on_opposite_values.len());
+    if candidate_budget > 20_000 {
+        return Err("policy sweep expanded beyond 20,000 candidates".to_string());
+    }
+
+    let mut candidates = Vec::with_capacity(candidate_budget);
     for t_long in &t_long_values {
         for t_short in &t_short_values {
             for delta in &delta_values {
@@ -1820,11 +2264,6 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
                                 )),
                                 strategy: req.base_strategy.clone(),
                             });
-                            if candidates.len() > 20_000 {
-                                return Err(
-                                    "policy sweep expanded beyond 20,000 candidates".to_string()
-                                );
-                            }
                         }
                     }
                 }
@@ -1832,11 +2271,13 @@ pub fn run_ml_signal_policy_sweep_blocking_with_candles(
         }
     }
     let sweep_size = candidates.len();
-    let score_points = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
+    let score_cache = load_score_cache(&req.score_cache_path, &req.data_id, candles)?;
+    validate_score_cache_contract(&score_cache, &candidates)?;
     let mut validation = validate_ml_signal_candidates(
         req.data_id,
         req.score_cache_path,
-        &score_points,
+        score_cache.summary.clone(),
+        &score_cache.points,
         candidates,
         candles,
         &req.iterative,
@@ -2066,6 +2507,418 @@ mod tests {
     }
 
     #[test]
+    fn build_desired_positions_respects_allow_flip_cooldown_and_persistence() {
+        let mut params = MlSignalPolicyParams::default();
+        params.strategy.long_only = false;
+        params.strategy.trade_on_next_bar = false;
+        params.exit_on_opposite = true;
+        params.strategy.allow_flip = false;
+        params.strategy.cooldown_bars = 2;
+        let score_points = vec![
+            Some(ScorePoint {
+                p_long: Some(0.80),
+                p_short: Some(0.10),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.10),
+                p_short: Some(0.85),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.10),
+                p_short: Some(0.85),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.10),
+                p_short: Some(0.85),
+                raw_long: None,
+                raw_short: None,
+            }),
+        ];
+        assert_eq!(
+            build_desired_positions(&score_points, &params),
+            vec![1, 0, 0, -1]
+        );
+
+        params.strategy.allow_flip = true;
+        params.strategy.cooldown_bars = 0;
+        params.strategy.signal_persistence_bars = 2;
+        let persistent = vec![
+            Some(ScorePoint {
+                p_long: Some(0.80),
+                p_short: Some(0.10),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.80),
+                p_short: Some(0.10),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.10),
+                p_short: Some(0.10),
+                raw_long: None,
+                raw_short: None,
+            }),
+        ];
+        assert_eq!(build_desired_positions(&persistent, &params), vec![0, 1, 1]);
+    }
+
+    #[test]
+    fn build_desired_positions_respects_opposite_persistence_before_close_and_reentry() {
+        let mut params = MlSignalPolicyParams::default();
+        params.strategy.long_only = false;
+        params.strategy.trade_on_next_bar = false;
+        params.strategy.allow_flip = false;
+        params.strategy.cooldown_bars = 2;
+        params.strategy.signal_persistence_bars = 2;
+        params.max_hold_bars = 0;
+        params.exit_on_flat = false;
+        params.exit_on_opposite = true;
+
+        let score_points = vec![
+            Some(ScorePoint {
+                p_long: Some(0.80),
+                p_short: Some(0.10),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.82),
+                p_short: Some(0.10),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.12),
+                p_short: Some(0.81),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.10),
+                p_short: Some(0.84),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.09),
+                p_short: Some(0.86),
+                raw_long: None,
+                raw_short: None,
+            }),
+            Some(ScorePoint {
+                p_long: Some(0.08),
+                p_short: Some(0.88),
+                raw_long: None,
+                raw_short: None,
+            }),
+        ];
+
+        assert_eq!(
+            build_desired_positions(&score_points, &params),
+            vec![0, 1, 1, 0, 0, -1]
+        );
+    }
+
+    #[test]
+    fn score_csv_prefers_calibrated_probability_columns() {
+        let _guard = lock_test_env();
+        let input_path = temp_file_path("scores_prefers_cal", "csv");
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record([
+                "timestamp",
+                "p_long",
+                "p_long_cal",
+                "p_short",
+                "p_short_cal",
+            ])
+            .expect("header");
+        writer
+            .write_record(["1", "0.15", "0.81", "0.85", "0.19"])
+            .expect("row");
+        writer.flush().expect("flush score csv");
+
+        let parsed = read_score_rows_csv(&input_path).expect("parse score csv");
+        assert_eq!(parsed.score_space, MlSignalScoreSpace::Probability);
+        assert_eq!(parsed.rows.len(), 1);
+        assert_eq!(parsed.rows[0].p_long, Some(0.81));
+        assert_eq!(parsed.rows[0].p_short, Some(0.19));
+
+        let _ = fs::remove_file(&input_path);
+    }
+
+    #[test]
+    fn score_cache_build_persists_probability_metadata() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(20);
+        let input_path = temp_file_path("scores_meta_in", "csv");
+        let cache_path = temp_file_path("scores_meta_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long_cal", "score_scope"])
+            .expect("header");
+        writer
+            .write_record([
+                candles.timestamp[3].to_string(),
+                "0.75".to_string(),
+                "custom_partial".to_string(),
+            ])
+            .expect("row 1");
+        writer
+            .write_record([
+                candles.timestamp[4].to_string(),
+                "0.74".to_string(),
+                "custom_partial".to_string(),
+            ])
+            .expect("row 2");
+        writer
+            .write_record([
+                candles.timestamp[4].to_string(),
+                "0.73".to_string(),
+                "custom_partial".to_string(),
+            ])
+            .expect("row 3");
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            MlSignalScoreCacheBuildRequest {
+                data_id: "data-1".to_string(),
+                input_path: input_path.clone(),
+                output_path: cache_path.clone(),
+                model_bundle_id: Some("bundle-a".to_string()),
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("build score cache");
+
+        assert_eq!(build.score_space, MlSignalScoreSpace::Probability);
+        assert_eq!(build.score_scope, MlSignalScoreScope::CustomPartial);
+        assert_eq!(build.duplicate_timestamps, 1);
+        assert!((build.coverage_ratio - 0.10).abs() < 1.0e-9);
+
+        let manifest: MlSignalScoreCacheManifest = serde_json::from_reader(BufReader::new(
+            File::open(&build.manifest_path).expect("open manifest"),
+        ))
+        .expect("parse manifest");
+        assert_eq!(manifest.score_space, MlSignalScoreSpace::Probability);
+        assert_eq!(manifest.score_scope, MlSignalScoreScope::CustomPartial);
+        assert_eq!(manifest.duplicate_timestamps, 1);
+        assert!((manifest.coverage_ratio - 0.10).abs() < 1.0e-9);
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_rejects_raw_only_score_cache() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("scores_raw_only_in", "csv");
+        let cache_path = temp_file_path("scores_raw_only_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "raw_long", "raw_short"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(2).take(8) {
+            writer
+                .write_record([ts.to_string(), "0.25".to_string(), "-0.25".to_string()])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            MlSignalScoreCacheBuildRequest {
+                data_id: "data-1".to_string(),
+                input_path: input_path.clone(),
+                output_path: cache_path.clone(),
+                model_bundle_id: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("build raw-only cache");
+
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams::default()],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("raw-only cache should be rejected");
+        assert!(err.contains("raw margin"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_allows_long_only_one_sided_probability_cache() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(30);
+        let input_path = temp_file_path("scores_long_only_in", "csv");
+        let cache_path = temp_file_path("scores_long_only_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long_cal"])
+            .expect("header");
+        for (idx, ts) in candles.timestamp.iter().enumerate().skip(3).take(12) {
+            let p_long = if idx % 4 < 2 { "0.78" } else { "0.41" };
+            writer
+                .write_record([ts.to_string(), p_long.to_string()])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            MlSignalScoreCacheBuildRequest {
+                data_id: "data-1".to_string(),
+                input_path: input_path.clone(),
+                output_path: cache_path.clone(),
+                model_bundle_id: Some("bundle-a".to_string()),
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("build score cache");
+
+        let mut strategy = StrategyConfig::default();
+        strategy.long_only = true;
+        let validation = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams {
+                    strategy,
+                    ..MlSignalPolicyParams::default()
+                }],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("long-only validation should succeed");
+
+        assert_eq!(
+            validation.score_summary.score_space,
+            MlSignalScoreSpace::Probability
+        );
+        assert_eq!(validation.candidates.len(), 1);
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_rejects_two_sided_cache_with_missing_short_probability_rows() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("scores_missing_short_in", "csv");
+        let cache_path = temp_file_path("scores_missing_short_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long", "p_short"])
+            .expect("header");
+        writer
+            .write_record([
+                candles.timestamp[2].to_string(),
+                "0.72".to_string(),
+                "0.18".to_string(),
+            ])
+            .expect("row 1");
+        writer
+            .write_record([
+                candles.timestamp[3].to_string(),
+                "0.74".to_string(),
+                "".to_string(),
+            ])
+            .expect("row 2");
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            MlSignalScoreCacheBuildRequest {
+                data_id: "data-1".to_string(),
+                input_path: input_path.clone(),
+                output_path: cache_path.clone(),
+                model_bundle_id: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("build score cache");
+
+        let mut strategy = StrategyConfig::default();
+        strategy.long_only = false;
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams {
+                    strategy,
+                    ..MlSignalPolicyParams::default()
+                }],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("two-sided validation should reject incomplete short scores");
+        assert!(err.contains("missing short scores"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
     fn score_cache_build_and_validation_smoke() {
         let _guard = lock_test_env();
         let candles = sample_candles(80);
@@ -2136,6 +2989,239 @@ mod tests {
         assert_eq!(validation.candidates.len(), 1);
         assert!(!validation.backend_route.unwrap_or_default().is_empty());
         assert!(validation.candidates[0].track_record_bars >= 2);
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn score_cache_prefers_calibrated_columns_and_persists_metadata() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("validation_scores_input", "csv");
+        let cache_path = temp_file_path("validation_scores_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record([
+                "timestamp",
+                "p_long",
+                "p_short",
+                "p_long_cal",
+                "p_short_cal",
+            ])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(3).take(10) {
+            writer
+                .write_record([
+                    ts.to_string(),
+                    "0.11".to_string(),
+                    "0.89".to_string(),
+                    "0.77".to_string(),
+                    "0.23".to_string(),
+                ])
+                .expect("row");
+        }
+        writer
+            .write_record([
+                candles.timestamp[5].to_string(),
+                "0.12".to_string(),
+                "0.88".to_string(),
+                "0.91".to_string(),
+                "0.09".to_string(),
+            ])
+            .expect("duplicate row");
+        writer
+            .write_record([
+                "9999999999999".to_string(),
+                "0.12".to_string(),
+                "0.88".to_string(),
+                "0.66".to_string(),
+                "0.34".to_string(),
+            ])
+            .expect("unmatched row");
+        writer.flush().expect("flush score csv");
+
+        let build = build_ml_signal_score_cache_from_csv(
+            MlSignalScoreCacheBuildRequest {
+                data_id: "data-1".to_string(),
+                input_path: input_path.clone(),
+                output_path: cache_path.clone(),
+                model_bundle_id: Some("bundle-a".to_string()),
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("build score cache");
+        assert_eq!(build.score_space, MlSignalScoreSpace::Probability);
+        assert_eq!(build.score_scope, MlSignalScoreScope::CalibrationSlice);
+        assert_eq!(build.duplicate_timestamps, 1);
+        assert_eq!(build.skipped_rows, 1);
+        assert!(build.coverage_ratio > 0.0);
+
+        let cache: MlSignalScoreCacheFile =
+            serde_json::from_reader(BufReader::new(File::open(&cache_path).expect("open cache")))
+                .expect("parse cache");
+        assert_eq!(cache.score_space, MlSignalScoreSpace::Probability);
+        assert_eq!(cache.score_scope, MlSignalScoreScope::CalibrationSlice);
+        assert_eq!(cache.duplicate_timestamps, 1);
+        assert_eq!(cache.scores[0].p_long, Some(0.77));
+        assert_eq!(cache.scores[0].p_short, Some(0.23));
+
+        let manifest: MlSignalScoreCacheManifest = serde_json::from_reader(BufReader::new(
+            File::open(&build.manifest_path).expect("open manifest"),
+        ))
+        .expect("parse manifest");
+        assert_eq!(manifest.score_space, MlSignalScoreSpace::Probability);
+        assert_eq!(manifest.score_scope, MlSignalScoreScope::CalibrationSlice);
+        assert_eq!(manifest.duplicate_timestamps, 1);
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(&build.manifest_path);
+    }
+
+    #[test]
+    fn validation_rejects_raw_only_cache_and_missing_short_side() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(24);
+        let input_path = temp_file_path("raw_scores_in", "csv");
+        let cache_path = temp_file_path("raw_scores_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "raw_long", "raw_short"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(2).take(8) {
+            writer
+                .write_record([ts.to_string(), "1.5".to_string(), "-1.2".to_string()])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+        build_ml_signal_score_cache_from_csv(
+            MlSignalScoreCacheBuildRequest {
+                data_id: "data-1".to_string(),
+                input_path: input_path.clone(),
+                output_path: cache_path.clone(),
+                model_bundle_id: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("build raw cache");
+        let mut strategy = StrategyConfig::default();
+        strategy.long_only = false;
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams {
+                    strategy,
+                    ..MlSignalPolicyParams::default()
+                }],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("raw-only cache should fail");
+        assert!(err.contains("raw margin columns"));
+
+        let _ = fs::remove_file(&input_path);
+        let _ = fs::remove_file(&cache_path);
+        let _ = fs::remove_file(score_manifest_path_for_cache(&cache_path));
+    }
+
+    #[test]
+    fn validation_allows_long_only_one_sided_scores_but_requires_short_side_for_two_sided() {
+        let _guard = lock_test_env();
+        let candles = sample_candles(32);
+        let input_path = temp_file_path("long_only_scores_in", "csv");
+        let cache_path = temp_file_path("long_only_scores_cache", "json");
+        let cancel = AtomicBool::new(false);
+
+        let mut writer = WriterBuilder::new()
+            .has_headers(true)
+            .from_path(&input_path)
+            .expect("create score csv");
+        writer
+            .write_record(["timestamp", "p_long"])
+            .expect("header");
+        for ts in candles.timestamp.iter().skip(3).take(12) {
+            writer
+                .write_record([ts.to_string(), "0.81".to_string()])
+                .expect("row");
+        }
+        writer.flush().expect("flush score csv");
+        let build = build_ml_signal_score_cache_from_csv(
+            MlSignalScoreCacheBuildRequest {
+                data_id: "data-1".to_string(),
+                input_path: input_path.clone(),
+                output_path: cache_path.clone(),
+                model_bundle_id: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("build one-sided cache");
+
+        let mut long_only_strategy = StrategyConfig::default();
+        long_only_strategy.long_only = true;
+        let ok = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams {
+                    strategy: long_only_strategy,
+                    ..MlSignalPolicyParams::default()
+                }],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect("long-only validation should succeed");
+        assert_eq!(
+            ok.score_summary.score_space,
+            MlSignalScoreSpace::Probability
+        );
+        assert_eq!(ok.score_summary.bars_scored, build.bars_scored);
+
+        let mut long_short_strategy = StrategyConfig::default();
+        long_short_strategy.long_only = false;
+        let err = run_ml_signal_validation_blocking_with_candles(
+            MlSignalValidationRequest {
+                data_id: "data-1".to_string(),
+                score_cache_path: cache_path.clone(),
+                candidates: vec![MlSignalPolicyParams {
+                    strategy: long_short_strategy,
+                    ..MlSignalPolicyParams::default()
+                }],
+                iterative: IterativeSimConfig::default(),
+                min_psr: None,
+                min_dsr: None,
+                validation_context: None,
+            },
+            &candles,
+            &cancel,
+        )
+        .expect_err("two-sided validation should reject missing short scores");
+        assert!(err.contains("short probability"));
 
         let _ = fs::remove_file(&input_path);
         let _ = fs::remove_file(&cache_path);

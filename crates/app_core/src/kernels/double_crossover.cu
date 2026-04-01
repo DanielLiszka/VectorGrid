@@ -3565,7 +3565,7 @@ static __device__ __forceinline__ void store_metrics_row_fixed_f32(
     if constexpr (N > 21) metrics_out[base + 21] = gross_loss;
 }
 
-template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false>
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false, bool SCORE_ONLY_SHARPE = false>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
@@ -3609,20 +3609,22 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     float* __restrict__ metrics_out
 ){
     const int effective_m = (FIXED_M > 0) ? FIXED_M : M;
-    const int metrics_stride =
+    const int metrics_stride = SCORE_ONLY_SHARPE
+        ? 1
+        :
         (metrics_out_stride > 0) ? metrics_out_stride : (FULL_M7 ? 7 : effective_m);
     const bool has_commission =
         (COMMISSION_MODE == 0) ? false : ((COMMISSION_MODE == 1) ? true : (commission > 0.0f));
     const float log_comm = has_commission ? log1pf(-commission) : 0.0f;
-    const int need_trades = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 1) : (M > 1));
-    const int need_max_dd = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 2) : (M > 2));
-    const int need_stats  = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 3) : (M > 3));
-    const int need_std    = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 4) : (M > 4));
-    const int need_expo   = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 5) : (M > 5));
-    const int need_downside_dev = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 7) : (M > 7));
-    const int need_ulcer = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 8) : (M > 8));
-    const int need_omega = FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 9) : (M > 9));
-    const int need_kappa_tau = FULL_M7 ? (metrics_stride > 14) : ((FIXED_M > 0) ? (FIXED_M > 14) : (M > 14));
+    const int need_trades = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 1) : (M > 1)));
+    const int need_max_dd = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 2) : (M > 2)));
+    const int need_stats  = SCORE_ONLY_SHARPE ? 1 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 3) : (M > 3)));
+    const int need_std    = SCORE_ONLY_SHARPE ? 1 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 4) : (M > 4)));
+    const int need_expo   = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 5) : (M > 5)));
+    const int need_downside_dev = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 7) : (M > 7)));
+    const int need_ulcer = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 8) : (M > 8)));
+    const int need_omega = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? 1 : ((FIXED_M > 0) ? (FIXED_M > 9) : (M > 9)));
+    const int need_kappa_tau = SCORE_ONLY_SHARPE ? 0 : (FULL_M7 ? (metrics_stride > 14) : ((FIXED_M > 0) ? (FIXED_M > 14) : (M > 14)));
     const int use_stop    = (flags & STRAT_STOP_LOSS) != 0;
     const int use_take    = (flags & STRAT_TAKE_PROFIT) != 0;
     const int use_risk_runtime = use_stop || use_take;
@@ -3676,6 +3678,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         const size_t base = row_idx * (size_t)metrics_stride;
 
         if ((flags & STRAT_ENFORCE_FAST_LT_SLOW) && (period_f >= period_s)) {
+            if constexpr (SCORE_ONLY_SHARPE) {
+                metrics_out[row_idx] = NEG_INF_F;
+                continue;
+            }
             if constexpr (FIXED_M > 0) {
                 zero_metrics_row_fixed_f32<FIXED_M>(metrics_out, base);
             } else {
@@ -3712,6 +3718,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
         const int end_t = min(T, eval_end);
 
         if (start_t >= end_t) {
+            if constexpr (SCORE_ONLY_SHARPE) {
+                metrics_out[row_idx] = NEG_INF_F;
+                continue;
+            }
             if constexpr (FIXED_M > 0) {
                 zero_metrics_row_fixed_f32<FIXED_M>(metrics_out, base);
             } else {
@@ -4261,7 +4271,10 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
         const float short_mean_return =
             (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
-        if constexpr (FULL_M7) {
+        if constexpr (SCORE_ONLY_SHARPE) {
+            const float sharpe = (std > 0.0f) ? (mean / std) : 0.0f;
+            metrics_out[row_idx] = isfinite(sharpe) ? sharpe : NEG_INF_F;
+        } else if constexpr (FULL_M7) {
             // Preserve the existing reduced-row contract even for the M7-specialized kernels:
             // when M < 17, slots 0 and 2 are emitted in log-space (log_eq/max_log_dd) and the
             // host decode restores arithmetic pnl/max_dd.
@@ -4345,7 +4358,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     }
 }
 
-template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false>
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false, bool SCORE_ONLY_SHARPE = false>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
@@ -4385,7 +4398,7 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, WALK_SERIES_PTRS>(
+    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, WALK_SERIES_PTRS, SCORE_ONLY_SHARPE>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
@@ -4442,6 +4455,55 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32(
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_shadow_sharpe_score(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ score_out
+){
+    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 0, false, true>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride,
+        pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows,
+        compact_slow_local_rows, pair_count, compact_output, score_out
     );
 }
 
@@ -5204,6 +5266,53 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time(
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
+    );
+}
+
+extern "C" __global__
+__launch_bounds__(128) void double_cross_backtest_tm_flex_f32_lockstep_time_shadow_sharpe_score(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ score_out
+){
+    double_cross_backtest_tm_flex_f32_body<false, true, false, -1, -1, -1, -1, 0, false, true>(
+        fast_ma_T, slow_ma_T, lr, ret1,
+        T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+        Pf_total, Ps_total, f_offset, s_offset,
+        fast_periods, slow_periods, regime_filter,
+        use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+        commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, score_out
     );
 }
 
@@ -8641,6 +8750,65 @@ void gather_topk_scored_pairs_tm_f32(
             ? ((row >= 0 && row < total_rows)
                 ? resolve_dense_pair_idx(row, pairs, pair_index_map)
                 : -1)
+            : row;
+        if (pair < 0 || pair >= pairs) {
+            out_fast_len[i] = 0;
+            out_slow_len[i] = 0;
+            out_scores[i] = NEG_INF_F;
+            continue;
+        }
+        const int pf_local = pair / Ps_tile;
+        const int ps_local = pair - pf_local * Ps_tile;
+        if (pf_local < 0 || pf_local >= Pf_tile || ps_local < 0 || ps_local >= Ps_tile) {
+            out_fast_len[i] = 0;
+            out_slow_len[i] = 0;
+            out_scores[i] = NEG_INF_F;
+            continue;
+        }
+        out_fast_len[i] = fast_periods[pf_local];
+        out_slow_len[i] = slow_periods[ps_local];
+        out_scores[i] = isfinite(score) ? score : NEG_INF_F;
+    }
+}
+
+extern "C" __global__
+void gather_topk_scored_scalar_pairs_tm_f32(
+    const float* __restrict__ scores,
+    int rows,
+    int pairs,
+    int Pf_tile,
+    int Ps_tile,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const int* __restrict__ top_pair_idx,
+    int topk,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_rows,
+    const int* __restrict__ compact_slow_rows,
+    int pair_count,
+    int compact_output,
+    int* __restrict__ out_fast_len,
+    int* __restrict__ out_slow_len,
+    float* __restrict__ out_scores
+) {
+    const int total_rows = (rows > 0) ? rows : ((compact_output && pair_count > 0) ? pair_count : pairs);
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < topk; i += blockDim.x * gridDim.x) {
+        const int row = top_pair_idx[i];
+        if (row < 0 || row >= total_rows) {
+            out_fast_len[i] = 0;
+            out_slow_len[i] = 0;
+            out_scores[i] = NEG_INF_F;
+            continue;
+        }
+        const float score = scores[row];
+        if (compact_output && compact_fast_rows != nullptr && compact_slow_rows != nullptr) {
+            out_fast_len[i] = compact_fast_rows[row];
+            out_slow_len[i] = compact_slow_rows[row];
+            out_scores[i] = isfinite(score) ? score : NEG_INF_F;
+            continue;
+        }
+        const int pair = compact_output
+            ? resolve_dense_pair_idx(row, pairs, pair_index_map)
             : row;
         if (pair < 0 || pair >= pairs) {
             out_fast_len[i] = 0;

@@ -85,6 +85,15 @@ fn count_pairs_fast_lt_slow(fast_periods: &[u16], slow_periods: &[u16]) -> usize
     total
 }
 
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
 fn bench_ma_profile() -> (
     &'static str,
     &'static str,
@@ -130,6 +139,22 @@ fn bench_gpu_kernel_pnl_full_metrics(c: &mut Criterion) {
     ));
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        &format!("double_ma/gpu_kernel_pnl_full_metrics/{ma_label}/200k"),
+        &[
+            ("ma_profile", ma_label.to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("surface", "gpu_kernel_pnl_full_metrics".to_string()),
+            (
+                "cases",
+                cases
+                    .iter()
+                    .map(|(label, _, _, _)| *label)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ],
+    );
 
     for (case_label, fast_range, slow_range, budget_mb) in cases.iter().copied() {
         match budget_mb {

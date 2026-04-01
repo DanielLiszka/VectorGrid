@@ -1522,6 +1522,17 @@ fn describe_cross_omitted_modules(strategy_kind: &str, validation_req: &Value) -
             "trade_bootstrap".to_string(),
         ];
     }
+    if !is_double_like_strategy(strategy_kind) {
+        return vec![
+            "walk_forward".to_string(),
+            "reopt_walk_forward".to_string(),
+            "spa".to_string(),
+            "perturb".to_string(),
+            "trade_bootstrap".to_string(),
+            "cscv_pbo".to_string(),
+            "hard gates".to_string(),
+        ];
+    }
     Vec::new()
 }
 
@@ -1642,7 +1653,66 @@ fn build_expected_execution_category_summary(
     if backend == "CpuOnly" || cpu_preferred || cpu_fallback {
         return format_execution_category_summary(vec![("CPU-only", modules)]);
     }
-    format_execution_category_summary(vec![("GPU-native", modules)])
+    let mut gpu_native = Vec::new();
+    let mut gpu_tail = Vec::new();
+    let is_cpu_reference_hybrid = strategy_kind == "Carm" || strategy_kind == "Cdmc";
+    let is_vcet_mixed = strategy_kind == "Vcet";
+
+    let base_category = if is_cpu_reference_hybrid {
+        &mut gpu_tail
+    } else {
+        &mut gpu_native
+    };
+    base_category.push("base reruns");
+    base_category.push("hard gates");
+
+    if validation_req
+        .get("walk_forward")
+        .is_some_and(|v| !v.is_null())
+    {
+        if is_cpu_reference_hybrid || is_vcet_mixed {
+            gpu_tail.push("walk_forward");
+        } else {
+            gpu_native.push("walk_forward");
+        }
+    }
+    if validation_req
+        .get("reopt_walk_forward")
+        .is_some_and(|v| !v.is_null())
+    {
+        if is_cpu_reference_hybrid || is_vcet_mixed {
+            gpu_tail.push("reopt_walk_forward");
+        } else {
+            gpu_native.push("reopt_walk_forward");
+        }
+    }
+    if validation_req.get("cscv_pbo").is_some_and(|v| !v.is_null()) {
+        if is_cpu_reference_hybrid {
+            gpu_tail.push("cscv_pbo");
+        } else {
+            gpu_native.push("cscv_pbo");
+        }
+    }
+    if validation_req.get("spa").is_some_and(|v| !v.is_null()) {
+        if is_cpu_reference_hybrid {
+            gpu_tail.push("spa");
+        } else {
+            gpu_native.push("spa");
+        }
+    }
+    if validation_req.get("perturb").is_some_and(|v| !v.is_null()) {
+        gpu_tail.push("perturb");
+    }
+    if validation_req
+        .get("trade_bootstrap")
+        .is_some_and(|v| !v.is_null())
+    {
+        gpu_tail.push("trade_bootstrap");
+    }
+    format_execution_category_summary(vec![
+        ("GPU-native", gpu_native),
+        ("GPU main + CPU tail", gpu_tail),
+    ])
 }
 
 fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option<String> {
@@ -1671,7 +1741,7 @@ fn describe_composite_route_detail(strategy_kind: &str, backend: &str) -> Option
                 .to_string(),
         ),
         "Vcet" => Some(
-            "VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward currently uses the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work."
+            "VCET GPU validation now supports the fixed-candidate GPU route for the main profile. Walk-forward and reopt walk-forward currently use the generic validation path, and perturb/trade bootstrap remain auxiliary CPU work."
                 .to_string(),
         ),
         "Mkcs" => Some(
@@ -1737,6 +1807,24 @@ fn describe_composite_auto_cpu_preference(strategy_kind: &str, backend: &str) ->
                 .to_string(),
         ),
         _ => None,
+    }
+}
+
+fn composite_profile_label_for_expected_summary(strategy_kind: &str) -> &'static str {
+    match strategy_kind {
+        "CompositeCpu" => "base composite",
+        "Asr" => "ASR",
+        "Vcc" => "VCC",
+        "Vemr" => "VEMR",
+        "Rocb" => "ROCB",
+        "Vcet" => "VCET",
+        "Mkcs" => "MKCS",
+        "Kqsr" => "KQSR",
+        "Carm" => "CARM",
+        "Kvdf" => "KVDF",
+        "Cdmc" => "CDMC",
+        "CompositeMo" => "CompositeMo",
+        _ => "unknown composite",
     }
 }
 
@@ -1863,23 +1951,68 @@ fn build_expected_execution_summary(
         }
     } else {
         let mut warning_notes = Vec::new();
-        if let Some(auto_pref) = describe_composite_auto_cpu_preference(strategy_kind, backend) {
+        let composite_profile = composite_profile_label_for_expected_summary(strategy_kind);
+        let composite_route_detail = describe_composite_route_detail(strategy_kind, backend);
+        let composite_cpu_fallback = strategy_kind == "CompositeMo";
+        if backend == "CpuOnly" {
+            route_summary =
+                format!("CpuOnly requested | CPU composite route expected ({composite_profile})");
+            module_summary = format!(
+                "CPU route ({composite_profile}): {}{}",
+                enabled_main.join(" + "),
+                if aux_cpu.is_empty() {
+                    String::new()
+                } else {
+                    format!(" + {}", aux_cpu.join(" + "))
+                }
+            );
+        } else if let Some(auto_pref) =
+            describe_composite_auto_cpu_preference(strategy_kind, backend)
+        {
             route_summary = format!(
-                "Auto requested | expected CPU-preferred composite route ({strategy_kind})"
+                "Auto requested | expected CPU-preferred composite route ({composite_profile})"
+            );
+            module_summary = format!(
+                "Expected CPU route ({composite_profile}): {}{}",
+                enabled_main.join(" + "),
+                if aux_cpu.is_empty() {
+                    String::new()
+                } else {
+                    format!(" + {}", aux_cpu.join(" + "))
+                }
             );
             fallback_summary = auto_pref;
-        } else if let Some(route_detail) = describe_composite_route_detail(strategy_kind, backend) {
-            route_note_summary = route_detail;
-        }
-        module_summary = format!(
-            "Enabled modules: {}{}",
-            enabled_main.join(" + "),
-            if aux_cpu.is_empty() {
-                String::new()
-            } else {
-                format!(" + {}", aux_cpu.join(" + "))
+        } else if composite_cpu_fallback {
+            route_summary =
+                format!("{backend} requested | expected CpuOnly fallback for composite validation");
+            module_summary = format!(
+                "Expected CPU fallback route ({composite_profile}): {}{}",
+                enabled_main.join(" + "),
+                if aux_cpu.is_empty() {
+                    String::new()
+                } else {
+                    format!(" + {}", aux_cpu.join(" + "))
+                }
+            );
+            if let Some(route_detail) = composite_route_detail {
+                route_note_summary = route_detail;
             }
-        );
+        } else {
+            route_summary =
+                format!("{backend} requested | expected GPU composite route ({composite_profile})");
+            module_summary = format!(
+                "Expected GPU composite route ({composite_profile}): {}{}",
+                enabled_main.join(" + "),
+                if aux_cpu.is_empty() {
+                    String::new()
+                } else {
+                    format!(" + {}", aux_cpu.join(" + "))
+                }
+            );
+            if let Some(route_detail) = composite_route_detail {
+                route_note_summary = route_detail;
+            }
+        }
         if !aux_cpu.is_empty() && backend != "CpuOnly" {
             warning_notes.push(format!(
                 "{} may not share the same execution route as the main validation pass; confirm post-run route notes because these are intentional auxiliary CPU work today.",
@@ -1924,6 +2057,24 @@ fn build_expected_execution_summary(
             };
         } else if is_double_like && mode == "lightweight" {
             cross_summary = format!("{base} | lightweight reruns");
+        } else if !is_double_like {
+            cross_summary = if mode == "lightweight" {
+                format!("{base} | lightweight reruns")
+            } else {
+                format!("{base} | effective lightweight reruns")
+            };
+            let cross_warning = if mode == "lightweight" {
+                "Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.".to_string()
+            } else {
+                format!(
+                    "Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns remain lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates; requested {mode} currently uses lightweight behavior."
+                )
+            };
+            warning_summary = if warning_summary == "none" {
+                cross_warning
+            } else {
+                format!("{warning_summary} | {cross_warning}")
+            };
         } else {
             cross_summary = base;
         }
@@ -2426,4 +2577,89 @@ fn build_model_from_validation_res_with_context(
     };
     apply_ranking_stability(&mut model);
     Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn composite_lightweight_cross_summary_matches_frontend_policy() {
+        let req = json!({
+            "backend": { "backend": "Auto" },
+            "cross_ticker": {
+                "mode": "lightweight",
+                "datasets": [
+                    { "csv_path": "C:/data/SPY.csv" },
+                    { "csv_path": "C:/data/QQQ.csv" }
+                ]
+            }
+        });
+
+        let summary = build_expected_execution_summary("Cdmc", Some(&req));
+        assert!(summary
+            .cross_summary
+            .contains("2 datasets | lightweight | lightweight reruns"));
+        assert!(summary.warning_summary.contains(
+            "Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight"
+        ));
+        assert!(summary.cross_omitted_summary.contains("walk_forward"));
+        assert!(summary.cross_omitted_summary.contains("cscv_pbo"));
+        assert!(summary.cross_omitted_summary.contains("hard gates"));
+    }
+
+    #[test]
+    fn composite_non_lightweight_cross_summary_reports_effective_lightweight_reruns() {
+        let req = json!({
+            "backend": { "backend": "Auto" },
+            "cross_ticker": {
+                "mode": "preserved_finalists",
+                "datasets": [
+                    { "csv_path": "C:/data/SPY.csv" }
+                ]
+            }
+        });
+
+        let summary = build_expected_execution_summary("CompositeCpu", Some(&req));
+        assert!(summary
+            .cross_summary
+            .contains("1 dataset | preserved_finalists | effective lightweight reruns"));
+        assert!(summary
+            .warning_summary
+            .contains("requested preserved_finalists currently uses lightweight behavior"));
+    }
+
+    #[test]
+    fn composite_auto_cpu_expected_labels_use_profile_label() {
+        let req = json!({
+            "backend": { "backend": "Auto" }
+        });
+
+        let summary = build_expected_execution_summary("Carm", Some(&req));
+        assert!(summary
+            .route_summary
+            .contains("expected CPU-preferred composite route (CARM)"));
+        assert!(summary
+            .module_summary
+            .contains("Expected CPU route (CARM):"));
+    }
+
+    #[test]
+    fn composite_mo_gpu_fallback_remains_explicit() {
+        let req = json!({
+            "backend": { "backend": "GpuKernel" }
+        });
+
+        let summary = build_expected_execution_summary("CompositeMo", Some(&req));
+        assert!(summary
+            .route_summary
+            .contains("expected CpuOnly fallback for composite validation"));
+        assert!(summary.route_note_summary.contains(
+            "CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+        ));
+        assert!(summary
+            .category_summary
+            .contains("CPU-only: base reruns + hard gates"));
+    }
 }

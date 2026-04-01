@@ -15,7 +15,7 @@ import {
   runBatch,
   runMlPolicyEvaluation,
   runMeta,
-  runStage4,
+  runStage5,
   toggleBatchDataset,
 } from './metaService'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -272,7 +272,7 @@ describe('meta service', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('list_meta_artifacts')
   })
 
-  it('runs stage4 with auto-built request via direct invoke', async () => {
+  it('runs stage5 with auto-built request via direct invoke', async () => {
     const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
@@ -282,7 +282,7 @@ describe('meta service', () => {
     })
 
     await runMeta()
-    await runStage4()
+    await runStage5()
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_stage5_ml_confidence')
     expect(call).toBeTruthy()

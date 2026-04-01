@@ -43,9 +43,13 @@ pub(crate) fn build_meta_report_xlsx_bytes(
     commands_reports_meta_xlsx::build_meta_report_xlsx_bytes(ts, meta)
 }
 
-pub(crate) fn build_report_xlsx_blocking(report: Value) -> Result<String, String> {
+pub(crate) fn build_report_xlsx_blocking(
+    report: Value,
+    max_rows: Option<u32>,
+) -> Result<String, String> {
     use base64::{engine::general_purpose, Engine as _};
-    let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, None)?;
+    let max_rows = max_rows.map(|n| n as usize).filter(|n| *n > 0);
+    let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
     Ok(general_purpose::STANDARD.encode(bytes))
 }
 
@@ -3152,6 +3156,39 @@ mod tests {
         let bytes = build_report_xlsx_bytes_headless(&report, Some(25)).expect("xlsx bytes");
         assert!(bytes.len() > 512);
         assert_eq!(&bytes[0..2], b"PK");
+    }
+
+    #[test]
+    fn build_report_xlsx_blocking_matches_headless_builder_for_max_rows() {
+        use base64::{engine::general_purpose, Engine as _};
+
+        let report = json!({
+          "version": 1,
+          "kind": "vectorgrid_report",
+          "ts": "2026-01-26T00:00:00Z",
+          "validation": {
+            "res": {
+              "data_id": "test",
+              "candidates": [
+                {
+                  "params": {
+                    "fast_ma_type": "sma",
+                    "fast_len": 9,
+                    "slow_ma_type": "sma",
+                    "slow_len": 21
+                  },
+                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+                  "robust_score": 1.23,
+                  "robust_pareto": true
+                }
+              ]
+            }
+          }
+        });
+
+        let encoded = build_report_xlsx_blocking(report.clone(), Some(1)).expect("wrapped xlsx");
+        let bytes = build_report_xlsx_bytes_headless(&report, Some(1)).expect("direct xlsx");
+        assert_eq!(encoded, general_purpose::STANDARD.encode(bytes));
     }
 
     #[test]

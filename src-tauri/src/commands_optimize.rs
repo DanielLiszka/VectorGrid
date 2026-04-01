@@ -116,6 +116,7 @@ pub async fn run_composite_cpu_optimization(
     let cancel2 = cancel.clone();
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _nvtx_scope = ta_app_core::nvtx::scope("engine", "tauri_composite_cpu_request");
         let sink = TauriProgressSink { app: app2 };
         ta_app_core::run_composite_cpu_optimization_blocking_with_candles(
             req,
@@ -227,6 +228,17 @@ mod tests {
     }
 
     #[test]
+    fn double_ma_product_mode_normalization_ignores_whitespace_export_path() {
+        let mut req = base_double_ma_req();
+        req.mode = OptimizationMode::GpuVdps;
+        req.export_all_csv_path = Some("   ".to_string());
+        assert_eq!(
+            normalize_product_double_ma_optimization_mode(&req),
+            OptimizationMode::GpuVdps
+        );
+    }
+
+    #[test]
     fn composite_cpu_product_mode_normalization_stays_grid_only() {
         assert_eq!(
             normalize_product_composite_cpu_optimization_mode(OptimizationMode::Grid),
@@ -260,6 +272,7 @@ pub async fn run_composite_mo_optimization(
     let cancel2 = cancel.clone();
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _nvtx_scope = ta_app_core::nvtx::scope("engine", "tauri_composite_mo_request");
         let sink = TauriProgressSink { app: app2 };
         ta_app_core::run_composite_mo_optimization_blocking_with_candles(
             req,

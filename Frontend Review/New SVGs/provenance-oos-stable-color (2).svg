@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <title>Out-of-Sample Stable</title>
+  <desc>Two aligned parallel traces indicating consistent performance across in-sample and out-of-sample evaluation</desc>
+  <!-- Upper evaluation trace (in-sample lane) -->
+  <polyline points="3,9 6.5,10.6 10,7.4 14,10.6 17.5,9 19.5,9" stroke="#5B8FA8"/>
+  <!-- Lower evaluation trace (out-of-sample lane, mirroring upper) -->
+  <polyline points="3,15 6.5,16.6 10,13.4 14,16.6 17.5,15 19.5,15" stroke="#7AABBD"/>
+  <!-- Stabilizing vertical anchor bar at convergence end -->
+  <line x1="19.5" y1="9" x2="19.5" y2="15" stroke="#5B8FA8" stroke-width="1.4" opacity="0.5"/>
+  <!-- Equilibrium diamond at midpoint — sized to survive at 14-18px -->
+  <path d="M19.5,10.2 L21,12 L19.5,13.8 L18,12 Z" fill="#4A7A8F" stroke="none"/>
+</svg>

@@ -1,5 +1,9 @@
 {
   "scenario_id": "double_ma_alma_200k_250000pairs",
+  "preset_id": "legacy_250k_search_only",
+  "benchmark_mode": "search_only_legacy",
+  "intended_metric_contract": "search_only_objective",
+  "intended_pair_count": 250000,
   "strategy": "double_ma",
   "ma_case": "alma_alma",
   "objective": "Sharpe",
@@ -32,10 +36,20 @@
     ]
   },
   "vectorbt": {
-    "chunk_size": 256
+    "benchmark_mode": "search_only_legacy",
+    "chunk_size": 256,
+    "cache_max_entries": 1024,
+    "timeout_sec": 0
+  },
+  "strategy_config": {
+    "fees": 0.0,
+    "hurdle_tau": 0.0,
+    "long_only": true,
+    "allow_flip": true,
+    "trade_on_next_bar": true
   },
   "notes": [
-    "Expanded frozen faceoff scenario for the VectorGrid vs VectorBT double-MA benchmark.",
+    "Expanded frozen faceoff scenario for the preserved legacy VectorGrid vs VectorBT double-MA benchmark.",
     "Shared dataset is the deterministic synthetic benchmark harness exported to CSV.",
     "Fast and slow ranges are disjoint so all 500 x 500 period combinations are valid.",
     "Heatmap is disabled for the timed runs to avoid unrelated UI-style overhead."

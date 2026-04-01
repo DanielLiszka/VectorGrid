@@ -55,6 +55,18 @@ Every SVG generation request in this document should explicitly assume the follo
 
 This is especially important for GPT-5.4 Pro because it can spend multiple internal reasoning turns improving the SVG before it emits the final answer.
 
+## Intent-First Prompt Rule
+
+Every asset-specific user prompt in this document should describe three things in order:
+
+1. `Meaning`: the label or state the asset represents.
+2. `Intent`: what the user should understand immediately when they see it in-product.
+3. `Preferred motif`: the geometry or symbolic structure that should carry that meaning.
+
+Use `Intent` to name the operator-facing takeaway and the emotional posture. It should clarify whether the asset is supposed to feel calm, analytical, deliberate, cautious, active, or resolved.
+
+Do not jump directly from a file name to motif instructions. The prompt should explicitly tell the model what the SVG is supposed to communicate so the composition is driven by meaning first and shape second. The goal is not just "draw an icon for X." The goal is "draw a symbol that makes X legible as a specific workstation concept."
+
 ## Shared System Prompt
 
 Use this system prompt for every SVG generation request in this document:
@@ -74,7 +86,7 @@ Use a multi-pass internal design process before you answer:
 Do not output your intermediate concepts, critique, or iteration notes. Output only the final polished SVG.
 
 Global constraints:
-- Output exactly one standalone Two SVG files, one with color, one without.
+- When the user prompt asks for both variants, output exactly two standalone SVG files: one with color and one without.
 - Transparent background.
 - No embedded JavaScript.
 - No raster images or base64 image payloads.
@@ -251,6 +263,11 @@ Meaning:
 - out-of-sample stable
 - calm, reliable, balanced performance across in-sample and out-of-sample review
 
+Intent:
+- at a glance, this should tell the operator that the result held up when moved from fit-time evaluation to a second validation context
+- it should communicate supportive out-of-sample stability, not "best performer," broad endorsement, or celebratory success
+- the symbol should feel like agreement between two review lanes rather than a generic pass badge
+
 Visual direction:
 - technical and restrained
 - should feel trustworthy, not celebratory
@@ -290,6 +307,11 @@ Meaning:
 - thin evidence / low sample count
 - not total failure, but insufficient depth or confidence
 
+Intent:
+- at a glance, this should tell the operator that the evidence base is too thin to trust strongly, even if the result is not obviously bad
+- it should read as insufficient observational depth, not as danger, failure, or rejection
+- the tone should stay analytical and restrained
+
 Preferred motif:
 - a sparse histogram, few data bars, or very small cluster of points
 - the composition should visually imply “not enough observations”
@@ -323,6 +345,11 @@ Asset type:
 Meaning:
 - performance is sensitive to execution friction / slippage
 
+Intent:
+- at a glance, this should tell the operator that the apparent edge weakens once real-world trading friction is introduced
+- it should read as a result being dragged off its ideal path by execution costs, not as a market crash or broken system
+- the tone should feel cautious and analytical rather than dramatic
+
 Preferred motif:
 - a clean path or channel that is visibly offset or dragged by lateral friction
 - a compact market/execution feel without looking like a chart screenshot
@@ -355,6 +382,11 @@ Asset type:
 
 Meaning:
 - result quality is concentrated in a narrow regime rather than broadly robust
+
+Intent:
+- at a glance, this should tell the operator that one market condition is carrying most of the apparent quality
+- it should read as narrow robustness and uneven regime dependence, not as low sample count or generic imbalance
+- the symbol should emphasize segmentation with one dominant slice rather than scarcity
 
 Preferred motif:
 - a compact regime-strip or segmented analytical lane with three to five regime segments
@@ -404,6 +436,11 @@ Asset type:
 Meaning:
 - validation exists, but it is no longer current relative to the latest context
 
+Intent:
+- at a glance, this should tell the operator that a check was performed before, but it is no longer fresh enough for the current context
+- it should read as outdated or lagging review state, not as failure, missing data, or source replacement
+- the tone should feel quietly stale rather than alarming
+
 Preferred motif:
 - a compact checkpoint, badge, or validation marker combined with subtle time drift / lag semantics
 - should communicate “outdated” rather than “broken”
@@ -439,6 +476,11 @@ Asset type:
 
 Meaning:
 - the dataset or source context changed since the reviewed result was produced
+
+Intent:
+- at a glance, this should tell the operator that the underlying input context has shifted since the result was reviewed
+- it should read as lineage drift or source mismatch, not merely the passage of time
+- the symbol should feel data-structural rather than clock-like
 
 Preferred motif:
 - stacked records, bars, or layers with one shifted/reloaded segment
@@ -477,6 +519,11 @@ Meaning:
 - this result deserves closer review
 - attention-worthy, but not necessarily a warning or failure
 
+Intent:
+- at a glance, this should tell the operator to inspect this result more closely before trusting or discarding it
+- it should read as focused analytical attention, not as danger, error, or notification
+- the tone should feel deliberate and review-oriented
+
 Preferred motif:
 - a focal frame, bracket, or centered analytical emphasis mark around one signal point or tile
 - should read as “worth inspecting”
@@ -508,6 +555,11 @@ Asset type:
 
 Meaning:
 - hold this result in the compare set
+
+Intent:
+- at a glance, this should tell the operator to keep this candidate staged in the compare set for later review
+- it should read as "keep in compare" rather than office pinning, bookmarking, or geographic location
+- the symbol should feel like an analytical staging action
 
 Preferred motif:
 - not a generic office pushpin
@@ -546,6 +598,11 @@ Asset type:
 Meaning:
 - compare two or more shortlisted candidates side by side
 
+Intent:
+- at a glance, this should tell the operator that these candidates are meant to be evaluated together on equal footing
+- it should read as aligned side-by-side review, not merge, sync, or competition drama
+- the tone should feel orderly and analytical
+
 Preferred motif:
 - two aligned result cards, metric columns, or mirrored analysis tiles
 - a shared axis or relationship line is welcome if subtle
@@ -582,6 +639,11 @@ Asset type:
 Meaning:
 - replace a currently pinned compare slot with the actively selected candidate
 
+Intent:
+- at a glance, this should tell the operator that one candidate in the compare set will be swapped out while the compare context stays intact
+- it should read as controlled substitution inside a tray, not generic refresh or synchronization
+- the symbol should feel precise and reversible
+
 Preferred motif:
 - two compact review tiles with a restrained exchange or swap direction
 - the composition should communicate replacement inside a compare workflow, not generic file transfer
@@ -617,6 +679,11 @@ Asset type:
 Meaning:
 - remove one candidate from the compare tray
 
+Intent:
+- at a glance, this should tell the operator that a candidate will be unstaged from the active comparison set
+- it should read as removal from a review tray, not destructive deletion of the underlying artifact
+- the tone should feel tidy and intentional
+
 Preferred motif:
 - a compare tile or paired-card structure with a quiet subtraction cue
 - should feel reversible and controlled, not destructive
@@ -646,6 +713,11 @@ Asset type:
 
 Meaning:
 - promote this candidate to the primary review focus
+
+Intent:
+- at a glance, this should tell the operator to make this the primary review target while other candidates remain visible but secondary
+- it should read as centering or elevating the review target, not as declaring a winner or favorite
+- the symbol should feel focused rather than celebratory
 
 Preferred motif:
 - one central highlighted review tile with surrounding muted peer tiles
@@ -677,6 +749,11 @@ Asset type:
 
 Meaning:
 - background task is queued and waiting
+
+Intent:
+- at a glance, this should tell the operator that work has been accepted and is waiting its turn in an orderly pipeline
+- it should read as pending in sequence, not paused, cancelled, or stalled
+- the tone should feel organized and calm
 
 Preferred motif:
 - stacked items, staged tiles, or a queue lane with one pending item
@@ -711,6 +788,11 @@ Asset type:
 
 Meaning:
 - active computation / running task
+
+Intent:
+- at a glance, this should tell the operator that computation is actively in flight right now
+- it should read as structured processing activity, not as a media play button or vague spinner
+- the tone should feel active, technical, and controlled
 
 Preferred motif:
 - segmented ring, staged progression, or compact computational pulse
@@ -747,6 +829,11 @@ Asset type:
 Meaning:
 - a task is in the process of stopping, not fully stopped yet
 
+Intent:
+- at a glance, this should tell the operator that a stop has been requested and the system is unwinding active work
+- it should read as transitional interruption, not failure and not already-stopped finality
+- the tone should feel controlled and intermediate
+
 Preferred motif:
 - a running/progression structure interrupted by a controlled barrier or stop cue
 - should read as transitional state
@@ -781,6 +868,11 @@ Asset type:
 Meaning:
 - background task completed successfully
 
+Intent:
+- at a glance, this should tell the operator that the run finished cleanly and reached a resolved end state
+- it should read as resolved work, not celebration or generalized "success" branding
+- the tone should feel calm and operationally complete
+
 Preferred motif:
 - resolved progression ending in a calm completion mark
 - should feel operationally done, not celebratory
@@ -794,7 +886,7 @@ Styling:
 - should pair naturally with running, failed, and cancelled
 
 Distinctness requirement:
-- must remain visually distinct from `task-completed.svg`
+- must remain visually distinct from `task-failed.svg` and `task-cancelled.svg`
 - completion should read as resolved work, not a generic success badge
 
 Output:
@@ -814,6 +906,11 @@ Asset type:
 
 Meaning:
 - background task failed and needs attention
+
+Intent:
+- at a glance, this should tell the operator that the work path broke and now requires investigation
+- it should read as interruption or error, not as an intentional stop
+- the tone should feel serious and contained rather than theatrical
 
 Preferred motif:
 - broken or interrupted progression path
@@ -851,6 +948,11 @@ Asset type:
 Meaning:
 - task was intentionally stopped by the operator
 
+Intent:
+- at a glance, this should tell the operator that the work was deliberately halted and ended in that state
+- it should read as a chosen stop, not as failure or passive waiting
+- the tone should feel neutral, deliberate, and resolved
+
 Preferred motif:
 - a halted progression with a neutral stop cue
 - should feel deliberate, not erroneous
@@ -884,6 +986,11 @@ Asset type:
 
 Meaning:
 - desktop runtime is ready and healthy
+
+Intent:
+- at a glance, this should tell the operator that the runtime surface is healthy, available, and ready before active work begins
+- it should read as system readiness and availability, not as a generic success check, live-operation state, or power-button state
+- the tone should feel technical and dependable
 
 Preferred motif:
 - a compact workstation/status panel or runtime surface with a stable indicator
@@ -924,6 +1031,11 @@ Asset type:
 Meaning:
 - structured report workbook or analytical spreadsheet artifact
 
+Intent:
+- at a glance, this should tell the operator that this refers to a structured analytical report output
+- it should read as workbook-style analysis, not as a generic document or file icon
+- the symbol should foreground internal structure and summary layout
+
 Preferred motif:
 - a sheet/workbook with visible grid structure and one emphasized summary region
 - should read as analytical output, not a generic document
@@ -956,6 +1068,11 @@ Asset type:
 
 Meaning:
 - saved run artifact package / grouped output bundle
+
+Intent:
+- at a glance, this should tell the operator that multiple outputs are being kept together as one saved analysis package
+- it should read as grouped artifact layers, not as a single report sheet, a zip box, or a shipping package
+- the tone should feel structured and archival
 
 Preferred motif:
 - layered result cards, compact archive block, or structured bundle stack
@@ -991,6 +1108,11 @@ Asset type:
 Meaning:
 - reveal artifact in the file system / open containing location
 
+Intent:
+- at a glance, this should tell the operator "show me where this saved item lives on disk"
+- it should read as exposing a containing location, not exporting, sharing, or launching a file outward
+- the symbol should feel navigational and utility-oriented
+
 Preferred motif:
 - a folder/path tray with subtle outward reveal semantics
 - should communicate “show me where it lives”
@@ -1025,6 +1147,11 @@ Asset type:
 Meaning:
 - export the currently reviewed state as an artifact or snapshot
 
+Intent:
+- at a glance, this should tell the operator that the currently reviewed state will be frozen into a new saved snapshot or artifact
+- it should read as controlled snapshot/export from the present context, not as folder browsing or cloud upload
+- the tone should feel deliberate and bounded
+
 Preferred motif:
 - result card or analytical panel leaving a bounded frame
 - should feel like controlled export, not generic share/upload
@@ -1058,6 +1185,11 @@ Asset type:
 
 Meaning:
 - reopen the latest generated report
+
+Intent:
+- at a glance, this should tell the operator that an already-generated report can be revisited and opened again
+- it should read as return-to-existing-report, not create-report or generic back navigation
+- the symbol should feel like re-entry into a known artifact
 
 Preferred motif:
 - workbook/report structure with a subtle return/open cue
@@ -1102,6 +1234,11 @@ Asset type:
 Meaning:
 - analysis/results area is empty because nothing has been run yet
 
+Intent:
+- at a glance, this should tell the operator that this workspace is blank because no workflow has produced results yet
+- it should read as a ready review surface waiting for first use, not as an error state
+- the scene should quietly imply "run something, then inspect it here"
+
 Preferred motif:
 - a sparse operator bench with a muted table region, one empty chart frame, and a small focal placeholder
 - should imply “run something, then review it here”
@@ -1142,6 +1279,11 @@ Asset type:
 Meaning:
 - compare tray/workspace is waiting for pinned candidates
 
+Intent:
+- at a glance, this should tell the operator that this area is prepared for side-by-side review but currently has no pinned inputs
+- it should read as an empty compare surface awaiting candidates, not as missing data or broken UI
+- the scene should imply readiness for deliberate comparison
+
 Preferred motif:
 - two empty comparison cards or panels with a shared axis or connector
 - should communicate “pin two or more candidates to compare them here”
@@ -1180,6 +1322,11 @@ Asset type:
 
 Meaning:
 - saved run library or artifact shelf is currently empty
+
+Intent:
+- at a glance, this should tell the operator that saved outputs have not yet been created or collected here
+- it should read as orderly storage waiting to be filled, not as broken filesystem state or clutter
+- the scene should feel quiet, organized, and operational
 
 Preferred motif:
 - organized archive trays, shelves, or structured slots with one clearly empty focal slot
@@ -1231,6 +1378,11 @@ Meaning:
 - build mode / authoring posture
 - strategy, data, and setup work
 
+Intent:
+- at a glance, this should tell the operator that this mode is for configuring inputs, parameters, and setup decisions
+- it should read as authoring and system construction posture, not as review or live operation
+- the tone should feel structured and preparatory
+
 Preferred motif:
 - construction grid or parameter tile system with one active element
 - should feel like configuring a model or system, not using a hammer/wrench cliché
@@ -1264,6 +1416,11 @@ Asset type:
 Meaning:
 - review mode / analytical interpretation posture
 
+Intent:
+- at a glance, this should tell the operator that this mode is for inspecting evidence, comparing candidates, and interpreting outputs
+- it should read as analytical inspection posture, not as build/setup or runtime execution
+- the tone should feel focused and evaluative
+
 Preferred motif:
 - reviewed result card paired with a compact chart or metric frame
 - should communicate inspection and comparison
@@ -1296,6 +1453,11 @@ Asset type:
 
 Meaning:
 - operate mode / execution posture
+
+Intent:
+- at a glance, this should tell the operator that this mode is for supervising live execution and monitored runtime activity
+- it should read as an operational workspace posture, not as setup, readiness-only status, or retrospective review
+- the tone should feel active, supervised, and steady
 
 Preferred motif:
 - compact runtime console, execution panel, or live status trace
@@ -1333,6 +1495,11 @@ Only generate these after the static versions are good.
 ```text
 Create an animated SVG variant named `task-running.animated.svg` based on the static `task-running.svg` concept.
 
+Intent:
+- the motion should reinforce ongoing computation rather than change the meaning of the base icon
+- a frozen frame must still communicate active processing on its own
+- the animated feel should remain calm, technical, and controlled
+
 Requirements:
 - keep the same core silhouette and meaning as the static running-task icon
 - use the same viewBox: 0 0 24 24
@@ -1354,6 +1521,11 @@ Output:
 ```text
 Create an animated SVG variant named `compare-candidates.animated.svg` based on the static `compare-candidates.svg` concept.
 
+Intent:
+- the motion should reinforce two candidates being evaluated in relation to each other, not competition or instability
+- a frozen frame must still communicate side-by-side comparison without relying on animation
+- the animated feel should remain subtle, analytical, and non-dramatic
+
 Requirements:
 - keep the same viewBox and same core geometry family as the static icon
 - animation should be extremely subtle
@@ -1372,6 +1544,11 @@ Output:
 
 ```text
 Create an animated SVG variant named `empty-results-workspace.animated.svg` based on the static `empty-results-workspace.svg` illustration.
+
+Intent:
+- the motion should reinforce dormancy and readiness for future output rather than make the empty state feel busy
+- a frozen frame must still read as an empty results surface awaiting first use
+- the animated feel should remain ambient, quiet, and workstation-like
 
 Requirements:
 - keep the same scene and visual hierarchy as the static illustration

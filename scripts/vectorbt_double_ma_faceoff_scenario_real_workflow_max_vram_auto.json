@@ -1,0 +1,57 @@
+{
+  "scenario_id": "double_ma_alma_200k_max_vram_auto_real_workflow",
+  "preset_id": "max_vram_auto10_68798730",
+  "benchmark_mode": "real_workflow_10row",
+  "intended_metric_contract": "auto_product_reduced_10row",
+  "intended_pair_count": 68798730,
+  "strategy": "double_ma",
+  "ma_case": "alma_alma",
+  "objective": "Sharpe",
+  "ranges": {
+    "fast": "5:8298:1",
+    "slow": "8299:16593:1"
+  },
+  "alma": {
+    "offset": 0.85,
+    "sigma": 6.0
+  },
+  "dataset": {
+    "kind": "synthetic_benchmark_harness",
+    "synth_len": 200000
+  },
+  "execution": {
+    "top_k": 10,
+    "heatmap_bins": 0,
+    "include_all": false,
+    "export_all_csv": false
+  },
+  "trials": {
+    "warmup": 1,
+    "measured": 1
+  },
+  "vectorgrid": {
+    "backends": [
+      "gpu-kernel",
+      "cpu"
+    ]
+  },
+  "vectorbt": {
+    "benchmark_mode": "real_workflow_10row",
+    "chunk_size": 64,
+    "cache_max_entries": 512,
+    "timeout_sec": 21600
+  },
+  "strategy_config": {
+    "fees": 0.0,
+    "hurdle_tau": 0.0,
+    "long_only": true,
+    "allow_flip": true,
+    "trade_on_next_bar": true
+  },
+  "notes": [
+    "Max-VRAM real-workflow faceoff lane for the VectorBT vs VectorGrid double-MA benchmark.",
+    "Fast and slow ranges are disjoint so every pair is valid.",
+    "The intended pair count is tied to the current local auto/10-row one-pass VRAM ceiling for the 200k-candle ALMA/ALMA case.",
+    "Python timeout is intentionally bounded so long-running failure or infeasibility is captured explicitly."
+  ]
+}

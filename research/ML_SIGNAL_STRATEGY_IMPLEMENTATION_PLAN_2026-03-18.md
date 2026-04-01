@@ -188,6 +188,12 @@ The runtime should not emit direct order actions.
 
 It should emit score streams that feed a deterministic mapping layer.
 
+Current repo truthfulness note:
+
+- the shipped desktop path currently validates from score-cache files using probability-threshold policies
+- raw margins are still useful as diagnostics, but they are not the intended desktop validation contract
+- the Python research harness may emit both calibration-slice and walk-forward artifacts, and those scopes should not be treated as interchangeable
+
 ## 6.3 Position mapping contract
 
 Recommended mapping:
@@ -218,6 +224,12 @@ Lock these defaults now unless there is a deliberate later decision to revise th
 - Runtime rollout step 1: ship score-cache-backed validation
 - Runtime rollout step 2: add native Rust model scoring against the same bundle format
 - Native model format default: CatBoost `.cbm`
+
+Truthfulness guardrail for current readers:
+
+- `validation_scores.csv` from the research harness is a calibration-slice artifact
+- `walkforward_test_scores.csv` is a Python-side walk-forward proxy artifact
+- neither file by itself is proof of desktop validation/policy-sweep parity unless the desktop path is exercised separately against the same contract
 - Calibration format default: repo-owned JSON containing sigmoid or isotonic mappings
 - Frontend scope for v1: dataset export, model status, score-cache generation, validation, artifact review
 - Explicitly out of scope for v1: training models from the Tauri UI

@@ -4,7 +4,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use ta_app_core::double_ma::{DoubleMaScoreMode, DoubleMaShortlistUnionMode, VdpsConfig};
+use ta_app_core::double_ma::{
+    DoubleMaMetricContract, DoubleMaScoreMode, DoubleMaShortlistUnionMode, VdpsConfig,
+};
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, marrt_strategy_for_kernel, mts_strategy_for_kernel,
@@ -340,6 +342,31 @@ fn build_valid_double_ma_combos(
     out
 }
 
+struct EnvVarOverride {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarOverride {
+    fn new(key: &'static str, value: Option<&str>) -> Self {
+        let previous = std::env::var(key).ok();
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarOverride {
+    fn drop(&mut self) {
+        match self.previous.as_deref() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 fn run_with_dynamic_strategy_opt_env<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
     let key = "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL";
     let prev = std::env::var(key).ok();
@@ -388,6 +415,31 @@ fn run_with_product_reduced_rows_env<T>(value: Option<bool>, f: impl FnOnce() ->
     out
 }
 
+fn dynamic_strategy_opt_env_override(enabled: bool) -> EnvVarOverride {
+    EnvVarOverride::new(
+        "VECTORBT_DYNAMIC_STRATEGY_OPT_EXPERIMENTAL",
+        enabled.then_some("1"),
+    )
+}
+
+fn finalist_recompute_env_override(enabled: bool) -> EnvVarOverride {
+    EnvVarOverride::new(
+        "VECTORBT_KERNEL_FINALIST_RECOMPUTE",
+        Some(if enabled { "1" } else { "0" }),
+    )
+}
+
+fn product_reduced_rows_env_override(value: Option<bool>) -> EnvVarOverride {
+    EnvVarOverride::new(
+        "VECTORBT_KERNEL_PRODUCT_REDUCED_ROWS",
+        match value {
+            Some(true) => Some("1"),
+            Some(false) => Some("0"),
+            None => None,
+        },
+    )
+}
+
 fn bench_route_probe_logging_enabled() -> bool {
     std::env::var("VECTORBT_BENCH_LOG_ROUTE_PROBES")
         .ok()
@@ -396,6 +448,15 @@ fn bench_route_probe_logging_enabled() -> bool {
             matches!(value.as_str(), "1" | "true" | "yes" | "on")
         })
         .unwrap_or(false)
+}
+
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
 }
 
 fn bench_double_ma_cpu(c: &mut Criterion) {
@@ -819,6 +880,20 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
     let mut group = c.benchmark_group("double_ma/gpu_kernel_contract_split/alma_alma/200k");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        "double_ma/gpu_kernel_contract_split/alma_alma/200k",
+        &[
+            ("ma_profile", "alma_alma".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("pairs", pairs.to_string()),
+            ("surface", "contract_split".to_string()),
+            (
+                "variants",
+                "search_only,search_plus_heatmap,search_plus_finalist_recompute,end_to_end_product"
+                    .to_string(),
+            ),
+        ],
+    );
 
     let variants: [(&str, DoubleMaRequest, bool, Option<bool>); 4] = [
         (
@@ -864,16 +939,14 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
     for (name_tmpl, req0, recompute_enabled, reduced_rows_override) in variants {
         let name = name_tmpl.replace("{pairs}", &pairs.to_string());
         group.bench_function(&name, |b| {
+            let _reduced_rows_env = product_reduced_rows_env_override(reduced_rows_override);
+            let _recompute_env = finalist_recompute_env_override(recompute_enabled);
             b.iter(|| {
                 let req2 = req0.clone();
-                run_with_product_reduced_rows_env(reduced_rows_override, || {
-                    run_with_finalist_recompute_env(recompute_enabled, || {
-                        let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                            req2, &candles, &cancel, None,
-                        )
-                        .expect("gpu kernel contract split run");
-                    });
-                });
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2, &candles, &cancel, None,
+                )
+                .expect("gpu kernel contract split run");
             })
         });
     }
@@ -888,6 +961,128 @@ fn bench_double_ma_gpu_kernel_contract_split(c: &mut Criterion) {
 
 #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 fn bench_double_ma_gpu_kernel_contract_split(_c: &mut Criterion) {}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn bench_double_ma_gpu_kernel_contract_rows(c: &mut Criterion) {
+    if !vector_ta::cuda::cuda_available() {
+        return;
+    }
+    let candles = make_trending_candles(200_000);
+    let cancel = AtomicBool::new(false);
+    let fast_range = (5, 200, 1);
+    let slow_range = (10, 400, 1);
+    let fast_periods = expand_range_u16(fast_range);
+    let slow_periods = expand_range_u16(slow_range);
+    let pairs = count_pairs_fast_lt_slow(&fast_periods, &slow_periods);
+    let prev_budget = std::env::var("VECTORBT_KERNEL_VRAM_BUDGET_MB").ok();
+    std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB");
+
+    let base_req = DoubleMaRequest {
+        backend: Backend::GpuKernel { device_id: 0 },
+        data_id: make_bench_data_id(&[
+            "gpu-kernel-contract-rows",
+            "alma_alma",
+            "trending-200k",
+            &pairs.to_string(),
+        ]),
+        fast_range,
+        slow_range,
+        fast_ma_types: vec!["alma".to_string()],
+        slow_ma_types: vec!["alma".to_string()],
+        ma_source: "close".to_string(),
+        export_all_csv_path: None,
+        fast_ma_params: Some(alma_params_default()),
+        slow_ma_params: Some(alma_params_default()),
+        fast_ma_param_sweeps: None,
+        slow_ma_param_sweeps: None,
+        strategy: StrategyConfig::default(),
+        halftrend_filter: None,
+        objective: ObjectiveKind::Sharpe,
+        score_mode: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        shortlist_slice_mode: None,
+        shortlist_slice_benchmark: None,
+        shortlist_neighborhood_radius: None,
+        shortlist_neighborhood_step: None,
+        mode: OptimizationMode::Grid,
+        top_k: Some(50),
+        include_all: Some(false),
+        heatmap_bins: Some(0),
+        constraints: None,
+        vdps: None,
+        dynamic_strategy_ir: None,
+        gpu_execution: Default::default(),
+        persist_followup_cache: false,
+        include_trade_metrics: false,
+        metric_contract: None,
+        hurdle_tau: None,
+    };
+
+    let variants: [(&str, DoubleMaRequest); 3] = [
+        ("large/{pairs}pairs/auto", base_req.clone()),
+        (
+            "large/{pairs}pairs/full17",
+            DoubleMaRequest {
+                metric_contract: Some(DoubleMaMetricContract::Full17),
+                ..base_req.clone()
+            },
+        ),
+        (
+            "large/{pairs}pairs/trade22",
+            DoubleMaRequest {
+                include_trade_metrics: true,
+                metric_contract: Some(DoubleMaMetricContract::Trade22),
+                ..base_req
+            },
+        ),
+    ];
+
+    let mut group = c.benchmark_group("double_ma/gpu_kernel_contract_rows/alma_alma/trending_200k");
+    group.measurement_time(Duration::from_secs(8));
+    group.sample_size(10);
+    print_bench_metadata(
+        "double_ma/gpu_kernel_contract_rows/alma_alma/trending_200k",
+        &[
+            ("ma_profile", "alma_alma".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("surface", "contract_rows".to_string()),
+            ("shape", "trending_synth".to_string()),
+        ],
+    );
+
+    for (_, req0) in variants.iter() {
+        let req2 = req0.clone();
+        let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+            req2, &candles, &cancel, None,
+        )
+        .expect("gpu kernel contract rows prewarm run");
+    }
+
+    for (name_tmpl, req0) in variants {
+        let name = name_tmpl.replace("{pairs}", &pairs.to_string());
+        group.bench_function(&name, |b| {
+            b.iter(|| {
+                let req2 = req0.clone();
+                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                    req2, &candles, &cancel, None,
+                )
+                .expect("gpu kernel contract rows run");
+            })
+        });
+    }
+
+    group.finish();
+
+    match prev_budget {
+        Some(v) => std::env::set_var("VECTORBT_KERNEL_VRAM_BUDGET_MB", v),
+        None => std::env::remove_var("VECTORBT_KERNEL_VRAM_BUDGET_MB"),
+    }
+}
+
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+fn bench_double_ma_gpu_kernel_contract_rows(_c: &mut Criterion) {}
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn bench_double_ma_gpu_hybrid_kernel(c: &mut Criterion) {
@@ -1409,6 +1604,30 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
     let mut group = c.benchmark_group("double_ma/gpu_kernel_dynamic_preflight/sma_sma/200k");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        "double_ma/gpu_kernel_dynamic_preflight/sma_sma/200k",
+        &[
+            ("ma_profile", "sma_sma".to_string()),
+            ("surface", "dynamic_preflight".to_string()),
+            ("candles_len", trend_candles.close.len().to_string()),
+            (
+                "modes",
+                mode_cases
+                    .iter()
+                    .map(|(label, _)| *label)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+            (
+                "workloads",
+                workloads
+                    .iter()
+                    .map(|(label, _, _)| *label)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ],
+    );
 
     for (strategy_label, make_strategy) in strategy_cases.iter().copied() {
         for (mode_label, dynamic_enabled) in mode_cases.iter().copied() {
@@ -1463,6 +1682,7 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
                 };
 
                 group.bench_function(&name, |b| {
+                    let _dynamic_env = dynamic_strategy_opt_env_override(dynamic_enabled);
                     b.iter(|| {
                         let req2 = req.clone();
                         let candles =
@@ -1471,12 +1691,10 @@ fn bench_double_ma_gpu_kernel_dynamic_preflight_strategy_profiles(c: &mut Criter
                             } else {
                                 &trend_candles
                             };
-                        run_with_dynamic_strategy_opt_env(dynamic_enabled, || {
-                            let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                                req2, candles, &cancel, None,
-                            )
-                            .expect("gpu kernel dynamic-preflight strategy profile run");
-                        });
+                        let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                            req2, candles, &cancel, None,
+                        )
+                        .expect("gpu kernel dynamic-preflight strategy profile run");
                     })
                 });
             }
@@ -1558,6 +1776,19 @@ fn bench_double_ma_dynamic_contract_overhead(c: &mut Criterion) {
     ));
     group.measurement_time(Duration::from_secs(6));
     group.sample_size(10);
+    print_bench_metadata(
+        &format!("double_ma/dynamic_contract/alma_alma/200k/large/{pairs}pairs"),
+        &[
+            ("ma_profile", "alma_alma".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("pairs", pairs.to_string()),
+            (
+                "subsurfaces",
+                "compile_plan_only,compile_plan_plus_gpu_program,build_upload_executable_only,lookup_uploaded_executable_warm,static_gpu_kernel_legacy_off,static_gpu_kernel_dynamic_preflight_warm,static_gpu_kernel_dynamic_preflight_cold"
+                    .to_string(),
+            ),
+        ],
+    );
 
     group.bench_function("compile_plan_only", |b| {
         b.iter(|| {
@@ -1639,39 +1870,36 @@ fn bench_double_ma_dynamic_contract_overhead(c: &mut Criterion) {
     });
 
     group.bench_function("static_gpu_kernel_legacy_off", |b| {
+        let _dynamic_env = dynamic_strategy_opt_env_override(false);
         b.iter(|| {
             let req2 = req.clone();
-            run_with_dynamic_strategy_opt_env(false, || {
-                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("legacy static gpu kernel run");
-            });
+            let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                req2, &candles, &cancel, None,
+            )
+            .expect("legacy static gpu kernel run");
         })
     });
 
     group.bench_function("static_gpu_kernel_dynamic_preflight_warm", |b| {
+        let _dynamic_env = dynamic_strategy_opt_env_override(true);
         b.iter(|| {
             let req2 = req.clone();
-            run_with_dynamic_strategy_opt_env(true, || {
-                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("warm dynamic preflight gpu kernel run");
-            });
+            let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                req2, &candles, &cancel, None,
+            )
+            .expect("warm dynamic preflight gpu kernel run");
         })
     });
 
     group.bench_function("static_gpu_kernel_dynamic_preflight_cold", |b| {
+        let _dynamic_env = dynamic_strategy_opt_env_override(true);
         b.iter(|| {
             let req2 = req.clone();
-            run_with_dynamic_strategy_opt_env(true, || {
-                reset_dynamic_gpu_preflight_cache();
-                let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                    req2, &candles, &cancel, None,
-                )
-                .expect("cold dynamic preflight gpu kernel run");
-            });
+            reset_dynamic_gpu_preflight_cache();
+            let _ = ta_app_core::run_double_ma_optimization_blocking_with_candles(
+                req2, &candles, &cancel, None,
+            )
+            .expect("cold dynamic preflight gpu kernel run");
         })
     });
 
@@ -1986,6 +2214,7 @@ criterion_group!(
     bench_double_ma_gpu_sweep,
     bench_double_ma_gpu_kernel,
     bench_double_ma_gpu_kernel_contract_split,
+    bench_double_ma_gpu_kernel_contract_rows,
     bench_double_ma_gpu_hybrid_kernel,
     bench_double_ma_gpu_kernel_extra_ma,
     bench_double_ma_gpu_kernel_strategy_profiles,

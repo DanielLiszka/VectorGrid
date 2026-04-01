@@ -163,6 +163,51 @@ fn print_double_ma_route_probe(label: &str, result: &ta_app_core::DoubleMaValida
     }
 }
 
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
+fn bench_env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn maybe_assert_exact_route(
+    label: &str,
+    result: &ta_app_core::DoubleMaValidationResult,
+    expected_route: Option<&str>,
+) {
+    if !bench_env_flag("VTA_DOUBLE_MA_VALIDATE_REQUIRE_EXACT_ROUTE") {
+        return;
+    }
+
+    match expected_route {
+        Some(expected) => assert_eq!(
+            result.backend_route.as_deref(),
+            Some(expected),
+            "benchmark route mismatch for {label}: expected {expected}, got {}",
+            result.backend_route.as_deref().unwrap_or("<none>")
+        ),
+        None => assert!(
+            result.backend_route.is_none(),
+            "benchmark route mismatch for {label}: expected no explicit route, got {}",
+            result.backend_route.as_deref().unwrap_or("<none>")
+        ),
+    }
+}
+
 fn bench_double_ma_validation_workflow(c: &mut Criterion) {
     let candles = make_synth_candles(50_000);
     let cancel = AtomicBool::new(false);
@@ -171,12 +216,30 @@ fn bench_double_ma_validation_workflow(c: &mut Criterion) {
     let mut group = c.benchmark_group("double_ma_validate/workflow/50k/32candidates");
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        "double_ma_validate/workflow/50k/32candidates",
+        &[
+            ("backend", "CpuOnly".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("candidate_count", candidates.len().to_string()),
+            (
+                "surfaces",
+                "base,walk_forward,cscv_pbo,spa,reopt_walk_forward,perturb_32,trade_bootstrap_250,full_stack"
+                    .to_string(),
+            ),
+        ],
+    );
 
     let base = base_request(candidates.clone());
     let route_probe =
         run_double_ma_validation_blocking_with_candles(base.clone(), &candles, &cancel, None)
             .expect("cpu validation route probe");
     print_double_ma_route_probe("double_ma_validate/workflow/50k/32candidates", &route_probe);
+    maybe_assert_exact_route(
+        "double_ma_validate/workflow/50k/32candidates",
+        &route_probe,
+        Some("CpuOnly"),
+    );
 
     group.bench_function("base", |b| {
         b.iter(|| {
@@ -331,6 +394,15 @@ fn bench_double_ma_validation_gpu_sparse_workflow(c: &mut Criterion) {
         c.benchmark_group("double_ma_validate/gpu_kernel/sparse_finalists/100k/8candidates");
     group.measurement_time(Duration::from_secs(6));
     group.sample_size(10);
+    print_bench_metadata(
+        "double_ma_validate/gpu_kernel/sparse_finalists/100k/8candidates",
+        &[
+            ("backend", "GpuKernel".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            ("candidate_count", candidate_count.to_string()),
+            ("surface", "wf_reopt_cscv_spa".to_string()),
+        ],
+    );
 
     let mut req = base_request(candidates.clone());
     req.data_id = "bench-double-ma-gpu-sparse".to_string();
@@ -363,6 +435,11 @@ fn bench_double_ma_validation_gpu_sparse_workflow(c: &mut Criterion) {
     print_double_ma_route_probe(
         "double_ma_validate/gpu_kernel/sparse_finalists/100k/8candidates",
         &route_probe,
+    );
+    maybe_assert_exact_route(
+        "double_ma_validate/gpu_kernel/sparse_finalists/100k/8candidates",
+        &route_probe,
+        Some("GpuKernel"),
     );
 
     group.bench_function("wf_reopt_cscv_spa", |b| {

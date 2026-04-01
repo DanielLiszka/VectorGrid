@@ -62,6 +62,15 @@ fn bench_target_enabled(strategy_key: &str) -> bool {
     }
 }
 
+fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
+    let mut fields = vec![
+        "timing_boundary=Criterion".to_string(),
+        "build_profile=bench".to_string(),
+    ];
+    fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
+    println!("benchmark metadata {group_name}: {}", fields.join(" "));
+}
+
 fn make_kqsr_oscillating_candles(len: usize) -> Candles {
     let len = len.max(240);
     let mut ts = Vec::with_capacity(len);
@@ -278,6 +287,21 @@ fn bench_cpu_cases_with_cases<F>(
     let mut group = c.benchmark_group(group_name);
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        group_name,
+        &[
+            ("backend", "CpuOnly".to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            (
+                "cases",
+                cases
+                    .iter()
+                    .map(|(label, _, _)| *label)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ],
+    );
 
     for (label, fast_range, slow_range) in cases.iter().copied() {
         let req = build_req(Backend::CpuOnly, fast_range, slow_range);
@@ -368,6 +392,22 @@ fn bench_gpu_cases<F>(
     let mut group = c.benchmark_group(group_name);
     group.measurement_time(Duration::from_secs(8));
     group.sample_size(10);
+    print_bench_metadata(
+        group_name,
+        &[
+            ("backend", "GpuKernel".to_string()),
+            ("route_label", route_label.to_string()),
+            ("candles_len", candles.close.len().to_string()),
+            (
+                "cases",
+                cases
+                    .iter()
+                    .map(|(label, _, _)| *label)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ),
+        ],
+    );
 
     for (label, fast_range, slow_range) in cases.iter().copied() {
         let req = build_req(Backend::GpuKernel { device_id: 0 }, fast_range, slow_range);
