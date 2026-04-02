@@ -791,3 +791,20 @@ This is the best balance between:
 - support for the current strategy set
 - contained tech debt
 - performance upside where the current architecture already gives us the best chance of success
+
+## Related Follow-On Plans
+
+The campaign runner should stay focused on orchestration. Two adjacent scopes should remain separate implementation tracks:
+
+- `metric_contract_unification_plan_2026-04-02.md`
+  - owns cross-strategy `Core17` / `Trade22` metric-surface work
+  - matters most for artifact normalization, compare/export parity, and later ML feature quality
+- `validation_shortlist_admission_plan_2026-04-02.md`
+  - owns better candidate admission into validation
+  - matters most for validation quality and meta-corpus quality, but does not belong inside campaign orchestration
+
+Recommended sequencing:
+
+- campaign runner can ship before either follow-on plan is complete
+- improved validation admission can land independently of universal metric-contract support
+- universal `Core17` support is a likely prerequisite for a strong campaign-wide Stage 5 / ML feature surface

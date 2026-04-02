@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="currentColor" stroke="currentColor" stroke-linecap="round">
+  <title>Task running</title>
+  <desc>A task being actively processed with remaining items queued</desc>
+
+  <!-- Remaining queue blocks -->
+  <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.18"/>
+  <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.25"/>
+
+  <!-- 270° processing arc — amber -->
+  <path d="M15.5 19 A3.5 3.5 0 1 1 12 15.5" fill="none" stroke="#BA7517" stroke-width="2.25" opacity="0.65"/>
+</svg>

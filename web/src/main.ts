@@ -34,7 +34,7 @@ export async function startVectorGridApp(root: HTMLElement): Promise<void> {
   try {
     runStorageMigrations()
     applySettingsBootstrapFromStorage()
-    applyWorkflowBootstrapFromStorage()
+    const startupDataPromise = applyWorkflowBootstrapFromStorage({ includeDeferredData: false })
     applyRecommendedOptimizationDefaults()
 
     runtimeStore.setBootStage('Initializing desktop services')
@@ -43,6 +43,9 @@ export async function startVectorGridApp(root: HTMLElement): Promise<void> {
       runtimeStore.pushDesktopLog('warn', `Desktop startup service failed: ${message}`)
       console.warn(error)
     })
+
+    runtimeStore.setBootStage('Finalizing dataset readiness')
+    await startupDataPromise
 
     runtimeStore.setBootStage('Mounting workspace shell')
     await waitForNextPaint()

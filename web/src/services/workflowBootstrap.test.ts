@@ -23,6 +23,15 @@ function installStorage(values: StorageMap): void {
   })
 }
 
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    void nextReject
+  })
+  return { promise, resolve }
+}
+
 describe('workflow bootstrap service', () => {
   beforeEach(() => {
     pinia = createPinia()
@@ -95,7 +104,7 @@ describe('workflow bootstrap service', () => {
     })
   })
 
-  it('applies persisted workflow bootstrap through workflow actions', () => {
+  it('applies persisted workflow bootstrap through workflow actions', async () => {
     installStorage({
       vta_workspace_tab_v1: 'library',
       vta_workflow_tab_v1: 'history',
@@ -104,7 +113,7 @@ describe('workflow bootstrap service', () => {
       vta_aggregate_tab_v1: 'batch',
     })
 
-    applyWorkflowBootstrapFromStorage()
+    await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(hydrateStartupStateSpy).toHaveBeenCalled()
     expect(store.workspace).toBe('library')
@@ -114,12 +123,12 @@ describe('workflow bootstrap service', () => {
     expect(store.aggregateTab).toBe('batch')
   })
 
-  it('applies workspace bootstrap when workflow value is absent', () => {
+  it('applies workspace bootstrap when workflow value is absent', async () => {
     installStorage({
       vta_workspace_tab_v1: 'aggregate',
     })
 
-    applyWorkflowBootstrapFromStorage()
+    await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('aggregate')
     expect(store.workflow).toBe('settings')
@@ -127,19 +136,19 @@ describe('workflow bootstrap service', () => {
     expect(store.resultsTab).toBe('meta')
   })
 
-  it('applies aggregate bootstrap through workflow aggregate action when aggregate workspace is restored', () => {
+  it('applies aggregate bootstrap through workflow aggregate action when aggregate workspace is restored', async () => {
     installStorage({
       vta_workspace_tab_v1: 'aggregate',
       vta_aggregate_tab_v1: 'compare',
     })
 
-    applyWorkflowBootstrapFromStorage()
+    await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('aggregate')
     expect(store.aggregateTab).toBe('compare')
   })
 
-  it('restores local tabs without changing the selected workflow location', () => {
+  it('restores local tabs without changing the selected workflow location', async () => {
     installStorage({
       vta_workspace_tab_v1: 'workflow',
       vta_workflow_step_v1: 'optimize',
@@ -147,7 +156,7 @@ describe('workflow bootstrap service', () => {
       vectorgrid_results_tab_v1: 'top',
     })
 
-    applyWorkflowBootstrapFromStorage()
+    await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('workflow')
     expect(store.workflow).toBe('optimize')
@@ -156,7 +165,7 @@ describe('workflow bootstrap service', () => {
     expect(store.resultsTab).toBe('top')
   })
 
-  it('restores the finalizer workflow step from storage', () => {
+  it('restores the finalizer workflow step from storage', async () => {
     installStorage({
       vta_workspace_tab_v1: 'workflow',
       vta_workflow_step_v1: 'finalize',
@@ -164,7 +173,7 @@ describe('workflow bootstrap service', () => {
       vectorgrid_results_tab_v1: 'meta',
     })
 
-    applyWorkflowBootstrapFromStorage()
+    await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('workflow')
     expect(store.workflowStep).toBe('finalize')
@@ -190,7 +199,7 @@ describe('workflow bootstrap service', () => {
     })
   })
 
-  it('restores persisted shell split fraction when present', () => {
+  it('restores persisted shell split fraction when present', async () => {
     installStorage({
       vta_workspace_tab_v1: 'workflow',
       vta_workflow_step_v1: 'analyze',
@@ -207,14 +216,38 @@ describe('workflow bootstrap service', () => {
       splitFraction: '0.52',
     })
 
-    applyWorkflowBootstrapFromStorage()
+    await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.splitFraction).toBe(0.52)
   })
 
-  it('hydrates startup data even when there is no saved workflow bootstrap state', () => {
-    applyWorkflowBootstrapFromStorage()
+  it('hydrates startup data even when there is no saved workflow bootstrap state', async () => {
+    await applyWorkflowBootstrapFromStorage()
 
     expect(hydrateStartupStateSpy).toHaveBeenCalled()
+  })
+
+  it('returns the startup hydration promise so boot can await critical readiness', async () => {
+    const deferred = createDeferred<void>()
+    hydrateStartupStateSpy.mockReturnValueOnce(deferred.promise)
+
+    let settled = false
+    const bootstrapPromise = applyWorkflowBootstrapFromStorage({ includeDeferredData: false }).then(() => {
+      settled = true
+    })
+
+    expect(hydrateStartupStateSpy).toHaveBeenCalledWith({ includeDeferred: false })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    deferred.resolve()
+    await bootstrapPromise
+    expect(settled).toBe(true)
+  })
+
+  it('propagates startup hydration failures so boot can surface them', async () => {
+    hydrateStartupStateSpy.mockReturnValueOnce(Promise.reject(new Error('hydrate failed')))
+
+    await expect(applyWorkflowBootstrapFromStorage({ includeDeferredData: false })).rejects.toThrow('hydrate failed')
   })
 })

@@ -29,6 +29,10 @@ export interface WorkflowBootstrapState {
   splitFraction: string
 }
 
+export interface WorkflowBootstrapOptions {
+  includeDeferredData?: boolean
+}
+
 function normalize(value: unknown): string {
   return String(value ?? '').trim()
 }
@@ -54,14 +58,17 @@ export function readWorkflowBootstrapState(): WorkflowBootstrapState {
   }
 }
 
-export function applyWorkflowBootstrapFromStorage(): void {
+export function applyWorkflowBootstrapFromStorage(options: WorkflowBootstrapOptions = {}): Promise<void> {
   const state = readWorkflowBootstrapState()
 
   const pinia = resolveRuntimePinia()
-  if (!pinia) return
-  void useDataStore(pinia).hydrateStartupState()
+  if (!pinia) return Promise.resolve()
+  const includeDeferredData = options.includeDeferredData !== false
+  const startupDataPromise = useDataStore(pinia).hydrateStartupState({ includeDeferred: includeDeferredData })
 
-  if (!state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab && !state.splitFraction) return
+  if (!state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab && !state.splitFraction) {
+    return startupDataPromise
+  }
   const store = useWorkflowStore(pinia)
 
   if (state.workspace) {
@@ -99,4 +106,6 @@ export function applyWorkflowBootstrapFromStorage(): void {
   if (state.splitFraction) {
     store.setSplitFraction(Number(state.splitFraction), { persist: false })
   }
+
+  return startupDataPromise
 }

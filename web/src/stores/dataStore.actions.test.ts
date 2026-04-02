@@ -512,6 +512,18 @@ describe('data store actions', () => {
     expect(store.polygonCacheDir).toBe(defaultMarketDataDirInfo.polygonCacheDir)
   })
 
+  it('can hydrate only the critical startup dataset-readiness path', async () => {
+    const store = useDataStore()
+
+    await store.hydrateStartupState({ includeDeferred: false })
+
+    expect(getMarketDataDirInfoMock).toHaveBeenCalled()
+    expect(listSampleCsvsMock).not.toHaveBeenCalled()
+    expect(store.sampleCsvVisible).toBe(false)
+    expect(store.sampleCsvOptions).toEqual([])
+    expect(store.polygonCacheDir).toBe(defaultMarketDataDirInfo.polygonCacheDir)
+  })
+
   it('restores the startup dataset snapshot without eagerly scanning Polygon cache', async () => {
     const store = useDataStore()
     writeStorageJson(DATA_STARTUP_SNAPSHOT_KEY, {
@@ -532,6 +544,96 @@ describe('data store actions', () => {
     expect(store.baseDataId).toBe('data-1')
     expect(store.dataId).toBe('data-1@15m')
     expect(store.dataTimeframe).toBe('15m')
+  })
+
+  it('does not eagerly scan Polygon cache when stale polygon-open state is restored during startup hydration', async () => {
+    const store = useDataStore()
+    store.applyLegacySnapshot({
+      polygonOpen: true,
+      autoRestoreDataset: true,
+    })
+    writeStorageJson(DATA_STARTUP_SNAPSHOT_KEY, {
+      autoRestoreDataset: true,
+      baseCsvPath: 'C:/tmp/aapl.csv',
+      selectedTimeframe: '',
+      source: 'csv',
+      baseSourceSizeBytes: 123,
+      baseSourceMtimeUtcMs: 456,
+      savedAtUnixMs: Date.now(),
+    })
+
+    await store.hydrateStartupState({ includeDeferred: false })
+
+    expect(loadCsvMock).toHaveBeenCalledWith('C:/tmp/aapl.csv')
+    expect(getPolygonCacheInfoMock).not.toHaveBeenCalled()
+    expect(store.polygonOpen).toBe(true)
+  })
+
+  it('rewrites Polygon startup snapshot paths when moving the cache root with moveExisting=true', async () => {
+    const store = useDataStore()
+    const oldPolygonPath = 'C:/default/polygon-cache/AAPL_1m.csv'
+    const nextPolygonPath = 'C:/custom/polygon-cache/AAPL_1m.csv'
+    setMarketDataDirMock.mockResolvedValueOnce({
+      defaultRootDir: 'C:/default',
+      configuredRootDir: 'C:/custom',
+      effectiveRootDir: 'C:/custom',
+      polygonCacheDir: 'C:/custom/polygon-cache',
+      hint: 'Using custom root: C:/custom · Polygon cache: C:/custom/polygon-cache',
+    })
+
+    store.applyLoadResult(
+      {
+        ...defaultLoadResult,
+        path: oldPolygonPath,
+        dataId: 'poly-1-base',
+      },
+      { treatAsBase: true, source: 'polygon' },
+    )
+    store.polygonCacheDir = 'C:/default/polygon-cache'
+    store.polygonSelectedPath = oldPolygonPath
+    store.recentCsvPaths = [oldPolygonPath, 'C:/tmp/manual.csv']
+
+    store.setMarketDataDir('C:/custom', true)
+    await flushAsync()
+
+    expect(setMarketDataDirMock).toHaveBeenCalledWith('C:/custom', true)
+    expect(store.baseCsvPath).toBe(nextPolygonPath)
+    expect(store.csvPath).toBe(nextPolygonPath)
+    expect(store.polygonSelectedPath).toBe(nextPolygonPath)
+    expect(store.recentCsvPaths).toContain(nextPolygonPath)
+    expect(store.recentCsvPaths).toContain('C:/tmp/manual.csv')
+    expect(readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)?.baseCsvPath).toBe(nextPolygonPath)
+  })
+
+  it('keeps Polygon startup snapshot paths unchanged when moveExisting=false', async () => {
+    const store = useDataStore()
+    const oldPolygonPath = 'C:/default/polygon-cache/AAPL_1m.csv'
+    setMarketDataDirMock.mockResolvedValueOnce({
+      defaultRootDir: 'C:/default',
+      configuredRootDir: 'C:/custom',
+      effectiveRootDir: 'C:/custom',
+      polygonCacheDir: 'C:/custom/polygon-cache',
+      hint: 'Using custom root: C:/custom · Polygon cache: C:/custom/polygon-cache',
+    })
+
+    store.applyLoadResult(
+      {
+        ...defaultLoadResult,
+        path: oldPolygonPath,
+        dataId: 'poly-1-base',
+      },
+      { treatAsBase: true, source: 'polygon' },
+    )
+    store.polygonCacheDir = 'C:/default/polygon-cache'
+    store.polygonSelectedPath = oldPolygonPath
+
+    store.setMarketDataDir('C:/custom', false)
+    await flushAsync()
+
+    expect(store.baseCsvPath).toBe(oldPolygonPath)
+    expect(store.csvPath).toBe(oldPolygonPath)
+    expect(store.polygonSelectedPath).toBe('')
+    expect(readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)?.baseCsvPath).toBe(oldPolygonPath)
   })
 
   it('clears data state while still calling data service clear hook', async () => {

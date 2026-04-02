@@ -98,6 +98,7 @@ interface DataState {
   baseDatasetLabel: string
   baseDatasetContext: string
   startupHydratedOnce: boolean
+  startupDeferredHydratedOnce: boolean
   polygonCacheLoadedOnce: boolean
   source: 'vue' | 'unknown'
   updatedAtUnixMs: number
@@ -118,6 +119,7 @@ const POLYGON_CACHE_UNAVAILABLE_TEXT = 'Polygon cache unavailable.'
 const STARTUP_RESTORE_PENDING_STATUS = 'Startup restore pending.'
 
 let startupHydratePromise: Promise<void> | null = null
+let startupDeferredHydratePromise: Promise<void> | null = null
 let polygonCacheLoadPromise: Promise<void> | null = null
 
 function fileBasename(path: string): string {
@@ -302,6 +304,43 @@ function normalizeDatasetDateInput(value: string): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(next) ? next : ''
 }
 
+function normalizePath(value: unknown): string {
+  return String(value || '').trim().replace(/\\/g, '/')
+}
+
+function normalizePathKey(value: unknown): string {
+  return normalizePath(value).toLowerCase()
+}
+
+function normalizeRootPath(value: unknown): string {
+  return normalizePath(value).replace(/\/+$/, '')
+}
+
+function pathIsWithinRoot(path: unknown, root: unknown): boolean {
+  const normalizedPath = normalizePathKey(path)
+  const normalizedRoot = normalizeRootPath(root).toLowerCase()
+  if (!normalizedPath || !normalizedRoot) return false
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`)
+}
+
+function rewritePathForMovedRoot(path: unknown, fromRoot: unknown, toRoot: unknown): string {
+  const currentPath = normalizePath(path)
+  const currentRoot = normalizeRootPath(fromRoot)
+  const nextRoot = normalizeRootPath(toRoot)
+  if (!currentPath || !currentRoot || !nextRoot) return currentPath
+  if (!pathIsWithinRoot(currentPath, currentRoot)) return currentPath
+  const relative = currentPath.slice(currentRoot.length).replace(/^\/+/, '')
+  return relative ? `${nextRoot}/${relative}` : nextRoot
+}
+
+function rewriteRecentPathsForMovedRoot(paths: string[], fromRoot: string, toRoot: string): string[] {
+  const rewritten = paths.map((path) => rewritePathForMovedRoot(path, fromRoot, toRoot))
+  return rewritten.filter((path, index, rows) => {
+    const normalized = normalizePathKey(path)
+    return !!normalized && rows.findIndex((entry) => normalizePathKey(entry) === normalized) === index
+  }).slice(0, 8)
+}
+
 function polygonIntegrityText(dataset: PolygonDatasetSummary): string {
   const integrity = dataset.integrity
   if (!integrity) return 'Integrity: unchecked'
@@ -399,13 +438,13 @@ function applyPolygonCacheInfo(state: DataState, info: PolygonCacheInfoSummary, 
   selectPolygonDatasetPath(state, preferredPath)
 }
 
-function resetPolygonCacheRuntimeState(state: DataState, nextCacheDir = ''): void {
+function resetPolygonCacheRuntimeState(state: DataState, nextCacheDir = '', preferredSelectedPath = ''): void {
   polygonCacheLoadPromise = null
   state.polygonCacheLoadedOnce = false
   state.polygonCacheDir = String(nextCacheDir || '').trim()
   state.polygonHasApiKey = false
   state.polygonDatasets = []
-  state.polygonSelectedPath = ''
+  state.polygonSelectedPath = String(preferredSelectedPath || '').trim()
   state.polygonSelectedMeta = POLYGON_SELECTED_PROMPT
   state.polygonCacheMeta = state.polygonCacheDir ? 'Polygon cache metadata not loaded.' : POLYGON_CACHE_UNAVAILABLE_TEXT
 }
@@ -470,6 +509,55 @@ function applyMarketDataDirInfo(state: DataState, info: MarketDataDirInfoSummary
   state.marketDataDir = nextRootDir
   state.marketDataDirHint = nextHint
   return previousCacheDir !== nextCacheDir
+}
+
+async function ensureStartupAffordancesLoaded(state: DataState): Promise<void> {
+  if (state.startupDeferredHydratedOnce) return
+  if (startupDeferredHydratePromise) return startupDeferredHydratePromise
+  startupDeferredHydratePromise = (async () => {
+    const samples = await listSampleCsvsAction().catch(() => [])
+    state.sampleCsvOptions = Array.isArray(samples) ? samples : []
+    state.sampleCsvVisible = state.sampleCsvOptions.length > 0
+    state.startupDeferredHydratedOnce = true
+    markVueUpdate(state)
+  })().finally(() => {
+    startupDeferredHydratePromise = null
+  })
+  return startupDeferredHydratePromise
+}
+
+function rewriteMovedPolygonStartupState(
+  state: DataState,
+  previousCacheDir: string,
+  nextCacheDir: string,
+): string {
+  const priorBaseCsvPath = String(state.baseCsvPath || '').trim()
+  const priorCsvPath = String(state.csvPath || '').trim()
+  const priorSelectedPath = String(state.polygonSelectedPath || '').trim()
+  if (
+    state.baseSourceKind !== 'polygon'
+    || !previousCacheDir
+    || !nextCacheDir
+    || normalizePathKey(previousCacheDir) === normalizePathKey(nextCacheDir)
+    || !pathIsWithinRoot(priorBaseCsvPath, previousCacheDir)
+  ) {
+    return ''
+  }
+
+  const nextBaseCsvPath = rewritePathForMovedRoot(priorBaseCsvPath, previousCacheDir, nextCacheDir)
+  const nextCsvPath = rewritePathForMovedRoot(priorCsvPath, previousCacheDir, nextCacheDir)
+  const nextSelectedPath = rewritePathForMovedRoot(priorSelectedPath, previousCacheDir, nextCacheDir)
+
+  state.baseCsvPath = nextBaseCsvPath
+  if (pathIsWithinRoot(priorCsvPath, previousCacheDir)) {
+    state.csvPath = nextCsvPath
+  }
+  if (pathIsWithinRoot(priorSelectedPath, previousCacheDir)) {
+    state.polygonSelectedPath = nextSelectedPath
+  }
+  state.recentCsvPaths = rewriteRecentPathsForMovedRoot(state.recentCsvPaths, previousCacheDir, nextCacheDir)
+  persistStartupSnapshot(state)
+  return state.polygonSelectedPath
 }
 
 async function ensurePolygonCacheLoaded(state: DataState, force = false, preferredPath = ''): Promise<void> {
@@ -616,93 +704,83 @@ export const useDataStore = defineStore('data', {
     baseDatasetLabel: '',
     baseDatasetContext: '',
     startupHydratedOnce: false,
+    startupDeferredHydratedOnce: false,
     polygonCacheLoadedOnce: false,
     source: 'unknown',
     updatedAtUnixMs: 0,
   }),
 
   actions: {
-    hydrateStartupState(): Promise<void> {
-      if (this.startupHydratedOnce) {
-        if (this.polygonOpen) {
-          return ensurePolygonCacheLoaded(this).catch(() => undefined)
-        }
-        return Promise.resolve()
-      }
-      if (startupHydratePromise) return startupHydratePromise
-      startupHydratePromise = (async () => {
-        const startup = readStartupSnapshot()
-        const restorePath = String(startup?.baseCsvPath || '').trim()
-        const restoreSource = normalizeDataSourceKind(startup?.source)
-        const restoreTimeframe = String(startup?.selectedTimeframe || '').trim()
-        this.autoRestoreDataset = startup?.autoRestoreDataset ?? this.autoRestoreDataset
-        if (this.autoRestoreDataset && restorePath) {
-          this.statusLine = STARTUP_RESTORE_PENDING_STATUS
-          markVueUpdate(this)
-        }
-
-        const [marketInfo, samples] = await Promise.all([
-          getMarketDataDirInfoAction().catch(() => null),
-          listSampleCsvsAction().catch(() => []),
-        ])
-
-        if (marketInfo) {
-          const nextCacheDir = String(marketInfo.polygonCacheDir || '').trim()
-          const cacheDirChanged = applyMarketDataDirInfo(this, marketInfo)
-          if (cacheDirChanged) resetPolygonCacheRuntimeState(this, nextCacheDir)
-          else this.polygonCacheDir = nextCacheDir
-        }
-
-        this.sampleCsvOptions = Array.isArray(samples) ? samples : []
-        this.sampleCsvVisible = this.sampleCsvOptions.length > 0
-
-        if (this.autoRestoreDataset && restorePath) {
-          const restoreLabel = fileBasename(restorePath) || restorePath
-          this.statusLine = `Restoring ${restoreLabel}...`
-          markVueUpdate(this)
-          try {
-            const base = await loadCsvAction(restorePath)
-            this.applyLoadResult(base, {
-              treatAsBase: true,
-              statusLine: baseLoadStatusText(base, restoreSource),
-              source: restoreSource,
-            })
-            const baseTf = String(base.meta?.timeframe || '').trim()
-            if (restoreTimeframe && restoreTimeframe !== baseTf) {
-              const derived = await applyTimeframeAction(restoreTimeframe, base.dataId)
-              this.applyLoadResult(derived, {
-                treatAsBase: false,
-                statusLine: derivedLoadStatusText(derived),
-                source: restoreSource,
-              })
-            } else {
-              this.statusLine = `Restored ${restoreLabel}.`
-              markVueUpdate(this)
-            }
-          } catch (error: unknown) {
-            applyEmptyDatasetState(
-              this,
-              `Startup restore failed: ${String(error || '').trim() || 'restore failed.'}`,
-            )
+    hydrateStartupState(options?: { includeDeferred?: boolean }): Promise<void> {
+      const includeDeferred = options?.includeDeferred !== false
+      const hydrateCore = (): Promise<void> => {
+        if (this.startupHydratedOnce) return Promise.resolve()
+        if (startupHydratePromise) return startupHydratePromise
+        startupHydratePromise = (async () => {
+          const startup = readStartupSnapshot()
+          const restorePath = String(startup?.baseCsvPath || '').trim()
+          const restoreSource = normalizeDataSourceKind(startup?.source)
+          const restoreTimeframe = String(startup?.selectedTimeframe || '').trim()
+          this.autoRestoreDataset = startup?.autoRestoreDataset ?? this.autoRestoreDataset
+          if (this.autoRestoreDataset && restorePath) {
+            this.statusLine = STARTUP_RESTORE_PENDING_STATUS
             markVueUpdate(this)
           }
-        }
 
-        if (this.polygonOpen) {
-          await ensurePolygonCacheLoaded(this).catch((error: unknown) => {
-            this.statusLine = String(error || '').trim() || 'Failed to refresh Polygon cache.'
+          const marketInfo = await getMarketDataDirInfoAction().catch(() => null)
+
+          if (marketInfo) {
+            const nextCacheDir = String(marketInfo.polygonCacheDir || '').trim()
+            const cacheDirChanged = applyMarketDataDirInfo(this, marketInfo)
+            if (cacheDirChanged) resetPolygonCacheRuntimeState(this, nextCacheDir)
+            else this.polygonCacheDir = nextCacheDir
+          }
+
+          if (this.autoRestoreDataset && restorePath) {
+            const restoreLabel = fileBasename(restorePath) || restorePath
+            this.statusLine = `Restoring ${restoreLabel}...`
             markVueUpdate(this)
-          })
-        }
+            try {
+              const base = await loadCsvAction(restorePath)
+              this.applyLoadResult(base, {
+                treatAsBase: true,
+                statusLine: baseLoadStatusText(base, restoreSource),
+                source: restoreSource,
+              })
+              const baseTf = String(base.meta?.timeframe || '').trim()
+              if (restoreTimeframe && restoreTimeframe !== baseTf) {
+                const derived = await applyTimeframeAction(restoreTimeframe, base.dataId)
+                this.applyLoadResult(derived, {
+                  treatAsBase: false,
+                  statusLine: derivedLoadStatusText(derived),
+                  source: restoreSource,
+                })
+              } else {
+                this.statusLine = `Restored ${restoreLabel}.`
+                markVueUpdate(this)
+              }
+            } catch (error: unknown) {
+              applyEmptyDatasetState(
+                this,
+                `Startup restore failed: ${String(error || '').trim() || 'restore failed.'}`,
+              )
+              markVueUpdate(this)
+            }
+          }
 
-        this.startupHydratedOnce = true
-        persistStartupSnapshot(this)
-        setControlsBusy(this, false)
-        markVueUpdate(this)
-      })().finally(() => {
-        startupHydratePromise = null
-      })
-      return startupHydratePromise
+          this.startupHydratedOnce = true
+          persistStartupSnapshot(this)
+          setControlsBusy(this, false)
+          markVueUpdate(this)
+        })().finally(() => {
+          startupHydratePromise = null
+        })
+        return startupHydratePromise
+      }
+
+      const critical = hydrateCore()
+      if (!includeDeferred) return critical
+      return critical.then(() => ensureStartupAffordancesLoaded(this))
     },
 
     applyLegacySnapshot(snapshot: Partial<DataState>): void {
@@ -733,7 +811,10 @@ export const useDataStore = defineStore('data', {
       this.polygonAdjusted = Boolean(snapshot.polygonAdjusted ?? this.polygonAdjusted)
       resetPolygonCacheRuntimeState(this)
       setControlsBusy(this, false)
+      startupHydratePromise = null
+      startupDeferredHydratePromise = null
       this.startupHydratedOnce = false
+      this.startupDeferredHydratedOnce = false
       this.polygonCacheLoadedOnce = false
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
@@ -1207,10 +1288,15 @@ export const useDataStore = defineStore('data', {
 
       void setMarketDataDirAction(nextDir, nextMoveExisting)
         .then((info) => {
+          const previousCacheDir = String(this.polygonCacheDir || '').trim()
           const nextCacheDir = String(info.polygonCacheDir || '').trim()
           const cacheDirChanged = applyMarketDataDirInfo(this, info)
+          let preferredSelectedPath = ''
           if (cacheDirChanged) {
-            resetPolygonCacheRuntimeState(this, nextCacheDir)
+            if (nextMoveExisting) {
+              preferredSelectedPath = rewriteMovedPolygonStartupState(this, previousCacheDir, nextCacheDir)
+            }
+            resetPolygonCacheRuntimeState(this, nextCacheDir, preferredSelectedPath)
             if (this.polygonOpen) {
               void ensurePolygonCacheLoaded(this).catch(() => undefined)
             }
