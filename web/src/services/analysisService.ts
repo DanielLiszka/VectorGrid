@@ -200,16 +200,63 @@ interface DrillTvRenderPayload {
   trades: number;
 }
 
+interface CacheLoadResult<T> {
+  value: T;
+  cacheHit: boolean;
+  sharedInFlight: boolean;
+}
+
+interface DrillRenderState {
+  runIdentity: string;
+  rowId: string;
+  row: TopRowModel;
+  params: Record<string, unknown>;
+  metrics: Record<string, unknown>;
+  curves: unknown;
+  bars: DrillPriceBar[] | null;
+  stabilityResult: unknown | null;
+  drillMeta: string;
+  drillStatus: string;
+  stabilityMeta: string;
+  stabilityStatus: string;
+}
+
+interface HeatmapMarker {
+  col: number;
+  drawRow: number;
+  label: string;
+}
+
+interface HeatmapRenderState {
+  signature: string;
+  meta: string;
+  statusLine: string;
+  model: HeatmapModel;
+  req: Record<string, unknown>;
+  markers: HeatmapMarker[];
+  range: { min: number; max: number; label: string };
+  palette: { negative: string; zero: string; positive: string };
+}
+
+const DRILL_CURVES_CACHE_MAX = 96;
+const STABILITY_CACHE_MAX = 96;
+const BASELINE_ARTIFACT_CACHE_MAX = 24;
+const DRILL_PRICE_BARS_CACHE_MAX = 24;
+
 let compareSeq = 0;
 let drillSeq = 0;
 let drillSelectedTradeIdx = -1;
 let drillTradesRangeStart = 0;
 let topRowsModelCache: TopRowModel[] = [];
 let topRowsAllModelCache: TopRowModel[] = [];
-const baselineArtifactCache = new Map<string, BaselineRun>();
+const baselineArtifactCache = new Map<string, BaselineRun | null>();
 const drillCurvesCache = new Map<string, unknown>();
 const stabilityCache = new Map<string, unknown>();
 const drillPriceBarsCache = new Map<string, DrillPriceBar[]>();
+const baselineArtifactPending = new Map<string, Promise<BaselineRun | null>>();
+const drillCurvesPending = new Map<string, Promise<unknown>>();
+const stabilityPending = new Map<string, Promise<unknown>>();
+const drillPriceBarsPending = new Map<string, Promise<DrillPriceBar[]>>();
 let drillTvModulePromise: Promise<any> | null = null;
 const drillTvRuntime = useLightweightChart<any>();
 let drillTvCandleSeries: any = null;
@@ -220,6 +267,9 @@ let drillTvMaczSeries: any = null;
 let drillTvRenderFrame = 0;
 let drillTvPendingPayload: DrillTvRenderPayload | null = null;
 let heatmapHoverCell: { col: number; row: number } | null = null;
+let drillRenderState: DrillRenderState | null = null;
+let heatmapRenderState: HeatmapRenderState | null = null;
+let lastAnalysisRunIdentity = "";
 
 function text(v: unknown): string {
   return String(v ?? "").trim();
@@ -973,9 +1023,14 @@ function readWorkflowRun(): WorkflowRunState | null {
     const run = wf.currentRun;
     if (run && typeof run === "object") return run as WorkflowRunState;
   }
-  const snapshot = readLatestWorkflowRunSnapshot();
+  const snapshot = readLatestWorkflowRunSnapshot() as Record<string, unknown> | null;
   if (!snapshot) return null;
-  return { req: snapshot.req ?? null, res: snapshot.res ?? null };
+  return {
+    ts: snapshot.ts ?? null,
+    artifactPath: snapshot.artifactPath ?? null,
+    req: snapshot.req ?? null,
+    res: snapshot.res ?? null,
+  };
 }
 
 function hasValidationResult(): boolean {
@@ -1630,11 +1685,11 @@ function topColumnsFor(
   return columns;
 }
 
-function cacheSet(
-  cache: Map<string, unknown>,
+function cacheSet<T>(
+  cache: Map<string, T>,
   key: string,
-  value: unknown,
-  max = 96,
+  value: T,
+  max = DRILL_CURVES_CACHE_MAX,
 ): void {
   if (!key) return;
   if (cache.has(key)) cache.delete(key);
@@ -1646,26 +1701,66 @@ function cacheSet(
   }
 }
 
+async function cacheGetOrLoad<T>(
+  cache: Map<string, T>,
+  pending: Map<string, Promise<T>>,
+  key: string,
+  load: () => Promise<T>,
+  max: number,
+): Promise<CacheLoadResult<T>> {
+  if (cache.has(key)) {
+    return {
+      value: cache.get(key) as T,
+      cacheHit: true,
+      sharedInFlight: false,
+    };
+  }
+
+  const inflight = pending.get(key);
+  if (inflight) {
+    return {
+      value: await inflight,
+      cacheHit: false,
+      sharedInFlight: true,
+    };
+  }
+
+  const started = (async () => {
+    const value = await load();
+    cacheSet(cache, key, value, max);
+    return value;
+  })();
+  pending.set(key, started);
+  try {
+    return {
+      value: await started,
+      cacheHit: false,
+      sharedInFlight: false,
+    };
+  } finally {
+    if (pending.get(key) === started) pending.delete(key);
+  }
+}
+
 function buildTopRowModelsForCurrentFilters(
   store: AnalysisStoreState,
   req: Record<string, unknown>,
   res: Record<string, unknown>,
+  sortedRows?: TopRowModel[],
 ): TopRowModel[] {
-  const objective = objectiveOf(req);
-  const scoreMode = scoreModeOf(req);
-  const scoreContext = scoreObservationContextOf(res);
   const sort = readSortState(store);
-  const collected = collectTopRows(res, {
-    allowBestFallback: requestedTopK(req) !== 0,
-  });
-  const sorted = sortRows(
-    collected,
-    sort.key,
-    sort.dir,
-    objective,
-    scoreMode,
-    scoreContext,
-  );
+  const sorted =
+    sortedRows ??
+    sortRows(
+      collectTopRows(res, {
+        allowBestFallback: requestedTopK(req) !== 0,
+      }),
+      sort.key,
+      sort.dir,
+      objectiveOf(req),
+      scoreModeOf(req),
+      scoreObservationContextOf(res),
+    );
   const filters = readFilters(store);
   return applyTopFilters(sorted, filters);
 }
@@ -1891,9 +1986,15 @@ function buildLocalStabilityInvocation(
   invocation: DrillInvocation,
 ): StabilityInvocation | null {
   const runReq = invocation.runReq;
-  const objective = text(runReq.objective) || "Sharpe";
+  const objective = objectiveOf(runReq);
+  const scoreMode = scoreModeOf(runReq);
   const base: Record<string, unknown> = {
-    ...invocation.request,
+    data_id: invocation.request.data_id,
+    params: invocation.request.params,
+    ma_source: invocation.request.ma_source,
+    fast_ma_params: invocation.request.fast_ma_params,
+    slow_ma_params: invocation.request.slow_ma_params,
+    strategy: invocation.request.strategy,
     objective,
     radius: 1,
     step: 1,
@@ -1901,7 +2002,13 @@ function buildLocalStabilityInvocation(
   if (invocation.command === "compute_double_ma_drilldown") {
     return {
       command: "compute_double_ma_local_stability",
-      request: base,
+      request: {
+        ...base,
+        backend_hint: invocation.request.backend_hint,
+        followup_cache_key: invocation.request.followup_cache_key,
+        ...(scoreMode ? { score_mode: scoreMode } : {}),
+        halftrend_filter: invocation.request.halftrend_filter ?? null,
+      },
     };
   }
 
@@ -1914,6 +2021,7 @@ function buildLocalStabilityInvocation(
       command: "compute_composite_cpu_local_stability",
       request: {
         ...base,
+        backend: invocation.request.backend_hint || { backend: "CpuOnly" },
         halftrend: params.halftrend,
         macz: params.macz || {},
         ott: params.ott || {},
@@ -1932,6 +2040,7 @@ function buildLocalStabilityInvocation(
     command: "compute_composite_cpu_local_stability",
     request: {
       ...base,
+      backend: invocation.request.backend_hint || { backend: "CpuOnly" },
       halftrend: runReq.halftrend,
       macz: runReq.macz || {},
       ott: runReq.ott || {},
@@ -1939,6 +2048,91 @@ function buildLocalStabilityInvocation(
       vemr: runReq.vemr || null,
       signal_mode: runReq.signal_mode || runReq.signalMode || "hard_gate",
     },
+  };
+}
+
+function buildDrillMeta(
+  params: Record<string, unknown>,
+  metrics: Record<string, unknown>,
+  row: TopRowModel,
+  curves: unknown,
+): string {
+  const curvesRow = asRecord(curves);
+  const eq = asRecord(curvesRow.equity);
+  const metricPart = formatDrillMetricsSummary(metrics);
+  const moPart = formatDrillMoSummary(row.mo);
+  const parts = [
+    `${text(params.fast_ma_type) || "?"}(${num(params.fast_len, 0) || "?"}) vs ${text(params.slow_ma_type) || "?"}(${num(params.slow_len, 0) || "?"})`,
+  ];
+  if (metricPart) parts.push(metricPart);
+  if (moPart) parts.push(moPart);
+  parts.push(
+    `bins=${num(eq.bins, 0)} start_t=${num(eq.start_t, 0)} end_t=${num(eq.end_t, 0)}`,
+  );
+  return parts.join(" | ");
+}
+
+function buildStabilityMeta(stabilityResult: unknown): string {
+  const sr = asRecord(stabilityResult);
+  const summary = asRecord(sr.summary);
+  return `objective=${text(sr.objective) || "?"} radius=${num(sr.radius, 0)} step=${num(sr.step, 0)} points=${Array.isArray(sr.points) ? sr.points.length : 0} | score: base=${fmt(summary.base, 6)} median=${fmt(summary.median, 6)} min=${fmt(summary.min, 6)} max=${fmt(summary.max, 6)}`;
+}
+
+function applyDrillCompletionState(
+  store: AnalysisStoreState | null,
+  drillMeta: string,
+  drillStatus: string,
+): void {
+  if (!store) return;
+  store.drillStatus = drillStatus;
+  store.drillMeta = drillMeta;
+  store.topSelectionGuardrail = "—";
+  markAnalysisVue(store);
+}
+
+function applyStabilityCompletionState(
+  store: AnalysisStoreState | null,
+  stabilityResult: unknown | null,
+  stabilityMeta: string,
+  stabilityStatus: string,
+): void {
+  if (!store || !stabilityResult) return;
+  renderStabilityDom(stabilityResult, store);
+  store.stabilityMeta = stabilityMeta;
+  store.stabilityStatus = stabilityStatus;
+  markAnalysisVue(store);
+}
+
+function captureDrillRenderState(
+  run: WorkflowRunState | null,
+  row: TopRowModel,
+  params: Record<string, unknown>,
+  metrics: Record<string, unknown>,
+  curves: unknown,
+  bars: DrillPriceBar[] | null,
+  stabilityResult: unknown | null,
+  cachedDrill: boolean,
+  cachedStability: boolean,
+): void {
+  const drillStatus = cachedDrill ? "Done (cached)." : "Done.";
+  const stabilityStatus = stabilityResult
+    ? cachedStability
+      ? "Done (cached)."
+      : "Done."
+    : "-";
+  drillRenderState = {
+    runIdentity: workflowRunIdentity(run),
+    rowId: topRowIdFor(row),
+    row,
+    params,
+    metrics,
+    curves,
+    bars,
+    stabilityResult,
+    drillMeta: buildDrillMeta(params, metrics, row, curves),
+    drillStatus,
+    stabilityMeta: stabilityResult ? buildStabilityMeta(stabilityResult) : "-",
+    stabilityStatus,
   };
 }
 
@@ -1964,11 +2158,15 @@ async function runVueDrillPipeline(
   setStatus(store, "Computing drilldown…");
   try {
     const drillKey = requestCacheKey(invocation.command, invocation.request);
-    const cachedDrill = drillCurvesCache.get(drillKey);
-    const curves =
-      cachedDrill ??
-      (await invokeCommand(invocation.command, { req: invocation.request }));
-    if (!cachedDrill) cacheSet(drillCurvesCache, drillKey, curves, 96);
+    const drillLoad = await cacheGetOrLoad(
+      drillCurvesCache,
+      drillCurvesPending,
+      drillKey,
+      async () => await invokeCommand(invocation.command, { req: invocation.request }),
+      DRILL_CURVES_CACHE_MAX,
+    );
+    const curves = drillLoad.value;
+    const cachedDrill = drillLoad.cacheHit || drillLoad.sharedInFlight;
     if (seq !== drillSeq) return true;
 
     let bars: DrillPriceBar[] | null = null;
@@ -1980,13 +2178,17 @@ async function runVueDrillPipeline(
         bars = null;
       }
     }
+    if (seq !== drillSeq) return true;
     const rendered = renderDrillDomFallback(curves, params, metrics, row, bars);
     if (rendered) {
       void renderDrillTvChartDom(curves, bars, seq).catch(() => {});
     }
+    if (seq !== drillSeq) return true;
 
+    let drillMeta = "-";
+    const drillStatus = cachedDrill ? "Done (cached)." : "Done.";
     if (store) {
-      store.drillStatus = cachedDrill ? "Done (cached)." : "Done.";
+      store.drillStatus = drillStatus;
       const curvesRow = asRecord(curves);
       const eq = asRecord(curvesRow.equity);
       const metricPart = formatDrillMetricsSummary(metrics);
@@ -1999,7 +2201,8 @@ async function runVueDrillPipeline(
       parts.push(
         `bins=${num(eq.bins, 0)} start_t=${num(eq.start_t, 0)} end_t=${num(eq.end_t, 0)}`,
       );
-      store.drillMeta = parts.join(" | ");
+      drillMeta = parts.join(" | ");
+      store.drillMeta = drillMeta;
       store.topSelectionGuardrail = "—";
       markAnalysisVue(store);
     }
@@ -2009,30 +2212,62 @@ async function runVueDrillPipeline(
     );
 
     const stability = buildLocalStabilityInvocation(params, invocation);
-    if (!stability) return true;
+    if (!stability) {
+      captureDrillRenderState(
+        run,
+        row,
+        params,
+        metrics,
+        curves,
+        bars,
+        null,
+        cachedDrill,
+        false,
+      );
+      return true;
+    }
     const stabilityKey = requestCacheKey(stability.command, stability.request);
-    const cachedStability = stabilityCache.get(stabilityKey);
     if (store) {
       store.stabilityStatus = "Computing stability…";
       markAnalysisVue(store);
     }
-    const stabilityRes =
-      cachedStability ??
-      (await invokeCommand(stability.command, { req: stability.request }));
-    if (!cachedStability)
-      cacheSet(stabilityCache, stabilityKey, stabilityRes, 96);
+    const stabilityLoad = await cacheGetOrLoad(
+      stabilityCache,
+      stabilityPending,
+      stabilityKey,
+      async () => await invokeCommand(stability.command, { req: stability.request }),
+      STABILITY_CACHE_MAX,
+    );
+    const stabilityRes = stabilityLoad.value;
+    const cachedStability =
+      stabilityLoad.cacheHit || stabilityLoad.sharedInFlight;
     if (seq !== drillSeq) return true;
     renderStabilityDom(stabilityRes, store);
+    let stabilityMeta = "-";
+    const stabilityStatus = cachedStability ? "Done (cached)." : "Done.";
     if (store) {
       const sr = asRecord(stabilityRes);
       const summary = asRecord(sr.summary);
-      store.stabilityMeta = `objective=${text(sr.objective) || "?"} radius=${num(sr.radius, 0)} step=${num(sr.step, 0)} points=${Array.isArray(sr.points) ? sr.points.length : 0} | score: base=${fmt(summary.base, 6)} median=${fmt(summary.median, 6)} min=${fmt(summary.min, 6)} max=${fmt(summary.max, 6)}`;
-      store.stabilityStatus = cachedStability ? "Done (cached)." : "Done.";
+      stabilityMeta = `objective=${text(sr.objective) || "?"} radius=${num(sr.radius, 0)} step=${num(sr.step, 0)} points=${Array.isArray(sr.points) ? sr.points.length : 0} | score: base=${fmt(summary.base, 6)} median=${fmt(summary.median, 6)} min=${fmt(summary.min, 6)} max=${fmt(summary.max, 6)}`;
+      store.stabilityMeta = stabilityMeta;
+      store.stabilityStatus = stabilityStatus;
       markAnalysisVue(store);
     }
+    captureDrillRenderState(
+      run,
+      row,
+      params,
+      metrics,
+      curves,
+      bars,
+      stabilityRes,
+      cachedDrill,
+      cachedStability,
+    );
     return true;
   } catch (error) {
     if (seq !== drillSeq) return true;
+    drillRenderState = null;
     const message = `Drilldown failed: ${String(error)}`;
     if (store) {
       store.drillStatus = message;
@@ -2051,16 +2286,22 @@ export function refreshTopTableFromWorkflowRun(): boolean {
   const res = asRecord(run.res);
   if (!Object.keys(res).length) return false;
 
-  refreshOverviewFromWorkflowRunStore(store, req, res);
-
   const objective = objectiveOf(req);
   const scoreMode = scoreModeOf(req);
+  const scoreContext = scoreObservationContextOf(res);
   const sort = readSortState(store);
   const topK = requestedTopK(req);
   const collected = collectTopRows(res, { allowBestFallback: topK !== 0 });
-  const sorted = sortRows(collected, sort.key, sort.dir, objective, scoreMode);
+  const sorted = sortRows(
+    collected,
+    sort.key,
+    sort.dir,
+    objective,
+    scoreMode,
+    scoreContext,
+  );
+  const filtered = buildTopRowModelsForCurrentFilters(store, req, res, sorted);
   const filters = readFilters(store);
-  const filtered = buildTopRowModelsForCurrentFilters(store, req, res);
   topRowsModelCache = filtered;
   topRowsAllModelCache = sorted;
   const selectedOldRows = readTopRows(store);
@@ -2170,12 +2411,12 @@ export function refreshTopTableFromWorkflowRun(): boolean {
         if (!mo)
           cells.push({
             text: fmtDisplay(
-              scoreOf(m, objective, scoreMode, p, scoreObservationContextOf(res)),
+              scoreOf(m, objective, scoreMode, p, scoreContext),
               4,
             ),
             className: "mono",
             title: fmt(
-              scoreOf(m, objective, scoreMode, p, scoreObservationContextOf(res)),
+              scoreOf(m, objective, scoreMode, p, scoreContext),
               6,
             ),
           });
@@ -2257,6 +2498,11 @@ export function refreshAnalysisFromWorkflowRun(): boolean {
   const req = asRecord(run.req);
   const res = asRecord(run.res);
   if (!Object.keys(res).length) return false;
+  const runIdentity = workflowRunIdentity(run);
+  if (runIdentity !== lastAnalysisRunIdentity) {
+    if (lastAnalysisRunIdentity) invalidateAnalysisExecutionCaches();
+    lastAnalysisRunIdentity = runIdentity;
+  }
   if (kindFromReq(req) === "MlSignal") {
     store.bestKicker = "ML signal artifact";
     store.bestTitle = "Score cache / policy validation";
@@ -2943,62 +3189,32 @@ function buildHeatmapCellParams(
   };
 }
 
-function renderHeatmapCanvas(
-  store: AnalysisStoreState,
+function heatmapBaseSignature(
+  run: WorkflowRunState | null,
   req: Record<string, unknown>,
   res: Record<string, unknown>,
-): boolean {
-  const model = readHeatmapModel(res);
-  const wrap = byIds<HTMLElement>(["heatmapWrapVue"]);
-  const hint = byIds<HTMLElement>(["heatmapEmptyHintVue"]);
-  const meta = byIds<HTMLElement>(["heatmapMetaVue"]);
-  const canvas = byIds<HTMLCanvasElement>(["heatmapCanvasVue"]);
-  const overlay = byIds<HTMLCanvasElement>(["heatmapOverlayVue"]);
-  const tooltip = byIds<HTMLElement>(["heatmapTooltipVue"]);
-  if (!wrap || !hint || !meta || !canvas || !overlay || !tooltip) return false;
+  model: HeatmapModel | null,
+): string {
+  return stableStringify({
+    run: workflowRunIdentity(run),
+    objective: objectiveOf(req),
+    score_mode: scoreModeOf(req),
+    top_k: requestedTopK(req),
+    heatmap_bins: requestedHeatmapBins(req),
+    model,
+    markers: model ? heatmapMarkerRows(res, model) : [],
+  });
+}
 
-  const topK = requestedTopK(req);
-  const heatmapBins = requestedHeatmapBins(req);
-  if (!model) {
-    wrap.style.display = "none";
-    hint.style.display = "block";
-    store.heatmapWrapVisible = false;
-    store.canHeatmapExportPng = false;
-    store.heatmapStatusLine =
-      heatmapBins <= 0
-        ? "Heatmap disabled for this run. Increase Advanced > Heatmap bins above 0, then rerun optimization."
-        : "No heatmap payload was returned for this run.";
-    store.heatmapMeta =
-      heatmapBins <= 0
-        ? "Heatmap disabled for this run (heatmap_bins=0)."
-        : "Heatmap data unavailable for this run.";
-    if (meta) meta.textContent = text(store.heatmapMeta);
-    hideHeatmapTooltip();
-    return true;
-  }
-
-  const finite = finiteHeatmapValues(model);
-  if (!finite.length) {
-    wrap.style.display = "none";
-    hint.style.display = "block";
-    store.heatmapWrapVisible = false;
-    store.canHeatmapExportPng = false;
-    store.heatmapMeta =
-      "Heatmap payload was returned, but it contained no populated cells.";
-    store.heatmapStatusLine = "Heatmap unavailable for this run.";
-    meta.textContent = text(store.heatmapMeta);
-    hideHeatmapTooltip();
-    return true;
-  }
-
-  const range = resolveHeatmapRange(finite);
-  const palette = heatmapPalette();
+function paintHeatmapBaseFromState(
+  state: HeatmapRenderState,
+  canvas: HTMLCanvasElement,
+): void {
+  const { model, range, palette } = state;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
   const width = canvas.width;
   const height = canvas.height;
-  const ctx = canvas.getContext("2d");
-  const overlayCtx = overlay.getContext("2d");
-  if (!ctx || !overlayCtx) return false;
-
   const cellW = width / Math.max(1, model.binsFast);
   const cellH = height / Math.max(1, model.binsSlow);
 
@@ -3022,57 +3238,134 @@ function renderHeatmapCanvas(
       ctx.fillRect(x, y, cellW, cellH);
     }
   }
+}
 
-  const markers = heatmapMarkerRows(res, model);
-  const paintOverlay = (): void => {
-    overlayCtx.clearRect(0, 0, width, height);
-    for (const marker of markers) {
-      const cx = (marker.col + 0.5) * cellW;
-      const cy = (marker.drawRow + 0.5) * cellH;
-      overlayCtx.fillStyle = "rgba(248, 250, 252, 0.95)";
-      overlayCtx.beginPath();
-      overlayCtx.arc(
-        cx,
-        cy,
-        Math.max(3, Math.min(cellW, cellH) * 0.18),
-        0,
-        Math.PI * 2,
-      );
-      overlayCtx.fill();
-      overlayCtx.strokeStyle = "rgba(15, 23, 42, 0.95)";
-      overlayCtx.lineWidth = 1;
-      overlayCtx.stroke();
-      overlayCtx.fillStyle = "rgba(15, 23, 42, 0.95)";
-      overlayCtx.font = "11px ui-monospace, monospace";
-      overlayCtx.fillText(marker.label, cx + 5, cy - 5);
-    }
+function paintHeatmapOverlayFromState(
+  state: HeatmapRenderState,
+  overlay: HTMLCanvasElement,
+): void {
+  const { model, markers } = state;
+  const overlayCtx = overlay.getContext("2d");
+  if (!overlayCtx) return;
+  const width = overlay.width;
+  const height = overlay.height;
+  const cellW = width / Math.max(1, model.binsFast);
+  const cellH = height / Math.max(1, model.binsSlow);
 
-    if (!heatmapHoverCell) return;
-    const hoverX = heatmapHoverCell.col * cellW;
-    const hoverY = heatmapHoverCell.row * cellH;
-    overlayCtx.strokeStyle = "rgba(248, 250, 252, 0.95)";
-    overlayCtx.lineWidth = 1.5;
-    overlayCtx.strokeRect(
-      hoverX + 0.5,
-      hoverY + 0.5,
-      Math.max(0, cellW - 1),
-      Math.max(0, cellH - 1),
-    );
+  overlayCtx.clearRect(0, 0, width, height);
+  for (const marker of markers) {
+    const cx = (marker.col + 0.5) * cellW;
+    const cy = (marker.drawRow + 0.5) * cellH;
+    overlayCtx.fillStyle = "rgba(248, 250, 252, 0.95)";
     overlayCtx.beginPath();
-    overlayCtx.moveTo(hoverX + cellW / 2, 0);
-    overlayCtx.lineTo(hoverX + cellW / 2, height);
-    overlayCtx.moveTo(0, hoverY + cellH / 2);
-    overlayCtx.lineTo(width, hoverY + cellH / 2);
-    overlayCtx.strokeStyle = "rgba(248, 250, 252, 0.28)";
+    overlayCtx.arc(
+      cx,
+      cy,
+      Math.max(3, Math.min(cellW, cellH) * 0.18),
+      0,
+      Math.PI * 2,
+    );
+    overlayCtx.fill();
+    overlayCtx.strokeStyle = "rgba(15, 23, 42, 0.95)";
+    overlayCtx.lineWidth = 1;
     overlayCtx.stroke();
+    overlayCtx.fillStyle = "rgba(15, 23, 42, 0.95)";
+    overlayCtx.font = "11px ui-monospace, monospace";
+    overlayCtx.fillText(marker.label, cx + 5, cy - 5);
+  }
+
+  if (!heatmapHoverCell) return;
+  const hoverX = heatmapHoverCell.col * cellW;
+  const hoverY = heatmapHoverCell.row * cellH;
+  overlayCtx.strokeStyle = "rgba(248, 250, 252, 0.95)";
+  overlayCtx.lineWidth = 1.5;
+  overlayCtx.strokeRect(
+    hoverX + 0.5,
+    hoverY + 0.5,
+    Math.max(0, cellW - 1),
+    Math.max(0, cellH - 1),
+  );
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(hoverX + cellW / 2, 0);
+  overlayCtx.lineTo(hoverX + cellW / 2, height);
+  overlayCtx.moveTo(0, hoverY + cellH / 2);
+  overlayCtx.lineTo(width, hoverY + cellH / 2);
+  overlayCtx.strokeStyle = "rgba(248, 250, 252, 0.28)";
+  overlayCtx.stroke();
+}
+
+function renderHeatmapCanvas(
+  store: AnalysisStoreState,
+  req: Record<string, unknown>,
+  res: Record<string, unknown>,
+): boolean {
+  const model = readHeatmapModel(res);
+  const wrap = byIds<HTMLElement>(["heatmapWrapVue"]);
+  const hint = byIds<HTMLElement>(["heatmapEmptyHintVue"]);
+  const meta = byIds<HTMLElement>(["heatmapMetaVue"]);
+  const canvas = byIds<HTMLCanvasElement>(["heatmapCanvasVue"]);
+  const overlay = byIds<HTMLCanvasElement>(["heatmapOverlayVue"]);
+  const tooltip = byIds<HTMLElement>(["heatmapTooltipVue"]);
+  if (!wrap || !hint || !meta || !canvas || !overlay || !tooltip) return false;
+
+  const topK = requestedTopK(req);
+  const heatmapBins = requestedHeatmapBins(req);
+  if (!model) {
+    heatmapRenderState = null;
+    wrap.style.display = "none";
+    hint.style.display = "block";
+    store.heatmapWrapVisible = false;
+    store.canHeatmapExportPng = false;
+    store.heatmapStatusLine =
+      heatmapBins <= 0
+        ? "Heatmap disabled for this run. Increase Advanced > Heatmap bins above 0, then rerun optimization."
+        : "No heatmap payload was returned for this run.";
+    store.heatmapMeta =
+      heatmapBins <= 0
+        ? "Heatmap disabled for this run (heatmap_bins=0)."
+        : "Heatmap data unavailable for this run.";
+    if (meta) meta.textContent = text(store.heatmapMeta);
+    hideHeatmapTooltip();
+    return true;
+  }
+
+  const finite = finiteHeatmapValues(model);
+  if (!finite.length) {
+    heatmapRenderState = null;
+    wrap.style.display = "none";
+    hint.style.display = "block";
+    store.heatmapWrapVisible = false;
+    store.canHeatmapExportPng = false;
+    store.heatmapMeta =
+      "Heatmap payload was returned, but it contained no populated cells.";
+    store.heatmapStatusLine = "Heatmap unavailable for this run.";
+    meta.textContent = text(store.heatmapMeta);
+    hideHeatmapTooltip();
+    return true;
+  }
+
+  const range = resolveHeatmapRange(finite);
+  const palette = heatmapPalette();
+  const state: HeatmapRenderState = {
+    signature: heatmapBaseSignature(readWorkflowRun(), req, res, model),
+    meta: "",
+    statusLine: "",
+    model,
+    req,
+    markers: heatmapMarkerRows(res, model),
+    range,
+    palette,
   };
 
-  paintOverlay();
+  paintHeatmapBaseFromState(state, canvas);
+  paintHeatmapOverlayFromState(state, overlay);
+  canvas.dataset.renderSignature = state.signature;
+  overlay.dataset.renderSignature = state.signature;
 
   overlay.onmouseleave = () => {
     heatmapHoverCell = null;
     hideHeatmapTooltip();
-    paintOverlay();
+    paintHeatmapOverlayFromState(state, overlay);
   };
 
   overlay.onmousemove = (event: MouseEvent) => {
@@ -3100,8 +3393,8 @@ function renderHeatmapCanvas(
     tooltip.style.display = "block";
     tooltip.style.left = `${Math.max(8, event.clientX - rect.left + 12)}px`;
     tooltip.style.top = `${Math.max(8, event.clientY - rect.top + 12)}px`;
-    tooltip.textContent = `${text(Array.isArray(req.fast_ma_types) ? req.fast_ma_types[0] : req.fast_ma_type).toUpperCase() || "FAST"} ${fast} · ${text(Array.isArray(req.slow_ma_types) ? req.slow_ma_types[0] : req.slow_ma_type).toUpperCase() || "SLOW"} ${slow} · ${scoreLabelOf(req)} ${fmtDisplay(value, 4)}`;
-    paintOverlay();
+    tooltip.textContent = `${text(Array.isArray(state.req.fast_ma_types) ? state.req.fast_ma_types[0] : state.req.fast_ma_type).toUpperCase() || "FAST"} ${fast} · ${text(Array.isArray(state.req.slow_ma_types) ? state.req.slow_ma_types[0] : state.req.slow_ma_type).toUpperCase() || "SLOW"} ${slow} · ${scoreLabelOf(state.req)} ${fmtDisplay(value, 4)}`;
+    paintHeatmapOverlayFromState(state, overlay);
   };
 
   overlay.onclick = (event: MouseEvent) => {
@@ -3124,9 +3417,9 @@ function renderHeatmapCanvas(
     const logicalRow = model.binsSlow - 1 - drawRow;
     const value = model.values[heatmapIndex(model, logicalRow, col)];
     if (typeof value !== "number" || !Number.isFinite(value)) return;
-    const params = buildHeatmapCellParams(req, model, col, logicalRow);
-    const objective = objectiveOf(req);
-    const scoreMode = scoreModeOf(req);
+    const params = buildHeatmapCellParams(state.req, model, col, logicalRow);
+    const objective = objectiveOf(state.req);
+    const scoreMode = scoreModeOf(state.req);
     const metrics: Record<string, unknown> = {
       [objectiveScoreKey(objective, scoreMode)]: value,
     };
@@ -3147,6 +3440,9 @@ function renderHeatmapCanvas(
     topK === 0
       ? "Heatmap ready. This run disabled ranked Top rows (top_k=0), so markers use the best candidate only."
       : "Heatmap ready. Hover for values and click a populated cell to drill down.";
+  state.meta = text(store.heatmapMeta);
+  state.statusLine = text(store.heatmapStatusLine);
+  heatmapRenderState = state;
   meta.textContent = text(store.heatmapMeta);
   return true;
 }
@@ -3205,6 +3501,48 @@ export function refreshHeatmapFromWorkflowRun(): boolean {
   return ok;
 }
 
+export function restoreHeatmapVisible(): boolean {
+  const store = readAnalysisStore();
+  const run = readWorkflowRun();
+  if (!store || !run || !heatmapRenderState) return false;
+  const req = asRecord(run.req);
+  const res = asRecord(run.res);
+  if (!Object.keys(res).length) return false;
+  const model = readHeatmapModel(res);
+  const nextSignature = heatmapBaseSignature(run, req, res, model);
+  if (nextSignature !== heatmapRenderState.signature) return false;
+
+  const wrap = byIds<HTMLElement>(["heatmapWrapVue"]);
+  const hint = byIds<HTMLElement>(["heatmapEmptyHintVue"]);
+  const meta = byIds<HTMLElement>(["heatmapMetaVue"]);
+  const canvas = byIds<HTMLCanvasElement>(["heatmapCanvasVue"]);
+  const overlay = byIds<HTMLCanvasElement>(["heatmapOverlayVue"]);
+  if (!wrap || !hint || !meta || !canvas || !overlay) return false;
+
+  wrap.style.display = "block";
+  hint.style.display = "none";
+  heatmapHoverCell = null;
+  hideHeatmapTooltip();
+  if (text(canvas.dataset.renderSignature) !== heatmapRenderState.signature) {
+    paintHeatmapBaseFromState(heatmapRenderState, canvas);
+    canvas.dataset.renderSignature = heatmapRenderState.signature;
+  }
+  paintHeatmapOverlayFromState(heatmapRenderState, overlay);
+  overlay.dataset.renderSignature = heatmapRenderState.signature;
+  renderHeatmapLegend(
+    heatmapRenderState.range.min,
+    heatmapRenderState.range.max,
+    heatmapRenderState.palette,
+  );
+  store.heatmapWrapVisible = true;
+  store.canHeatmapExportPng = true;
+  store.heatmapMeta = heatmapRenderState.meta;
+  store.heatmapStatusLine = heatmapRenderState.statusLine;
+  meta.textContent = heatmapRenderState.meta;
+  markAnalysisVue(store);
+  return true;
+}
+
 function stableStringify(value: unknown): string {
   if (value == null) return "null";
   if (typeof value !== "object") {
@@ -3220,6 +3558,36 @@ function stableStringify(value: unknown): string {
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
+}
+
+function workflowRunIdentity(run: WorkflowRunState | null | undefined): string {
+  if (!run) return "null";
+  return stableStringify({
+    ts: text(run.ts),
+    artifactPath: text(run.artifactPath ?? run.artifact_path),
+    req: run.req ?? null,
+    res: run.res ?? null,
+  });
+}
+
+export function invalidateAnalysisExecutionCaches(): void {
+  baselineArtifactCache.clear();
+  drillCurvesCache.clear();
+  stabilityCache.clear();
+  drillPriceBarsCache.clear();
+  baselineArtifactPending.clear();
+  drillCurvesPending.clear();
+  stabilityPending.clear();
+  drillPriceBarsPending.clear();
+  drillRenderState = null;
+  heatmapRenderState = null;
+  heatmapHoverCell = null;
+  topRowsModelCache = [];
+  topRowsAllModelCache = [];
+  drillSelectedTradeIdx = -1;
+  drillTradesRangeStart = 0;
+  drillSeq = (drillSeq + 1) >>> 0;
+  hideHeatmapTooltip();
 }
 
 function truncate(value: string, maxLen: number): string {
@@ -3251,24 +3619,31 @@ function diffParams(
 async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
   const normalizedPath = text(path);
   if (!normalizedPath) return null;
-  const cached = baselineArtifactCache.get(normalizedPath);
-  if (cached) return cached;
-  const raw = (await invokeCommand("load_run_artifact", {
-    path: normalizedPath,
-  })) as RunArtifactPayload;
-  const row = asRecord(raw);
-  const run = asRecord(row.run);
-  const req = asRecord(run.req);
-  const res = asRecord(run.res);
-  if (!Object.keys(req).length || !Object.keys(res).length) return null;
-  const baseline: BaselineRun = {
-    source: "disk",
-    ts: text(row.ts) || text(run.ts),
-    req,
-    res,
-  };
-  baselineArtifactCache.set(normalizedPath, baseline);
-  return baseline;
+  const loaded = await cacheGetOrLoad(
+    baselineArtifactCache,
+    baselineArtifactPending,
+    normalizedPath,
+    async () => {
+      const raw = (await invokeCommand("load_run_artifact", {
+        path: normalizedPath,
+      })) as RunArtifactPayload;
+      const row = asRecord(raw);
+      const run = asRecord(row.run);
+      const req = asRecord(run.req);
+      const res = asRecord(run.res);
+      if (!Object.keys(req).length || !Object.keys(res).length) {
+        return null;
+      }
+      return {
+        source: "disk" as const,
+        ts: text(row.ts) || text(run.ts),
+        req,
+        res,
+      };
+    },
+    BASELINE_ARTIFACT_CACHE_MAX,
+  );
+  return loaded.value;
 }
 
 async function resolveBaselineSelection(
@@ -4231,27 +4606,32 @@ function normalizeDrillPriceBars(raw: unknown): DrillPriceBar[] {
 async function fetchDrillPriceBars(dataId: string): Promise<DrillPriceBar[]> {
   const id = text(dataId);
   if (!id) return [];
-  const cached = drillPriceBarsCache.get(id);
-  if (cached) return cached;
-  let raw: unknown;
-  try {
-    raw = await invokeCommand("get_price_bars", {
-      dataId: id,
-      maxPoints: 8000,
-    });
-  } catch (firstError) {
-    try {
-      raw = await invokeCommand("get_price_bars", {
-        data_id: id,
-        max_points: 8000,
-      });
-    } catch {
-      throw firstError;
-    }
-  }
-  const bars = normalizeDrillPriceBars(raw);
-  drillPriceBarsCache.set(id, bars);
-  return bars;
+  const loaded = await cacheGetOrLoad(
+    drillPriceBarsCache,
+    drillPriceBarsPending,
+    id,
+    async () => {
+      let raw: unknown;
+      try {
+        raw = await invokeCommand("get_price_bars", {
+          dataId: id,
+          maxPoints: 8000,
+        });
+      } catch (firstError) {
+        try {
+          raw = await invokeCommand("get_price_bars", {
+            data_id: id,
+            max_points: 8000,
+          });
+        } catch {
+          throw firstError;
+        }
+      }
+      return normalizeDrillPriceBars(raw);
+    },
+    DRILL_PRICE_BARS_CACHE_MAX,
+  );
+  return loaded.value;
 }
 
 function mapTradeIndexToChartTime(
@@ -4561,6 +4941,56 @@ function renderDrillDomFallback(
   return true;
 }
 
+function restoreDrillViewFromCache(
+  store: AnalysisStoreState,
+  row: TopRowModel,
+): boolean {
+  if (!drillRenderState) return false;
+  const run = readWorkflowRun();
+  const runIdentity = workflowRunIdentity(run);
+  const rowId = topRowIdFor(row);
+  if (
+    drillRenderState.runIdentity !== runIdentity ||
+    drillRenderState.rowId !== rowId
+  ) {
+    return false;
+  }
+
+  drillSeq = (drillSeq + 1) >>> 0;
+  const seq = drillSeq;
+  const rendered = renderDrillDomFallback(
+    drillRenderState.curves,
+    drillRenderState.params,
+    drillRenderState.metrics,
+    drillRenderState.row,
+    drillRenderState.bars,
+  );
+  if (!rendered) return false;
+  void renderDrillTvChartDom(
+    drillRenderState.curves,
+    drillRenderState.bars,
+    seq,
+  ).catch(() => {});
+  applyDrillCompletionState(
+    store,
+    drillRenderState.drillMeta,
+    drillRenderState.drillStatus,
+  );
+  applyStabilityCompletionState(
+    store,
+    drillRenderState.stabilityResult,
+    drillRenderState.stabilityMeta,
+    drillRenderState.stabilityStatus,
+  );
+  setStatus(
+    store,
+    drillRenderState.drillStatus === "Done (cached)."
+      ? "Drilldown restored (cached)."
+      : "Drilldown restored.",
+  );
+  return true;
+}
+
 export async function clearTopFilters(): Promise<void> {
   const store = readAnalysisStore();
   if (!store) return;
@@ -4779,6 +5209,7 @@ export async function exportTopCsv(): Promise<void> {
       sort.dir,
       objective,
       scoreMode,
+      scoreObservationContextOf(res),
     ),
     store ? readFilters(store) : {},
   );
@@ -5002,7 +5433,12 @@ export async function rerenderDrill(): Promise<void> {
     const rows = readTopRows(store);
     if (rows.length) {
       const selected = rows.findIndex((row) => !!row?.selected);
-      await selectTopRow(selected >= 0 ? selected : 0);
+      const bounded = selected >= 0 ? selected : 0;
+      const model = resolveTopRowModelAtIndex(store, bounded);
+      if (model && restoreDrillViewFromCache(store, model)) {
+        return;
+      }
+      await selectTopRow(bounded);
     }
   }
 }

@@ -25,7 +25,9 @@ use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 use vector_ta::cuda::CudaDeviceSliceF32Ref;
 use vector_ta::utilities::data_loader::{source_type, Candles};
 
-use crate::alloc_policy::{alloc_uninit_copy, alloc_uninit_f32, resize_uninit_f32};
+use crate::alloc_policy::{
+    alloc_uninit_copy, alloc_uninit_f32, resize_uninit_f32, resize_uninit_i32,
+};
 use crate::composite_validate::SpaBenchmarkKind;
 use crate::double_ma::{
     derived_active_downside_deviation, derived_active_mean, derived_active_sortino,
@@ -5554,7 +5556,7 @@ fn copy_device_prefix_to_host_i32(
     elems: usize,
     stream: &Stream,
 ) -> Result<(), String> {
-    dst.resize(elems, 0);
+    resize_uninit_i32(dst, elems);
     if elems == 0 {
         return Ok(());
     }
@@ -14760,7 +14762,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 h.copy_to(&mut host).map_err(|e| e.to_string())?;
                 let mut host_sum: Vec<f32> = alloc_uninit_copy(heatmap_len);
                 h_sum.copy_to(&mut host_sum).map_err(|e| e.to_string())?;
-                let mut host_count = vec![0i32; heatmap_len];
+                let mut host_count: Vec<i32> = alloc_uninit_copy(heatmap_len);
                 h_count
                     .copy_to(&mut host_count)
                     .map_err(|e| e.to_string())?;
@@ -14820,8 +14822,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             .ok_or_else(|| "missing global slow-row buffer".to_string())?;
 
         let d2h_t0 = Instant::now();
-        let mut fast_host = vec![0i32; global_rows_len];
-        let mut slow_host = vec![0i32; global_rows_len];
+        let mut fast_host: Vec<i32> = Vec::new();
+        let mut slow_host: Vec<i32> = Vec::new();
         copy_device_prefix_to_host_i32(global_fast, &mut fast_host, global_rows_len, bt_stream)?;
         copy_device_prefix_to_host_i32(global_slow, &mut slow_host, global_rows_len, bt_stream)?;
         d2h_copy_elapsed = d2h_copy_elapsed.saturating_add(d2h_t0.elapsed());

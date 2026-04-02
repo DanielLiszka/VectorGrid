@@ -6,12 +6,16 @@ use std::time::{Duration, Instant};
 use ta_app_core::composite_cpu::{MaczGateParams, OttGateParams};
 use ta_app_core::double_ma::HalfTrendRegimeFilter;
 use ta_app_core::{
-    meta_group_key_for_request, meta_select_from_artifacts, predict_ml_confidence_for_group,
+    extract_ml_confidence_group_features, meta_group_key_for_request, meta_select_from_artifacts,
+    predict_ml_confidence_for_features, predict_ml_confidence_for_group,
+    prepare_ml_confidence_rows_from_meta_artifacts,
     run_composite_cpu_optimization_blocking_with_candles,
     run_composite_validation_blocking_with_candles, train_ml_confidence_model_from_meta_artifacts,
-    Backend, CompositeCpuRequest, CompositeParams, CompositeValidationRequest, HoldoutAggregate,
-    HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig, MetaGroupingMode, MetaHoldoutMode,
-    MetaScoreWeights, MetaSelectionRequest, MlConfidenceScope, MlConfidenceTrainConfig,
+    train_ml_confidence_model_from_prepared_rows, Backend, CompositeCpuRequest, CompositeParams,
+    CompositeValidationRequest, HoldoutAggregate, HoldoutSummary, MetaCandidateAggregate,
+    MetaClusterConfig, MetaGroupingMode, MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest,
+    MlConfidenceGroupFeatures, MlConfidencePreparedRows, MlConfidenceScope,
+    MlConfidenceTrainConfig,
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
@@ -568,6 +572,126 @@ fn run_full_workflow_once(
     Ok(())
 }
 
+struct MlHistoryBenchInput {
+    scope: MlConfidenceScope,
+    cfg: MlConfidenceTrainConfig,
+    history: Vec<Value>,
+    prepared_rows: MlConfidencePreparedRows,
+    apply_features: Vec<MlConfidenceGroupFeatures>,
+    prefix_len: usize,
+}
+
+fn build_ml_history_bench_input(
+    history_metas: usize,
+    groups_per_meta: usize,
+) -> Result<MlHistoryBenchInput, String> {
+    let history_metas = history_metas.max(2);
+    let groups_per_meta = groups_per_meta.max(1);
+
+    let scope = MlConfidenceScope {
+        strategy_kind: "CompositeCpu".to_string(),
+        timeframe: "1m".to_string(),
+    };
+    let mut cfg = MlConfidenceTrainConfig::default();
+    cfg.label.min_holdout_datasets = 1;
+    cfg.label.min_holdout_pass_rate = 0.55;
+    cfg.label.min_holdout_score_p10 = 0.0;
+
+    let mut history: Vec<Value> = Vec::with_capacity(history_metas);
+    for meta_idx in 0..history_metas {
+        let mut groups: Vec<Value> = Vec::with_capacity(groups_per_meta);
+        for group_idx in 0..groups_per_meta {
+            let strong = (meta_idx + group_idx) % 2 == 0;
+            let mut rows: Vec<Value> = Vec::with_capacity(8);
+            for ds in 0..8usize {
+                let pass = if strong { ds != 0 } else { ds == 0 };
+                rows.push(json!({
+                    "dataset": format!("H{meta_idx:03}_G{group_idx:03}_D{ds:02}"),
+                    "score_median": if pass { 0.20 } else { -0.12 },
+                    "score_p10": if pass { 0.08 } else { -0.16 },
+                    "sharpe_median": if pass { 0.95 } else { -0.45 },
+                    "max_dd_worst": if pass { 0.28 } else { 0.62 },
+                    "pnl_median": if pass { 1.0 } else { -0.9 },
+                    "pass": pass
+                }));
+            }
+            groups.push(json!({
+                "samples": 40 + ((group_idx % 5) as u64) * 4,
+                "pass_rate": if strong { 0.82 } else { 0.24 },
+                "robust_score_p10": if strong { 0.16 } else { -0.10 },
+                "robust_score_median": if strong { 0.24 } else { -0.04 },
+                "max_dd_p90": if strong { 0.24 } else { 0.58 },
+                "cross_score_median": if strong { 0.07 } else { -0.05 },
+                "meta_score": if strong { 0.28 } else { -0.18 },
+                "holdout": {
+                    "datasets": 8,
+                    "pass_rate": if strong { 0.875 } else { 0.125 },
+                    "score_p10": if strong { 0.08 } else { -0.16 },
+                    "score_median": if strong { 0.16 } else { -0.05 },
+                    "sharpe_median": if strong { 1.0 } else { -0.3 },
+                    "max_dd_p90": if strong { 0.26 } else { 0.57 },
+                    "pnl_median": if strong { 1.1 } else { -0.8 }
+                },
+                "holdout_rows": rows
+            }));
+        }
+        history.push(json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": format!("2026-03-{day:02}T00:00:00Z", day = meta_idx + 1),
+            "req": { "strategy_kind": "CompositeCpu", "timeframe": "1m" },
+            "res": { "strategy_kind": "CompositeCpu", "timeframe": "1m", "groups": groups }
+        }));
+    }
+
+    let prefix_len = history.len().saturating_sub(1);
+    let apply_features = history[prefix_len]
+        .pointer("/res/groups")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "missing benchmark meta groups".to_string())?
+        .iter()
+        .filter_map(extract_ml_confidence_group_features)
+        .collect::<Vec<_>>();
+    let prepared_rows =
+        prepare_ml_confidence_rows_from_meta_artifacts(&scope, &history, &cfg.label);
+
+    Ok(MlHistoryBenchInput {
+        scope,
+        cfg,
+        history,
+        prepared_rows,
+        apply_features,
+        prefix_len,
+    })
+}
+
+fn run_ml_history_prefix_once(
+    input: &MlHistoryBenchInput,
+    use_prepared_rows: bool,
+) -> Result<(), String> {
+    let (model, _metrics) = if use_prepared_rows {
+        train_ml_confidence_model_from_prepared_rows(
+            input.scope.clone(),
+            &input.prepared_rows,
+            input.cfg.clone(),
+            Some(input.prefix_len),
+        )?
+    } else {
+        train_ml_confidence_model_from_meta_artifacts(
+            input.scope.clone(),
+            &input.history[..input.prefix_len],
+            input.cfg.clone(),
+        )?
+    };
+
+    let mut _sum = 0.0f64;
+    for features in &input.apply_features {
+        if let Some(p) = predict_ml_confidence_for_features(&model, features) {
+            _sum += p;
+        }
+    }
+    Ok(())
+}
+
 fn parse_bench_lens() -> Vec<usize> {
     let raw = std::env::var("VTA_E2E_BENCH_LENS").ok();
     let Some(s) = raw.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) else {
@@ -602,6 +726,8 @@ fn bench_e2e_workflow_with_ml(c: &mut Criterion) {
     // Keep defaults small so `cargo bench` stays reasonable. Increase via VTA_E2E_BENCH_LENS.
     let train_assets = parse_bench_asset_count("VTA_E2E_BENCH_TRAIN_ASSETS", 12);
     let holdout_assets = parse_bench_asset_count("VTA_E2E_BENCH_HOLDOUT_ASSETS", 8);
+    let history_metas = parse_bench_asset_count("VTA_ML_HISTORY_BENCH_METAS", 32).max(2);
+    let groups_per_meta = parse_bench_asset_count("VTA_ML_HISTORY_BENCH_GROUPS_PER_META", 24);
     let stage_diagnostics = bench_env_flag("VTA_E2E_BENCH_STAGE_DIAGNOSTICS");
 
     let cancel = AtomicBool::new(false);
@@ -635,6 +761,54 @@ fn bench_e2e_workflow_with_ml(c: &mut Criterion) {
 
         group.finish();
     }
+
+    let history_input =
+        build_ml_history_bench_input(history_metas, groups_per_meta).expect("ml history inputs");
+    let history_group_name = format!(
+        "e2e/ml_stage5_history_prefix/metas{history_metas}/groups{groups_per_meta}/prefix{}",
+        history_input.prefix_len
+    );
+    let mut history_group = c.benchmark_group(history_group_name.clone());
+    history_group.measurement_time(Duration::from_secs(6));
+    history_group.sample_size(10);
+    print_bench_metadata(
+        &history_group_name,
+        &[
+            ("history_metas", history_metas.to_string()),
+            ("groups_per_meta", groups_per_meta.to_string()),
+            ("prefix_len", history_input.prefix_len.to_string()),
+            ("prefix_mode", "train_prefix_apply_current".to_string()),
+            ("surface", "stage5_history_prefix".to_string()),
+        ],
+    );
+    print_bench_metadata(
+        &format!("{history_group_name}/raw_history_prefix"),
+        &[
+            ("history_metas", history_metas.to_string()),
+            ("groups_per_meta", groups_per_meta.to_string()),
+            ("prefix_len", history_input.prefix_len.to_string()),
+            ("prepared_rows", "false".to_string()),
+        ],
+    );
+    print_bench_metadata(
+        &format!("{history_group_name}/prepared_history_prefix"),
+        &[
+            ("history_metas", history_metas.to_string()),
+            ("groups_per_meta", groups_per_meta.to_string()),
+            ("prefix_len", history_input.prefix_len.to_string()),
+            ("prepared_rows", "true".to_string()),
+        ],
+    );
+
+    history_group.bench_function("raw_history_prefix", |b| {
+        b.iter(|| run_ml_history_prefix_once(&history_input, false).expect("raw history prefix"))
+    });
+    history_group.bench_function("prepared_history_prefix", |b| {
+        b.iter(|| {
+            run_ml_history_prefix_once(&history_input, true).expect("prepared history prefix")
+        })
+    });
+    history_group.finish();
 }
 
 criterion_group!(benches, bench_e2e_workflow_with_ml);

@@ -59,6 +59,7 @@ vi.mock('./dataService', () => ({
     },
     cacheHit: false,
     cachePath: '',
+    loadSource: 'csv_parsed_cache_write_skipped',
   })),
   applyTimeframe: vi.fn(async () => ({
     path: '',
@@ -78,6 +79,7 @@ vi.mock('./dataService', () => ({
     },
     cacheHit: false,
     cachePath: '',
+    loadSource: 'derived_fresh_resample',
   })),
 }))
 
@@ -87,88 +89,161 @@ const runValidationMock = vi.mocked(runValidation)
 const buildOptimizationRequestMock = vi.mocked(buildOptimizationRequestFromVueStores)
 let pinia: ReturnType<typeof createPinia>
 
-function mockInvokeDefaults(): void {
-  invokeCommandMock.mockImplementation(async (command: string) => {
-    if (command === 'run_meta_selection') {
-      return {
-        ts: '2026-02-26T10:00:00Z',
-        report_xlsx_path: 'C:/reports/meta.xlsx',
-        meta_json_path: 'C:/runs/vectorgrid_meta.json',
-        result: {
-          strategy_kind: 'CompositeMo',
-          timeframe: '1m',
-          artifacts_used: 2,
-          artifacts_considered: 3,
-          candidates_considered: 40,
-          runtime_ms: 123,
-          groups: [{
-            params: { fast_ma_type: 'ema', fast_len: 10, slow_ma_type: 'ema', slow_len: 20 },
-            pass_rate: 0.55,
-            samples: 10,
-            meta_score: 0.8,
-          }],
-        },
-      }
-    }
+function createDeferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (reason?: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
 
-    if (command === 'run_meta_stage5_ml_confidence') {
-      return {
-        ts: '2026-02-26T10:02:00Z',
-        stage4_json_path: 'C:/runs/vectorgrid_stage5.json',
-        stage5_json_path: 'C:/runs/vectorgrid_stage5.json',
-        result: {
-          strategy_kind: 'CompositeMo',
-          timeframe: '1m',
-          source_meta_json_path: 'C:/runs/vectorgrid_meta.json',
-          model_path: 'C:/models/meta_model.json',
-          model_state: 'healthy',
-          model_healthy: true,
-          model_trained_now: false,
-          groups_selected: 1,
-          groups_scored: 1,
-          groups_considered: 2,
-          min_ml_confidence: 0.55,
-          decision_counts: { accept: 1, review: 0, reject: 1 },
-          selected_groups: [{
-            stage4_rank: 1,
-            decision_bucket: 'accept',
-            final_rank_score: 0.9,
-            ml_confidence: 0.8,
-            ml_uncertainty: 0.1,
-            params: { fast_ma_type: 'ema', fast_len: 10, slow_ma_type: 'ema', slow_len: 20 },
-          }],
-        },
-      }
+async function invokeDefaultMock(command: string): Promise<unknown> {
+  if (command === 'run_meta_selection') {
+    return {
+      ts: '2026-02-26T10:00:00Z',
+      report_xlsx_path: 'C:/reports/meta.xlsx',
+      meta_json_path: 'C:/runs/vectorgrid_meta.json',
+      result: {
+        strategy_kind: 'CompositeMo',
+        timeframe: '1m',
+        artifacts_used: 2,
+        artifacts_considered: 3,
+        candidates_considered: 40,
+        runtime_ms: 123,
+        groups: [{
+          params: { fast_ma_type: 'ema', fast_len: 10, slow_ma_type: 'ema', slow_len: 20 },
+          pass_rate: 0.55,
+          samples: 10,
+          robust_score_p10: 0.12,
+          robust_score_median: 0.18,
+          max_dd_p90: 0.09,
+          cross_score_median: 0.04,
+          meta_score: 0.8,
+        }],
+      },
     }
+  }
 
-    if (command === 'evaluate_ml_confidence_policy') {
-      return {
-        ts: '2026-02-26T10:03:00Z',
-        eval_json_path: 'C:/runs/vectorgrid_ml_policy_eval.json',
-        result: {
-          strategy_kind: 'CompositeMo',
-          timeframe: '1m',
-          artifacts_considered: 4,
-          artifacts_evaluated: 3,
-          artifacts_skipped_no_history: 1,
-          artifacts_skipped_training_failure: 0,
-          artifacts_skipped_unhealthy_model: 0,
-          artifacts_skipped_no_labels: 0,
-          top_k: 15,
-          min_ml_confidence: 0.58,
-          meta_weight: 0.6,
-          ml_weight: 0.35,
-          uncertainty_weight: 0.05,
-          meta_only: { selected_total: 3, positives_total: 2, precision_at_k: 2 / 3 },
-          ml_only: { selected_total: 3, positives_total: 1, precision_at_k: 1 / 3 },
-          stage5_blended: { selected_total: 3, positives_total: 3, precision_at_k: 1.0 },
-          warnings: [],
-        },
-      }
+  if (command === 'run_meta_stage5_ml_confidence') {
+    return {
+      ts: '2026-02-26T10:02:00Z',
+      stage4_json_path: 'C:/runs/vectorgrid_stage5.json',
+      stage5_json_path: 'C:/runs/vectorgrid_stage5.json',
+      result: {
+        strategy_kind: 'CompositeMo',
+        timeframe: '1m',
+        source_meta_json_path: 'C:/runs/vectorgrid_meta.json',
+        model_path: 'C:/models/meta_model.json',
+        model_state: 'healthy',
+        model_healthy: true,
+        model_trained_now: false,
+        groups_selected: 1,
+        groups_scored: 1,
+        groups_considered: 2,
+        min_ml_confidence: 0.55,
+        decision_counts: { accept: 1, review: 0, reject: 1 },
+        selected_groups: [{
+          stage4_rank: 1,
+          decision_bucket: 'accept',
+          final_rank_score: 0.9,
+          ml_confidence: 0.8,
+          ml_uncertainty: 0.1,
+          params: { fast_ma_type: 'ema', fast_len: 10, slow_ma_type: 'ema', slow_len: 20 },
+        }],
+      },
     }
+  }
 
-    if (command === 'ml_confidence_model_status') {
-      return {
+  if (command === 'evaluate_ml_confidence_policy') {
+    return {
+      ts: '2026-02-26T10:03:00Z',
+      eval_json_path: 'C:/runs/vectorgrid_ml_policy_eval.json',
+      result: {
+        strategy_kind: 'CompositeMo',
+        timeframe: '1m',
+        artifacts_considered: 4,
+        artifacts_evaluated: 3,
+        artifacts_skipped_no_history: 1,
+        artifacts_skipped_training_failure: 0,
+        artifacts_skipped_unhealthy_model: 0,
+        artifacts_skipped_no_labels: 0,
+        top_k: 15,
+        min_ml_confidence: 0.58,
+        meta_weight: 0.6,
+        ml_weight: 0.35,
+        uncertainty_weight: 0.05,
+        meta_only: { selected_total: 3, positives_total: 2, precision_at_k: 2 / 3 },
+        ml_only: { selected_total: 3, positives_total: 1, precision_at_k: 1 / 3 },
+        stage5_blended: { selected_total: 3, positives_total: 3, precision_at_k: 1.0 },
+        warnings: [],
+      },
+    }
+  }
+
+  if (command === 'ml_confidence_model_status') {
+    return {
+      exists: true,
+      model_path: 'C:/models/meta_model.json',
+      bytes: 1024,
+      available_meta_artifacts: 10,
+      available_labeled_rows: 300,
+      stale: false,
+      retrain_recommended: false,
+      state: 'healthy',
+      model_healthy: true,
+      model_summary: {
+        label: {
+          min_holdout_pass_rate: 0.6,
+          min_holdout_score_p10: 0.1,
+          min_holdout_datasets: 5,
+        },
+        meta: {
+          healthy: true,
+          cv_auc: 0.71,
+          cv_brier_calibrated: 0.19,
+          trained_rows: 300,
+          target: 'holdout_dataset_pass',
+        },
+      },
+      meta_scan_error: null,
+    }
+  }
+
+  if (command === 'train_ml_confidence_model') {
+    return {
+      model_path: 'C:/models/meta_model.json',
+      model_bytes: 1024,
+      model_summary: {
+        label: {
+          min_holdout_pass_rate: 0.6,
+          min_holdout_score_p10: 0.1,
+          min_holdout_datasets: 5,
+        },
+        meta: {
+          healthy: true,
+          cv_auc: 0.71,
+          cv_brier_calibrated: 0.19,
+        },
+      },
+      metrics: {
+        rows: 300,
+        positives: 180,
+        negatives: 120,
+        target: 'holdout_gate',
+        model_kind: 'logistic',
+        train_auc: 0.8,
+        train_brier: 0.18,
+        baseline_brier: 0.24,
+        healthy: true,
+        warnings: [],
+      },
+      status: {
         exists: true,
         model_path: 'C:/models/meta_model.json',
         bytes: 1024,
@@ -176,7 +251,9 @@ function mockInvokeDefaults(): void {
         available_labeled_rows: 300,
         stale: false,
         retrain_recommended: false,
-        model: {
+        state: 'healthy',
+        model_healthy: true,
+        model_summary: {
           label: {
             min_holdout_pass_rate: 0.6,
             min_holdout_score_p10: 0.1,
@@ -186,54 +263,61 @@ function mockInvokeDefaults(): void {
             healthy: true,
             cv_auc: 0.71,
             cv_brier_calibrated: 0.19,
+            trained_rows: 320,
+            target: 'holdout_dataset_pass',
           },
         },
-      }
+        meta_scan_error: null,
+      },
     }
+  }
 
-    if (command === 'apply_ml_confidence_model') {
-      return { confidences: [0.88], warnings: [] }
+  if (command === 'apply_ml_confidence_model') {
+    return { confidences: [0.88], warnings: [] }
+  }
+
+  if (command === 'polygon_get_cache_info') {
+    return {
+      datasets: [
+        {
+          csv_path: 'C:/a.csv',
+          display_symbol: 'AAPL',
+          market: 'stocks',
+          timeframe: '1m',
+          min_ts: 1700000000000,
+          max_ts: 1700003600000,
+          last_updated_utc_ms: 1700010000000,
+          row_count: 1000,
+          adjusted: true,
+        },
+      ],
     }
+  }
 
-    if (command === 'polygon_get_cache_info') {
-      return {
-        datasets: [
-          {
-            csv_path: 'C:/a.csv',
-            display_symbol: 'AAPL',
-            market: 'stocks',
-            timeframe: '1m',
-            min_ts: 1700000000000,
-            max_ts: 1700003600000,
-            last_updated_utc_ms: 1700010000000,
-            row_count: 1000,
-            adjusted: true,
-          },
-        ],
-      }
+  if (command === 'list_repo_data_csvs') {
+    return {
+      dir: 'C:/repo/data',
+      truncated: false,
+      csv_entries: [
+        {
+          csv_path: 'C:/b.csv',
+          source_size_bytes: 123,
+          source_mtime_utc_ms: 1700020000000,
+        },
+      ],
     }
+  }
 
-    if (command === 'list_repo_data_csvs') {
-      return {
-        dir: 'C:/repo/data',
-        truncated: false,
-        csv_entries: [
-          {
-            csv_path: 'C:/b.csv',
-            source_size_bytes: 123,
-            source_mtime_utc_ms: 1700020000000,
-          },
-        ],
-      }
-    }
+  if (command === 'list_run_artifacts') return []
+  if (command === 'save_batch_summary') return { path: 'C:/runs/vectorgrid_batch_1.json' }
+  if (command === 'list_meta_artifacts') return []
+  if (command === 'list_stage5_artifacts') return []
+  if (command === 'list_ml_policy_eval_artifacts') return []
+  return undefined
+}
 
-    if (command === 'list_run_artifacts') return []
-    if (command === 'save_batch_summary') return { path: 'C:/runs/vectorgrid_batch_1.json' }
-    if (command === 'list_meta_artifacts') return []
-    if (command === 'list_stage5_artifacts') return []
-    if (command === 'list_ml_policy_eval_artifacts') return []
-    return undefined
-  })
+function mockInvokeDefaults(): void {
+  invokeCommandMock.mockImplementation(invokeDefaultMock)
 }
 
 describe('meta service', () => {
@@ -246,7 +330,7 @@ describe('meta service', () => {
     mockInvokeDefaults()
   })
 
-  it('runs meta with auto-built request via direct tauri invoke', async () => {
+  it('runs meta with auto-built request via direct tauri invoke without waiting on saved refresh', async () => {
     const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
@@ -263,16 +347,30 @@ describe('meta service', () => {
       mcEnable: false,
     })
 
-    await runMeta()
+    const deferredSaved = createDeferred<unknown[]>()
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_meta_artifacts') return deferredSaved.promise
+      return invokeDefaultMock(command)
+    })
+
+    const runPromise = runMeta()
+    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(analysisStore.metaSavedSelected).toBe('C:/runs/vectorgrid_meta.json')
+    expect(analysisStore.aggregateSummarySavedMeta).toBe('1')
+
+    deferredSaved.resolve([])
+    await runPromise
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_selection')
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(25)
-    expect(invokeCommandMock).toHaveBeenCalledWith('list_meta_artifacts')
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_meta_artifacts')).toBe(true)
   })
 
-  it('runs stage5 with auto-built request via direct invoke', async () => {
+  it('runs stage5 with auto-built request without waiting on saved refresh or redundant ML status refresh', async () => {
     const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
@@ -282,16 +380,67 @@ describe('meta service', () => {
     })
 
     await runMeta()
-    await runStage5()
+    await mlRefresh()
+    invokeCommandMock.mockClear()
+
+    const deferredSaved = createDeferred<unknown[]>()
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_meta_stage5_ml_confidence') {
+        return {
+          ts: '2026-02-26T10:02:00Z',
+          stage4_json_path: 'C:/runs/vectorgrid_stage5.json',
+          stage5_json_path: 'C:/runs/vectorgrid_stage5.json',
+          result: {
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            source_meta_json_path: 'C:/runs/vectorgrid_meta.json',
+            model_path: 'C:/models/meta_model.json',
+            model_state: 'healthy',
+            model_healthy: true,
+            model_trained_now: false,
+            groups_selected: 1,
+            groups_scored: 1,
+            groups_considered: 2,
+            min_ml_confidence: 0.55,
+            decision_counts: { accept: 1, review: 0, reject: 1 },
+            selected_groups: [{
+              stage4_rank: 1,
+              decision_bucket: 'accept',
+              final_rank_score: 0.9,
+              ml_confidence: 0.8,
+              ml_uncertainty: 0.1,
+              params: { fast_ma_type: 'ema', fast_len: 10, slow_ma_type: 'ema', slow_len: 20 },
+            }],
+          },
+        }
+      }
+      if (command === 'list_stage5_artifacts') return deferredSaved.promise
+      return invokeDefaultMock(command)
+    })
+
+    let settled = false
+    const runPromise = runStage5().then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(settled).toBe(true)
+    expect(analysisStore.stage4SavedSelected).toBe('C:/runs/vectorgrid_stage5.json')
+    expect(invokeCommandMock.mock.calls.filter(([command]) => command === 'ml_confidence_model_status')).toHaveLength(0)
+
+    deferredSaved.resolve([])
+    await runPromise
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_stage5_ml_confidence')
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
     expect((call?.[1] as { req?: { source_meta_path?: string | null } }).req?.source_meta_path).toBe('C:/runs/vectorgrid_meta.json')
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_stage5_artifacts')).toBe(true)
   })
 
-  it('runs ML policy evaluation with auto-built request via direct invoke', async () => {
+  it('runs ML policy evaluation with auto-built request without waiting on saved refresh', async () => {
     const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
@@ -301,12 +450,60 @@ describe('meta service', () => {
     })
 
     await runMeta()
-    await runMlPolicyEvaluation()
+    invokeCommandMock.mockClear()
+
+    const deferredSaved = createDeferred<unknown[]>()
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'evaluate_ml_confidence_policy') {
+        return {
+          ts: '2026-02-26T10:03:00Z',
+          eval_json_path: 'C:/runs/vectorgrid_ml_policy_eval.json',
+          result: {
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            artifacts_considered: 4,
+            artifacts_evaluated: 3,
+            artifacts_skipped_no_history: 1,
+            artifacts_skipped_training_failure: 0,
+            artifacts_skipped_unhealthy_model: 0,
+            artifacts_skipped_no_labels: 0,
+            top_k: 15,
+            min_ml_confidence: 0.58,
+            meta_weight: 0.6,
+            ml_weight: 0.35,
+            uncertainty_weight: 0.05,
+            meta_only: { selected_total: 3, positives_total: 2, precision_at_k: 2 / 3 },
+            ml_only: { selected_total: 3, positives_total: 1, precision_at_k: 1 / 3 },
+            stage5_blended: { selected_total: 3, positives_total: 3, precision_at_k: 1.0 },
+            best_policy: 'stage5_blended',
+            stage5_vs_meta_precision_delta: 0.1,
+            stage5_vs_ml_precision_delta: 0.2,
+            warnings: [],
+          },
+        }
+      }
+      if (command === 'list_ml_policy_eval_artifacts') return deferredSaved.promise
+      return invokeDefaultMock(command)
+    })
+
+    let settled = false
+    const runPromise = runMlPolicyEvaluation().then(() => {
+      settled = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(settled).toBe(true)
+    expect(analysisStore.policyEvalSavedSelected).toBe('C:/runs/vectorgrid_ml_policy_eval.json')
+
+    deferredSaved.resolve([])
+    await runPromise
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'evaluate_ml_confidence_policy')
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_ml_policy_eval_artifacts')).toBe(true)
 
     expect(analysisStore.metaPolicyEvalStatus).toContain('Policy evaluation complete')
     expect(analysisStore.metaPolicyEvalOutputPreview).toContain('stage5_blended')
@@ -336,30 +533,70 @@ describe('meta service', () => {
     expect((call?.[1] as { req?: { strategy_kind?: string } }).req?.strategy_kind).toBe('Asr')
   })
 
-  it('runs ml refresh/train/apply on direct command path', async () => {
+  it('uses summary-only ML status payloads and minimal apply DTOs on direct command path', async () => {
     const analysisStore = useAnalysisStore(pinia)
     analysisStore.applyLegacySnapshot({
       metaStrategyKind: 'CompositeMo',
       metaTimeframe: '1m',
-      metaUseMlConfidence: true,
+      metaUseMlConfidence: false,
     })
 
     await runMeta()
     await mlRefresh()
-    await mlTrain()
-    await mlApply()
+    expect(analysisStore.metaMlStatus).toContain('cv_auc=0.710')
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('ml_confidence_model_status', {
-      scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
-    })
+    invokeCommandMock.mockClear()
+    await mlTrain()
+
+    expect(invokeCommandMock.mock.calls.filter(([command]) => command === 'ml_confidence_model_status')).toHaveLength(0)
+    expect(analysisStore.metaMlStatus).toContain('trained_rows=320')
     expect(invokeCommandMock).toHaveBeenCalledWith('train_ml_confidence_model', {
       scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
       cfg: null,
     })
-    expect(invokeCommandMock).toHaveBeenCalledWith('apply_ml_confidence_model', {
+
+    analysisStore.metaUseMlConfidence = true
+    invokeCommandMock.mockClear()
+    await mlApply()
+
+    const applyCall = invokeCommandMock.mock.calls.find(([command]) => command === 'apply_ml_confidence_model')
+    expect(applyCall?.[1]).toEqual({
       scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
-      groups: expect.any(Array),
+      groups: [{
+        samples: 10,
+        pass_rate: 0.55,
+        robust_score_p10: 0.12,
+        robust_score_median: 0.18,
+        max_dd_p90: 0.09,
+        cross_score_median: 0.04,
+        meta_score: 0.8,
+      }],
     })
+  })
+
+  it('includes meta scan errors in formatted ML status', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'ml_confidence_model_status') {
+        return {
+          exists: false,
+          state: 'missing',
+          available_meta_artifacts: 7,
+          available_labeled_rows: 140,
+          meta_scan_error: 'scan failed',
+        }
+      }
+      return invokeDefaultMock(command)
+    })
+
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: 'CompositeMo',
+      metaTimeframe: '1m',
+    })
+
+    await mlRefresh()
+
+    expect(analysisStore.metaMlStatus).toContain('meta_scan_error=scan failed')
   })
 
   it('runs ML autopilot after meta when enabled and ML ranking is active', async () => {
@@ -378,7 +615,98 @@ describe('meta service', () => {
     })
     expect(invokeCommandMock).toHaveBeenCalledWith('apply_ml_confidence_model', {
       scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
-      groups: expect.any(Array),
+      groups: [{
+        samples: 10,
+        pass_rate: 0.55,
+        robust_score_p10: 0.12,
+        robust_score_median: 0.18,
+        max_dd_p90: 0.09,
+        cross_score_median: 0.04,
+        meta_score: 0.8,
+      }],
+    })
+  })
+
+  it('refreshes ML status after stage5 auto-trains a model', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_meta_selection') {
+        return {
+          ts: '2026-02-26T10:00:00Z',
+          report_xlsx_path: 'C:/reports/meta.xlsx',
+          meta_json_path: 'C:/runs/vectorgrid_meta.json',
+          result: {
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            groups: [{
+              samples: 10,
+              pass_rate: 0.55,
+              robust_score_p10: 0.12,
+              robust_score_median: 0.18,
+              max_dd_p90: 0.09,
+              cross_score_median: 0.04,
+              meta_score: 0.8,
+            }],
+          },
+        }
+      }
+      if (command === 'run_meta_stage5_ml_confidence') {
+        return {
+          ts: '2026-02-26T10:02:00Z',
+          stage4_json_path: 'C:/runs/vectorgrid_stage5.json',
+          stage5_json_path: 'C:/runs/vectorgrid_stage5.json',
+          result: {
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            source_meta_json_path: 'C:/runs/vectorgrid_meta.json',
+            model_path: 'C:/models/meta_model.json',
+            model_state: 'healthy',
+            model_healthy: true,
+            model_trained_now: true,
+            groups_selected: 1,
+            groups_scored: 1,
+            groups_considered: 1,
+            min_ml_confidence: 0.55,
+            decision_counts: { accept: 1, review: 0, reject: 0 },
+            selected_groups: [],
+          },
+        }
+      }
+      if (command === 'ml_confidence_model_status') {
+        return {
+          exists: true,
+          model_path: 'C:/models/meta_model.json',
+          bytes: 1024,
+          available_meta_artifacts: 10,
+          available_labeled_rows: 300,
+          stale: false,
+          retrain_recommended: false,
+          model_healthy: true,
+          model_summary: {
+            label: { min_holdout_pass_rate: 0.6, min_holdout_score_p10: 0.1, min_holdout_datasets: 5 },
+            meta: { healthy: true },
+          },
+        }
+      }
+      if (command === 'list_stage5_artifacts') return []
+      if (command === 'list_meta_artifacts') return []
+      return undefined
+    })
+
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: 'CompositeMo',
+      metaTimeframe: '1m',
+    })
+
+    await runMeta()
+    await mlRefresh()
+    invokeCommandMock.mockClear()
+    await runStage5()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('ml_confidence_model_status', {
+      scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
     })
   })
 

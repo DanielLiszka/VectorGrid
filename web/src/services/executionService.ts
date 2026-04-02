@@ -1,4 +1,5 @@
 import { invokeCommand } from '../tauri/invoke'
+import { listenEvent } from '../tauri/events'
 import { readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
 import {
   buildExecutionStrategyFromRunContext,
@@ -86,8 +87,16 @@ interface ExecutionSnapshotResponse {
   position?: unknown
 }
 
+interface LiveCandleStreamInfoResponse {
+  symbol?: unknown
+  delayed?: unknown
+  market?: unknown
+  active?: unknown
+}
+
 interface LiveCandleStreamStatusResponse {
   active?: unknown
+  stream?: unknown
 }
 
 interface LiveCandleStreamResponse {
@@ -101,7 +110,28 @@ interface ExecuteSignalResponse {
   action?: unknown
   order_submitted?: unknown
   order_id?: unknown
+  delta_qty?: unknown
+  last_bar_ts?: unknown
   warnings?: unknown
+}
+
+interface PolygonLiveStatusEventPayload {
+  status?: unknown
+  message?: unknown
+  market?: unknown
+  symbol?: unknown
+  delayed?: unknown
+  channel?: unknown
+  at_unix_ms?: unknown
+}
+
+interface LiveExecutionRunnerEventPayload {
+  status?: unknown
+  message?: unknown
+  symbol?: unknown
+  at_unix_ms?: unknown
+  bar_open_unix_ms?: unknown
+  execution?: unknown
 }
 
 export interface ExecutionOrderRow {
@@ -113,6 +143,7 @@ export interface ExecutionActionResult {
   statusHint?: string
   liveStatusHint?: string
   runnerStatusHint?: string
+  prependOrderRows?: ExecutionOrderRow[]
   positionMeta?: string
   chartMeta?: string
   outputPreview?: string
@@ -120,10 +151,42 @@ export interface ExecutionActionResult {
   orderCount?: number
   liveActive?: boolean
   runnerActive?: boolean
+  liveSymbol?: string
+  liveDelayed?: boolean
+}
+
+export interface ParsedLiveStatus {
+  active: boolean
+  symbol: string
+  delayed: boolean
+  hint: string
+  status: string
+  message: string
+}
+
+export interface ParsedRunnerEvent {
+  status: string
+  symbol: string
+  message: string
+  hint: string
+  active: boolean | null
+  execution: ExecuteSignalResponse | null
+}
+
+export interface ExecutionRuntimeEventHandlers {
+  onPolygonLiveStatus?: (event: ParsedLiveStatus) => void
+  onRunnerEvent?: (event: ParsedRunnerEvent) => void
 }
 
 function text(value: unknown): string {
   return String(value ?? '').trim()
+}
+
+export function canonicalSymbol(raw: unknown): string {
+  return String(raw ?? '')
+    .trim()
+    .replace(/\s+/g, '')
+    .toUpperCase()
 }
 
 function toNumber(value: unknown): number {
@@ -174,7 +237,7 @@ function parseQty(raw: unknown): number {
 }
 
 function requireSymbol(raw: unknown): string {
-  const symbol = text(raw).toUpperCase()
+  const symbol = canonicalSymbol(raw)
   if (!symbol) throw new Error('Execution symbol is required (e.g. AAPL).')
   return symbol
 }
@@ -275,7 +338,7 @@ function positionMeta(raw: unknown): string {
 }
 
 function chartMeta(symbolRaw: unknown, orderCount: number): string {
-  const symbol = text(symbolRaw).toUpperCase() || '-'
+  const symbol = canonicalSymbol(symbolRaw) || '-'
   return `Execution chart sync pending. symbol=${symbol} orders=${orderCount}`
 }
 
@@ -294,6 +357,133 @@ function summarizeRunnerStatus(raw: unknown): { text: string; active: boolean } 
   return {
     text: `Auto-runner: on (${sym}, ${mode}, ${dry}) runs=${runs} skips=${skips} errs=${errs}${inflight ? ' [in-flight]' : ''}`,
     active,
+  }
+}
+
+function liveStatusHint(active: boolean, symbolRaw: unknown, delayed: boolean, statusRaw?: unknown): string {
+  const symbol = canonicalSymbol(symbolRaw)
+  const suffix = symbol ? ` for ${symbol}` : ''
+  const delayText = delayed ? ' [delayed]' : ''
+  const status = text(statusRaw).toLowerCase()
+  if (active && status === 'connecting') {
+    return `Live candles connecting${suffix}${delayText}.`.trim()
+  }
+  if (active && status === 'subscribed') {
+    return `Live candles subscribed${suffix}${delayText}.`.trim()
+  }
+  if (active && status === 'started') {
+    return `Live candles started${suffix}${delayText}.`.trim()
+  }
+  if (!active) {
+    if (status === 'stopped') return 'Live candles stopped.'
+    if (status === 'closed') return `Live candles closed${suffix}${delayText}.`.trim()
+    if (status === 'error') return `Live candles error${suffix}${delayText}.`.trim()
+    return 'Live candles: off'
+  }
+  return `Live candles active${suffix}${delayText}.`.trim()
+}
+
+function parseLiveStreamStatus(raw: unknown): ParsedLiveStatus {
+  const row = isRecord(raw) ? (raw as LiveCandleStreamStatusResponse) : {}
+  const stream = isRecord(row.stream) ? (row.stream as LiveCandleStreamInfoResponse) : null
+  const active = !!row.active
+  const symbol = canonicalSymbol(stream?.symbol)
+  const delayed = !!stream?.delayed
+  return {
+    active,
+    symbol,
+    delayed,
+    hint: liveStatusHint(active, symbol, delayed),
+    status: active ? 'active' : 'off',
+    message: '',
+  }
+}
+
+export function parsePolygonLiveStatusEvent(raw: unknown): ParsedLiveStatus {
+  const row = isRecord(raw) ? (raw as PolygonLiveStatusEventPayload) : {}
+  const status = text(row.status).toLowerCase()
+  const symbol = canonicalSymbol(row.symbol)
+  const delayed = !!row.delayed
+  const active = status === 'started' || status === 'connecting' || status === 'subscribed'
+  return {
+    active,
+    symbol,
+    delayed,
+    hint: liveStatusHint(active, symbol, delayed, status),
+    status,
+    message: text(row.message),
+  }
+}
+
+export function optimisticOrderRowFromExecution(
+  executionRaw: unknown,
+): ExecutionOrderRow | null {
+  const execution = isRecord(executionRaw) ? (executionRaw as ExecuteSignalResponse) : null
+  if (!execution?.order_submitted) return null
+  const lastBarTs = toNumber(execution.last_bar_ts)
+  const atUnixMs = Number.isFinite(lastBarTs) && lastBarTs > 0 ? Math.floor(lastBarTs) : Date.now()
+  const side = text(execution.action).toLowerCase() || '-'
+  const qty = trimTrailingZeros(Math.abs(toNumber(execution.delta_qty)), 6)
+  const orderId = text(execution.order_id) || '-'
+  return {
+    cells: [
+      toUtcDateTime(atUnixMs),
+      side,
+      'submitted*',
+      qty,
+      '-',
+      '-',
+      orderId,
+    ],
+  }
+}
+
+export function parseRunnerEvent(raw: unknown): ParsedRunnerEvent {
+  const row = isRecord(raw) ? (raw as LiveExecutionRunnerEventPayload) : {}
+  const status = text(row.status).toLowerCase()
+  const symbol = canonicalSymbol(row.symbol)
+  const message = text(row.message)
+  let active: boolean | null = null
+  if (status === 'stopped') active = false
+  if (status === 'cancelled') active = false
+  if (
+    status === 'started' ||
+    status === 'triggered' ||
+    status === 'queued_latest' ||
+    status === 'signal_processed' ||
+    status === 'order_submitted'
+  ) {
+    active = true
+  }
+  return {
+    status,
+    symbol,
+    message,
+    hint: message ? `Auto-runner: ${message}` : 'Auto-runner status updated.',
+    active,
+    execution: isRecord(row.execution) ? (row.execution as ExecuteSignalResponse) : null,
+  }
+}
+
+export async function subscribeExecutionRuntimeEvents(
+  handlers: ExecutionRuntimeEventHandlers,
+): Promise<() => void> {
+  const unsubs = await Promise.all([
+    listenEvent<PolygonLiveStatusEventPayload>('polygon_live_status', (payload) => {
+      handlers.onPolygonLiveStatus?.(parsePolygonLiveStatusEvent(payload))
+    }),
+    listenEvent<LiveExecutionRunnerEventPayload>('live_execution_runner_event', (payload) => {
+      handlers.onRunnerEvent?.(parseRunnerEvent(payload))
+    }),
+  ])
+  return () => {
+    for (const off of unsubs) {
+      try {
+        off?.()
+      } catch {
+        // best-effort teardown
+      }
+    }
   }
 }
 
@@ -466,13 +656,10 @@ async function refreshRunnerStatusHint(): Promise<{ hint: string; active: boolea
   return { hint: summary.text, active: summary.active }
 }
 
-async function refreshLiveStatusHint(): Promise<{ hint: string; active: boolean }> {
-  const raw = (await invokeCommand('polygon_live_candle_stream_status')) as LiveCandleStreamStatusResponse
-  const active = !!raw?.active
-  return {
-    hint: active ? 'Live candles active.' : 'Live candles: off',
-    active,
-  }
+async function refreshLiveStatus(): Promise<ParsedLiveStatus> {
+  return parseLiveStreamStatus(
+    (await invokeCommand('polygon_live_candle_stream_status')) as LiveCandleStreamStatusResponse,
+  )
 }
 
 export async function testConnection(options: ExecutionActionOptions): Promise<ExecutionActionResult> {
@@ -502,7 +689,7 @@ export async function refreshOrders(options: ExecutionActionOptions): Promise<Ex
   if (!api.apiKey || !api.apiSecret) {
     throw new Error('API key + secret are required to refresh broker orders.')
   }
-  const symbol = text(options.symbol).toUpperCase()
+  const symbol = canonicalSymbol(options.symbol)
   const resp = (await invokeCommand('get_live_execution_snapshot', {
     req: {
       mode,
@@ -510,14 +697,20 @@ export async function refreshOrders(options: ExecutionActionOptions): Promise<Ex
       alpaca_api_secret: api.apiSecret,
       symbol,
       limit: 200,
+      include_account: false,
+      include_orders: true,
+      include_position: true,
     },
   })) as ExecutionSnapshotResponse
   syncPersistedExecutionKeys(options)
   const rows = buildOrderRows(resp?.orders)
   const count = rows.length
+  const scopeLabel = symbol
+    ? `recent order${count === 1 ? '' : 's'} for ${symbol}`
+    : `order${count === 1 ? '' : 's'} for all symbols`
   return {
-    statusLine: `Loaded ${count} order${count === 1 ? '' : 's'} for ${symbol || 'all symbols'}.`,
-    statusHint: `Loaded ${count} order${count === 1 ? '' : 's'} for ${symbol || 'all symbols'}.`,
+    statusLine: `Loaded ${count} ${scopeLabel}.`,
+    statusHint: `Loaded ${count} ${scopeLabel}.`,
     outputPreview: safePrettyJson(resp),
     orderRows: rows,
     orderCount: count,
@@ -536,6 +729,8 @@ export async function startLive(options: ExecutionActionOptions): Promise<Execut
     statusLine: `Live candles started for ${text(resp?.symbol) || symbol}.`,
     liveStatusHint: `Live candles started for ${text(resp?.symbol) || symbol}${text(resp?.channel) ? ` (${text(resp?.channel)})` : ''}${resp?.delayed ? ' [delayed]' : ''}.`,
     liveActive: true,
+    liveSymbol: canonicalSymbol(resp?.symbol || symbol),
+    liveDelayed: !!resp?.delayed,
   }
 }
 
@@ -546,6 +741,8 @@ export async function stopLive(): Promise<ExecutionActionResult> {
     statusLine: stopped ? 'Live candles stopped.' : 'Live candles were already stopped.',
     liveStatusHint: stopped ? 'Live candles stopped.' : 'Live candles were already stopped.',
     liveActive: false,
+    liveSymbol: '',
+    liveDelayed: false,
   }
 }
 
@@ -556,9 +753,15 @@ export async function startRunner(options: ExecutionActionOptions): Promise<Exec
     throw new Error('API key + secret are required unless dry-run is enabled.')
   }
 
-  const live = (await invokeCommand('polygon_live_candle_stream_status')) as LiveCandleStreamStatusResponse
-  if (!live?.active) {
+  const live = parseLiveStreamStatus(
+    (await invokeCommand('polygon_live_candle_stream_status')) as LiveCandleStreamStatusResponse,
+  )
+  if (!live.active) {
     throw new Error('Start live candles first. Auto-runner triggers on Polygon live bars.')
+  }
+  const requestedSymbol = canonicalSymbol(req.symbol)
+  if (live.symbol && live.symbol !== requestedSymbol) {
+    throw new Error(`Live candles are currently running for ${live.symbol}. Stop them or switch the execution symbol first.`)
   }
 
   const statusRaw = await invokeCommand('start_live_execution_runner', { req })
@@ -568,6 +771,8 @@ export async function startRunner(options: ExecutionActionOptions): Promise<Exec
     statusLine: `Auto-runner started for ${text(req.symbol) || '-'}.`,
     runnerStatusHint: summary.text,
     runnerActive: summary.active,
+    liveSymbol: live.symbol,
+    liveDelayed: live.delayed,
   }
 }
 
@@ -601,6 +806,9 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
     : `Signal processed: action=${action}.`
   if (req.dry_run) statusHint += ' Dry-run only.'
   if (warningCount) statusHint += ` Warnings=${warningCount}.`
+  if (submitted && !req.dry_run) {
+    statusHint += ' Use Refresh orders for broker-confirmed state.'
+  }
 
   const result: ExecutionActionResult = {
     statusLine: statusHint,
@@ -609,14 +817,9 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
   }
 
   if (submitted && !req.dry_run) {
-    try {
-      const snapshot = await refreshOrders(options)
-      if (Array.isArray(snapshot.orderRows)) result.orderRows = snapshot.orderRows
-      if (typeof snapshot.orderCount === 'number') result.orderCount = snapshot.orderCount
-      if (typeof snapshot.positionMeta === 'string') result.positionMeta = snapshot.positionMeta
-      if (typeof snapshot.chartMeta === 'string') result.chartMeta = snapshot.chartMeta
-    } catch {
-      // keep run-once success non-fatal when refresh fails
+    const optimisticRow = optimisticOrderRowFromExecution(resp)
+    if (optimisticRow) {
+      result.prependOrderRows = [optimisticRow]
     }
   }
 
@@ -626,22 +829,27 @@ export async function runOnce(options: ExecutionActionOptions): Promise<Executio
 export async function refreshStatuses(): Promise<ExecutionActionResult> {
   const [runner, live] = await Promise.allSettled([
     refreshRunnerStatusHint(),
-    refreshLiveStatusHint(),
+    refreshLiveStatus(),
   ])
   const runnerHint = runner.status === 'fulfilled'
     ? runner.value.hint
     : 'Auto-runner status unavailable.'
   const runnerActive = runner.status === 'fulfilled' ? runner.value.active : false
-  const liveHint = live.status === 'fulfilled'
-    ? live.value.hint
+  const liveSummary = live.status === 'fulfilled'
+    ? live.value
+    : null
+  const liveHint = liveSummary
+    ? liveSummary.hint
     : 'Live status unavailable.'
-  const liveActive = live.status === 'fulfilled' ? live.value.active : false
+  const liveActive = liveSummary ? liveSummary.active : false
   return {
     statusLine: 'Execution status refreshed.',
     runnerStatusHint: runnerHint,
     runnerActive,
     liveStatusHint: liveHint,
     liveActive,
+    liveSymbol: liveSummary?.symbol || '',
+    liveDelayed: !!liveSummary?.delayed,
   }
 }
 
@@ -654,14 +862,6 @@ export async function clearKeys(): Promise<ExecutionActionResult> {
   return {
     statusLine: 'Cleared execution API keys.',
     statusHint: 'Cleared execution API keys.',
-    liveStatusHint: 'Live candles: off',
-    runnerStatusHint: 'Auto-runner: off',
     outputPreview: '-',
-    orderRows: [],
-    orderCount: 0,
-    positionMeta: 'Position: -',
-    chartMeta: 'Load a dataset and refresh orders to overlay broker events.',
-    liveActive: false,
-    runnerActive: false,
   }
 }

@@ -1,5 +1,10 @@
 import { invokeCommand } from '../tauri/invoke'
-import { applyWorkflowArtifactsPayload } from '../stores/workflowArtifactsStore'
+import {
+  applyWorkflowArtifactsPayload,
+  readLatestWorkflowRunIdentitySnapshot,
+  useWorkflowArtifactsStore,
+} from '../stores/workflowArtifactsStore'
+import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { refreshAnalysisFromWorkflowRun } from './analysisService'
 
 type WorkflowArtifactsSource = 'legacy-runtime' | 'vue'
@@ -24,6 +29,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
+function syncSourceIfStoreBound(source: WorkflowArtifactsSource): void {
+  const pinia = resolveRuntimePinia()
+  if (!pinia) return
+  useWorkflowArtifactsStore(pinia).source = source
+}
+
 export async function syncWorkflowArtifactsFromLegacyRuntime(
   source: WorkflowArtifactsSource = 'vue',
 ): Promise<boolean> {
@@ -34,7 +45,20 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
 
     const latest = asRecord(rows[0])
     const latestPath = normalizeText(latest?.path)
+    const latestTs = normalizeText(latest?.ts)
     if (!latestPath) return false
+
+    const currentIdentity = readLatestWorkflowRunIdentitySnapshot()
+    const canSkipLoad = !!(
+      currentIdentity &&
+      currentIdentity.artifactPath === latestPath &&
+      currentIdentity.ts === latestTs &&
+      currentIdentity.hasValidation
+    )
+    if (canSkipLoad) {
+      syncSourceIfStoreBound(source)
+      return false
+    }
 
     const artifactRaw = (await invokeCommand('load_run_artifact', { path: latestPath })) as unknown
     const artifact = asRecord(artifactRaw)
@@ -62,8 +86,9 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
     }
 
     const applied = applyWorkflowArtifactsPayload(payload, source)
-    if (applied) refreshAnalysisFromWorkflowRun()
-    return applied
+    const meaningfullyApplied = applied.runChanged || applied.validationChanged
+    if (meaningfullyApplied) refreshAnalysisFromWorkflowRun()
+    return meaningfullyApplied
   } catch {
     return false
   }

@@ -13,6 +13,7 @@ import {
   listSampleCsvs as listSampleCsvsAction,
   loadCsv as loadCsvAction,
   loadSampleCsv as loadSampleCsvAction,
+  type MarketDataDirInfoSummary,
   openMarketDataDir as openMarketDataDirAction,
   openPolygon as openPolygonAction,
   type PolygonCacheInfoSummary,
@@ -23,6 +24,8 @@ import {
   setMarketDataDir as setMarketDataDirAction,
   validatePolygonDataset as validatePolygonDatasetAction,
 } from '../services/dataService'
+import { DATA_STARTUP_SNAPSHOT_KEY } from '../utils/core/storageKeys'
+import { readStorageJson, writeStorageJson } from '../utils/storage'
 import { formatUtcDateFromUnixMs } from '../utils/uiFormat'
 import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowArtifactsStore } from './workflowArtifactsStore'
@@ -33,6 +36,8 @@ export interface DataSampleOption {
   path: string
   disabled: boolean
 }
+
+type DataSourceKind = 'csv' | 'polygon'
 
 interface DataState {
   activeControlsTab: string
@@ -86,11 +91,34 @@ interface DataState {
   statusLine: string
   baseDataId: string
   baseDataMeta: DataLoadResult['meta'] | null
+  baseCsvPath: string
+  baseSourceKind: DataSourceKind
+  baseSourceSizeBytes: number | null
+  baseSourceMtimeUtcMs: number | null
   baseDatasetLabel: string
   baseDatasetContext: string
+  startupHydratedOnce: boolean
+  polygonCacheLoadedOnce: boolean
   source: 'vue' | 'unknown'
   updatedAtUnixMs: number
 }
+
+interface DataStartupSnapshot {
+  autoRestoreDataset: boolean
+  baseCsvPath: string
+  selectedTimeframe: string
+  source: DataSourceKind
+  baseSourceSizeBytes: number | null
+  baseSourceMtimeUtcMs: number | null
+  savedAtUnixMs: number
+}
+
+const POLYGON_SELECTED_PROMPT = 'Select a cached Polygon dataset to inspect, validate, repair, or load.'
+const POLYGON_CACHE_UNAVAILABLE_TEXT = 'Polygon cache unavailable.'
+const STARTUP_RESTORE_PENDING_STATUS = 'Startup restore pending.'
+
+let startupHydratePromise: Promise<void> | null = null
+let polygonCacheLoadPromise: Promise<void> | null = null
 
 function fileBasename(path: string): string {
   const normalized = String(path || '').trim().replace(/\\/g, '/')
@@ -118,12 +146,51 @@ function datasetRangeText(meta: DataLoadResult['meta'] | null, timeframe: string
   return parts.length ? parts.join(' • ') : '—'
 }
 
-function datasetContextText(path: string, source: string): string {
+function loadSourceText(loadSource: DataLoadResult['loadSource'] | string): string {
+  switch (String(loadSource || '').trim()) {
+    case 'binary_cache':
+      return 'binary cache'
+    case 'csv_parsed_and_cached':
+      return 'csv parsed + cached'
+    case 'csv_parsed_cache_write_skipped':
+      return 'csv parsed (cache write skipped)'
+    case 'in_memory_base_reuse':
+      return 'in-memory base reuse'
+    case 'derived_fresh_resample':
+      return 'fresh resample'
+    case 'derived_in_memory_reuse':
+      return 'in-memory derived reuse'
+    default:
+      return 'load path unknown'
+  }
+}
+
+function baseLoadStatusText(result: DataLoadResult, source: DataSourceKind): string {
+  const subject = source === 'polygon' ? 'Loaded Polygon dataset' : 'Loaded'
+  return `${subject} (${loadSourceText(result.loadSource)}).`
+}
+
+function derivedLoadStatusText(result: DataLoadResult): string {
+  const effective = String(result.meta?.timeframe || '').trim()
+  const prefix = effective ? `Using ${effective}` : 'Using derived timeframe'
+  return `${prefix} (${loadSourceText(result.loadSource)}).`
+}
+
+function datasetContextText(
+  path: string,
+  source: DataSourceKind,
+  loadSource = '',
+  cachePath = '',
+): string {
   const parts: string[] = []
   const src = String(source || '').trim()
   if (src) parts.push(`source=${src}`)
   const name = fileBasename(path)
   if (name) parts.push(`file=${name}`)
+  const load = String(loadSource || '').trim()
+  if (load) parts.push(`load=${load}`)
+  const cacheName = fileBasename(cachePath)
+  if (cacheName) parts.push(`cache=${cacheName}`)
   return parts.length ? parts.join(' • ') : '—'
 }
 
@@ -260,7 +327,55 @@ function polygonCacheMetaText(info: PolygonCacheInfoSummary): string {
     info.cacheDir ? `Cache: ${info.cacheDir}` : '',
     `${count} cached dataset${count === 1 ? '' : 's'}`,
   ].filter((item) => item.length > 0)
-  return parts.join(' · ') || 'Polygon cache unavailable.'
+  return parts.join(' · ') || POLYGON_CACHE_UNAVAILABLE_TEXT
+}
+
+function normalizeDataSourceKind(value: unknown): DataSourceKind {
+  return String(value || '').trim() === 'polygon' ? 'polygon' : 'csv'
+}
+
+function normalizeStartupSnapshot(raw: unknown): DataStartupSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null
+  const row = raw as Partial<DataStartupSnapshot>
+  return {
+    autoRestoreDataset: Boolean(row.autoRestoreDataset),
+    baseCsvPath: String(row.baseCsvPath || '').trim(),
+    selectedTimeframe: String(row.selectedTimeframe || '').trim(),
+    source: normalizeDataSourceKind(row.source),
+    baseSourceSizeBytes:
+      typeof row.baseSourceSizeBytes === 'number' && Number.isFinite(row.baseSourceSizeBytes)
+        ? row.baseSourceSizeBytes
+        : null,
+    baseSourceMtimeUtcMs:
+      typeof row.baseSourceMtimeUtcMs === 'number' && Number.isFinite(row.baseSourceMtimeUtcMs)
+        ? row.baseSourceMtimeUtcMs
+        : null,
+    savedAtUnixMs:
+      typeof row.savedAtUnixMs === 'number' && Number.isFinite(row.savedAtUnixMs)
+        ? row.savedAtUnixMs
+        : 0,
+  }
+}
+
+function readStartupSnapshot(): DataStartupSnapshot | null {
+  return normalizeStartupSnapshot(readStorageJson<DataStartupSnapshot>(DATA_STARTUP_SNAPSHOT_KEY))
+}
+
+function writeStartupSnapshot(snapshot: DataStartupSnapshot): void {
+  writeStorageJson(DATA_STARTUP_SNAPSHOT_KEY, snapshot)
+}
+
+function persistStartupSnapshot(state: DataState): void {
+  const hasBase = hasLoadedDataset(state.baseDataId) && !!String(state.baseCsvPath || '').trim()
+  writeStartupSnapshot({
+    autoRestoreDataset: !!state.autoRestoreDataset,
+    baseCsvPath: hasBase ? String(state.baseCsvPath || '').trim() : '',
+    selectedTimeframe: hasBase ? String(state.dataTimeframe || state.baseDataMeta?.timeframe || '').trim() : '',
+    source: normalizeDataSourceKind(state.baseSourceKind),
+    baseSourceSizeBytes: hasBase ? state.baseSourceSizeBytes ?? null : null,
+    baseSourceMtimeUtcMs: hasBase ? state.baseSourceMtimeUtcMs ?? null : null,
+    savedAtUnixMs: Date.now(),
+  })
 }
 
 function selectPolygonDatasetPath(state: DataState, preferredPath = ''): void {
@@ -273,7 +388,7 @@ function selectPolygonDatasetPath(state: DataState, preferredPath = ''): void {
     state.polygonSelectedPath = state.polygonDatasets[0]?.csvPath || ''
   }
   const selected = state.polygonDatasets.find((row) => row.csvPath === state.polygonSelectedPath) || null
-  state.polygonSelectedMeta = selected ? polygonDatasetMetaText(selected) : 'Select a cached Polygon dataset to inspect, validate, repair, or load.'
+  state.polygonSelectedMeta = selected ? polygonDatasetMetaText(selected) : POLYGON_SELECTED_PROMPT
 }
 
 function applyPolygonCacheInfo(state: DataState, info: PolygonCacheInfoSummary, preferredPath = ''): void {
@@ -282,7 +397,103 @@ function applyPolygonCacheInfo(state: DataState, info: PolygonCacheInfoSummary, 
   state.polygonDatasets = Array.isArray(info.datasets) ? [...info.datasets] : []
   state.polygonCacheMeta = polygonCacheMetaText(info)
   selectPolygonDatasetPath(state, preferredPath)
-  setControlsBusy(state, false)
+}
+
+function resetPolygonCacheRuntimeState(state: DataState, nextCacheDir = ''): void {
+  polygonCacheLoadPromise = null
+  state.polygonCacheLoadedOnce = false
+  state.polygonCacheDir = String(nextCacheDir || '').trim()
+  state.polygonHasApiKey = false
+  state.polygonDatasets = []
+  state.polygonSelectedPath = ''
+  state.polygonSelectedMeta = POLYGON_SELECTED_PROMPT
+  state.polygonCacheMeta = state.polygonCacheDir ? 'Polygon cache metadata not loaded.' : POLYGON_CACHE_UNAVAILABLE_TEXT
+}
+
+function upsertPolygonDatasetFromDownload(
+  state: DataState,
+  result: { csvPath: string; baseLoad: DataLoadResult },
+): void {
+  const csvPath = String(result.csvPath || '').trim()
+  if (!csvPath) return
+  const next: PolygonDatasetSummary = {
+    market: String(state.polygonMarket || 'stocks').trim() || 'stocks',
+    displaySymbol: String(state.polygonSymbol || fileBasename(csvPath)).trim().toUpperCase(),
+    polygonTicker: String(state.polygonSymbol || fileBasename(csvPath)).trim().toUpperCase(),
+    timeframe: String(result.baseLoad.meta?.timeframe || '1m').trim() || '1m',
+    csvPath,
+    minTs: Number(result.baseLoad.meta?.minTs || 0),
+    maxTs: Number(result.baseLoad.meta?.maxTs || 0),
+    lastUpdatedUtcMs: Number(result.baseLoad.meta?.sourceMtimeUtcMs || Date.now()),
+    rowCount: Number(result.baseLoad.meta?.len || 0),
+    adjusted: !!state.polygonAdjusted,
+    integrity: null,
+  }
+  const rows = state.polygonDatasets.filter((row) => row.csvPath !== csvPath)
+  rows.unshift(next)
+  state.polygonDatasets = rows
+  state.polygonCacheMeta = polygonCacheMetaText({
+    cacheDir: state.polygonCacheDir,
+    hasApiKey: state.polygonHasApiKey,
+    datasets: state.polygonDatasets,
+  })
+  selectPolygonDatasetPath(state, csvPath)
+}
+
+function applyEmptyDatasetState(state: DataState, statusLine = 'Ready.'): void {
+  state.dataId = '—'
+  state.datasetLabel = '—'
+  state.datasetRange = '—'
+  state.dataLen = '—'
+  state.dataTimeframe = ''
+  state.dataTimeframeHint = 'Load a dataset to enable timeframe resampling.'
+  state.datasetContext = '—'
+  state.dataFields = []
+  state.dataFieldHint = ''
+  state.baseDataId = ''
+  state.baseDataMeta = null
+  state.baseCsvPath = ''
+  state.baseSourceKind = 'csv'
+  state.baseSourceSizeBytes = null
+  state.baseSourceMtimeUtcMs = null
+  state.baseDatasetLabel = ''
+  state.baseDatasetContext = ''
+  state.canApplyTimeframe = false
+  state.statusLine = String(statusLine || 'Ready.').trim() || 'Ready.'
+}
+
+function applyMarketDataDirInfo(state: DataState, info: MarketDataDirInfoSummary): boolean {
+  const previousCacheDir = String(state.polygonCacheDir || '').trim()
+  const nextHint = String(info?.hint || state.marketDataDirHint || '—').trim() || '—'
+  const nextRootDir = String(info?.configuredRootDir || '').trim()
+  const nextCacheDir = String(info?.polygonCacheDir || '').trim()
+  state.marketDataDir = nextRootDir
+  state.marketDataDirHint = nextHint
+  return previousCacheDir !== nextCacheDir
+}
+
+async function ensurePolygonCacheLoaded(state: DataState, force = false, preferredPath = ''): Promise<void> {
+  if (state.polygonCacheLoadedOnce && !force) {
+    if (preferredPath) selectPolygonDatasetPath(state, preferredPath)
+    return
+  }
+  if (polygonCacheLoadPromise) {
+    await polygonCacheLoadPromise
+    if (!force || state.polygonCacheLoadedOnce) {
+      if (preferredPath) selectPolygonDatasetPath(state, preferredPath)
+      return
+    }
+  }
+  polygonCacheLoadPromise = (async () => {
+    const info = await getPolygonCacheInfoAction()
+    applyPolygonCacheInfo(state, info, preferredPath || state.polygonSelectedPath)
+    state.polygonCacheLoadedOnce = true
+  })()
+  try {
+    await polygonCacheLoadPromise
+  } finally {
+    polygonCacheLoadPromise = null
+  }
 }
 
 function applyVueTextFieldUpdate(state: DataState, field: string, value: string): boolean {
@@ -386,8 +597,8 @@ export const useDataStore = defineStore('data', {
     polygonHasApiKey: false,
     polygonDatasets: [],
     polygonSelectedPath: '',
-    polygonSelectedMeta: 'Select a cached Polygon dataset to inspect, validate, repair, or load.',
-    polygonCacheMeta: 'Polygon cache unavailable.',
+    polygonSelectedMeta: POLYGON_SELECTED_PROMPT,
+    polygonCacheMeta: POLYGON_CACHE_UNAVAILABLE_TEXT,
     canPolygonRefresh: true,
     canPolygonSaveApiKey: false,
     canPolygonClearApiKey: false,
@@ -398,41 +609,109 @@ export const useDataStore = defineStore('data', {
     statusLine: 'Ready.',
     baseDataId: '',
     baseDataMeta: null,
+    baseCsvPath: '',
+    baseSourceKind: 'csv',
+    baseSourceSizeBytes: null,
+    baseSourceMtimeUtcMs: null,
     baseDatasetLabel: '',
     baseDatasetContext: '',
+    startupHydratedOnce: false,
+    polygonCacheLoadedOnce: false,
     source: 'unknown',
     updatedAtUnixMs: 0,
   }),
 
   actions: {
-    hydrateStartupState(): void {
-      void getMarketDataDirInfoAction()
-        .then((info) => {
-          const configured = String(info?.configuredRootDir || '').trim()
-          const hint = String(info?.hint || this.marketDataDirHint || '—').trim() || '—'
-          this.marketDataDir = configured
-          this.marketDataDirHint = hint
+    hydrateStartupState(): Promise<void> {
+      if (this.startupHydratedOnce) {
+        if (this.polygonOpen) {
+          return ensurePolygonCacheLoaded(this).catch(() => undefined)
+        }
+        return Promise.resolve()
+      }
+      if (startupHydratePromise) return startupHydratePromise
+      startupHydratePromise = (async () => {
+        const startup = readStartupSnapshot()
+        const restorePath = String(startup?.baseCsvPath || '').trim()
+        const restoreSource = normalizeDataSourceKind(startup?.source)
+        const restoreTimeframe = String(startup?.selectedTimeframe || '').trim()
+        this.autoRestoreDataset = startup?.autoRestoreDataset ?? this.autoRestoreDataset
+        if (this.autoRestoreDataset && restorePath) {
+          this.statusLine = STARTUP_RESTORE_PENDING_STATUS
           markVueUpdate(this)
-        })
-        .catch(() => undefined)
+        }
 
-      void listSampleCsvsAction()
-        .then((samples) => {
-          this.sampleCsvOptions = Array.isArray(samples) ? samples : []
-          this.sampleCsvVisible = this.sampleCsvOptions.length > 0
-          markVueUpdate(this)
-        })
-        .catch(() => undefined)
+        const [marketInfo, samples] = await Promise.all([
+          getMarketDataDirInfoAction().catch(() => null),
+          listSampleCsvsAction().catch(() => []),
+        ])
 
-      void getPolygonCacheInfoAction()
-        .then((info) => {
-          applyPolygonCacheInfo(this, info)
+        if (marketInfo) {
+          const nextCacheDir = String(marketInfo.polygonCacheDir || '').trim()
+          const cacheDirChanged = applyMarketDataDirInfo(this, marketInfo)
+          if (cacheDirChanged) resetPolygonCacheRuntimeState(this, nextCacheDir)
+          else this.polygonCacheDir = nextCacheDir
+        }
+
+        this.sampleCsvOptions = Array.isArray(samples) ? samples : []
+        this.sampleCsvVisible = this.sampleCsvOptions.length > 0
+
+        if (this.autoRestoreDataset && restorePath) {
+          const restoreLabel = fileBasename(restorePath) || restorePath
+          this.statusLine = `Restoring ${restoreLabel}...`
           markVueUpdate(this)
-        })
-        .catch(() => undefined)
+          try {
+            const base = await loadCsvAction(restorePath)
+            this.applyLoadResult(base, {
+              treatAsBase: true,
+              statusLine: baseLoadStatusText(base, restoreSource),
+              source: restoreSource,
+            })
+            const baseTf = String(base.meta?.timeframe || '').trim()
+            if (restoreTimeframe && restoreTimeframe !== baseTf) {
+              const derived = await applyTimeframeAction(restoreTimeframe, base.dataId)
+              this.applyLoadResult(derived, {
+                treatAsBase: false,
+                statusLine: derivedLoadStatusText(derived),
+                source: restoreSource,
+              })
+            } else {
+              this.statusLine = `Restored ${restoreLabel}.`
+              markVueUpdate(this)
+            }
+          } catch (error: unknown) {
+            applyEmptyDatasetState(
+              this,
+              `Startup restore failed: ${String(error || '').trim() || 'restore failed.'}`,
+            )
+            markVueUpdate(this)
+          }
+        }
+
+        if (this.polygonOpen) {
+          await ensurePolygonCacheLoaded(this).catch((error: unknown) => {
+            this.statusLine = String(error || '').trim() || 'Failed to refresh Polygon cache.'
+            markVueUpdate(this)
+          })
+        }
+
+        this.startupHydratedOnce = true
+        persistStartupSnapshot(this)
+        setControlsBusy(this, false)
+        markVueUpdate(this)
+      })().finally(() => {
+        startupHydratePromise = null
+      })
+      return startupHydratePromise
     },
 
     applyLegacySnapshot(snapshot: Partial<DataState>): void {
+      const startup = readStartupSnapshot()
+      const pendingRestore =
+        Boolean(snapshot.autoRestoreDataset ?? this.autoRestoreDataset)
+        && !!String(startup?.baseCsvPath || '').trim()
+
+      applyEmptyDatasetState(this, pendingRestore ? STARTUP_RESTORE_PENDING_STATUS : 'Ready.')
       this.activeControlsTab = String(snapshot.activeControlsTab ?? this.activeControlsTab ?? 'data').trim() || 'data'
       this.csvPath = String(snapshot.csvPath ?? this.csvPath ?? '').trim()
       this.recentCsvPaths = normalizedList(snapshot.recentCsvPaths ?? this.recentCsvPaths ?? [])
@@ -440,88 +719,58 @@ export const useDataStore = defineStore('data', {
       this.sampleCsvVisible = Boolean(snapshot.sampleCsvVisible ?? this.sampleCsvVisible)
       this.marketDataDir = String(snapshot.marketDataDir ?? this.marketDataDir ?? '').trim()
       this.marketDataMoveExisting = Boolean(snapshot.marketDataMoveExisting ?? this.marketDataMoveExisting)
-      this.marketDataDirHint = String(snapshot.marketDataDirHint ?? this.marketDataDirHint ?? '—').trim() || '—'
-      const dataId = snapshot.dataId ?? this.dataId ?? '—'
-      const datasetLabel = snapshot.datasetLabel ?? this.datasetLabel ?? '—'
-      const datasetRange = snapshot.datasetRange ?? this.datasetRange ?? '—'
-      const dataLen = snapshot.dataLen ?? this.dataLen ?? '—'
+      this.marketDataDirHint = String(this.marketDataDirHint || '—').trim() || '—'
       this.dataTimeframe = String(snapshot.dataTimeframe ?? this.dataTimeframe ?? '').trim()
-      this.dataTimeframeHint = String(snapshot.dataTimeframeHint ?? this.dataTimeframeHint ?? '—').trim() || '—'
+      this.dataTimeframeHint = timeframeHintText('', this.dataTimeframe, false)
       this.autoRestoreDataset = Boolean(snapshot.autoRestoreDataset ?? this.autoRestoreDataset)
-      this.datasetContext = String(snapshot.datasetContext ?? this.datasetContext ?? '—').trim() || '—'
-      this.dataFields = normalizedList(snapshot.dataFields ?? this.dataFields ?? [])
-      this.dataFieldHint = String(snapshot.dataFieldHint ?? this.dataFieldHint ?? '').trim()
-      this.canBrowseCsv = Boolean(snapshot.canBrowseCsv ?? this.canBrowseCsv)
-      this.canPolygonOpen = Boolean(snapshot.canPolygonOpen ?? this.canPolygonOpen)
-      this.canLoadCsv = Boolean(snapshot.canLoadCsv ?? this.canLoadCsv)
-      this.canClearData = Boolean(snapshot.canClearData ?? this.canClearData)
-      this.canBrowseMarketDataDir = Boolean(snapshot.canBrowseMarketDataDir ?? this.canBrowseMarketDataDir)
-      this.canSetMarketDataDir = Boolean(snapshot.canSetMarketDataDir ?? this.canSetMarketDataDir)
-      this.canResetMarketDataDir = Boolean(snapshot.canResetMarketDataDir ?? this.canResetMarketDataDir)
-      this.canOpenMarketDataDir = Boolean(snapshot.canOpenMarketDataDir ?? this.canOpenMarketDataDir)
-      this.canApplyTimeframe = Boolean(snapshot.canApplyTimeframe ?? this.canApplyTimeframe)
       this.polygonOpen = Boolean(snapshot.polygonOpen ?? this.polygonOpen)
-      this.polygonApiKey = String(snapshot.polygonApiKey ?? this.polygonApiKey ?? '').trim()
+      this.polygonApiKey = String(this.polygonApiKey ?? '').trim()
       this.polygonMarket = String(snapshot.polygonMarket ?? this.polygonMarket ?? 'stocks').trim() || 'stocks'
       this.polygonSymbol = String(snapshot.polygonSymbol ?? this.polygonSymbol ?? '').trim().toUpperCase()
       this.polygonFrom = normalizeDatasetDateInput(String(snapshot.polygonFrom ?? this.polygonFrom ?? '').trim())
       this.polygonTo = normalizeDatasetDateInput(String(snapshot.polygonTo ?? this.polygonTo ?? '').trim())
       this.polygonTimeframe = String(snapshot.polygonTimeframe ?? this.polygonTimeframe ?? '1m').trim() || '1m'
       this.polygonAdjusted = Boolean(snapshot.polygonAdjusted ?? this.polygonAdjusted)
-      this.polygonCacheDir = String(snapshot.polygonCacheDir ?? this.polygonCacheDir ?? '').trim()
-      this.polygonHasApiKey = Boolean(snapshot.polygonHasApiKey ?? this.polygonHasApiKey)
-      this.polygonDatasets = Array.isArray(snapshot.polygonDatasets) ? snapshot.polygonDatasets as PolygonDatasetSummary[] : this.polygonDatasets
-      this.polygonSelectedPath = String(snapshot.polygonSelectedPath ?? this.polygonSelectedPath ?? '').trim()
-      this.polygonSelectedMeta = String(snapshot.polygonSelectedMeta ?? this.polygonSelectedMeta ?? 'Select a cached Polygon dataset to inspect, validate, repair, or load.').trim() || 'Select a cached Polygon dataset to inspect, validate, repair, or load.'
-      this.polygonCacheMeta = String(snapshot.polygonCacheMeta ?? this.polygonCacheMeta ?? 'Polygon cache unavailable.').trim() || 'Polygon cache unavailable.'
-      this.canPolygonRefresh = Boolean(snapshot.canPolygonRefresh ?? this.canPolygonRefresh)
-      this.canPolygonSaveApiKey = Boolean(snapshot.canPolygonSaveApiKey ?? this.canPolygonSaveApiKey)
-      this.canPolygonClearApiKey = Boolean(snapshot.canPolygonClearApiKey ?? this.canPolygonClearApiKey)
-      this.canPolygonDownload = Boolean(snapshot.canPolygonDownload ?? this.canPolygonDownload)
-      this.canPolygonLoadSelected = Boolean(snapshot.canPolygonLoadSelected ?? this.canPolygonLoadSelected)
-      this.canPolygonValidateSelected = Boolean(snapshot.canPolygonValidateSelected ?? this.canPolygonValidateSelected)
-      this.canPolygonRepairSelected = Boolean(snapshot.canPolygonRepairSelected ?? this.canPolygonRepairSelected)
-      const statusLine = snapshot.statusLine ?? this.statusLine ?? 'Ready.'
-      const baseDataId = String(snapshot.baseDataId ?? this.baseDataId ?? '').trim()
-      const baseDataMeta = snapshot.baseDataMeta ?? this.baseDataMeta ?? null
-      const baseDatasetLabel = snapshot.baseDatasetLabel ?? this.baseDatasetLabel ?? ''
-      const baseDatasetContext = snapshot.baseDatasetContext ?? this.baseDatasetContext ?? ''
-
-      this.dataId = String(dataId).trim() || '—'
-      this.datasetLabel = String(datasetLabel).trim() || '—'
-      this.datasetRange = String(datasetRange).trim() || '—'
-      this.dataLen = String(dataLen).trim() || '—'
-      this.statusLine = String(statusLine).trim() || 'Ready.'
-      selectPolygonDatasetPath(this, this.polygonSelectedPath)
+      resetPolygonCacheRuntimeState(this)
       setControlsBusy(this, false)
-      this.baseDataId = hasLoadedDataset(baseDataId) ? baseDataId : ''
-      this.baseDataMeta = (baseDataMeta && typeof baseDataMeta === 'object') ? (baseDataMeta as DataLoadResult['meta']) : null
-      this.baseDatasetLabel = String(baseDatasetLabel || '').trim()
-      this.baseDatasetContext = String(baseDatasetContext || '').trim()
+      this.startupHydratedOnce = false
+      this.polygonCacheLoadedOnce = false
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
 
-    applyLoadResult(result: DataLoadResult, options?: { treatAsBase?: boolean; statusLine?: string; source?: 'csv' | 'polygon' }): void {
+    applyLoadResult(result: DataLoadResult, options?: { treatAsBase?: boolean; statusLine?: string; source?: DataSourceKind }): void {
       const row = result && typeof result === 'object' ? result : null
       if (!row) return
       const dataId = String(row.dataId || '').trim()
       const meta = row.meta && typeof row.meta === 'object' ? row.meta : null
       const path = String(row.path || '').trim()
       const treatAsBase = options?.treatAsBase !== false
+      const source = options?.source || this.baseSourceKind || 'csv'
+      const loadText = loadSourceText(row.loadSource)
+      const cachePath = String(row.cachePath || '').trim()
+      const contextPath = treatAsBase ? path : (this.baseCsvPath || path)
+      const contextText = datasetContextText(
+        contextPath,
+        treatAsBase ? source : this.baseSourceKind,
+        loadText,
+        cachePath,
+      )
 
       if (path) {
         this.csvPath = path
         this.recentCsvPaths = pushRecentCsvPath(this.recentCsvPaths, path)
       }
 
-      const source = options?.source || 'csv'
-
       if (treatAsBase) {
         this.baseDataId = dataId
         this.baseDataMeta = meta
+        this.baseCsvPath = path
+        this.baseSourceKind = source
+        this.baseSourceSizeBytes = meta?.sourceSizeBytes ?? null
+        this.baseSourceMtimeUtcMs = meta?.sourceMtimeUtcMs ?? null
         this.baseDatasetLabel = fileBasename(path) || this.baseDatasetLabel || this.datasetLabel || '—'
-        this.baseDatasetContext = datasetContextText(path, source)
+        this.baseDatasetContext = contextText
       }
 
       const baseMeta = this.baseDataMeta && typeof this.baseDataMeta === 'object' ? this.baseDataMeta : meta
@@ -534,16 +783,20 @@ export const useDataStore = defineStore('data', {
       this.datasetLabel = treatAsBase
         ? (fileBasename(path) || this.datasetLabel || '—')
         : (this.baseDatasetLabel || this.datasetLabel || '—')
-      this.datasetContext = treatAsBase
-        ? datasetContextText(path, source)
-        : (this.baseDatasetContext || this.datasetContext || '—')
+      this.datasetContext = contextText
       this.datasetRange = datasetRangeText(meta, effectiveTf)
       this.dataFields = dataFieldList(meta)
       this.dataFieldHint = dataFieldHint(meta)
       this.dataTimeframe = derived ? effectiveTf : ''
       this.dataTimeframeHint = timeframeHintText(baseTf, effectiveTf, hasLoadedDataset(this.baseDataId || this.dataId))
       this.canApplyTimeframe = hasLoadedDataset(this.baseDataId || this.dataId)
-      this.statusLine = String(options?.statusLine || this.statusLine || 'Ready.').trim() || 'Ready.'
+      this.statusLine = String(
+        options?.statusLine
+          || (treatAsBase ? baseLoadStatusText(row, source) : derivedLoadStatusText(row))
+          || this.statusLine
+          || 'Ready.',
+      ).trim() || 'Ready.'
+      persistStartupSnapshot(this)
       markVueUpdate(this)
     },
 
@@ -564,6 +817,7 @@ export const useDataStore = defineStore('data', {
       this.dataTimeframeHint = timeframeHintText(baseTf, baseTf, true)
       this.canApplyTimeframe = true
       this.statusLine = baseTf ? `Using base timeframe (${baseTf}).` : 'Using base timeframe.'
+      persistStartupSnapshot(this)
       markVueUpdate(this)
     },
 
@@ -589,6 +843,9 @@ export const useDataStore = defineStore('data', {
       const key = String(field || '').trim()
       const next = !!checked
       if (applyVueCheckboxFieldUpdate(this, key, next)) {
+        if (key === 'autoRestoreDataset') {
+          persistStartupSnapshot(this)
+        }
         setControlsBusy(this, false)
         markVueUpdate(this)
       }
@@ -602,10 +859,11 @@ export const useDataStore = defineStore('data', {
       void browseCsvAction()
         .then((result) => {
           if (!result) return
-          const status = result.cacheHit
-            ? 'Loaded (binary cache).'
-            : (result.cachePath ? 'Loaded (CSV parsed + cached).' : 'Loaded.')
-          this.applyLoadResult(result, { treatAsBase: true, statusLine: status })
+          this.applyLoadResult(result, {
+            treatAsBase: true,
+            statusLine: baseLoadStatusText(result, 'csv'),
+            source: 'csv',
+          })
         })
         .catch((error: unknown) => {
           this.statusLine = String(error || '').trim() || 'Data load failed.'
@@ -625,9 +883,8 @@ export const useDataStore = defineStore('data', {
       this.polygonOpen = true
       markVueUpdate(this)
       void openPolygonAction().catch(() => undefined)
-      void getPolygonCacheInfoAction()
-        .then((info) => {
-          applyPolygonCacheInfo(this, info, this.polygonSelectedPath)
+      void ensurePolygonCacheLoaded(this)
+        .then(() => {
           markVueUpdate(this)
         })
         .catch((error: unknown) => {
@@ -646,9 +903,9 @@ export const useDataStore = defineStore('data', {
       setControlsBusy(this, true)
       this.statusLine = 'Refreshing Polygon cache...'
       markVueUpdate(this)
-      void getPolygonCacheInfoAction()
-        .then((info) => {
-          applyPolygonCacheInfo(this, info, this.polygonSelectedPath)
+      void ensurePolygonCacheLoaded(this, true)
+        .then(() => {
+          setControlsBusy(this, false)
           this.statusLine = 'Refreshed Polygon cache.'
           markVueUpdate(this)
         })
@@ -672,6 +929,8 @@ export const useDataStore = defineStore('data', {
       void setPolygonApiKeyAction(apiKey)
         .then((info) => {
           applyPolygonCacheInfo(this, info, this.polygonSelectedPath)
+          this.polygonCacheLoadedOnce = true
+          setControlsBusy(this, false)
           this.statusLine = 'Saved Polygon API key.'
           markVueUpdate(this)
         })
@@ -690,6 +949,8 @@ export const useDataStore = defineStore('data', {
         .then((info) => {
           this.polygonApiKey = ''
           applyPolygonCacheInfo(this, info, this.polygonSelectedPath)
+          this.polygonCacheLoadedOnce = true
+          setControlsBusy(this, false)
           this.statusLine = 'Cleared Polygon API key.'
           markVueUpdate(this)
         })
@@ -719,10 +980,7 @@ export const useDataStore = defineStore('data', {
       markVueUpdate(this)
       void loadCsvAction(nextPath)
         .then((result) => {
-          const status = result.cacheHit
-            ? 'Loaded Polygon dataset (binary cache).'
-            : (result.cachePath ? 'Loaded Polygon dataset (CSV parsed + cached).' : 'Loaded Polygon dataset.')
-          this.applyLoadResult(result, { treatAsBase: true, statusLine: status, source: 'polygon' })
+          this.applyLoadResult(result, { treatAsBase: true, statusLine: baseLoadStatusText(result, 'polygon'), source: 'polygon' })
         })
         .catch((error: unknown) => {
           this.statusLine = String(error || '').trim() || 'Polygon data load failed.'
@@ -746,9 +1004,9 @@ export const useDataStore = defineStore('data', {
         adjusted: this.polygonAdjusted,
         timeframe: this.polygonTimeframe,
       })
-        .then(async (result) => {
-          const info = await getPolygonCacheInfoAction()
-          applyPolygonCacheInfo(this, info, result.csvPath)
+        .then((result) => {
+          upsertPolygonDatasetFromDownload(this, result)
+          this.polygonCacheLoadedOnce = true
           const sourcePath = String(result.csvPath || '').trim()
           const symbol = String(this.polygonSymbol || '').trim().toUpperCase()
           const cacheNote = result.usedCacheOnly ? 'cache reused' : `${result.downloadedBars} bars downloaded`
@@ -756,17 +1014,19 @@ export const useDataStore = defineStore('data', {
           const effectiveTimeframe = String(result.load?.meta?.timeframe || '').trim()
           this.applyLoadResult(result.baseLoad, {
             treatAsBase: true,
-            statusLine: `Loaded Polygon ${symbol || 'dataset'} (${cacheNote}).`,
+            statusLine: `${baseLoadStatusText(result.baseLoad, 'polygon')} ${cacheNote}.`,
             source: 'polygon',
           })
           if (effectiveTimeframe && baseTimeframe && effectiveTimeframe !== baseTimeframe) {
             this.applyLoadResult(result.load, {
               treatAsBase: false,
-              statusLine: `Loaded Polygon ${symbol || 'dataset'} (${cacheNote}).`,
+              statusLine: `${derivedLoadStatusText(result.load)} ${cacheNote}.`,
               source: 'polygon',
             })
           }
+          this.statusLine = symbol ? `${this.statusLine} ${symbol}.` : this.statusLine
           this.csvPath = sourcePath || this.csvPath
+          setControlsBusy(this, false)
           markVueUpdate(this)
         })
         .catch((error: unknown) => {
@@ -853,10 +1113,11 @@ export const useDataStore = defineStore('data', {
 
       void loadCsvAction(nextPath)
         .then((result) => {
-          const status = result.cacheHit
-            ? 'Loaded (binary cache).'
-            : (result.cachePath ? 'Loaded (CSV parsed + cached).' : 'Loaded.')
-          this.applyLoadResult(result, { treatAsBase: true, statusLine: status })
+          this.applyLoadResult(result, {
+            treatAsBase: true,
+            statusLine: baseLoadStatusText(result, 'csv'),
+            source: 'csv',
+          })
         })
         .catch((error: unknown) => {
           this.statusLine = String(error || '').trim() || 'Data load failed.'
@@ -869,24 +1130,17 @@ export const useDataStore = defineStore('data', {
     },
 
     clearData(): void {
-      void clearDataAction().catch(() => undefined)
-      this.dataId = '—'
-      this.datasetLabel = '—'
-      this.datasetRange = '—'
-      this.dataLen = '—'
-      this.dataTimeframe = ''
-      this.dataTimeframeHint = 'Load a dataset to enable timeframe resampling.'
-      this.datasetContext = '—'
-      this.dataFields = []
-      this.dataFieldHint = ''
-      this.baseDataId = ''
-      this.baseDataMeta = null
-      this.baseDatasetLabel = ''
-      this.baseDatasetContext = ''
-      this.canApplyTimeframe = false
-      this.statusLine = 'Ready.'
+      const baseId = String(this.baseDataId || '').trim()
+      void clearDataAction(baseId)
+        .catch((error: unknown) => {
+          this.statusLine = `Cleared UI state (backend clear warning: ${String(error || '').trim() || 'clear failed'}).`
+          markVueUpdate(this)
+        })
+      applyEmptyDatasetState(this, 'Cleared data.')
+      persistStartupSnapshot(this)
       const pinia = (this as unknown as { $pinia?: Pinia }).$pinia
       if (pinia) useWorkflowArtifactsStore(pinia).clearArtifacts()
+      setControlsBusy(this, false)
       markVueUpdate(this)
     },
 
@@ -914,9 +1168,7 @@ export const useDataStore = defineStore('data', {
 
       void applyTimeframeAction(target, baseId)
         .then((result) => {
-          const effective = String(result.meta?.timeframe || target).trim() || target
-          const status = result.cacheHit ? `Using ${effective} (cached).` : `Using ${effective}.`
-          this.applyLoadResult(result, { treatAsBase: false, statusLine: status })
+          this.applyLoadResult(result, { treatAsBase: false, statusLine: derivedLoadStatusText(result) })
         })
         .catch((error: unknown) => {
           this.statusLine = String(error || '').trim() || `Resample to ${target} failed.`
@@ -955,8 +1207,16 @@ export const useDataStore = defineStore('data', {
 
       void setMarketDataDirAction(nextDir, nextMoveExisting)
         .then((info) => {
-          this.marketDataDir = String(info?.configuredRootDir || '').trim()
-          this.marketDataDirHint = String(info?.hint || this.marketDataDirHint || '—').trim() || '—'
+          const nextCacheDir = String(info.polygonCacheDir || '').trim()
+          const cacheDirChanged = applyMarketDataDirInfo(this, info)
+          if (cacheDirChanged) {
+            resetPolygonCacheRuntimeState(this, nextCacheDir)
+            if (this.polygonOpen) {
+              void ensurePolygonCacheLoaded(this).catch(() => undefined)
+            }
+          } else {
+            this.polygonCacheDir = nextCacheDir
+          }
           this.statusLine = 'Updated market data folder.'
           markVueUpdate(this)
         })
@@ -969,8 +1229,16 @@ export const useDataStore = defineStore('data', {
     resetMarketDataDir(): void {
       void resetMarketDataDirAction()
         .then((info) => {
-          this.marketDataDir = String(info?.configuredRootDir || '').trim()
-          this.marketDataDirHint = String(info?.hint || this.marketDataDirHint || '—').trim() || '—'
+          const nextCacheDir = String(info.polygonCacheDir || '').trim()
+          const cacheDirChanged = applyMarketDataDirInfo(this, info)
+          if (cacheDirChanged) {
+            resetPolygonCacheRuntimeState(this, nextCacheDir)
+            if (this.polygonOpen) {
+              void ensurePolygonCacheLoaded(this).catch(() => undefined)
+            }
+          } else {
+            this.polygonCacheDir = nextCacheDir
+          }
           this.statusLine = 'Reset market data folder to default.'
           markVueUpdate(this)
         })
@@ -1010,10 +1278,11 @@ export const useDataStore = defineStore('data', {
       void loadSampleCsvAction(index, path)
         .then((result) => {
           if (!result) return
-          const status = result.cacheHit
-            ? 'Loaded (binary cache).'
-            : (result.cachePath ? 'Loaded (CSV parsed + cached).' : 'Loaded.')
-          this.applyLoadResult(result, { treatAsBase: true, statusLine: status })
+          this.applyLoadResult(result, {
+            treatAsBase: true,
+            statusLine: baseLoadStatusText(result, 'csv'),
+            source: 'csv',
+          })
         })
         .catch((error: unknown) => {
           this.statusLine = String(error || '').trim() || 'Data load failed.'

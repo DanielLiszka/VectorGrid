@@ -49,6 +49,7 @@ vi.mock("./dataService", () => ({
     dataId: "data-1",
     cacheHit: false,
     cachePath: "",
+    loadSource: "csv_parsed_and_cached",
     meta: {
       len: 100,
       hasOpen: true,
@@ -68,6 +69,7 @@ vi.mock("./dataService", () => ({
     dataId: "data-1@5m",
     cacheHit: false,
     cachePath: "",
+    loadSource: "derived_fresh_resample",
     meta: {
       len: 20,
       hasOpen: true,
@@ -145,6 +147,7 @@ describe("historyService", () => {
       dataId: "data-1",
       cacheHit: false,
       cachePath: "",
+      loadSource: "csv_parsed_and_cached",
       meta: {
         len: 100,
         hasOpen: true,
@@ -164,6 +167,7 @@ describe("historyService", () => {
       dataId: "data-1@5m",
       cacheHit: false,
       cachePath: "",
+      loadSource: "derived_fresh_resample",
       meta: {
         len: 20,
         hasOpen: true,

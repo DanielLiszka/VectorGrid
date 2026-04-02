@@ -168,9 +168,13 @@ pub use meta_select::{
 };
 
 pub use ml_confidence::{
-    predict_ml_confidence_for_group, train_ml_confidence_model_from_meta_artifacts,
-    MlConfidenceCalibrationBin, MlConfidenceLabelConfig, MlConfidenceModel,
-    MlConfidenceModelFamily, MlConfidenceModelKind, MlConfidenceScope, MlConfidenceTrainConfig,
+    extract_ml_confidence_group_features, predict_ml_confidence_for_features,
+    predict_ml_confidence_for_group, prepare_ml_confidence_rows_from_meta_artifacts,
+    train_ml_confidence_model_from_meta_artifacts, train_ml_confidence_model_from_prepared_rows,
+    train_ml_confidence_model_from_rows, MlConfidenceCalibrationBin, MlConfidenceDatasetRow,
+    MlConfidenceGroupFeatures, MlConfidenceLabelConfig, MlConfidenceModel, MlConfidenceModelFamily,
+    MlConfidenceModelKind, MlConfidenceModelSummary, MlConfidencePreparedArtifactRows,
+    MlConfidencePreparedRows, MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
     MlConfidenceTrainMetrics,
 };
 

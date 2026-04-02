@@ -2,6 +2,7 @@
 export const TAURI_COMMANDS = [
   'load_price_data',
   'resample_price_data',
+  'clear_loaded_data',
   'list_sample_csvs',
   'list_repo_data_csvs',
   'get_market_data_dir_info',

@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use ta_app_core::{
-    MetaSelectionRequest, MetaSelectionResult, MlConfidenceLabelConfig, MlConfidenceModel,
-    MlConfidenceScope, MlConfidenceTrainConfig, MlConfidenceTrainMetrics,
+    MetaSelectionRequest, MetaSelectionResult, MlConfidenceGroupFeatures, MlConfidenceLabelConfig,
+    MlConfidenceModel, MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTrainConfig,
+    MlConfidenceTrainMetrics,
 };
 use tauri::Manager;
 
@@ -57,7 +58,9 @@ pub struct MlConfidenceModelStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retrain_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<MlConfidenceModel>,
+    pub model_summary: Option<MlConfidenceModelSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_scan_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -66,8 +69,9 @@ pub struct MlConfidenceModelStatus {
 pub struct TrainMlConfidenceResponse {
     pub model_path: String,
     pub model_bytes: usize,
-    pub model: MlConfidenceModel,
+    pub model_summary: MlConfidenceModelSummary,
     pub metrics: MlConfidenceTrainMetrics,
+    pub status: MlConfidenceModelStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,7 +293,7 @@ fn ml_confidence_model_path(
 
 fn classify_ml_confidence_model_state(
     exists: bool,
-    model: Option<&MlConfidenceModel>,
+    model_summary: Option<&MlConfidenceModelSummary>,
     error: Option<&str>,
     stale: bool,
     retrain_recommended: bool,
@@ -301,7 +305,7 @@ fn classify_ml_confidence_model_state(
         return (MlConfidenceModelState::Blocked, false, None);
     }
 
-    let Some(model) = model else {
+    let Some(model) = model_summary else {
         return (MlConfidenceModelState::Blocked, false, None);
     };
 
@@ -317,6 +321,30 @@ fn classify_ml_confidence_model_state(
         MlConfidenceModelState::Healthy
     };
     (state, legacy_model, model_healthy)
+}
+
+fn read_json_value(path: &Path) -> Option<Value> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    serde_json::from_reader(reader).ok()
+}
+
+fn is_known_non_run_artifact_filename(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.starts_with("vectorbt_meta_")
+        || trimmed.starts_with("vectorgrid_meta_")
+        || trimmed.starts_with("vectorbt_stage4_")
+        || trimmed.starts_with("vectorgrid_stage4_")
+        || trimmed.starts_with("vectorbt_stage5_")
+        || trimmed.starts_with("vectorgrid_stage5_")
+        || trimmed.starts_with("vectorbt_meta_stage4_")
+        || trimmed.starts_with("vectorgrid_meta_stage4_")
+        || trimmed.starts_with("vectorbt_meta_stage5_")
+        || trimmed.starts_with("vectorgrid_meta_stage5_")
+        || trimmed.starts_with("vectorbt_ml_confidence_eval_")
+        || trimmed.starts_with("vectorgrid_ml_confidence_eval_")
+        || trimmed.starts_with("vectorbt_batch_summary_")
+        || trimmed.starts_with("vectorgrid_batch_summary_")
 }
 
 fn load_meta_artifacts_with_paths_blocking(
@@ -344,13 +372,8 @@ fn load_meta_artifacts_with_paths_blocking(
 
     let mut out: Vec<(PathBuf, Value)> = Vec::with_capacity(paths.len());
     for p in paths {
-        let raw = match std::fs::read_to_string(&p) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let Some(v) = read_json_value(&p) else {
+            continue;
         };
         out.push((p, v));
     }
@@ -430,6 +453,129 @@ fn stage4_training_metas_excluding_source(
 fn try_load_ml_confidence_model(path: &Path) -> Option<MlConfidenceModel> {
     let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<MlConfidenceModel>(&raw).ok()
+}
+
+fn try_load_ml_confidence_model_summary(path: &Path) -> Result<MlConfidenceModelSummary, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = std::io::BufReader::new(file);
+    serde_json::from_reader(reader).map_err(|e| e.to_string())
+}
+
+fn build_ml_confidence_status(
+    exists: bool,
+    model_path: String,
+    bytes: usize,
+    model_summary: Option<MlConfidenceModelSummary>,
+    error: Option<String>,
+    meta_scan_error: Option<String>,
+    meta_summary: &MlMetaScopeSummary,
+) -> MlConfidenceModelStatus {
+    let available_meta_artifacts = meta_summary.available_meta_artifacts;
+    let newest_meta_ts_available = meta_summary.newest_meta_ts_available.clone();
+    let available_labeled_rows = if meta_summary.has_holdout_dataset_rows {
+        meta_summary.available_labeled_rows_dataset
+    } else {
+        meta_summary.available_labeled_rows_holdout
+    };
+
+    let mut stale = false;
+    let mut retrain_recommended = false;
+    let mut retrain_reason: Option<String> = None;
+
+    if model_summary.is_none() {
+        if !exists {
+            retrain_recommended = true;
+            retrain_reason = Some("No model saved for this scope.".to_string());
+        } else if error.is_some() {
+            retrain_recommended = true;
+            retrain_reason =
+                Some("Model exists but failed to load; retrain recommended.".to_string());
+        }
+    } else if let Some(summary) = model_summary.as_ref() {
+        let meta = summary.meta.as_ref();
+        if meta.is_none() {
+            stale = available_meta_artifacts > 0;
+            if stale && available_labeled_rows >= 25 {
+                retrain_recommended = true;
+                retrain_reason = Some(
+                    "Legacy model (missing training metadata); retrain recommended.".to_string(),
+                );
+            } else if stale {
+                retrain_reason = Some(
+                    "Legacy model (missing training metadata); retrain when more labels exist."
+                        .to_string(),
+                );
+            }
+        } else if let Some(mm) = meta {
+            if let (Some(used), Some(avail)) = (
+                mm.newest_meta_ts_used.as_ref(),
+                newest_meta_ts_available.as_ref(),
+            ) {
+                if avail.as_str() > used.as_str() {
+                    stale = true;
+                }
+            } else if newest_meta_ts_available.is_some() {
+                stale = true;
+            }
+            if let Some(used_count) = mm.meta_artifacts_used {
+                if available_meta_artifacts > used_count {
+                    stale = true;
+                }
+            } else if available_meta_artifacts > 0 {
+                stale = true;
+            }
+
+            let trained_rows = mm.trained_rows;
+            let new_rows = available_labeled_rows.saturating_sub(trained_rows);
+            let threshold = std::cmp::max(25, trained_rows / 10);
+
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000;
+
+            if stale && new_rows >= threshold && cooldown_ok {
+                retrain_recommended = true;
+                retrain_reason = Some(format!(
+                    "Model stale: new labeled rows {new_rows} (threshold {threshold})."
+                ));
+            } else if stale && new_rows > 0 {
+                retrain_reason = Some(format!(
+                    "Model stale: new labeled rows {new_rows} (<{threshold})."
+                ));
+            } else if stale && !cooldown_ok {
+                retrain_reason = Some("Model stale but recently trained (cooldown).".to_string());
+            }
+        }
+    }
+
+    let (state, legacy_model, model_healthy) = classify_ml_confidence_model_state(
+        exists,
+        model_summary.as_ref(),
+        error.as_deref(),
+        stale,
+        retrain_recommended,
+    );
+
+    MlConfidenceModelStatus {
+        exists,
+        model_path,
+        bytes,
+        available_meta_artifacts,
+        available_labeled_rows,
+        newest_meta_ts_available,
+        stale,
+        retrain_recommended,
+        state,
+        legacy_model,
+        model_healthy,
+        retrain_reason,
+        model_summary,
+        meta_scan_error,
+        error,
+    }
 }
 
 fn should_block_stage4_for_unhealthy_model(
@@ -689,118 +835,42 @@ fn group_has_required_ml_features(g: &Value) -> bool {
         && g.get("meta_score").and_then(|v| v.as_f64()).is_some()
 }
 
-fn scope_has_holdout_rows_for_ml(
-    metas: &[Value],
-    scope: &MlConfidenceScope,
-    cfg: &MlConfidenceLabelConfig,
-) -> bool {
-    let scope_tf = normalize_timeframe_label(&scope.timeframe);
-    let scope_sk = scope.strategy_kind.trim();
-
-    for meta in metas {
-        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if !is_meta_selection_kind(kind) {
-            continue;
-        }
-        let Some((sk, tf)) = extract_meta_scope(meta) else {
-            continue;
-        };
-        if sk != scope_sk || tf != scope_tf {
-            continue;
-        }
-        let groups = meta
-            .pointer("/res/groups")
-            .and_then(|v| v.as_array())
-            .map(|xs| xs.as_slice())
-            .unwrap_or(&[]);
-        for g in groups {
-            if !group_has_required_ml_features(g) {
-                continue;
-            }
-            let Some(rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            if rows.len() < cfg.min_holdout_datasets {
-                continue;
-            }
-            if rows.iter().any(valid_holdout_row) {
-                return true;
-            }
-        }
+fn meta_candidate_group_features(
+    group: &ta_app_core::MetaCandidateAggregate,
+) -> MlConfidenceGroupFeatures {
+    MlConfidenceGroupFeatures {
+        samples: group.samples as u64,
+        pass_rate: group.pass_rate,
+        robust_score_p10: group.robust_score_p10,
+        robust_score_median: group.robust_score_median,
+        max_dd_p90: group.max_dd_p90,
+        cross_score_median: group.cross_score_median,
+        meta_score: group.meta_score,
     }
-
-    false
 }
 
-fn count_labeled_rows_in_meta(
-    meta: &Value,
-    cfg: &MlConfidenceLabelConfig,
-    use_holdout_rows: bool,
-) -> usize {
-    let groups = meta
-        .pointer("/res/groups")
-        .and_then(|v| v.as_array())
-        .map(|xs| xs.as_slice())
-        .unwrap_or(&[]);
-
-    let mut rows = 0usize;
-    for g in groups {
-        if !group_has_required_ml_features(g) {
-            continue;
-        }
-
-        if use_holdout_rows {
-            let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            if holdout_rows.len() < cfg.min_holdout_datasets {
-                continue;
-            }
-            for r in holdout_rows {
-                if valid_holdout_row(r) {
-                    rows = rows.saturating_add(1);
-                }
-            }
-        } else {
-            let Some(h) = g.get("holdout") else {
-                continue;
-            };
-            let datasets = h.get("datasets").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            if datasets < cfg.min_holdout_datasets {
-                continue;
-            }
-            let pass_rate = h.get("pass_rate").and_then(|v| v.as_f64());
-            let score_p10 = h.get("score_p10").and_then(|v| v.as_f64());
-            if pass_rate.is_none() || score_p10.is_none() {
-                continue;
-            }
-            let max_dd_p90 = h.get("max_dd_p90").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-            let mut ok = pass_rate.unwrap() >= cfg.min_holdout_pass_rate
-                && score_p10.unwrap() >= cfg.min_holdout_score_p10;
-            if let Some(dd_max) = cfg.max_holdout_max_dd_p90 {
-                ok = ok && max_dd_p90 <= dd_max;
-            }
-            let _ = ok; // label value isn't needed for counting; just gate for validity.
-
-            rows = rows.saturating_add(1);
-        }
-    }
-    rows
+#[derive(Debug, Clone, Default)]
+struct MlMetaScopeSummary {
+    available_meta_artifacts: usize,
+    newest_meta_ts_available: Option<String>,
+    available_labeled_rows_holdout: usize,
+    available_labeled_rows_dataset: usize,
+    has_holdout_dataset_rows: bool,
 }
 
 fn summarize_meta_artifacts_for_scope(
     metas: &[Value],
     scope: &MlConfidenceScope,
     cfg: &MlConfidenceLabelConfig,
-) -> (usize, Option<String>, usize) {
+) -> MlMetaScopeSummary {
     let mut count = 0usize;
     let mut newest: Option<String> = None;
-    let mut labeled_rows = 0usize;
+    let mut labeled_rows_holdout = 0usize;
+    let mut labeled_rows_dataset = 0usize;
+    let mut has_holdout_dataset_rows = false;
 
     let scope_tf = normalize_timeframe_label(&scope.timeframe);
     let scope_sk = scope.strategy_kind.trim();
-    let use_holdout_rows = scope_has_holdout_rows_for_ml(metas, scope, cfg);
 
     for meta in metas {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
@@ -827,11 +897,54 @@ fn summarize_meta_artifacts_for_scope(
                 newest = Some(ts);
             }
         }
-        labeled_rows =
-            labeled_rows.saturating_add(count_labeled_rows_in_meta(meta, cfg, use_holdout_rows));
+        let groups = meta
+            .pointer("/res/groups")
+            .and_then(|v| v.as_array())
+            .map(|xs| xs.as_slice())
+            .unwrap_or(&[]);
+
+        for g in groups {
+            if !group_has_required_ml_features(g) {
+                continue;
+            }
+
+            if let Some(h) = g.get("holdout") {
+                let datasets = h.get("datasets").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                if datasets >= cfg.min_holdout_datasets {
+                    let pass_rate = h.get("pass_rate").and_then(|v| v.as_f64());
+                    let score_p10 = h.get("score_p10").and_then(|v| v.as_f64());
+                    if pass_rate.is_some() && score_p10.is_some() {
+                        labeled_rows_holdout = labeled_rows_holdout.saturating_add(1);
+                    }
+                }
+            }
+
+            let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            if holdout_rows.len() < cfg.min_holdout_datasets {
+                continue;
+            }
+            let mut valid_rows = 0usize;
+            for r in holdout_rows {
+                if valid_holdout_row(r) {
+                    valid_rows = valid_rows.saturating_add(1);
+                }
+            }
+            if valid_rows > 0 {
+                has_holdout_dataset_rows = true;
+                labeled_rows_dataset = labeled_rows_dataset.saturating_add(valid_rows);
+            }
+        }
     }
 
-    (count, newest, labeled_rows)
+    MlMetaScopeSummary {
+        available_meta_artifacts: count,
+        newest_meta_ts_available: newest,
+        available_labeled_rows_holdout: labeled_rows_holdout,
+        available_labeled_rows_dataset: labeled_rows_dataset,
+        has_holdout_dataset_rows,
+    }
 }
 
 fn ml_confidence_model_status_blocking(
@@ -844,126 +957,40 @@ fn ml_confidence_model_status_blocking(
     let exists = path.exists();
 
     let mut bytes = 0usize;
-    let mut model: Option<MlConfidenceModel> = None;
+    let mut model_summary: Option<MlConfidenceModelSummary> = None;
     let mut error: Option<String> = None;
     let mut label_cfg = MlConfidenceLabelConfig::default();
 
     if exists {
         bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
-        let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        match serde_json::from_str::<MlConfidenceModel>(&raw) {
-            Ok(m) => {
-                label_cfg = m.label.clone();
-                model = Some(m);
+        match try_load_ml_confidence_model_summary(&path) {
+            Ok(summary) => {
+                label_cfg = summary.label.clone();
+                model_summary = Some(summary);
             }
             Err(e) => {
-                error = Some(e.to_string());
+                error = Some(e);
             }
         }
     }
 
-    let metas = load_meta_artifacts_blocking(app).unwrap_or_default();
-    let (available_meta_artifacts, newest_meta_ts_available, available_labeled_rows) =
-        summarize_meta_artifacts_for_scope(&metas, &scope, &label_cfg);
+    let (meta_summary, meta_scan_error) = match load_meta_artifacts_blocking(app) {
+        Ok(metas) => (
+            summarize_meta_artifacts_for_scope(&metas, &scope, &label_cfg),
+            None,
+        ),
+        Err(e) => (MlMetaScopeSummary::default(), Some(e)),
+    };
 
-    // Staleness/retrain policy: conservative defaults to avoid surprise compute.
-    let mut stale = false;
-    let mut retrain_recommended = false;
-    let mut retrain_reason: Option<String> = None;
-
-    if model.is_none() {
-        if !exists {
-            retrain_recommended = true;
-            retrain_reason = Some("No model saved for this scope.".to_string());
-        } else if error.is_some() {
-            retrain_recommended = true;
-            retrain_reason =
-                Some("Model exists but failed to load; retrain recommended.".to_string());
-        }
-    } else if let Some(m) = model.as_ref() {
-        let meta = m.meta.as_ref();
-        if meta.is_none() {
-            stale = available_meta_artifacts > 0;
-            if stale && available_labeled_rows >= 25 {
-                retrain_recommended = true;
-                retrain_reason = Some(
-                    "Legacy model (missing training metadata); retrain recommended.".to_string(),
-                );
-            } else if stale {
-                retrain_reason = Some(
-                    "Legacy model (missing training metadata); retrain when more labels exist."
-                        .to_string(),
-                );
-            }
-        } else if let Some(mm) = meta {
-            if let (Some(used), Some(avail)) = (
-                mm.newest_meta_ts_used.as_ref(),
-                newest_meta_ts_available.as_ref(),
-            ) {
-                if avail.as_str() > used.as_str() {
-                    stale = true;
-                }
-            } else if newest_meta_ts_available.is_some() {
-                stale = true;
-            }
-            if let Some(used_count) = mm.meta_artifacts_used {
-                if available_meta_artifacts > used_count {
-                    stale = true;
-                }
-            } else if available_meta_artifacts > 0 {
-                stale = true;
-            }
-
-            let trained_rows = mm.trained_rows;
-            let new_rows = available_labeled_rows.saturating_sub(trained_rows);
-            let threshold = std::cmp::max(25, trained_rows / 10);
-
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                .min(u128::from(u64::MAX)) as u64;
-            let cooldown_ok = now_ms.saturating_sub(mm.trained_at_ms) > 60_000; // 60s cooldown
-
-            if stale && new_rows >= threshold && cooldown_ok {
-                retrain_recommended = true;
-                retrain_reason = Some(format!(
-                    "Model stale: new labeled rows {new_rows} (threshold {threshold})."
-                ));
-            } else if stale && new_rows > 0 {
-                retrain_reason = Some(format!(
-                    "Model stale: new labeled rows {new_rows} (<{threshold})."
-                ));
-            } else if stale && !cooldown_ok {
-                retrain_reason = Some("Model stale but recently trained (cooldown).".to_string());
-            }
-        }
-    }
-
-    let (state, legacy_model, model_healthy) = classify_ml_confidence_model_state(
-        exists,
-        model.as_ref(),
-        error.as_deref(),
-        stale,
-        retrain_recommended,
-    );
-
-    Ok(MlConfidenceModelStatus {
+    Ok(build_ml_confidence_status(
         exists,
         model_path,
         bytes,
-        available_meta_artifacts,
-        available_labeled_rows,
-        newest_meta_ts_available,
-        stale,
-        retrain_recommended,
-        state,
-        legacy_model,
-        model_healthy,
-        retrain_reason,
-        model,
+        model_summary,
         error,
-    })
+        meta_scan_error,
+        &meta_summary,
+    ))
 }
 
 #[tauri::command]
@@ -987,17 +1014,29 @@ pub async fn train_ml_confidence_model(
         let cfg = cfg.unwrap_or_default();
         let metas = load_meta_artifacts_blocking(&app)?;
         let (model, metrics) =
-            ta_app_core::train_ml_confidence_model_from_meta_artifacts(scope, &metas, cfg)?;
+            ta_app_core::train_ml_confidence_model_from_meta_artifacts(scope.clone(), &metas, cfg)?;
 
         let path = ml_confidence_model_path(&model.scope, &app)?;
         let bytes = serde_json::to_vec_pretty(&model).map_err(|e| e.to_string())?;
         std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+        let model_summary = MlConfidenceModelSummary::from(&model);
+        let meta_summary = summarize_meta_artifacts_for_scope(&metas, &scope, &model.label);
+        let status = build_ml_confidence_status(
+            true,
+            path.to_string_lossy().to_string(),
+            bytes.len(),
+            Some(model_summary.clone()),
+            None,
+            None,
+            &meta_summary,
+        );
 
         Ok(TrainMlConfidenceResponse {
             model_path: path.to_string_lossy().to_string(),
             model_bytes: bytes.len(),
-            model,
+            model_summary,
             metrics,
+            status,
         })
     })
     .await
@@ -1007,7 +1046,7 @@ pub async fn train_ml_confidence_model(
 #[tauri::command]
 pub async fn apply_ml_confidence_model(
     scope: MlConfidenceScope,
-    groups: Vec<Value>,
+    groups: Vec<MlConfidenceGroupFeatures>,
     app: tauri::AppHandle,
 ) -> Result<ApplyMlConfidenceResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1033,7 +1072,7 @@ pub async fn apply_ml_confidence_model(
 
         let confidences: Vec<Option<f64>> = groups
             .iter()
-            .map(|g| ta_app_core::predict_ml_confidence_for_group(&model, g))
+            .map(|g| ta_app_core::predict_ml_confidence_for_features(&model, g))
             .collect();
 
         Ok(ApplyMlConfidenceResponse {
@@ -1327,34 +1366,14 @@ fn evaluate_policy_candidates(
     (meta_labels, ml_labels, stage5_labels)
 }
 
-fn run_ml_confidence_policy_evaluation_blocking(
-    req: MlConfidencePolicyEvaluationRequest,
-    app: tauri::AppHandle,
-) -> Result<RunMlConfidencePolicyEvaluationResponse, String> {
-    let req = normalize_ml_policy_evaluation_request(req)?;
-    let scope = normalize_ml_scope(MlConfidenceScope {
-        strategy_kind: req.strategy_kind.clone(),
-        timeframe: req.timeframe.clone().unwrap_or_default(),
-    })?;
-    let label_cfg = req.label.clone().unwrap_or_default();
-
-    let metas = load_meta_artifacts_blocking(&app)?;
-    let mut scoped: Vec<Value> = metas
-        .into_iter()
-        .filter(|meta| {
-            is_meta_selection_artifact(meta)
-                && extract_meta_scope(meta)
-                    .map(|(strategy_kind, timeframe)| {
-                        strategy_kind == scope.strategy_kind && timeframe == scope.timeframe
-                    })
-                    .unwrap_or(false)
-        })
-        .collect();
-    scoped.sort_by(|lhs, rhs| {
-        let lhs_ts = lhs.get("ts").and_then(|v| v.as_str()).unwrap_or("");
-        let rhs_ts = rhs.get("ts").and_then(|v| v.as_str()).unwrap_or("");
-        lhs_ts.cmp(rhs_ts)
-    });
+fn evaluate_ml_confidence_policy_from_scoped_metas(
+    req: &MlConfidencePolicyEvaluationRequest,
+    scope: &MlConfidenceScope,
+    label_cfg: &MlConfidenceLabelConfig,
+    scoped: &[Value],
+) -> MlConfidencePolicyEvaluationResult {
+    let prepared_rows =
+        ta_app_core::prepare_ml_confidence_rows_from_meta_artifacts(scope, scoped, label_cfg);
 
     let artifacts_considered = scoped.len();
     let mut artifacts_evaluated = 0usize;
@@ -1374,14 +1393,14 @@ fn run_ml_confidence_policy_evaluation_blocking(
             continue;
         }
 
-        let training_pool = &scoped[..idx];
         let mut train_cfg = MlConfidenceTrainConfig::default();
         train_cfg.label = label_cfg.clone();
 
-        let (model, metrics) = match ta_app_core::train_ml_confidence_model_from_meta_artifacts(
+        let (model, metrics) = match ta_app_core::train_ml_confidence_model_from_prepared_rows(
             scope.clone(),
-            training_pool,
+            &prepared_rows,
             train_cfg,
+            Some(idx),
         ) {
             Ok(v) => v,
             Err(err) => {
@@ -1410,11 +1429,15 @@ fn run_ml_confidence_policy_evaluation_blocking(
             .unwrap_or(&[]);
         let mut candidates: Vec<PolicyEvalCandidate> = Vec::new();
         for group in groups {
-            let Some(label) = group_holdout_label(group, &label_cfg) else {
+            let Some(label) = group_holdout_label(group, label_cfg) else {
                 continue;
             };
-            let Some(probability) = ta_app_core::predict_ml_confidence_for_group(&model, group)
-                .filter(|p| p.is_finite())
+            let Some(features) = ta_app_core::extract_ml_confidence_group_features(group) else {
+                continue;
+            };
+            let Some(probability) =
+                ta_app_core::predict_ml_confidence_for_features(&model, &features)
+                    .filter(|p| p.is_finite())
             else {
                 continue;
             };
@@ -1438,7 +1461,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
             continue;
         }
 
-        let (meta_labels, ml_labels, stage5_labels) = evaluate_policy_candidates(&req, &candidates);
+        let (meta_labels, ml_labels, stage5_labels) = evaluate_policy_candidates(req, &candidates);
         update_policy_arm_metrics(&mut meta_only, &meta_labels);
         update_policy_arm_metrics(&mut ml_only, &ml_labels);
         update_policy_arm_metrics(&mut stage5_blended, &stage5_labels);
@@ -1465,7 +1488,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
     }
     .to_string();
 
-    let result = MlConfidencePolicyEvaluationResult {
+    MlConfidencePolicyEvaluationResult {
         strategy_kind: scope.strategy_kind.clone(),
         timeframe: scope.timeframe.clone(),
         artifacts_considered,
@@ -1486,7 +1509,38 @@ fn run_ml_confidence_policy_evaluation_blocking(
         stage5_vs_meta_precision_delta: stage5_precision - meta_precision,
         stage5_vs_ml_precision_delta: stage5_precision - ml_precision,
         warnings,
-    };
+    }
+}
+
+fn run_ml_confidence_policy_evaluation_blocking(
+    req: MlConfidencePolicyEvaluationRequest,
+    app: tauri::AppHandle,
+) -> Result<RunMlConfidencePolicyEvaluationResponse, String> {
+    let req = normalize_ml_policy_evaluation_request(req)?;
+    let scope = normalize_ml_scope(MlConfidenceScope {
+        strategy_kind: req.strategy_kind.clone(),
+        timeframe: req.timeframe.clone().unwrap_or_default(),
+    })?;
+    let label_cfg = req.label.clone().unwrap_or_default();
+
+    let metas = load_meta_artifacts_blocking(&app)?;
+    let mut scoped: Vec<Value> = metas
+        .into_iter()
+        .filter(|meta| {
+            is_meta_selection_artifact(meta)
+                && extract_meta_scope(meta)
+                    .map(|(strategy_kind, timeframe)| {
+                        strategy_kind == scope.strategy_kind && timeframe == scope.timeframe
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+    scoped.sort_by(|lhs, rhs| {
+        let lhs_ts = lhs.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        let rhs_ts = rhs.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+        lhs_ts.cmp(rhs_ts)
+    });
+    let result = evaluate_ml_confidence_policy_from_scoped_metas(&req, &scope, &label_cfg, &scoped);
 
     let ts = chrono::Utc::now().to_rfc3339();
     let out_path = suggest_ml_policy_eval_artifact_path(&ts, &app)?;
@@ -1522,7 +1576,7 @@ fn run_meta_stage4_experimental_blocking(
     let mut warnings: Vec<String> = Vec::new();
     let mut model_trained_now = false;
     let model_path = ml_confidence_model_path(&scope, &app)?;
-    let mut model = try_load_ml_confidence_model(&model_path);
+    let mut model: Option<MlConfidenceModel> = None;
 
     let mut status = ml_confidence_model_status_blocking(scope.clone(), &app)?;
     let should_train = req.auto_train_model
@@ -1531,6 +1585,10 @@ fn run_meta_stage4_experimental_blocking(
             || (req.auto_retrain_stale && status.retrain_recommended));
     if should_train {
         let metas_with_paths = load_meta_artifacts_with_paths_blocking(&app)?;
+        let all_metas: Vec<Value> = metas_with_paths
+            .iter()
+            .map(|(_, meta)| meta.clone())
+            .collect();
         let (metas, excluded_source_count) =
             stage4_training_metas_excluding_source(metas_with_paths, &source_meta_path);
         if excluded_source_count > 0 {
@@ -1544,11 +1602,24 @@ fn run_meta_stage4_experimental_blocking(
             Ok((trained_model, _metrics)) => {
                 let bytes = serde_json::to_vec_pretty(&trained_model).map_err(|e| e.to_string())?;
                 std::fs::write(&model_path, &bytes).map_err(|e| e.to_string())?;
+                let meta_summary =
+                    summarize_meta_artifacts_for_scope(&all_metas, &scope, &trained_model.label);
                 model = Some(trained_model);
                 model_trained_now = true;
-                status = ml_confidence_model_status_blocking(scope.clone(), &app)?;
+                status = build_ml_confidence_status(
+                    true,
+                    model_path.to_string_lossy().to_string(),
+                    bytes.len(),
+                    model.as_ref().map(MlConfidenceModelSummary::from),
+                    None,
+                    None,
+                    &meta_summary,
+                );
             }
             Err(e) => {
+                if model.is_none() {
+                    model = try_load_ml_confidence_model(&model_path);
+                }
                 stage4_autotrain_failure_fallback(e, &model_path, model.is_some(), &mut warnings)?;
             }
         }
@@ -1617,7 +1688,9 @@ fn run_meta_stage4_experimental_blocking(
     let mut groups_scored = 0usize;
     let mut groups_bad_meta_score = 0usize;
     for g in groups {
-        let ml = ta_app_core::predict_ml_confidence_for_group(&model, g).filter(|p| p.is_finite());
+        let ml = ta_app_core::extract_ml_confidence_group_features(g)
+            .and_then(|features| ta_app_core::predict_ml_confidence_for_features(&model, &features))
+            .filter(|p| p.is_finite());
         if ml.is_some() {
             groups_scored = groups_scored.saturating_add(1);
         }
@@ -1955,47 +2028,6 @@ fn run_meta_selection_blocking(
     let dir = run_artifacts::runs_dir(&app)?;
     let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
 
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if name.starts_with("vectorbt_meta_") || name.starts_with("vectorgrid_meta_") {
-            continue;
-        }
-        paths.push(path);
-    }
-    paths.sort();
-
-    let sink = TauriProgressSink { app: app.clone() };
-
-    let mut artifacts: Vec<Value> = Vec::with_capacity(paths.len());
-    for (i, p) in paths.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            return Err("cancelled".to_string());
-        }
-        let raw = match std::fs::read_to_string(p) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        artifacts.push(v);
-        ta_app_core::progress::emit_double_ma_progress(
-            Some(&sink),
-            i + 1,
-            paths.len(),
-            "meta_read",
-        );
-    }
-
     let supports_holdout = strategy_supports_holdout(req.strategy_kind.as_str());
     let holdout_tag = if req.eval_holdout && supports_holdout {
         req.holdout_tag
@@ -2007,20 +2039,64 @@ fn run_meta_selection_blocking(
         None
     };
 
-    let (train_artifacts, holdout_artifacts) = if let Some(tag) = holdout_tag.as_deref() {
-        let mut train: Vec<Value> = Vec::with_capacity(artifacts.len());
-        let mut holdout: Vec<Value> = Vec::new();
-        for a in artifacts {
-            if artifact_has_tag(&a, tag) {
-                holdout.push(a);
-            } else {
-                train.push(a);
-            }
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
         }
-        (train, holdout)
-    } else {
-        (artifacts, Vec::new())
-    };
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if is_known_non_run_artifact_filename(name) {
+            continue;
+        }
+        paths.push(path);
+    }
+    paths.sort();
+
+    let sink = TauriProgressSink { app: app.clone() };
+    let mut train_artifacts: Vec<Value> = Vec::with_capacity(paths.len());
+    let mut holdout_artifacts: Vec<Value> = Vec::new();
+    for (i, p) in paths.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+        let Some(v) = read_json_value(p) else {
+            ta_app_core::progress::emit_double_ma_progress(
+                Some(&sink),
+                i + 1,
+                paths.len(),
+                "meta_read",
+            );
+            continue;
+        };
+        if !artifact_matches_meta_req_relaxed(&v, &req) {
+            ta_app_core::progress::emit_double_ma_progress(
+                Some(&sink),
+                i + 1,
+                paths.len(),
+                "meta_read",
+            );
+            continue;
+        }
+        if holdout_tag
+            .as_deref()
+            .map(|tag| artifact_has_tag(&v, tag))
+            .unwrap_or(false)
+        {
+            holdout_artifacts.push(v);
+        } else {
+            train_artifacts.push(v);
+        }
+        ta_app_core::progress::emit_double_ma_progress(
+            Some(&sink),
+            i + 1,
+            paths.len(),
+            "meta_read",
+        );
+    }
 
     // Parity guard: if timeframe filter isn't set, infer it from the candidate pool.
     // This prevents mixing artifacts across multiple timeframes in meta-selection.
@@ -2037,9 +2113,6 @@ fn run_meta_selection_blocking(
         let mut missing = 0usize;
 
         for a in &train_artifacts {
-            if !artifact_matches_meta_req(a, &req) {
-                continue;
-            }
             let raw = a
                 .pointer("/dataset_meta/timeframe")
                 .and_then(|v| v.as_str())
@@ -2078,6 +2151,16 @@ fn run_meta_selection_blocking(
                 "Meta selection requires a timeframe filter ({missing} candidate artifact(s) are missing dataset_meta.timeframe)."
             ));
         }
+    }
+
+    if req
+        .timeframe
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        train_artifacts.retain(|artifact| artifact_matches_meta_req(artifact, &req));
+        holdout_artifacts.retain(|artifact| artifact_matches_meta_req(artifact, &req));
     }
 
     let mut result = ta_app_core::meta_select_from_artifacts(&req, &train_artifacts, Some(&sink));
@@ -2165,16 +2248,9 @@ fn run_meta_selection_blocking(
                 let model = ml_model.as_ref().unwrap();
                 let mut scored: Vec<(usize, f64)> = Vec::with_capacity(total);
                 for (i, g) in result.groups.iter().enumerate() {
-                    let v = serde_json::json!({
-                        "samples": g.samples,
-                        "pass_rate": g.pass_rate,
-                        "robust_score_p10": g.robust_score_p10,
-                        "robust_score_median": g.robust_score_median,
-                        "max_dd_p90": g.max_dd_p90,
-                        "cross_score_median": g.cross_score_median,
-                        "meta_score": g.meta_score,
-                    });
-                    let p = ta_app_core::predict_ml_confidence_for_group(model, &v).unwrap_or(-1.0);
+                    let features = meta_candidate_group_features(g);
+                    let p = ta_app_core::predict_ml_confidence_for_features(model, &features)
+                        .unwrap_or(-1.0);
                     scored.push((i, p));
                 }
                 scored.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -2371,6 +2447,39 @@ fn artifact_matches_meta_req(artifact: &Value, req: &MetaSelectionRequest) -> bo
     artifact.pointer("/validation/res/candidates").is_some()
 }
 
+fn artifact_matches_meta_req_relaxed(artifact: &Value, req: &MetaSelectionRequest) -> bool {
+    let kind = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if !is_run_artifact_kind(kind) {
+        return false;
+    }
+
+    let strat = artifact
+        .pointer("/run/req/strategy_kind")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            artifact
+                .pointer("/run/req/strategyKind")
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("");
+    if strat != req.strategy_kind {
+        return false;
+    }
+
+    if let Some(tag) = req
+        .required_tag
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        if !artifact_has_tag(artifact, tag) {
+            return false;
+        }
+    }
+
+    artifact.pointer("/validation/res/candidates").is_some()
+}
+
 fn artifact_csv_path(artifact: &Value) -> Option<String> {
     let p = artifact
         .pointer("/data/csv_path")
@@ -2413,6 +2522,97 @@ struct HoldoutAcc {
     passes: usize,
 }
 
+fn apply_holdout_accumulators_to_result(
+    result: &mut MetaSelectionResult,
+    req: &MetaSelectionRequest,
+    active_indices: &[usize],
+    accs: &[HoldoutAcc],
+    holdout_rows: &mut Vec<Vec<ta_app_core::HoldoutDatasetRow>>,
+    datasets: usize,
+    skipped: usize,
+    holdout_tag: &str,
+) {
+    result.holdout = Some(ta_app_core::HoldoutSummary { datasets, skipped });
+
+    for (dense_idx, global_idx) in active_indices.iter().copied().enumerate() {
+        let g = &mut result.groups[global_idx];
+        let mut acc = accs[dense_idx].clone();
+        if acc.scores.is_empty() {
+            continue;
+        }
+        acc.scores.sort_by(|a, b| a.total_cmp(b));
+        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
+        acc.max_dds.sort_by(|a, b| a.total_cmp(b));
+        acc.pnls.sort_by(|a, b| a.total_cmp(b));
+
+        let pass_rate = (acc.passes as f64) / (datasets as f64);
+        let score_median = quantile(&acc.scores, 0.5);
+        let score_p10 = quantile(&acc.scores, 0.10);
+        let sharpe_median = quantile(&acc.sharpes, 0.5);
+        let max_dd_p90 = quantile(&acc.max_dds, 0.90);
+        let pnl_median = quantile(&acc.pnls, 0.5);
+
+        g.holdout = Some(ta_app_core::HoldoutAggregate {
+            datasets,
+            pass_rate,
+            score_median,
+            score_p10,
+            sharpe_median,
+            max_dd_p90,
+            pnl_median,
+        });
+        ta_app_core::refresh_meta_group_evidence_flags(g);
+
+        if req.save_holdout_rows && !holdout_rows.is_empty() {
+            g.holdout_rows = std::mem::take(&mut holdout_rows[dense_idx]);
+        }
+    }
+
+    for g in &mut result.groups {
+        let base = g.meta_score;
+        let final_score = if let Some(h) = g.holdout.as_ref() {
+            base + req.weights.w_holdout_pass_rate * h.pass_rate
+                + req.weights.w_holdout_p10 * h.score_p10
+                - req.weights.w_holdout_dd_p90 * h.max_dd_p90
+        } else {
+            base
+        };
+        g.final_score = Some(final_score);
+    }
+
+    result.groups.sort_by(|a, b| {
+        let a_eval = a.holdout.is_some();
+        let b_eval = b.holdout.is_some();
+        if a_eval != b_eval {
+            return b_eval.cmp(&a_eval);
+        }
+        let ascore = a.final_score.unwrap_or(a.meta_score);
+        let bscore = b.final_score.unwrap_or(b.meta_score);
+        bscore
+            .total_cmp(&ascore)
+            .then_with(|| b.meta_score.total_cmp(&a.meta_score))
+    });
+
+    if skipped > 0 {
+        result.warnings.push(format!(
+            "Holdout evaluation: skipped {skipped} dataset(s) (missing/invalid CSV path or parse error) for tag='{holdout_tag}'."
+        ));
+    }
+    result.warnings.push(
+        "Final group ordering uses holdout-adjusted score when holdout is available.".to_string(),
+    );
+    let groups_with_evidence_flags = result
+        .groups
+        .iter()
+        .filter(|group| !group.evidence_flags.is_empty())
+        .count();
+    if groups_with_evidence_flags > 0 {
+        result.warnings.push(format!(
+            "Holdout/meta evidence warning: {groups_with_evidence_flags} group(s) still show thin or noisy evidence after holdout evaluation."
+        ));
+    }
+}
+
 fn apply_holdout_evaluation(
     result: &mut MetaSelectionResult,
     req: &MetaSelectionRequest,
@@ -2427,16 +2627,23 @@ fn apply_holdout_evaluation(
         return Ok(());
     }
 
-    let selected_mask: Option<Vec<bool>> = selected_groups.map(|idxs| {
-        let mut m = vec![false; result.groups.len()];
-        for &i in idxs {
-            if i < m.len() {
-                m[i] = true;
-            }
-        }
-        m
-    });
-    let is_selected = |i: usize, m: Option<&Vec<bool>>| m.map(|mm| mm[i]).unwrap_or(true);
+    let active_indices: Vec<usize> = if let Some(indices) = selected_groups {
+        indices
+            .iter()
+            .copied()
+            .filter(|idx| *idx < result.groups.len())
+            .collect()
+    } else {
+        (0..result.groups.len()).collect()
+    };
+    if active_indices.is_empty() {
+        return Ok(());
+    }
+    let mut dense_index_by_global: HashMap<usize, usize> =
+        HashMap::with_capacity(active_indices.len());
+    for (dense_idx, global_idx) in active_indices.iter().copied().enumerate() {
+        dense_index_by_global.insert(global_idx, dense_idx);
+    }
 
     let heavy = matches!(req.holdout_mode, ta_app_core::MetaHoldoutMode::Heavy);
     let (hv_seed, hv_wf, hv_perturb, hv_mc, hv_engine, hv_iterative) = if heavy {
@@ -2504,25 +2711,23 @@ fn apply_holdout_evaluation(
 
     // Group the shortlist by MA config so we can evaluate a batch at once.
     let mut groups_by_cfg: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, g) in result.groups.iter().enumerate() {
-        if !is_selected(i, selected_mask.as_ref()) {
-            continue;
-        }
+    for global_idx in active_indices.iter().copied() {
+        let g = &result.groups[global_idx];
         let cfg_key = serde_json::to_string(&serde_json::json!({
             "ma_source": &g.ma_source,
             "fast_ma_params": &g.fast_ma_params,
             "slow_ma_params": &g.slow_ma_params,
         }))
         .unwrap_or_else(|_| "cfg".to_string());
-        groups_by_cfg.entry(cfg_key).or_default().push(i);
+        groups_by_cfg.entry(cfg_key).or_default().push(global_idx);
     }
     if groups_by_cfg.is_empty() {
         return Ok(());
     }
 
-    let mut accs: Vec<HoldoutAcc> = vec![HoldoutAcc::default(); result.groups.len()];
+    let mut accs: Vec<HoldoutAcc> = vec![HoldoutAcc::default(); active_indices.len()];
     let mut holdout_rows: Vec<Vec<ta_app_core::HoldoutDatasetRow>> = if req.save_holdout_rows {
-        vec![Vec::new(); result.groups.len()]
+        vec![Vec::new(); active_indices.len()]
     } else {
         Vec::new()
     };
@@ -2542,7 +2747,7 @@ fn apply_holdout_evaluation(
             }
         };
 
-        let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); result.groups.len()]; // (score, sharpe, max_dd, pnl)
+        let mut local: Vec<Vec<(f64, f64, f64, f64)>> = vec![Vec::new(); active_indices.len()]; // (score, sharpe, max_dd, pnl)
         let mut ok = true;
 
         for idxs in groups_by_cfg.values() {
@@ -2654,7 +2859,10 @@ fn apply_holdout_evaluation(
                         &g0.fast_ma_params,
                         &g0.slow_ma_params,
                     );
-                    let Some(&gi) = idx_by_key.get(&key) else {
+                    let Some(&global_idx) = idx_by_key.get(&key) else {
+                        continue;
+                    };
+                    let Some(&dense_idx) = dense_index_by_global.get(&global_idx) else {
                         continue;
                     };
 
@@ -2685,7 +2893,7 @@ fn apply_holdout_evaluation(
                         (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
                     };
 
-                    local[gi].push((score, sharpe, max_dd, pnl));
+                    local[dense_idx].push((score, sharpe, max_dd, pnl));
                 }
             } else {
                 let mut candidates: Vec<ta_app_core::CompositeParams> = Vec::new();
@@ -2750,7 +2958,10 @@ fn apply_holdout_evaluation(
                         &g0.fast_ma_params,
                         &g0.slow_ma_params,
                     );
-                    let Some(&gi) = idx_by_key.get(&key) else {
+                    let Some(&global_idx) = idx_by_key.get(&key) else {
+                        continue;
+                    };
+                    let Some(&dense_idx) = dense_index_by_global.get(&global_idx) else {
                         continue;
                     };
 
@@ -2781,7 +2992,7 @@ fn apply_holdout_evaluation(
                         (sharpe - 2.0 * max_dd, sharpe, max_dd, pnl)
                     };
 
-                    local[gi].push((score, sharpe, max_dd, pnl));
+                    local[dense_idx].push((score, sharpe, max_dd, pnl));
                 }
             }
         }
@@ -2791,7 +3002,7 @@ fn apply_holdout_evaluation(
             continue;
         }
 
-        for (gi, rows) in local.into_iter().enumerate() {
+        for (dense_idx, rows) in local.into_iter().enumerate() {
             if rows.is_empty() {
                 continue;
             }
@@ -2819,16 +3030,16 @@ fn apply_holdout_evaluation(
             let pnl = quantile(&pnls, 0.5);
             let pass = score_p10 > 0.0 && sharpe > 0.0;
 
-            accs[gi].scores.push(score);
-            accs[gi].sharpes.push(sharpe);
-            accs[gi].max_dds.push(max_dd);
-            accs[gi].pnls.push(pnl);
+            accs[dense_idx].scores.push(score);
+            accs[dense_idx].sharpes.push(sharpe);
+            accs[dense_idx].max_dds.push(max_dd);
+            accs[dense_idx].pnls.push(pnl);
             if pass {
-                accs[gi].passes = accs[gi].passes.saturating_add(1);
+                accs[dense_idx].passes = accs[dense_idx].passes.saturating_add(1);
             }
 
             if req.save_holdout_rows && !holdout_rows.is_empty() {
-                holdout_rows[gi].push(ta_app_core::HoldoutDatasetRow {
+                holdout_rows[dense_idx].push(ta_app_core::HoldoutDatasetRow {
                     dataset: label.clone(),
                     score_median: score,
                     score_p10,
@@ -2850,84 +3061,16 @@ fn apply_holdout_evaluation(
         return Ok(());
     }
 
-    result.holdout = Some(ta_app_core::HoldoutSummary { datasets, skipped });
-
-    for (i, g) in result.groups.iter_mut().enumerate() {
-        let mut acc = accs[i].clone();
-        if acc.scores.is_empty() {
-            continue;
-        }
-        acc.scores.sort_by(|a, b| a.total_cmp(b));
-        acc.sharpes.sort_by(|a, b| a.total_cmp(b));
-        acc.max_dds.sort_by(|a, b| a.total_cmp(b));
-        acc.pnls.sort_by(|a, b| a.total_cmp(b));
-
-        let pass_rate = (acc.passes as f64) / (datasets as f64);
-        let score_median = quantile(&acc.scores, 0.5);
-        let score_p10 = quantile(&acc.scores, 0.10);
-        let sharpe_median = quantile(&acc.sharpes, 0.5);
-        let max_dd_p90 = quantile(&acc.max_dds, 0.90);
-        let pnl_median = quantile(&acc.pnls, 0.5);
-
-        g.holdout = Some(ta_app_core::HoldoutAggregate {
-            datasets,
-            pass_rate,
-            score_median,
-            score_p10,
-            sharpe_median,
-            max_dd_p90,
-            pnl_median,
-        });
-        ta_app_core::refresh_meta_group_evidence_flags(g);
-
-        if req.save_holdout_rows && !holdout_rows.is_empty() {
-            g.holdout_rows = std::mem::take(&mut holdout_rows[i]);
-        }
-    }
-
-    for g in &mut result.groups {
-        let base = g.meta_score;
-        let final_score = if let Some(h) = g.holdout.as_ref() {
-            base + req.weights.w_holdout_pass_rate * h.pass_rate
-                + req.weights.w_holdout_p10 * h.score_p10
-                - req.weights.w_holdout_dd_p90 * h.max_dd_p90
-        } else {
-            base
-        };
-        g.final_score = Some(final_score);
-    }
-
-    result.groups.sort_by(|a, b| {
-        let a_eval = a.holdout.is_some();
-        let b_eval = b.holdout.is_some();
-        if a_eval != b_eval {
-            return b_eval.cmp(&a_eval);
-        }
-        let ascore = a.final_score.unwrap_or(a.meta_score);
-        let bscore = b.final_score.unwrap_or(b.meta_score);
-        bscore
-            .total_cmp(&ascore)
-            .then_with(|| b.meta_score.total_cmp(&a.meta_score))
-    });
-
-    if skipped > 0 {
-        result.warnings.push(format!(
-            "Holdout evaluation: skipped {skipped} dataset(s) (missing/invalid CSV path or parse error) for tag='{holdout_tag}'."
-        ));
-    }
-    result.warnings.push(
-        "Final group ordering uses holdout-adjusted score when holdout is available.".to_string(),
+    apply_holdout_accumulators_to_result(
+        result,
+        req,
+        &active_indices,
+        &accs,
+        &mut holdout_rows,
+        datasets,
+        skipped,
+        holdout_tag,
     );
-    let groups_with_evidence_flags = result
-        .groups
-        .iter()
-        .filter(|group| !group.evidence_flags.is_empty())
-        .count();
-    if groups_with_evidence_flags > 0 {
-        result.warnings.push(format!(
-            "Holdout/meta evidence warning: {groups_with_evidence_flags} group(s) still show thin or noisy evidence after holdout evaluation."
-        ));
-    }
 
     Ok(())
 }
@@ -2935,12 +3078,285 @@ fn apply_holdout_evaluation(
 #[cfg(test)]
 mod tests {
     use super::{
-        should_block_stage4_for_unhealthy_model, stage4_autotrain_failure_fallback,
+        apply_holdout_accumulators_to_result, artifact_matches_meta_req,
+        artifact_matches_meta_req_relaxed, build_ml_confidence_status,
+        evaluate_ml_confidence_policy_from_scoped_metas, evaluate_policy_candidates,
+        group_holdout_label, group_rank_score, is_known_non_run_artifact_filename,
+        ml_uncertainty_from_prob, normalize_ml_policy_evaluation_request, normalize_ml_scope,
+        should_block_stage4_for_unhealthy_model, stable_logit, stage4_autotrain_failure_fallback,
         stage4_training_metas_excluding_source, strategy_supports_holdout,
-        strategy_uses_double_ma_validation,
+        strategy_uses_double_ma_validation, update_policy_arm_metrics, HoldoutAcc,
+        MlConfidenceModelState, MlConfidencePolicyArmMetrics, MlConfidencePolicyEvaluationRequest,
+        MlConfidencePolicyEvaluationResult, MlMetaScopeSummary,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::path::PathBuf;
+    use ta_app_core::ml_confidence::MlConfidenceModelMeta;
+    use ta_app_core::{
+        meta_group_key_for_request, HoldoutSummary, MetaCandidateAggregate, MetaClusterConfig,
+        MetaGroupingMode, MetaHoldoutMode, MetaScoreWeights, MetaSelectionRequest,
+        MetaSelectionResult, MlConfidenceLabelConfig, MlConfidenceModelKind,
+        MlConfidenceModelSummary, MlConfidenceScope, MlConfidenceTarget, MlConfidenceTrainConfig,
+    };
+
+    fn test_meta_req() -> MetaSelectionRequest {
+        MetaSelectionRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: Some("bench".to_string()),
+            holdout_tag: None,
+            eval_holdout: true,
+            save_holdout_rows: false,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 25,
+            min_samples: 5,
+            strict_shortlist: true,
+            allow_shortlist_fallback: false,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 1,
+        }
+    }
+
+    fn make_meta_candidate(
+        req: &MetaSelectionRequest,
+        fast_len: u16,
+        slow_len: u16,
+        meta_score: f64,
+    ) -> MetaCandidateAggregate {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "sma",
+            "fast_len": fast_len,
+            "slow_len": slow_len,
+        });
+        let key = meta_group_key_for_request(req, &params, "close", &None, &None);
+        MetaCandidateAggregate {
+            params: params.clone(),
+            key,
+            ma_source: "close".to_string(),
+            feature_context: None,
+            run_context: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            representatives: vec![params],
+            samples: 8,
+            datasets_covered: 1,
+            pass_rate: 1.0,
+            robust_score_median: meta_score + 0.1,
+            robust_score_p10: meta_score,
+            tail_gap: 0.05,
+            max_dd_p90: 0.20,
+            cross_score_median: 0.05,
+            psr_median: 0.0,
+            dsr_median: 0.0,
+            meta_score,
+            final_score: None,
+            holdout: None,
+            evidence_flags: Vec::new(),
+            train_rows: Vec::new(),
+            holdout_rows: Vec::new(),
+        }
+    }
+
+    fn make_policy_eval_meta_artifact(strategy_kind: &str, ts: &str, groups: Vec<Value>) -> Value {
+        json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": ts,
+            "req": {
+                "strategy_kind": strategy_kind,
+                "timeframe": "1m"
+            },
+            "res": {
+                "strategy_kind": strategy_kind,
+                "timeframe": "1m",
+                "groups": groups
+            }
+        })
+    }
+
+    fn make_policy_eval_group(strong: bool, gid: usize) -> Value {
+        let mut rows = Vec::new();
+        for ds in 0..6usize {
+            let pass = if strong { ds != 0 } else { ds == 0 };
+            rows.push(json!({
+                "dataset": format!("DS{gid:03}_{ds:02}"),
+                "score_median": if pass { 0.20 } else { -0.10 },
+                "score_p10": if pass { 0.08 } else { -0.15 },
+                "sharpe_median": if pass { 0.95 } else { -0.45 },
+                "max_dd_worst": if pass { 0.28 } else { 0.60 },
+                "pnl_median": if pass { 1.0 } else { -0.9 },
+                "pass": pass
+            }));
+        }
+        json!({
+            "samples": 42,
+            "pass_rate": if strong { 0.82 } else { 0.26 },
+            "robust_score_p10": if strong { 0.16 } else { -0.10 },
+            "robust_score_median": if strong { 0.22 } else { -0.03 },
+            "max_dd_p90": if strong { 0.24 } else { 0.58 },
+            "cross_score_median": if strong { 0.06 } else { -0.05 },
+            "meta_score": if strong { 0.26 } else { -0.18 },
+            "holdout": {
+                "datasets": 6,
+                "pass_rate": if strong { 0.8333333333 } else { 0.1666666667 },
+                "score_p10": if strong { 0.08 } else { -0.15 },
+                "score_median": if strong { 0.17 } else { -0.05 },
+                "sharpe_median": if strong { 1.0 } else { -0.4 },
+                "max_dd_p90": if strong { 0.26 } else { 0.56 },
+                "pnl_median": if strong { 1.0 } else { -0.8 }
+            },
+            "holdout_rows": rows
+        })
+    }
+
+    fn run_policy_eval_reference_from_raw(
+        req: MlConfidencePolicyEvaluationRequest,
+        scoped: &[Value],
+    ) -> MlConfidencePolicyEvaluationResult {
+        let req = normalize_ml_policy_evaluation_request(req).expect("normalize policy req");
+        let scope = normalize_ml_scope(MlConfidenceScope {
+            strategy_kind: req.strategy_kind.clone(),
+            timeframe: req.timeframe.clone().unwrap_or_default(),
+        })
+        .expect("normalize scope");
+        let label_cfg = req.label.clone().unwrap_or_default();
+
+        let artifacts_considered = scoped.len();
+        let mut artifacts_evaluated = 0usize;
+        let mut artifacts_skipped_no_history = 0usize;
+        let mut artifacts_skipped_training_failure = 0usize;
+        let mut artifacts_skipped_unhealthy_model = 0usize;
+        let mut artifacts_skipped_no_labels = 0usize;
+        let mut warnings: Vec<String> = Vec::new();
+
+        let mut meta_only = MlConfidencePolicyArmMetrics::default();
+        let mut ml_only = MlConfidencePolicyArmMetrics::default();
+        let mut stage5_blended = MlConfidencePolicyArmMetrics::default();
+
+        for idx in 0..scoped.len() {
+            if idx == 0 {
+                artifacts_skipped_no_history = artifacts_skipped_no_history.saturating_add(1);
+                continue;
+            }
+
+            let mut train_cfg = MlConfidenceTrainConfig::default();
+            train_cfg.label = label_cfg.clone();
+            let (model, metrics) = match ta_app_core::train_ml_confidence_model_from_meta_artifacts(
+                scope.clone(),
+                &scoped[..idx],
+                train_cfg,
+            ) {
+                Ok(v) => v,
+                Err(_) => {
+                    artifacts_skipped_training_failure =
+                        artifacts_skipped_training_failure.saturating_add(1);
+                    continue;
+                }
+            };
+            if req.require_healthy_model && !metrics.healthy {
+                artifacts_skipped_unhealthy_model =
+                    artifacts_skipped_unhealthy_model.saturating_add(1);
+                continue;
+            }
+
+            let groups = scoped[idx]
+                .pointer("/res/groups")
+                .and_then(|v| v.as_array())
+                .map(|groups| groups.as_slice())
+                .unwrap_or(&[]);
+            let mut candidates: Vec<super::PolicyEvalCandidate> = Vec::new();
+            for group in groups {
+                let Some(label) = group_holdout_label(group, &label_cfg) else {
+                    continue;
+                };
+                let Some(features) = ta_app_core::extract_ml_confidence_group_features(group)
+                else {
+                    continue;
+                };
+                let Some(probability) =
+                    ta_app_core::predict_ml_confidence_for_features(&model, &features)
+                        .filter(|p| p.is_finite())
+                else {
+                    continue;
+                };
+                let raw_meta_score = group_rank_score(group);
+                let meta_score = if raw_meta_score.is_finite() {
+                    raw_meta_score
+                } else {
+                    0.0
+                };
+                candidates.push(super::PolicyEvalCandidate {
+                    label,
+                    meta_score,
+                    ml_confidence: probability,
+                    ml_logit: stable_logit(probability),
+                    ml_uncertainty: ml_uncertainty_from_prob(probability),
+                });
+            }
+
+            if candidates.is_empty() {
+                artifacts_skipped_no_labels = artifacts_skipped_no_labels.saturating_add(1);
+                continue;
+            }
+
+            let (meta_labels, ml_labels, stage5_labels) =
+                evaluate_policy_candidates(&req, &candidates);
+            update_policy_arm_metrics(&mut meta_only, &meta_labels);
+            update_policy_arm_metrics(&mut ml_only, &ml_labels);
+            update_policy_arm_metrics(&mut stage5_blended, &stage5_labels);
+            artifacts_evaluated = artifacts_evaluated.saturating_add(1);
+        }
+
+        if artifacts_considered == 0 {
+            warnings.push("No meta-selection artifacts found for this scope.".to_string());
+        } else if artifacts_evaluated == 0 {
+            warnings.push(
+                "No scoped artifacts produced a comparable policy-evaluation result.".to_string(),
+            );
+        }
+
+        let meta_precision = meta_only.precision_at_k;
+        let ml_precision = ml_only.precision_at_k;
+        let stage5_precision = stage5_blended.precision_at_k;
+        let best_policy = if stage5_precision >= meta_precision && stage5_precision >= ml_precision
+        {
+            "stage5_blended"
+        } else if meta_precision >= ml_precision {
+            "meta_only"
+        } else {
+            "ml_only"
+        }
+        .to_string();
+
+        MlConfidencePolicyEvaluationResult {
+            strategy_kind: scope.strategy_kind,
+            timeframe: scope.timeframe,
+            artifacts_considered,
+            artifacts_evaluated,
+            artifacts_skipped_no_history,
+            artifacts_skipped_training_failure,
+            artifacts_skipped_unhealthy_model,
+            artifacts_skipped_no_labels,
+            top_k: req.top_k,
+            min_ml_confidence: req.min_ml_confidence,
+            meta_weight: req.meta_weight,
+            ml_weight: req.ml_weight,
+            uncertainty_weight: req.uncertainty_weight,
+            meta_only,
+            ml_only,
+            stage5_blended,
+            best_policy,
+            stage5_vs_meta_precision_delta: stage5_precision - meta_precision,
+            stage5_vs_ml_precision_delta: stage5_precision - ml_precision,
+            warnings,
+        }
+    }
 
     #[test]
     fn stage4_training_set_excludes_source_meta_artifact() {
@@ -3034,5 +3450,303 @@ mod tests {
         assert!(strategy_uses_double_ma_validation("Marrt"));
         assert!(strategy_uses_double_ma_validation("Vfct"));
         assert!(!strategy_uses_double_ma_validation("Rocb"));
+    }
+
+    #[test]
+    fn known_non_run_artifact_filename_filters_meta_and_eval_outputs() {
+        assert!(is_known_non_run_artifact_filename(
+            "vectorgrid_meta_stage5_20260401.json"
+        ));
+        assert!(is_known_non_run_artifact_filename(
+            "vectorgrid_ml_confidence_eval_20260401.json"
+        ));
+        assert!(!is_known_non_run_artifact_filename(
+            "vectorgrid_run_artifact_20260401.json"
+        ));
+    }
+
+    #[test]
+    fn relaxed_meta_request_match_defers_timeframe_filter_until_after_inference() {
+        let req = test_meta_req();
+        let artifact = json!({
+            "kind": "vectorgrid_run_artifact",
+            "tags": ["bench"],
+            "dataset_meta": { "timeframe": "5m" },
+            "run": { "req": { "strategy_kind": "CompositeMo" } },
+            "validation": { "res": { "candidates": [{}] } }
+        });
+
+        assert!(artifact_matches_meta_req_relaxed(&artifact, &req));
+        assert!(!artifact_matches_meta_req(&artifact, &req));
+    }
+
+    #[test]
+    fn build_ml_confidence_status_prefers_dataset_rows_and_keeps_scan_error() {
+        let summary = MlConfidenceModelSummary {
+            version: 1,
+            scope: MlConfidenceScope {
+                strategy_kind: "CompositeMo".to_string(),
+                timeframe: "1m".to_string(),
+            },
+            model_kind: MlConfidenceModelKind::Logistic,
+            label: MlConfidenceLabelConfig::default(),
+            meta: Some(MlConfidenceModelMeta {
+                trained_at_ms: 1,
+                trained_rows: 40,
+                trained_positives: 20,
+                trained_negatives: 20,
+                target: MlConfidenceTarget::HoldoutDatasetPass,
+                model_kind: MlConfidenceModelKind::Logistic,
+                meta_artifacts_used: Some(2),
+                newest_meta_ts_used: Some("2026-03-01T00:00:00Z".to_string()),
+                cv_auc: Some(0.71),
+                cv_brier: Some(0.21),
+                cv_brier_calibrated: Some(0.19),
+                baseline_brier: 0.25,
+                healthy: true,
+                warnings: Vec::new(),
+            }),
+        };
+        let meta_summary = MlMetaScopeSummary {
+            available_meta_artifacts: 3,
+            newest_meta_ts_available: Some("2026-03-02T00:00:00Z".to_string()),
+            available_labeled_rows_holdout: 9,
+            available_labeled_rows_dataset: 14,
+            has_holdout_dataset_rows: true,
+        };
+
+        let status = build_ml_confidence_status(
+            true,
+            "models/confidence/ml_confidence_test_1m.json".to_string(),
+            1024,
+            Some(summary),
+            None,
+            Some("meta read failed".to_string()),
+            &meta_summary,
+        );
+
+        assert_eq!(status.available_labeled_rows, 14);
+        assert_eq!(status.meta_scan_error.as_deref(), Some("meta read failed"));
+        assert!(status.stale);
+        assert!(!status.retrain_recommended);
+        assert!(status.model_summary.is_some());
+        assert_eq!(status.model_healthy, Some(true));
+        assert_eq!(status.state, MlConfidenceModelState::Warning);
+    }
+
+    #[test]
+    fn dense_selected_group_holdout_evaluation_matches_full_outputs_for_selected_groups() {
+        let req = MetaSelectionRequest {
+            strategy_kind: "DoubleMa".to_string(),
+            timeframe: Some("1m".to_string()),
+            required_tag: Some("holdout".to_string()),
+            holdout_tag: Some("holdout".to_string()),
+            eval_holdout: true,
+            save_holdout_rows: true,
+            holdout_eval_top_n: None,
+            holdout_eval_explore_n: 0,
+            holdout_eval_rank_by: None,
+            holdout_mode: MetaHoldoutMode::Light,
+            holdout_validation: None,
+            top_k: 25,
+            min_samples: 1,
+            strict_shortlist: false,
+            allow_shortlist_fallback: true,
+            weights: MetaScoreWeights::default(),
+            grouping_mode: MetaGroupingMode::Exact,
+            cluster_config: MetaClusterConfig::default(),
+            cluster_representatives: 1,
+        };
+        let base_groups = vec![
+            make_meta_candidate(&req, 5, 20, 0.22),
+            make_meta_candidate(&req, 8, 32, 0.18),
+            make_meta_candidate(&req, 13, 55, 0.12),
+        ];
+        let selected_keys = vec![base_groups[0].key.clone(), base_groups[2].key.clone()];
+        let mut full_result = MetaSelectionResult {
+            runtime_ms: 0,
+            strategy_kind: "DoubleMa".to_string(),
+            timeframe: Some("1m".to_string()),
+            artifacts_considered: 2,
+            artifacts_used: 2,
+            candidates_considered: 3,
+            groups: base_groups.clone(),
+            warnings: Vec::new(),
+            holdout: Some(HoldoutSummary {
+                datasets: 0,
+                skipped: 0,
+            }),
+        };
+        let mut subset_result = MetaSelectionResult {
+            groups: base_groups,
+            ..full_result.clone()
+        };
+        let full_accs = vec![
+            HoldoutAcc {
+                scores: vec![1.10, 1.20],
+                sharpes: vec![1.00, 1.10],
+                max_dds: vec![0.10, 0.12],
+                pnls: vec![2.0, 2.2],
+                passes: 2,
+            },
+            HoldoutAcc {
+                scores: vec![0.70, 0.75],
+                sharpes: vec![0.65, 0.70],
+                max_dds: vec![0.20, 0.24],
+                pnls: vec![1.0, 1.1],
+                passes: 2,
+            },
+            HoldoutAcc {
+                scores: vec![0.95, 1.05],
+                sharpes: vec![0.90, 1.00],
+                max_dds: vec![0.14, 0.16],
+                pnls: vec![1.7, 1.9],
+                passes: 2,
+            },
+        ];
+        let mut full_rows = vec![
+            vec![ta_app_core::HoldoutDatasetRow {
+                dataset: "A".to_string(),
+                score_median: 1.15,
+                score_p10: 1.10,
+                sharpe_median: 1.05,
+                max_dd_worst: 0.12,
+                pnl_median: 2.1,
+                pass: true,
+            }],
+            vec![ta_app_core::HoldoutDatasetRow {
+                dataset: "A".to_string(),
+                score_median: 0.72,
+                score_p10: 0.70,
+                sharpe_median: 0.68,
+                max_dd_worst: 0.24,
+                pnl_median: 1.05,
+                pass: true,
+            }],
+            vec![ta_app_core::HoldoutDatasetRow {
+                dataset: "A".to_string(),
+                score_median: 1.00,
+                score_p10: 0.95,
+                sharpe_median: 0.95,
+                max_dd_worst: 0.16,
+                pnl_median: 1.8,
+                pass: true,
+            }],
+        ];
+        let mut subset_rows = vec![full_rows[0].clone(), full_rows[2].clone()];
+
+        apply_holdout_accumulators_to_result(
+            &mut full_result,
+            &req,
+            &[0, 1, 2],
+            &full_accs,
+            &mut full_rows,
+            2,
+            0,
+            "holdout",
+        );
+        apply_holdout_accumulators_to_result(
+            &mut subset_result,
+            &req,
+            &[0, 2],
+            &[full_accs[0].clone(), full_accs[2].clone()],
+            &mut subset_rows,
+            2,
+            0,
+            "holdout",
+        );
+
+        assert_eq!(
+            serde_json::to_value(&full_result.holdout).unwrap(),
+            serde_json::to_value(&subset_result.holdout).unwrap()
+        );
+        for key in selected_keys {
+            let full_group = full_result
+                .groups
+                .iter()
+                .find(|group| group.key == key)
+                .expect("full selected group");
+            let subset_group = subset_result
+                .groups
+                .iter()
+                .find(|group| group.key == key)
+                .expect("subset selected group");
+            assert_eq!(
+                serde_json::to_value(full_group).unwrap(),
+                serde_json::to_value(subset_group).unwrap()
+            );
+        }
+        let unselected = subset_result
+            .groups
+            .iter()
+            .find(|group| group.key == make_meta_candidate(&req, 8, 32, 0.18).key)
+            .expect("unselected group");
+        assert!(unselected.holdout.is_none());
+        assert!(unselected.holdout_rows.is_empty());
+    }
+
+    #[test]
+    fn prepared_row_policy_eval_matches_raw_prefix_reference() {
+        let metas = vec![
+            make_policy_eval_meta_artifact(
+                "CompositeMo",
+                "2026-03-01T00:00:00Z",
+                (0..30usize)
+                    .map(|idx| make_policy_eval_group(idx % 2 == 0, idx))
+                    .collect(),
+            ),
+            make_policy_eval_meta_artifact(
+                "CompositeMo",
+                "2026-03-02T00:00:00Z",
+                (0..30usize)
+                    .map(|idx| make_policy_eval_group((idx + 1) % 2 == 0, idx))
+                    .collect(),
+            ),
+            make_policy_eval_meta_artifact(
+                "CompositeMo",
+                "2026-03-03T00:00:00Z",
+                (0..30usize)
+                    .map(|idx| make_policy_eval_group(idx % 3 != 0, idx))
+                    .collect(),
+            ),
+        ];
+        let req = MlConfidencePolicyEvaluationRequest {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: Some("1m".to_string()),
+            top_k: 8,
+            min_ml_confidence: 0.55,
+            meta_weight: 0.6,
+            ml_weight: 0.35,
+            uncertainty_weight: 0.05,
+            require_healthy_model: true,
+            fallback_to_meta_if_empty: true,
+            label: Some(MlConfidenceLabelConfig {
+                min_holdout_pass_rate: 0.60,
+                min_holdout_score_p10: 0.0,
+                max_holdout_max_dd_p90: Some(0.60),
+                min_holdout_datasets: 5,
+            }),
+        };
+        let normalized_req =
+            normalize_ml_policy_evaluation_request(req.clone()).expect("normalize policy req");
+        let scope = normalize_ml_scope(MlConfidenceScope {
+            strategy_kind: normalized_req.strategy_kind.clone(),
+            timeframe: normalized_req.timeframe.clone().unwrap_or_default(),
+        })
+        .expect("normalize scope");
+        let label_cfg = normalized_req.label.clone().unwrap_or_default();
+
+        let result = evaluate_ml_confidence_policy_from_scoped_metas(
+            &normalized_req,
+            &scope,
+            &label_cfg,
+            &metas,
+        );
+        let expected = run_policy_eval_reference_from_raw(req, &metas);
+
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
     }
 }

@@ -119,6 +119,8 @@ fn followup_requests(
 fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
     let mut fields = vec![
         "timing_boundary=Criterion".to_string(),
+        "timing_boundary_note=engine_side_double_ma_followup_only_not_app_path_proof".to_string(),
+        "timing_boundary_exclusions=tauri_analysis_commands|workflow_artifact_sync_apply|top_table_hydration|heatmap_rendering|drill_local_stability_panel_hydration".to_string(),
         "build_profile=bench".to_string(),
     ];
     fields.extend(details.iter().map(|(key, value)| format!("{key}={value}")));
@@ -156,6 +158,11 @@ fn bench_followup_case(
             ("candles_len", candles.close.len().to_string()),
             ("surface", "followup_workflow".to_string()),
             ("phases", "drilldown_then_local_stability".to_string()),
+            (
+                "bundle13_exclusions",
+                "not_tauri_analysis_commands_or_workflow_artifact_sync_apply_or_top_table_hydration_or_heatmap_rendering_or_drill_local_stability_panel_hydration"
+                    .to_string(),
+            ),
         ],
     );
 

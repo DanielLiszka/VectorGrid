@@ -20,6 +20,8 @@ The first 10 bundles are still the core optimizer-first map.
 
 Bundles 11+ are optional broader application-performance bundles for when you want end-to-end responsiveness coverage beyond the optimizer core.
 
+Bundles 17+ are post-pass delta bundles for after the first 16 reviews have already been run and you want deeper coverage of runtime caches, shared validation ownership, perf-evidence canonicality, artifact persistence, task responsiveness, or startup/data-readiness latency.
+
 ## Hard scope guard
 
 The current repo posture is optimization-first, benchmark-first, and parity-preserving.
@@ -76,6 +78,15 @@ The highest-signal current themes are:
 14. data loading, resampling, and cache latency
 15. live execution, Polygon streaming, and runtime-control responsiveness
 16. allocation policy, prefix initialization, and copy-elision discipline
+17. dynamic GPU runtime executable-cache and runtime reuse
+18. shared validation core and advanced-strategy adapters
+19. perf-gate authority, perf artifacts, and headless verification
+20. artifact persistence, replay, and hydration backend ownership
+21. live task/event throughput and user-visible run responsiveness
+22. startup data-root ownership and dataset-readiness latency
+
+Bundles 17+ are intentionally follow-up delta bundles.
+Use them after an initial pass when the primary bundle findings depend on deeper owner files rather than broader product-surface review.
 
 ## 1. Double MA optimization backend
 
@@ -163,10 +174,10 @@ The highest-signal current themes are:
 
 ### Supporting research / tracker files
 
-- `research/PRICE_DATA_RESIDENCY_AND_VRAM_CACHE_IMPLEMENTATION_PLAN_2026-03-12.md`
-- `research/DOUBLE_MA_WARM_APP_PATH_OPTIMIZATION_PLAN_2026-03-13.md`
+- `research/SECTION3_GPU_RUNTIME_VALIDATED_IMPLEMENTATION_PLAN_2026-03-21.md`
+- `research/section3_gpu_runtime_plan_addendum.md`
 - `research/DOUBLE_MA_GPU_KERNEL_OPTIMIZATION_CHECKLIST_2026-03-13.md`
-- `research/OPEN_IMPLEMENTATION_COMPLETION_TRACKER_2026-03-12.md`
+- `research/DYNAMIC_GPU_STRATEGY_EXECUTION_IMPLEMENTATION_PLAN_2026-03-18.md`
 
 ### What this bundle owns
 
@@ -579,7 +590,7 @@ The highest-signal current themes are:
 - request-shape and route/fallback review
 - benchmark-shape review
 
-## 12. Meta-selection and Stage 5 ML confidence throughput  ***************
+## 12. Meta-selection and Stage 5 ML confidence throughput  ***************  __________
 
 ### Primary files
 
@@ -623,7 +634,7 @@ The highest-signal current themes are:
 - batch/holdout amplification review
 - saved-artifact and workflow-latency review
 
-## 13. Analysis/drilldown and artifact-hydration responsiveness ****************
+## 13. Analysis/drilldown and artifact-hydration responsiveness **************** _______________
 
 ### Primary files
 
@@ -665,7 +676,7 @@ The highest-signal current themes are:
 - cache and recompute review
 - user-visible responsiveness review
 
-## 14. Data loading, resampling, and cache latency  ****************
+## 14. Data loading, resampling, and cache latency  **************** _____________
 
 ### Primary files
 
@@ -800,6 +811,264 @@ The highest-signal current themes are:
 - host-readback copy-elision review
 - unavoidable-versus-avoidable copy-boundary review
 
+## 17. Dynamic GPU runtime executable-cache and runtime reuse
+
+### Primary files
+
+- `crates/app_core/src/strategy_gpu_runtime.rs`
+- `crates/app_core/src/standalone_gpu_runtime.rs`
+- `crates/app_core/src/strategy_ir.rs`
+- `crates/app_core/src/strategy_plan.rs`
+- `crates/app_core/src/strategy_gpu_program.rs`
+- `crates/app_core/src/strategy_dynamic.rs`
+- `crates/app_core/src/dynamic_indicator_adapter.rs`
+
+### Supporting benchmark / workflow files
+
+- `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs`
+- `src-tauri/src/bin/ta_app_path_faceoff.rs`
+- `research/SECTION3_GPU_RUNTIME_VALIDATED_IMPLEMENTATION_PLAN_2026-03-21.md`
+- `research/section3_gpu_runtime_plan_addendum.md`
+- `research/DYNAMIC_GPU_STRATEGY_EXECUTION_IMPLEMENTATION_PLAN_2026-03-18.md`
+
+### What this bundle owns
+
+- dynamic GPU executable build/reuse behavior
+- IR/profile identity and runtime ABI shape
+- standalone GPU runtime host/device buffer reuse
+- cache hit/miss behavior that changes warm-path payoff
+- dynamic-indicator staging boundaries that are easy to miss in broader GPU-runtime review
+
+### Performance review focus
+
+- repeated compile/program-build work that should hit caches
+- executable/runtime invalidation that silently turns warm-path into cold-path
+- host/device buffer churn inside standalone runtime paths
+- IR/program identity drift that defeats reuse
+- app-path timing that mixes compile cost and steady-state runtime cost incorrectly
+
+### Ask for
+
+- executable-cache and warm-path reuse review
+- IR/runtime-identity review
+- standalone runtime buffer-reuse review
+- compile-boundary and app-path timing review
+
+## 18. Shared validation core and advanced-strategy adapters
+
+### Primary files
+
+- `crates/app_core/src/validation_core.rs`
+- `crates/app_core/src/composite_validate.rs`
+- `crates/app_core/src/validation_pipeline.rs`
+- `crates/app_core/src/double_ma_validate.rs`
+- `src-tauri/src/commands_validation.rs`
+- `web/src/services/validationRequestBuilder.ts`
+
+### Supporting benchmark / workflow files
+
+- `src-tauri/src/bin/ta_headless_validate.rs`
+- `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
+- `crates/app_core/benches/double_ma_validation_workflow.rs`
+- `crates/app_core/benches/composite_validation_workflow.rs`
+
+### What this bundle owns
+
+- shared validation loop behavior across strategy families
+- advanced-strategy validation adapters and candidate shaping
+- backend reuse versus rerun behavior once validation leaves optimizer-first codepaths
+- headless validation timing surfaces outside the main Tauri workflow
+
+### Performance review focus
+
+- cross-strategy validation work duplication
+- adapter-layer staging or conversion overhead
+- fallback/parity differences between Double-MA and advanced-strategy validation
+- deterministic measurement boundaries in headless and command-layer validation paths
+
+### Ask for
+
+- shared validation-core throughput review
+- advanced-strategy adapter overhead review
+- cross-strategy fallback/parity review
+- headless-versus-product validation timing review
+
+## 19. Perf-gate authority, perf artifacts, and headless verification
+
+### Primary files
+
+- `scripts/run_cpu_perf_gate.ps1`
+- `scripts/run_gpu_perf_gate.ps1`
+- `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
+- `scripts/run_workflow_gate.ps1`
+- `scripts/check_output_parity.mjs`
+- `scripts/capture_optimization_memory.ps1`
+- `src-tauri/src/bin/ta_profile_route_matrix.rs`
+- `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
+- `src-tauri/src/bin/ta_workflow_regression.rs`
+- `src-tauri/src/bin/ta_headless_validate.rs`
+- `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs`
+- `crates/app_core/src/bin/real_data_optimizer_eval.rs`
+- `crates/app_core/src/bin/stage6b_kernel_report.rs`
+
+### Supporting benchmark files
+
+- `crates/app_core/benches/composite_mo_opt.rs`
+- `crates/app_core/benches/ml_signal_workflow.rs`
+- `crates/app_core/benches/ml_signal_validation.rs`
+- `crates/app_core/benches/e2e_workflow_ml.rs`
+
+### What this bundle owns
+
+- which perf gates and artifact outputs are actually authoritative
+- memory-capture, output-parity, and headless verification surfaces that sit beside the main perf gates
+- bench/bin coverage for `CompositeMo`, ML workflow, and headless validation timing
+- whether the repo's retained perf artifacts still match the claimed hotspot
+
+### Performance review focus
+
+- stale or duplicate perf evidence sources
+- missing timing boundaries in headless or artifact-driven verification
+- output-parity or memory-footprint checks that should gate conclusions but currently do not
+- cases where a narrower bench exists but the review is using a weaker artifact
+
+### Ask for
+
+- perf-authority and evidence-source review
+- memory-footprint and artifact-output review
+- headless-verification boundary review
+- stale-or-missing bench coverage review
+
+## 20. Artifact persistence, replay, and hydration backend ownership
+
+### Primary files
+
+- `src-tauri/src/commands_artifacts.rs`
+- `src-tauri/src/run_artifacts.rs`
+- `src-tauri/src/commands_reports_api.rs`
+- `src-tauri/src/commands_reports_validation_xlsx.rs`
+- `web/src/services/workflowArtifactsSync.ts`
+- `web/src/stores/workflowArtifactsStore.ts`
+- `web/src/services/historyService.ts`
+- `web/src/services/mlSignalService.ts`
+- `web/src/services/metaService.ts`
+
+### Current scope guard
+
+- keep this bundle on artifact save/load/list/reveal/delete, report/export boundaries, and replay/hydration cost
+- do not use this bundle for general UI cleanup around history or result tables unless the artifact boundary itself is the source of the latency
+
+### What this bundle owns
+
+- backend artifact persistence and replay ownership across validation, ML signal, meta, and analysis follow-up flows
+- report/export command boundaries that can add hidden serialization and hydration cost
+- artifact-list fanout, grouping, and replay paths that cross multiple previously separate bundles
+
+### Performance review focus
+
+- repeated serialization, JSON churn, and artifact re-hydration work
+- report/export paths that duplicate artifact preparation
+- replay/load boundaries that are split across frontend sync and backend artifact owners
+- drift between saved-artifact metadata and the cost of restoring it into workflow state
+
+### Ask for
+
+- artifact-persistence boundary review
+- replay/hydration overhead review
+- report/export serialization review
+- cross-workflow artifact-owner review
+
+## 21. Live task/event throughput and user-visible run responsiveness
+
+### Primary files
+
+- `web/src/stores/taskStore.ts`
+- `web/src/stores/taskStorePerformance.test.ts`
+- `web/src/services/runControlService.ts`
+- `web/src/services/executionService.ts`
+- `web/src/tauri/events.ts`
+- `web/src/components/RunFooterPanel.vue`
+- `web/src/components/TaskCenterOverlay.vue`
+- `src-tauri/src/commands_execution.rs`
+- `src-tauri/src/polygon.rs`
+
+### Supporting test / workflow files
+
+- `web/src/services/executionService.test.ts`
+- `web/src/services/runControlService.test.ts`
+
+### Current scope guard
+
+- keep this bundle on task/event fanout, cancellation/status-refresh surfaces, and user-visible run-state lag
+- do not use this bundle for general shell redesign unless the current task/status surfaces prove the source of the latency
+
+### What this bundle owns
+
+- task queueing, event fanout, and status timeline behavior that affects perceived responsiveness
+- cancellation and run-control state propagation into footer/task-center surfaces
+- throughput guardrails for task-store updates and live runner status churn
+
+### Performance review focus
+
+- duplicate event handling or repeated task-state writes
+- task-store fanout that scales badly under high event volume
+- cancellation/status paths that are responsive in backend logic but lag in user-visible surfaces
+- live runner and Polygon updates that saturate frontend state churn
+
+### Ask for
+
+- task/event throughput review
+- cancellation/status propagation review
+- user-visible run-lag review
+- high-volume event fanout review
+
+## 22. Startup data-root ownership and dataset-readiness latency
+
+### Primary files
+
+- `src-tauri/src/settings.rs`
+- `src-tauri/src/commands_data.rs`
+- `src-tauri/src/polygon.rs`
+- `src-tauri/src/data_cache.rs`
+- `web/src/main.ts`
+- `web/src/services/settingsBootstrap.ts`
+- `web/src/services/workflowBootstrap.ts`
+- `web/src/services/dataService.ts`
+- `web/src/stores/dataStore.ts`
+
+### Supporting verification files
+
+- `web/e2e/desktop/README.md`
+- `web/scripts/check-a11y-smoke.mjs`
+- `web/scripts/check-tauri-parity.mjs`
+- `web/scripts/check-known-tauri-commands.mjs`
+
+### Current scope guard
+
+- keep this bundle on startup data-root resolution, bootstrap sequencing, and dataset-readiness latency
+- do not use this bundle for generic settings UX redesign unless storage-path ownership is directly causing user-visible startup or load delay
+
+### What this bundle owns
+
+- market-data root resolution and settings-backed path ownership
+- startup bootstrap work that gates dataset readiness
+- cache-info, repair, and download flows that sit between settings, data commands, and live dataset state
+- the boundary between shell startup and usable data state
+
+### Performance review focus
+
+- startup ordering that performs redundant settings or dataset work
+- data-root discovery and metadata scans that slow first usable state
+- cold versus warm dataset-readiness mismatch
+- cache/repair/download paths that unexpectedly dominate startup or first-load latency
+
+### Ask for
+
+- startup dataset-readiness review
+- data-root ownership and bootstrap review
+- cold-versus-warm startup latency review
+- settings/data boundary review
+
 ## Prompt rules for GPT-5.4
 
 Use these rules for every bundle.
@@ -819,6 +1088,7 @@ Use these rules for every bundle.
 - For `MlSignal`, do not propose replacing score-cache validation with a new trade engine or moving offline training into Tauri unless the provided files show a measured blocking cost.
 - If `research/ml_signal/*` files are included, review the external CatBoost/calibration/walk-forward bundle contract against the exported feature schema and score-cache expectations instead of ignoring that part of the shipped workflow.
 - For bundles 11+, prioritize measured application latency and responsiveness problems over UI redesign or product-surface expansion.
+- For bundles 17+, treat them as follow-up delta bundles after a first-pass review, and keep them anchored on the deeper owner files rather than re-running a broader product-surface review.
 - For meta and live-execution bundles, focus on throughput, blocking cost, status drift, and cancellation behavior rather than new trading or ML product ideas.
 - Prefer the shared helpers in `crates/app_core/src/alloc_policy.rs` before proposing new local unsafe allocation code.
 - Only recommend uninitialized allocation when every element is guaranteed to be written before any read; keep full-fill allocation when the fill value is observable behavior.
@@ -916,6 +1186,8 @@ Pay extra attention to:
 ## Quick bundle picks
 
 Use these when you want a narrow review.
+
+Bundles Q through V are post-pass delta bundles for after the primary 1 through 16 sweep.
 
 ### Bundle A: Double-MA optimizer internals
 
@@ -1090,8 +1362,8 @@ Optionally add:
 Ask for:
 
 - composite hot-path review
-- GPU-prescan payoff review
 - request-shape and fallback review
+- benchmark-shape review
 
 ### Bundle K: Meta / Stage 5 throughput
 
@@ -1207,3 +1479,125 @@ Ask for:
 - review whether the promoted single-pass full-metrics contract should be generalized to adjacent shared-kernel routes or objectives
 - small-finalist GPU execution-shape review only if the legacy replay path is intentionally revisited
 - device-resident reuse / state-carry-forward review
+
+### Bundle Q: Dynamic GPU runtime executable-cache and reuse
+
+- `crates/app_core/src/strategy_gpu_runtime.rs`
+- `crates/app_core/src/standalone_gpu_runtime.rs`
+- `crates/app_core/src/strategy_ir.rs`
+- `crates/app_core/src/strategy_plan.rs`
+- `crates/app_core/src/strategy_gpu_program.rs`
+
+Optionally add:
+
+- `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs`
+- `src-tauri/src/bin/ta_app_path_faceoff.rs`
+
+Ask for:
+
+- executable-cache and warm-path reuse review
+- IR/runtime-identity review
+- standalone runtime buffer-reuse review
+
+### Bundle R: Shared validation core and advanced-strategy adapters
+
+- `crates/app_core/src/validation_core.rs`
+- `crates/app_core/src/composite_validate.rs`
+- `crates/app_core/src/validation_pipeline.rs`
+- `src-tauri/src/commands_validation.rs`
+
+Optionally add:
+
+- `src-tauri/src/bin/ta_headless_validate.rs`
+- `crates/app_core/benches/composite_validation_workflow.rs`
+
+Ask for:
+
+- shared validation-core throughput review
+- advanced-strategy adapter overhead review
+- cross-strategy fallback/parity review
+
+### Bundle S: Perf-gate authority and perf artifacts
+
+- `scripts/run_cpu_perf_gate.ps1`
+- `scripts/run_gpu_perf_gate.ps1`
+- `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
+- `scripts/run_workflow_gate.ps1`
+- `scripts/check_output_parity.mjs`
+- `scripts/capture_optimization_memory.ps1`
+- `src-tauri/src/bin/ta_headless_validate.rs`
+
+Optionally add:
+
+- `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs`
+- `crates/app_core/benches/ml_signal_workflow.rs`
+- `crates/app_core/benches/ml_signal_validation.rs`
+
+Ask for:
+
+- perf-authority and evidence-source review
+- memory-footprint and artifact-output review
+- headless-verification boundary review
+
+### Bundle T: Artifact persistence and replay backend ownership
+
+- `src-tauri/src/commands_artifacts.rs`
+- `src-tauri/src/run_artifacts.rs`
+- `src-tauri/src/commands_reports_api.rs`
+- `src-tauri/src/commands_reports_validation_xlsx.rs`
+- `web/src/services/workflowArtifactsSync.ts`
+- `web/src/stores/workflowArtifactsStore.ts`
+
+Optionally add:
+
+- `web/src/services/mlSignalService.ts`
+- `web/src/services/metaService.ts`
+- `web/src/services/historyService.ts`
+
+Ask for:
+
+- artifact-persistence boundary review
+- replay/hydration overhead review
+- report/export serialization review
+
+### Bundle U: Live task/event throughput and run responsiveness
+
+- `web/src/stores/taskStore.ts`
+- `web/src/stores/taskStorePerformance.test.ts`
+- `web/src/services/runControlService.ts`
+- `web/src/services/executionService.ts`
+- `web/src/tauri/events.ts`
+
+Optionally add:
+
+- `web/src/components/RunFooterPanel.vue`
+- `web/src/components/TaskCenterOverlay.vue`
+- `src-tauri/src/commands_execution.rs`
+
+Ask for:
+
+- task/event throughput review
+- cancellation/status propagation review
+- user-visible run-lag review
+
+### Bundle V: Startup data-root and dataset-readiness latency
+
+- `src-tauri/src/settings.rs`
+- `src-tauri/src/commands_data.rs`
+- `src-tauri/src/polygon.rs`
+- `src-tauri/src/data_cache.rs`
+- `web/src/main.ts`
+- `web/src/services/settingsBootstrap.ts`
+- `web/src/services/workflowBootstrap.ts`
+
+Optionally add:
+
+- `web/src/services/dataService.ts`
+- `web/src/stores/dataStore.ts`
+- `web/e2e/desktop/README.md`
+
+Ask for:
+
+- startup dataset-readiness review
+- data-root ownership and bootstrap review
+- cold-versus-warm startup latency review

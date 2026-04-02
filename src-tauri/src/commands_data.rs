@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -33,6 +34,46 @@ pub fn resample_price_data(
     state: tauri::State<AppState>,
 ) -> Result<LoadPriceDataResponse, String> {
     state.resample_loaded_data(&base_data_id, &timeframe)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClearLoadedDataResponse {
+    pub cleared: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_ids: Vec<String>,
+}
+
+fn clear_loaded_data_impl(
+    base_data_id: &str,
+    state: &AppState,
+) -> Result<ClearLoadedDataResponse, String> {
+    let base_id = base_data_id.trim();
+    if base_id.is_empty() {
+        return Ok(ClearLoadedDataResponse {
+            cleared: false,
+            removed_ids: Vec::new(),
+        });
+    }
+
+    match state.invalidate_dataset(base_id) {
+        Ok(removed_ids) => Ok(ClearLoadedDataResponse {
+            cleared: !removed_ids.is_empty(),
+            removed_ids,
+        }),
+        Err(error) if error.starts_with("unknown data id:") => Ok(ClearLoadedDataResponse {
+            cleared: false,
+            removed_ids: Vec::new(),
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+#[tauri::command]
+pub fn clear_loaded_data(
+    base_data_id: String,
+    state: tauri::State<AppState>,
+) -> Result<ClearLoadedDataResponse, String> {
+    clear_loaded_data_impl(&base_data_id, state.inner())
 }
 
 #[tauri::command]
@@ -561,13 +602,6 @@ fn now_unix_ms() -> i64 {
     i64::try_from(dur.as_millis()).unwrap_or(0)
 }
 
-fn normalize_symbol_key(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_uppercase()
-}
-
 fn normalize_live_stock_symbol(s: &str) -> Result<String, String> {
     let up = s.trim().to_ascii_uppercase().replace(' ', "");
     if up.is_empty() {
@@ -632,7 +666,7 @@ fn normalize_polygon_live_bar(
         return None;
     }
     let sym = v.get("sym").and_then(|x| x.as_str()).unwrap_or(symbol);
-    if !symbol.is_empty() && normalize_symbol_key(sym) != normalize_symbol_key(symbol) {
+    if !symbol.is_empty() && !super::commands_execution::symbol_matches(sym, symbol) {
         return None;
     }
     let open = value_as_f64(v, "o")?;
@@ -719,10 +753,10 @@ async fn run_polygon_live_candle_stream(
         format!("connecting to {ws_url}"),
     );
 
-    let ws = connect_async(ws_url.as_str()).await;
+    let ws = timeout(Duration::from_secs(10), connect_async(ws_url.as_str())).await;
     let (mut stream, _) = match ws {
-        Ok(v) => v,
-        Err(e) => {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
             emit_polygon_live_status(
                 &app,
                 &market,
@@ -734,6 +768,18 @@ async fn run_polygon_live_candle_stream(
             );
             return;
         }
+        Err(_) => {
+            emit_polygon_live_status(
+                &app,
+                &market,
+                &symbol,
+                delayed,
+                &channel,
+                "error",
+                "connect timed out",
+            );
+            return;
+        }
     };
 
     let auth_msg = serde_json::json!({
@@ -741,7 +787,24 @@ async fn run_polygon_live_candle_stream(
         "params": api_key,
     })
     .to_string();
-    if let Err(e) = stream.send(Message::Text(auth_msg.into())).await {
+    let auth_send = timeout(
+        Duration::from_secs(5),
+        stream.send(Message::Text(auth_msg.into())),
+    )
+    .await;
+    if let Err(_) = auth_send {
+        emit_polygon_live_status(
+            &app,
+            &market,
+            &symbol,
+            delayed,
+            &channel,
+            "error",
+            "auth send timed out",
+        );
+        return;
+    }
+    if let Ok(Err(e)) = auth_send {
         emit_polygon_live_status(
             &app,
             &market,
@@ -759,7 +822,24 @@ async fn run_polygon_live_candle_stream(
         "params": channel,
     })
     .to_string();
-    if let Err(e) = stream.send(Message::Text(sub_msg.into())).await {
+    let subscribe_send = timeout(
+        Duration::from_secs(5),
+        stream.send(Message::Text(sub_msg.into())),
+    )
+    .await;
+    if let Err(_) = subscribe_send {
+        emit_polygon_live_status(
+            &app,
+            &market,
+            &symbol,
+            delayed,
+            &channel,
+            "error",
+            "subscribe send timed out",
+        );
+        return;
+    }
+    if let Ok(Err(e)) = subscribe_send {
         emit_polygon_live_status(
             &app,
             &market,
@@ -875,12 +955,35 @@ pub async fn polygon_start_live_candle_stream(
         run_polygon_live_candle_stream(app2, ws_url2, api_key, market2, symbol2, delayed, channel2)
             .await;
     });
-    let replaced_prior = state.replace_live_candle_stream(LiveCandleStreamTask {
+    let replaced_prior = match state.replace_live_candle_stream(LiveCandleStreamTask {
         handle: task,
         market: market.clone(),
         symbol: symbol.clone(),
         delayed,
-    })?;
+    }) {
+        Ok(prior) => prior,
+        Err((error, task)) => {
+            task.handle.abort();
+            return Err(error);
+        }
+    };
+
+    if replaced_prior
+        .as_ref()
+        .is_some_and(|prior| !super::commands_execution::symbol_matches(&prior.symbol, &symbol))
+    {
+        let _ = super::commands_execution::stop_live_execution_runner(app.clone());
+    }
+
+    emit_polygon_live_status(
+        &app,
+        &market,
+        &symbol,
+        delayed,
+        &channel,
+        "started",
+        "live candle stream started",
+    );
 
     Ok(PolygonStartLiveCandleStreamResponse {
         started: true,
@@ -896,8 +999,22 @@ pub async fn polygon_start_live_candle_stream(
 #[tauri::command]
 pub fn polygon_stop_live_candle_stream(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<PolygonStopLiveCandleStreamResponse, String> {
     let prior = state.stop_live_candle_stream()?;
+    if let Some(info) = prior.as_ref() {
+        let channel = format!("AM.{}", info.symbol);
+        emit_polygon_live_status(
+            &app,
+            &info.market,
+            &info.symbol,
+            info.delayed,
+            &channel,
+            "stopped",
+            "live candle stream stopped",
+        );
+        let _ = super::commands_execution::stop_live_execution_runner(app.clone());
+    }
     Ok(PolygonStopLiveCandleStreamResponse {
         stopped: prior.is_some(),
         prior,
@@ -1149,5 +1266,126 @@ pub fn pick_folder() -> Result<Option<String>, String> {
     #[cfg(not(target_os = "windows"))]
     {
         Err("Native folder dialogs are only implemented on Windows in this demo.".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clear_loaded_data_impl;
+    use super::normalize_polygon_live_bar;
+    use crate::state::AppState;
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+    use vector_ta::utilities::data_loader::Candles;
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        p.push(format!("{prefix}_{}_{}", std::process::id(), uniq));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).expect("create temp dir");
+        p
+    }
+
+    fn make_candles(len: usize) -> Candles {
+        let mut timestamp = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut volume = Vec::with_capacity(len);
+        for idx in 0..len {
+            let base = 100.0 + idx as f64 * 0.5;
+            timestamp.push(1_700_000_000_000i64 + idx as i64 * 60_000);
+            open.push(base);
+            high.push(base + 1.0);
+            low.push(base - 1.0);
+            close.push(base + 0.25);
+            volume.push(1_000.0 + idx as f64);
+        }
+        Candles::new(timestamp, open, high, low, close, volume)
+    }
+
+    fn write_candles_csv(path: &Path, candles: &Candles) {
+        let mut out = String::from("timestamp,open,high,low,close,volume\n");
+        for idx in 0..candles.close.len() {
+            out.push_str(&format!(
+                "{},{},{},{},{},{}\n",
+                candles.timestamp[idx],
+                candles.open[idx],
+                candles.high[idx],
+                candles.low[idx],
+                candles.close[idx],
+                candles.volume[idx]
+            ));
+        }
+        std::fs::write(path, out).expect("write candles csv");
+    }
+
+    #[test]
+    fn clear_loaded_data_impl_is_idempotent_for_empty_or_unknown_ids() {
+        let state = AppState::default();
+
+        let empty = clear_loaded_data_impl("", &state).expect("empty clear");
+        let unknown = clear_loaded_data_impl("data-unknown", &state).expect("unknown clear");
+
+        assert!(!empty.cleared);
+        assert!(empty.removed_ids.is_empty());
+        assert!(!unknown.cleared);
+        assert!(unknown.removed_ids.is_empty());
+    }
+
+    #[test]
+    fn clear_loaded_data_impl_removes_base_dataset_and_descendants() {
+        let temp = make_temp_dir("commands_data_clear");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("base.csv");
+        write_candles_csv(&csv, &make_candles(32));
+
+        let state = AppState::default();
+        let base = state
+            .load_price_data(csv.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load base");
+        let derived = state
+            .resample_loaded_data(&base.id, "5m")
+            .expect("resample base");
+
+        let cleared = clear_loaded_data_impl(&base.id, &state).expect("clear loaded data");
+
+        assert!(cleared.cleared);
+        assert!(cleared.removed_ids.contains(&base.id));
+        assert!(cleared.removed_ids.contains(&derived.id));
+        assert!(state.get_candles(&base.id).is_err());
+        assert!(state.get_candles(&derived.id).is_err());
+    }
+
+    #[test]
+    fn normalize_polygon_live_bar_preserves_symbol_punctuation() {
+        let accepted = json!({
+            "ev": "AM",
+            "sym": "BRK.B",
+            "o": 10.0,
+            "h": 11.0,
+            "l": 9.5,
+            "c": 10.5,
+            "s": 1_700_000_000_000i64,
+        });
+        let rejected = json!({
+            "ev": "AM",
+            "sym": "BRKB",
+            "o": 10.0,
+            "h": 11.0,
+            "l": 9.5,
+            "c": 10.5,
+            "s": 1_700_000_000_000i64,
+        });
+
+        assert!(normalize_polygon_live_bar(&accepted, "stocks", "BRK.B", true, "AM.BRK.B").is_some());
+        assert!(normalize_polygon_live_bar(&rejected, "stocks", "BRK.B", true, "AM.BRK.B").is_none());
     }
 }

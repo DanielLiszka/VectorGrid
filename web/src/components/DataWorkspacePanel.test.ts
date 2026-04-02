@@ -21,7 +21,7 @@ describe("DataWorkspacePanel", () => {
     const dataStore = useDataStore(pinia);
     const workflowStore = useWorkflowStore(pinia);
 
-    vi.spyOn(dataStore, "hydrateStartupState").mockImplementation(() => {});
+    vi.spyOn(dataStore, "hydrateStartupState").mockResolvedValue(undefined);
     const setInputSpy = vi
       .spyOn(dataStore, "setInputField")
       .mockImplementation(() => {});

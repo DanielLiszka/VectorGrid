@@ -29,11 +29,23 @@ pub struct PriceDataMeta {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadSource {
+    BinaryCache,
+    CsvParsedAndCached,
+    CsvParsedCacheWriteSkipped,
+    InMemoryBaseReuse,
+    DerivedFreshResample,
+    DerivedInMemoryReuse,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct LoadPriceDataResponse {
     pub id: String,
     pub meta: PriceDataMeta,
     pub cache_hit: bool,
     pub cache_path: String,
+    pub load_source: LoadSource,
 }
 
 #[derive(Debug, Clone)]
@@ -249,14 +261,25 @@ impl AppState {
                 source_identity: Some(outcome.source_identity),
             },
         );
+        let cache_path = outcome
+            .cache_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let load_source = if outcome.cache_hit {
+            LoadSource::BinaryCache
+        } else if outcome.cache_path.is_some() {
+            LoadSource::CsvParsedAndCached
+        } else {
+            LoadSource::CsvParsedCacheWriteSkipped
+        };
+
         Ok(LoadPriceDataResponse {
             id,
             meta,
             cache_hit: outcome.cache_hit,
-            cache_path: outcome
-                .cache_path
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default(),
+            cache_path,
+            load_source,
         })
     }
 
@@ -316,12 +339,12 @@ impl AppState {
         self.remove_loaded_context_entries(&stale_removed_ids)?;
 
         if let Some(meta) = cached_meta {
-            let ctx = self.get_loaded_data_context(&out_id).ok();
             return Ok(LoadPriceDataResponse {
                 id: out_id,
                 meta,
                 cache_hit: true,
-                cache_path: ctx.map(|loaded| loaded.csv_path).unwrap_or_default(),
+                cache_path: String::new(),
+                load_source: LoadSource::DerivedInMemoryReuse,
             });
         }
 
@@ -374,6 +397,7 @@ impl AppState {
             meta,
             cache_hit: false,
             cache_path: String::new(),
+            load_source: LoadSource::DerivedFreshResample,
         })
     }
 
@@ -549,11 +573,11 @@ impl AppState {
     pub fn replace_live_candle_stream(
         &self,
         task: LiveCandleStreamTask,
-    ) -> Result<Option<LiveCandleStreamInfo>, String> {
-        let mut slot = self
-            .live_candle_stream
-            .lock()
-            .map_err(|_| "failed to lock live stream state".to_string())?;
+    ) -> Result<Option<LiveCandleStreamInfo>, (String, LiveCandleStreamTask)> {
+        let mut slot = match self.live_candle_stream.lock() {
+            Ok(slot) => slot,
+            Err(_) => return Err(("failed to lock live stream state".to_string(), task)),
+        };
         let prior = slot.take().map(|prev| {
             let info = LiveCandleStreamInfo {
                 market: prev.market,
@@ -613,26 +637,32 @@ impl AppState {
     ) -> Result<Option<LoadPriceDataResponse>, String> {
         let access_seq = self.next_access_seq();
 
-        let ctx_map = self
-            .loaded_data_context
-            .lock()
-            .map_err(|_| "failed to lock loaded-data context map".to_string())?;
-        let candidate_id = ctx_map.iter().find_map(|(id, ctx)| {
-            (ctx.timeframe.is_none()
-                && ctx.csv_path == path
-                && ctx.source_identity == Some(source_identity))
-            .then(|| id.clone())
-        });
-        drop(ctx_map);
-
-        let Some(id) = candidate_id else {
-            return Ok(None);
-        };
-
         let mut map = self
             .candles
             .lock()
             .map_err(|_| "failed to lock candles map".to_string())?;
+        let ctx_map = self
+            .loaded_data_context
+            .lock()
+            .map_err(|_| "failed to lock loaded-data context map".to_string())?;
+        let mut selected_id = None;
+        for (id, ctx) in ctx_map.iter() {
+            if ctx.csv_path != path || ctx.source_identity != Some(source_identity) {
+                continue;
+            }
+            let Some(entry) = map.get(id) else {
+                continue;
+            };
+            if entry.version_meta.kind == DatasetKind::Base {
+                selected_id = Some(id.clone());
+                break;
+            }
+        }
+        drop(ctx_map);
+
+        let Some(id) = selected_id else {
+            return Ok(None);
+        };
         let Some(entry) = map.get_mut(&id) else {
             return Ok(None);
         };
@@ -650,6 +680,7 @@ impl AppState {
             meta,
             cache_hit: true,
             cache_path: String::new(),
+            load_source: LoadSource::InMemoryBaseReuse,
         }))
     }
 
@@ -974,6 +1005,16 @@ mod state_residency_tests {
 
         assert_eq!(first.id, second.id);
         assert!(Arc::ptr_eq(&first_arc, &second_arc));
+        assert!(matches!(
+            first.load_source,
+            LoadSource::DerivedFreshResample
+        ));
+        assert!(first.cache_path.is_empty());
+        assert!(matches!(
+            second.load_source,
+            LoadSource::DerivedInMemoryReuse
+        ));
+        assert!(second.cache_path.is_empty());
     }
 
     #[test]
@@ -1004,6 +1045,8 @@ mod state_residency_tests {
 
         assert_eq!(first.id, second.id);
         assert!(second.cache_hit);
+        assert!(matches!(second.load_source, LoadSource::InMemoryBaseReuse));
+        assert!(second.cache_path.is_empty());
         assert!(Arc::ptr_eq(&first_arc, &second_arc));
         assert!(state.get_candles(&derived.id).is_ok());
         assert_eq!(

@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { applyWorkflowBootstrapFromStorage, readWorkflowBootstrapState } from './workflowBootstrap'
+import { useDataStore } from '../stores/dataStore'
 import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { CONTROLS_TAB_KEY, RESULTS_TAB_KEY } from '../utils/core/storageKeys'
 
 type StorageMap = Record<string, string>
 let pinia: ReturnType<typeof createPinia>
+let hydrateStartupStateSpy: ReturnType<typeof vi.spyOn>
 
 function installStorage(values: StorageMap): void {
   const state: StorageMap = { ...values }
@@ -27,6 +29,9 @@ describe('workflow bootstrap service', () => {
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
     installStorage({})
+    hydrateStartupStateSpy = vi
+      .spyOn(useDataStore(pinia), 'hydrateStartupState')
+      .mockResolvedValue(undefined)
   })
 
   it('reads and normalizes persisted bootstrap keys', () => {
@@ -101,6 +106,7 @@ describe('workflow bootstrap service', () => {
 
     applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
+    expect(hydrateStartupStateSpy).toHaveBeenCalled()
     expect(store.workspace).toBe('library')
     expect(store.workflow).toBe('history')
     expect(store.controlsTab).toBe('data')
@@ -204,5 +210,11 @@ describe('workflow bootstrap service', () => {
     applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.splitFraction).toBe(0.52)
+  })
+
+  it('hydrates startup data even when there is no saved workflow bootstrap state', () => {
+    applyWorkflowBootstrapFromStorage()
+
+    expect(hydrateStartupStateSpy).toHaveBeenCalled()
   })
 })

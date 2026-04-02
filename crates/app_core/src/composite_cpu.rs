@@ -55,9 +55,14 @@ use crate::cdmc_gpu_kernel::{
     eval_cdmc_metrics_gpu_kernel_device_rows, CdmcGpuComboBatch, CdmcGpuDeviceSignalMatrices,
 };
 use crate::composite_mo::CompositeGpuPrescanConfig;
+#[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
 use crate::composite_profile_route::composite_profile_gpu_target_label;
 #[cfg(feature = "cuda")]
 use crate::composite_profile_route::composite_profile_runtime_label;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::composite_profile_route::{
+    composite_profile_from_strategy, composite_profile_gpu_target_label,
+};
 use crate::double_ma::{
     build_indicator_bars_for_chart, compute_halftrend_trend, compute_log_returns_f64,
     cpu_tile_sizes, estimate_pairs_fast_lt_slow, expand_u16_range, first_finite_idx,
@@ -130,6 +135,8 @@ use crate::rocb::{
 use crate::rocb_gpu_kernel::{
     eval_rocb_metrics_gpu_kernel_device_rows, RocbGpuComboBatch, RocbGpuDeviceSignalMatrices,
 };
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::strategy_ir::StrategyProfileKind;
 use crate::vcc::{
     build_vcc_desired_positions, clear_vcc_route_diagnostics, compute_vcc_fast_signals,
     compute_vcc_start_t, compute_vcc_trend_signals, resolve_vcc_periods,

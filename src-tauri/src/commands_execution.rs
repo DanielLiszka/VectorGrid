@@ -3,8 +3,9 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
 use vector_ta::utilities::data_loader::Candles;
@@ -90,6 +91,12 @@ pub struct GetLiveExecutionSnapshotRequest {
     pub symbol: String,
     #[serde(default)]
     pub limit: Option<u32>,
+    #[serde(default)]
+    pub include_account: Option<bool>,
+    #[serde(default)]
+    pub include_orders: Option<bool>,
+    #[serde(default)]
+    pub include_position: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -172,6 +179,10 @@ pub struct ExecuteStrategySignalResponse {
 }
 
 const LIVE_EXECUTION_RUNNER_EVENT: &str = "live_execution_runner_event";
+const RUNNER_CANCELLED_ERR: &str = "__live_execution_runner_cancelled__";
+const ALPACA_CONNECT_TIMEOUT_MS: u64 = 3_000;
+const ALPACA_REQUEST_TIMEOUT_MS: u64 = 12_000;
+const ALPACA_IDLE_POOL_TIMEOUT_SECS: u64 = 90;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LiveExecutionRunnerConfig {
@@ -230,6 +241,9 @@ struct LiveExecutionRunnerEvent {
 
 #[derive(Clone, Debug)]
 struct LiveExecutionRunnerRuntime {
+    generation: u64,
+    abort: RunnerAbortHandle,
+    pending_bar: Option<LiveExecutionRunnerBar>,
     cfg: LiveExecutionRunnerInternalCfg,
     inflight: bool,
     started_at_unix_ms: i64,
@@ -265,6 +279,36 @@ pub(crate) struct LiveExecutionRunnerBar {
 }
 
 static LIVE_EXECUTION_RUNNER: OnceLock<Mutex<Option<LiveExecutionRunnerRuntime>>> = OnceLock::new();
+static LIVE_EXECUTION_RUNNER_GEN: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Debug)]
+struct RunnerAbortHandle {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl RunnerAbortHandle {
+    fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            Err(RUNNER_CANCELLED_ERR.to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
 
 struct SignalDecision {
     desired_position: i32,
@@ -368,6 +412,20 @@ fn live_execution_runner_slot() -> &'static Mutex<Option<LiveExecutionRunnerRunt
     LIVE_EXECUTION_RUNNER.get_or_init(|| Mutex::new(None))
 }
 
+fn with_active_runner_generation<T>(
+    generation: u64,
+    f: impl FnOnce(&mut LiveExecutionRunnerRuntime) -> T,
+) -> Option<T> {
+    let Ok(mut slot) = live_execution_runner_slot().lock() else {
+        return None;
+    };
+    let runtime = slot.as_mut()?;
+    if runtime.generation != generation {
+        return None;
+    }
+    Some(f(runtime))
+}
+
 fn strategy_kind_label(spec: &LiveStrategySpec) -> String {
     match spec {
         LiveStrategySpec::DoubleMa { .. } => "DoubleMa",
@@ -444,10 +502,18 @@ fn emit_live_execution_runner_event(
     let _ = app.emit(LIVE_EXECUTION_RUNNER_EVENT, payload);
 }
 
+pub(crate) fn canonical_symbol_key(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
 fn normalize_execute_request(
     mut req: ExecuteStrategySignalRequest,
 ) -> Result<(ExecuteStrategySignalRequest, String, f64), String> {
-    let symbol = req.symbol.trim().to_uppercase();
+    let symbol = canonical_symbol_key(&req.symbol);
     if symbol.is_empty() {
         return Err("symbol is required".to_string());
     }
@@ -483,6 +549,25 @@ fn build_alpaca_headers(api_key: &str, api_secret: &str) -> Result<HeaderMap, St
         HeaderValue::from_str(api_secret).map_err(|e| format!("invalid API secret header: {e}"))?,
     );
     Ok(headers)
+}
+
+fn alpaca_client() -> Result<&'static Client, String> {
+    static ALPACA_CLIENT: OnceLock<Client> = OnceLock::new();
+    if let Some(client) = ALPACA_CLIENT.get() {
+        return Ok(client);
+    }
+
+    let client = Client::builder()
+        .user_agent("VectorGrid/1.0")
+        .connect_timeout(Duration::from_millis(ALPACA_CONNECT_TIMEOUT_MS))
+        .timeout(Duration::from_millis(ALPACA_REQUEST_TIMEOUT_MS))
+        .pool_idle_timeout(Duration::from_secs(ALPACA_IDLE_POOL_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("failed to build Alpaca HTTP client: {e}"))?;
+    let _ = ALPACA_CLIENT.set(client);
+    ALPACA_CLIENT
+        .get()
+        .ok_or_else(|| "failed to initialize Alpaca HTTP client".to_string())
 }
 
 fn fetch_alpaca_position_qty(
@@ -570,18 +655,28 @@ fn json_field_as_f64(v: &serde_json::Value, field: &str) -> Option<f64> {
     }
 }
 
-fn normalize_symbol_key(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_uppercase()
-}
-
-fn symbol_matches(order_symbol: &str, target_symbol: &str) -> bool {
+pub(crate) fn symbol_matches(order_symbol: &str, target_symbol: &str) -> bool {
     if target_symbol.is_empty() {
         return true;
     }
-    normalize_symbol_key(order_symbol) == normalize_symbol_key(target_symbol)
+    canonical_symbol_key(order_symbol) == canonical_symbol_key(target_symbol)
+}
+
+fn update_pending_bar(
+    current: &mut Option<LiveExecutionRunnerBar>,
+    incoming: &LiveExecutionRunnerBar,
+) -> bool {
+    match current.as_ref() {
+        Some(existing) if existing.time_open_unix_ms >= incoming.time_open_unix_ms => false,
+        _ => {
+            *current = Some(incoming.clone());
+            true
+        }
+    }
+}
+
+fn is_runner_cancelled_error(err: &str) -> bool {
+    err.trim() == RUNNER_CANCELLED_ERR
 }
 
 fn fetch_alpaca_orders(
@@ -646,6 +741,33 @@ fn fetch_alpaca_positions(
         .as_array()
         .ok_or_else(|| "Alpaca positions response must be an array".to_string())?;
     Ok(arr.clone())
+}
+
+fn fetch_alpaca_position(
+    client: &Client,
+    mode: LiveExecutionMode,
+    api_key: &str,
+    api_secret: &str,
+    symbol: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    let headers = build_alpaca_headers(api_key, api_secret)?;
+    let url = format!("{}/v2/positions/{}", base_url(mode), symbol);
+    let resp = client
+        .get(url)
+        .headers(headers)
+        .send()
+        .map_err(|e| format!("failed to fetch Alpaca position: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        return Err(format!("Alpaca position request failed ({status}): {body}"));
+    }
+    resp.json()
+        .map(Some)
+        .map_err(|e| format!("failed to decode Alpaca position response: {e}"))
 }
 
 fn normalize_order_snapshot(v: &serde_json::Value) -> Option<LiveOrderSnapshot> {
@@ -775,8 +897,15 @@ fn execute_strategy_signal_blocking(
     symbol: String,
     qty: f64,
     candles: Arc<Candles>,
+    abort: Option<RunnerAbortHandle>,
 ) -> Result<ExecuteStrategySignalResponse, String> {
+    if let Some(abort) = abort.as_ref() {
+        abort.check()?;
+    }
     let decision = signal_decision_from_request(&req.strategy, candles.as_ref(), &req.risk)?;
+    if let Some(abort) = abort.as_ref() {
+        abort.check()?;
+    }
     let target_position_qty = (decision.desired_position as f64) * qty;
     let mut warnings: Vec<String> = Vec::new();
 
@@ -787,14 +916,17 @@ fn execute_strategy_signal_blocking(
                 "alpaca_api_key and alpaca_api_secret are required unless dry_run=true".to_string(),
             );
         }
-        let client = Client::new();
+        let client = alpaca_client()?;
         current_position_qty = fetch_alpaca_position_qty(
-            &client,
+            client,
             req.mode,
             req.alpaca_api_key.trim(),
             req.alpaca_api_secret.trim(),
             &symbol,
         )?;
+        if let Some(abort) = abort.as_ref() {
+            abort.check()?;
+        }
     }
 
     let delta_qty = target_position_qty - current_position_qty;
@@ -832,7 +964,10 @@ fn execute_strategy_signal_blocking(
         });
     }
 
-    let client = Client::new();
+    if let Some(abort) = abort.as_ref() {
+        abort.check()?;
+    }
+    let client = alpaca_client()?;
     let opening_new = current_position_qty.abs() < 1e-6 && target_position_qty.abs() > 1e-6;
     let (payload, bracket_warnings) = if opening_new {
         alpaca_order_payload(&symbol, delta_qty, &decision.cfg, decision.last_close)
@@ -849,9 +984,12 @@ fn execute_strategy_signal_blocking(
         )
     };
     warnings.extend(bracket_warnings);
+    if let Some(abort) = abort.as_ref() {
+        abort.check()?;
+    }
 
     let order_id = submit_alpaca_order(
-        &client,
+        client,
         req.mode,
         req.alpaca_api_key.trim(),
         req.alpaca_api_secret.trim(),
@@ -887,7 +1025,7 @@ pub async fn execute_strategy_signal_once(
     let data_id = strategy_data_id(&req.strategy).to_string();
     let candles = state.get_candles(&data_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        execute_strategy_signal_blocking(req, symbol, qty, candles)
+        execute_strategy_signal_blocking(req, symbol, qty, candles, None)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -907,6 +1045,7 @@ pub async fn start_live_execution_runner(
     let _ = state.get_candles(&data_id)?;
 
     let strategy_kind = strategy_kind_label(&req.strategy);
+    let generation = LIVE_EXECUTION_RUNNER_GEN.fetch_add(1, Ordering::SeqCst);
     let cfg = LiveExecutionRunnerInternalCfg {
         req: req.clone(),
         symbol: symbol.clone(),
@@ -915,6 +1054,9 @@ pub async fn start_live_execution_runner(
         strategy_kind: strategy_kind.clone(),
     };
     let runtime = LiveExecutionRunnerRuntime {
+        generation,
+        abort: RunnerAbortHandle::new(),
+        pending_bar: None,
         cfg,
         inflight: false,
         started_at_unix_ms: now_unix_ms(),
@@ -933,6 +1075,9 @@ pub async fn start_live_execution_runner(
         let mut slot = live_execution_runner_slot()
             .lock()
             .map_err(|_| "failed to lock live execution runner state".to_string())?;
+        if let Some(prior) = slot.as_ref() {
+            prior.abort.cancel();
+        }
         *slot = Some(runtime);
     }
 
@@ -958,6 +1103,9 @@ pub fn stop_live_execution_runner(
         let mut slot = live_execution_runner_slot()
             .lock()
             .map_err(|_| "failed to lock live execution runner state".to_string())?;
+        if let Some(runtime) = slot.as_ref() {
+            runtime.abort.cancel();
+        }
         slot.take().map(|r| runner_status_from_runtime(Some(&r)))
     };
     let stopped = prior.is_some();
@@ -993,8 +1141,9 @@ pub fn live_execution_runner_status() -> Result<LiveExecutionRunnerStatus, Strin
 
 pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRunnerBar) {
     let mut cfg_to_run: Option<LiveExecutionRunnerInternalCfg> = None;
-    let mut skipped_busy = false;
-    let symbol_norm = normalize_symbol_key(&bar.symbol);
+    let mut generation_to_run: Option<u64> = None;
+    let mut abort_to_run: Option<RunnerAbortHandle> = None;
+    let mut queued_latest = false;
 
     {
         let Ok(mut slot) = live_execution_runner_slot().lock() else {
@@ -1003,7 +1152,7 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
         let Some(runtime) = slot.as_mut() else {
             return;
         };
-        if normalize_symbol_key(&runtime.cfg.symbol) != symbol_norm {
+        if !symbol_matches(&runtime.cfg.symbol, &bar.symbol) {
             return;
         }
         if runtime
@@ -1016,21 +1165,23 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
         }
         if runtime.inflight {
             runtime.skip_count = runtime.skip_count.saturating_add(1);
-            skipped_busy = true;
+            queued_latest = update_pending_bar(&mut runtime.pending_bar, &bar);
         } else {
             runtime.inflight = true;
             runtime.last_bar_open_unix_ms = Some(bar.time_open_unix_ms);
             runtime.last_triggered_at_unix_ms = Some(now_unix_ms());
             runtime.last_error = None;
             cfg_to_run = Some(runtime.cfg.clone());
+            generation_to_run = Some(runtime.generation);
+            abort_to_run = Some(runtime.abort.clone());
         }
     }
 
-    if skipped_busy {
+    if queued_latest {
         emit_live_execution_runner_event(
             app,
-            "skipped_busy",
-            "runner skipped bar because previous run is still in flight",
+            "queued_latest",
+            "runner queued latest live bar while prior run was still in flight",
             bar.symbol.clone(),
             Some(bar.time_open_unix_ms),
             None,
@@ -1038,7 +1189,8 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
         return;
     }
 
-    let Some(cfg) = cfg_to_run else {
+    let (Some(cfg), Some(generation), Some(abort)) = (cfg_to_run, generation_to_run, abort_to_run)
+    else {
         return;
     };
     emit_live_execution_runner_event(
@@ -1052,6 +1204,17 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
 
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
+        if abort.check().is_err() {
+            let next_bar = with_active_runner_generation(generation, |runtime| {
+                runtime.inflight = false;
+                runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                runtime.pending_bar.take()
+            });
+            if let Some(Some(next)) = next_bar {
+                on_live_execution_bar(&app2, next);
+            }
+            return;
+        }
         let state = app2.state::<AppState>();
         if let Err(e) = state.upsert_live_bar(
             &cfg.data_id,
@@ -1062,52 +1225,64 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
             bar.close,
             bar.volume,
         ) {
-            if let Ok(mut slot) = live_execution_runner_slot().lock() {
-                if let Some(runtime) = slot.as_mut() {
-                    if normalize_symbol_key(&runtime.cfg.symbol)
-                        == normalize_symbol_key(&cfg.symbol)
-                    {
-                        runtime.inflight = false;
-                        runtime.error_count = runtime.error_count.saturating_add(1);
-                        runtime.last_completed_at_unix_ms = Some(now_unix_ms());
-                        runtime.last_error = Some(e.clone());
-                    }
+            let next_bar = with_active_runner_generation(generation, |runtime| {
+                runtime.inflight = false;
+                runtime.error_count = runtime.error_count.saturating_add(1);
+                runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                runtime.last_error = Some(e.clone());
+                runtime.pending_bar.take()
+            });
+            if let Some(next_bar) = next_bar {
+                emit_live_execution_runner_event(
+                    &app2,
+                    "error",
+                    format!("runner failed to apply live bar: {e}"),
+                    cfg.symbol.clone(),
+                    Some(bar.time_open_unix_ms),
+                    None,
+                );
+                if let Some(next) = next_bar {
+                    on_live_execution_bar(&app2, next);
                 }
             }
-            emit_live_execution_runner_event(
-                &app2,
-                "error",
-                format!("runner failed to apply live bar: {e}"),
-                cfg.symbol.clone(),
-                Some(bar.time_open_unix_ms),
-                None,
-            );
+            return;
+        }
+
+        if abort.check().is_err() {
+            let next_bar = with_active_runner_generation(generation, |runtime| {
+                runtime.inflight = false;
+                runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                runtime.pending_bar.take()
+            });
+            if let Some(Some(next)) = next_bar {
+                on_live_execution_bar(&app2, next);
+            }
             return;
         }
 
         let candles = match state.get_candles(&cfg.data_id) {
             Ok(c) => c,
             Err(e) => {
-                if let Ok(mut slot) = live_execution_runner_slot().lock() {
-                    if let Some(runtime) = slot.as_mut() {
-                        if normalize_symbol_key(&runtime.cfg.symbol)
-                            == normalize_symbol_key(&cfg.symbol)
-                        {
-                            runtime.inflight = false;
-                            runtime.error_count = runtime.error_count.saturating_add(1);
-                            runtime.last_completed_at_unix_ms = Some(now_unix_ms());
-                            runtime.last_error = Some(e.clone());
-                        }
+                let next_bar = with_active_runner_generation(generation, |runtime| {
+                    runtime.inflight = false;
+                    runtime.error_count = runtime.error_count.saturating_add(1);
+                    runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                    runtime.last_error = Some(e.clone());
+                    runtime.pending_bar.take()
+                });
+                if let Some(next_bar) = next_bar {
+                    emit_live_execution_runner_event(
+                        &app2,
+                        "error",
+                        format!("runner failed to load strategy candles: {e}"),
+                        cfg.symbol.clone(),
+                        Some(bar.time_open_unix_ms),
+                        None,
+                    );
+                    if let Some(next) = next_bar {
+                        on_live_execution_bar(&app2, next);
                     }
                 }
-                emit_live_execution_runner_event(
-                    &app2,
-                    "error",
-                    format!("runner failed to load strategy candles: {e}"),
-                    cfg.symbol.clone(),
-                    Some(bar.time_open_unix_ms),
-                    None,
-                );
                 return;
             }
         };
@@ -1115,8 +1290,9 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
         let req = cfg.req.clone();
         let symbol = cfg.symbol.clone();
         let qty = cfg.qty;
+        let abort_for_blocking = abort.clone();
         let exec_result = tauri::async_runtime::spawn_blocking(move || {
-            execute_strategy_signal_blocking(req, symbol, qty, candles)
+            execute_strategy_signal_blocking(req, symbol, qty, candles, Some(abort_for_blocking))
         })
         .await
         .map_err(|e| e.to_string())
@@ -1124,67 +1300,79 @@ pub(crate) fn on_live_execution_bar(app: &tauri::AppHandle, bar: LiveExecutionRu
 
         match exec_result {
             Ok(resp) => {
-                if let Ok(mut slot) = live_execution_runner_slot().lock() {
-                    if let Some(runtime) = slot.as_mut() {
-                        if normalize_symbol_key(&runtime.cfg.symbol)
-                            == normalize_symbol_key(&cfg.symbol)
-                        {
-                            runtime.inflight = false;
-                            runtime.run_count = runtime.run_count.saturating_add(1);
-                            runtime.last_completed_at_unix_ms = Some(now_unix_ms());
-                            runtime.last_action = Some(resp.action.clone());
-                            runtime.last_order_id = resp.order_id.clone();
-                            runtime.last_error = None;
-                        }
+                let next_bar = with_active_runner_generation(generation, |runtime| {
+                    runtime.inflight = false;
+                    runtime.run_count = runtime.run_count.saturating_add(1);
+                    runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                    runtime.last_action = Some(resp.action.clone());
+                    runtime.last_order_id = resp.order_id.clone();
+                    runtime.last_error = None;
+                    runtime.pending_bar.take()
+                });
+                if let Some(next_bar) = next_bar {
+                    let status = if resp.order_submitted {
+                        "order_submitted"
+                    } else {
+                        "signal_processed"
+                    };
+                    let msg = if resp.order_submitted {
+                        format!(
+                            "runner submitted {} order{}",
+                            resp.action,
+                            resp.order_id
+                                .as_deref()
+                                .map(|id| format!(" (id={id})"))
+                                .unwrap_or_default()
+                        )
+                    } else {
+                        format!("runner processed signal action={}", resp.action)
+                    };
+                    emit_live_execution_runner_event(
+                        &app2,
+                        status,
+                        msg,
+                        cfg.symbol.clone(),
+                        Some(bar.time_open_unix_ms),
+                        Some(resp),
+                    );
+                    if let Some(next) = next_bar {
+                        on_live_execution_bar(&app2, next);
                     }
                 }
-                let status = if resp.order_submitted {
-                    "order_submitted"
-                } else {
-                    "signal_processed"
-                };
-                let msg = if resp.order_submitted {
-                    format!(
-                        "runner submitted {} order{}",
-                        resp.action,
-                        resp.order_id
-                            .as_deref()
-                            .map(|id| format!(" (id={id})"))
-                            .unwrap_or_default()
-                    )
-                } else {
-                    format!("runner processed signal action={}", resp.action)
-                };
-                emit_live_execution_runner_event(
-                    &app2,
-                    status,
-                    msg,
-                    cfg.symbol.clone(),
-                    Some(bar.time_open_unix_ms),
-                    Some(resp),
-                );
             }
             Err(e) => {
-                if let Ok(mut slot) = live_execution_runner_slot().lock() {
-                    if let Some(runtime) = slot.as_mut() {
-                        if normalize_symbol_key(&runtime.cfg.symbol)
-                            == normalize_symbol_key(&cfg.symbol)
-                        {
-                            runtime.inflight = false;
-                            runtime.error_count = runtime.error_count.saturating_add(1);
-                            runtime.last_completed_at_unix_ms = Some(now_unix_ms());
-                            runtime.last_error = Some(e.clone());
-                        }
+                if is_runner_cancelled_error(&e) {
+                    let next_bar = with_active_runner_generation(generation, |runtime| {
+                        runtime.inflight = false;
+                        runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                        runtime.pending_bar.take()
+                    });
+                    if let Some(Some(next)) = next_bar {
+                        on_live_execution_bar(&app2, next);
+                    }
+                    return;
+                }
+
+                let next_bar = with_active_runner_generation(generation, |runtime| {
+                    runtime.inflight = false;
+                    runtime.error_count = runtime.error_count.saturating_add(1);
+                    runtime.last_completed_at_unix_ms = Some(now_unix_ms());
+                    runtime.last_error = Some(e.clone());
+                    runtime.pending_bar.take()
+                });
+                if let Some(next_bar) = next_bar {
+                    emit_live_execution_runner_event(
+                        &app2,
+                        "error",
+                        format!("runner execution failed: {e}"),
+                        cfg.symbol.clone(),
+                        Some(bar.time_open_unix_ms),
+                        None,
+                    );
+                    if let Some(next) = next_bar {
+                        on_live_execution_bar(&app2, next);
                     }
                 }
-                emit_live_execution_runner_event(
-                    &app2,
-                    "error",
-                    format!("runner execution failed: {e}"),
-                    cfg.symbol.clone(),
-                    Some(bar.time_open_unix_ms),
-                    None,
-                );
             }
         }
     });
@@ -1201,8 +1389,8 @@ pub async fn test_alpaca_connection(
     }
     let mode = req.mode;
     tauri::async_runtime::spawn_blocking(move || {
-        let client = Client::new();
-        let account = fetch_alpaca_account(&client, mode, &api_key, &api_secret)?;
+        let client = alpaca_client()?;
+        let account = fetch_alpaca_account(client, mode, &api_key, &api_secret)?;
         Ok(TestAlpacaConnectionResponse {
             mode,
             account_id: json_field_as_string(&account, "id"),
@@ -1229,37 +1417,63 @@ pub async fn get_live_execution_snapshot(
     }
 
     let mode = req.mode;
-    let symbol = req.symbol.trim().to_uppercase();
-    let limit = req.limit.unwrap_or(200).clamp(1, 500);
+    let symbol = canonical_symbol_key(&req.symbol);
+    let return_limit = req.limit.unwrap_or(200).clamp(1, 500);
+    let include_account = req.include_account.unwrap_or(true);
+    let include_orders = req.include_orders.unwrap_or(true);
+    let include_position = req.include_position.unwrap_or(true);
 
     tauri::async_runtime::spawn_blocking(move || {
-        let client = Client::new();
-        let account = fetch_alpaca_account(&client, mode, &api_key, &api_secret)?;
-        let account_status = json_field_as_string(&account, "status");
+        let client = alpaca_client()?;
+        let account_status = if include_account {
+            let account = fetch_alpaca_account(client, mode, &api_key, &api_secret)?;
+            json_field_as_string(&account, "status")
+        } else {
+            None
+        };
 
-        let orders_raw = fetch_alpaca_orders(&client, mode, &api_key, &api_secret, limit)?;
+        let order_scan_limit = if include_orders && !symbol.is_empty() {
+            return_limit.max(500)
+        } else {
+            return_limit
+        };
         let mut orders: Vec<LiveOrderSnapshot> = Vec::new();
-        for o in &orders_raw {
-            let Some(ord) = normalize_order_snapshot(o) else {
-                continue;
-            };
-            if !symbol_matches(&ord.symbol, &symbol) {
-                continue;
+        if include_orders {
+            let orders_raw =
+                fetch_alpaca_orders(client, mode, &api_key, &api_secret, order_scan_limit)?;
+            for o in &orders_raw {
+                let Some(ord) = normalize_order_snapshot(o) else {
+                    continue;
+                };
+                if !symbol_matches(&ord.symbol, &symbol) {
+                    continue;
+                }
+                orders.push(ord);
+                if orders.len() >= return_limit as usize {
+                    break;
+                }
             }
-            orders.push(ord);
         }
 
-        let positions_raw = fetch_alpaca_positions(&client, mode, &api_key, &api_secret)?;
         let mut position: Option<LivePositionSnapshot> = None;
-        for p in &positions_raw {
-            let Some(pos) = normalize_position_snapshot(p) else {
-                continue;
-            };
-            if !symbol_matches(&pos.symbol, &symbol) {
-                continue;
+        if include_position {
+            if symbol.is_empty() {
+                let positions_raw = fetch_alpaca_positions(client, mode, &api_key, &api_secret)?;
+                for p in &positions_raw {
+                    let Some(pos) = normalize_position_snapshot(p) else {
+                        continue;
+                    };
+                    if !symbol_matches(&pos.symbol, &symbol) {
+                        continue;
+                    }
+                    position = Some(pos);
+                    break;
+                }
+            } else if let Some(position_raw) =
+                fetch_alpaca_position(client, mode, &api_key, &api_secret, &symbol)?
+            {
+                position = normalize_position_snapshot(&position_raw);
             }
-            position = Some(pos);
-            break;
         }
 
         let fetched_at_unix_ms = SystemTime::now()
@@ -1283,6 +1497,71 @@ pub async fn get_live_execution_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+    use ta_app_core::{DoubleMaDrilldownRequest, DoubleMaParamsResolved};
+    use ta_strategies::double_ma::StrategyConfig;
+
+    fn runner_test_guard() -> &'static Mutex<()> {
+        static RUNNER_TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        RUNNER_TEST_GUARD.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_runner_runtime(generation: u64) -> LiveExecutionRunnerRuntime {
+        let req = ExecuteStrategySignalRequest {
+            symbol: "AAPL".to_string(),
+            qty: 1.0,
+            mode: LiveExecutionMode::Paper,
+            dry_run: true,
+            risk: LiveRiskOverride::default(),
+            alpaca_api_key: String::new(),
+            alpaca_api_secret: String::new(),
+            strategy: LiveStrategySpec::DoubleMa {
+                req: DoubleMaDrilldownRequest {
+                    data_id: "data_1".to_string(),
+                    backend_hint: None,
+                    followup_cache_key: None,
+                    params: DoubleMaParamsResolved {
+                        fast_len: 5,
+                        slow_len: 20,
+                        fast_ma_type: "sma".to_string(),
+                        slow_ma_type: "alma".to_string(),
+                        fast_ma_params: None,
+                        slow_ma_params: None,
+                    },
+                    ma_source: "close".to_string(),
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy: StrategyConfig::default(),
+                    halftrend_filter: None,
+                    bins: None,
+                },
+            },
+        };
+
+        LiveExecutionRunnerRuntime {
+            generation,
+            abort: RunnerAbortHandle::new(),
+            pending_bar: None,
+            cfg: LiveExecutionRunnerInternalCfg {
+                req,
+                symbol: "AAPL".to_string(),
+                qty: 1.0,
+                data_id: "data_1".to_string(),
+                strategy_kind: "DoubleMa".to_string(),
+            },
+            inflight: false,
+            started_at_unix_ms: 0,
+            last_bar_open_unix_ms: None,
+            last_triggered_at_unix_ms: None,
+            last_completed_at_unix_ms: None,
+            run_count: 0,
+            skip_count: 0,
+            error_count: 0,
+            last_action: None,
+            last_order_id: None,
+            last_error: None,
+        }
+    }
     use serde_json::json;
 
     #[test]
@@ -1333,5 +1612,126 @@ mod tests {
         assert_eq!(json_field_as_string(&v, "bool_v").as_deref(), Some("true"));
         assert_eq!(json_field_as_string(&v, "empty_v"), None);
         assert_eq!(json_field_as_string(&v, "missing"), None);
+    }
+
+    #[test]
+    fn canonical_symbol_key_preserves_meaningful_punctuation() {
+        assert_eq!(canonical_symbol_key(" brk.b "), "BRK.B");
+        assert_eq!(canonical_symbol_key("brk b"), "BRKB");
+        assert_eq!(canonical_symbol_key(" eur / usd "), "EUR/USD");
+    }
+
+    #[test]
+    fn symbol_matching_does_not_collapse_punctuation_variants() {
+        assert!(symbol_matches("BRK.B", "brk.b"));
+        assert!(!symbol_matches("BRKB", "BRK.B"));
+    }
+
+    #[test]
+    fn pending_bar_keeps_latest_timestamp() {
+        let mut pending = None;
+        assert!(update_pending_bar(
+            &mut pending,
+            &LiveExecutionRunnerBar {
+                symbol: "AAPL".to_string(),
+                time_open_unix_ms: 1000,
+                open: 1.0,
+                high: 1.0,
+                low: 1.0,
+                close: 1.0,
+                volume: None,
+            }
+        ));
+        assert!(!update_pending_bar(
+            &mut pending,
+            &LiveExecutionRunnerBar {
+                symbol: "AAPL".to_string(),
+                time_open_unix_ms: 900,
+                open: 0.9,
+                high: 0.9,
+                low: 0.9,
+                close: 0.9,
+                volume: None,
+            }
+        ));
+        assert!(update_pending_bar(
+            &mut pending,
+            &LiveExecutionRunnerBar {
+                symbol: "AAPL".to_string(),
+                time_open_unix_ms: 2000,
+                open: 2.0,
+                high: 2.0,
+                low: 2.0,
+                close: 2.0,
+                volume: None,
+            }
+        ));
+        assert_eq!(pending.as_ref().map(|bar| bar.time_open_unix_ms), Some(2000));
+    }
+
+    #[test]
+    fn generation_gate_ignores_stale_runtime_updates() {
+        let _guard = runner_test_guard()
+            .lock()
+            .expect("lock runner test guard");
+        let slot = live_execution_runner_slot();
+        let mut guard = slot.lock().expect("lock runner slot");
+        let prior = guard.take();
+        *guard = Some(test_runner_runtime(42));
+        drop(guard);
+
+        let stale = with_active_runner_generation(7, |runtime| {
+            runtime.skip_count = 99;
+        });
+        let current = with_active_runner_generation(42, |runtime| {
+            runtime.skip_count = 5;
+            runtime.skip_count
+        });
+
+        let mut guard = slot.lock().expect("relock runner slot");
+        let active_skip_count = guard.as_ref().map(|runtime| runtime.skip_count);
+        *guard = prior;
+        drop(guard);
+
+        assert!(stale.is_none());
+        assert_eq!(current, Some(5));
+        assert_eq!(active_skip_count, Some(5));
+    }
+
+    #[test]
+    fn runner_abort_handle_sets_cancellation_marker() {
+        let abort = RunnerAbortHandle::new();
+        assert!(abort.check().is_ok());
+        abort.cancel();
+        assert!(is_runner_cancelled_error(
+            abort.check().expect_err("expected cancellation marker").as_str()
+        ));
+    }
+
+    #[test]
+    fn with_active_runner_generation_ignores_stale_runtime_generations() {
+        let _guard = runner_test_guard()
+            .lock()
+            .expect("lock runner test guard");
+        let slot = live_execution_runner_slot();
+        let mut guard = slot.lock().expect("lock live execution runner slot");
+        let prior = guard.take();
+        *guard = Some(test_runner_runtime(42));
+        drop(guard);
+
+        assert!(with_active_runner_generation(41, |_| ()).is_none());
+
+        let seen_generation = with_active_runner_generation(42, |runtime| {
+            runtime.inflight = true;
+            runtime.generation
+        });
+        assert_eq!(seen_generation, Some(42));
+
+        let guard = slot.lock().expect("re-lock live execution runner slot");
+        assert!(guard.as_ref().expect("runtime present").inflight);
+        drop(guard);
+
+        let mut guard = slot.lock().expect("restore live execution runner slot");
+        *guard = prior;
     }
 }

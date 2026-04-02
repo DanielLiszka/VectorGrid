@@ -1,12 +1,14 @@
 use std::mem::{self, MaybeUninit};
 
-#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 const DEBUG_F64_POISON_BITS: u64 = 0x1111_1111_1111_1111;
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 const DEBUG_F64_MATRIX_POISON_BITS: u64 = 0x3333_3333_3333_3333;
-#[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 const DEBUG_F32_POISON_BITS: u32 = 0x1111_1111;
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+const DEBUG_I32_POISON_BITS: i32 = 0x1111_1111u32 as i32;
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 const DEBUG_F32_MATRIX_POISON_BITS: u32 = 0x3333_3333;
 
 #[inline(always)]
@@ -16,6 +18,14 @@ fn assume_init_vec<T>(mut buf: Vec<MaybeUninit<T>>) -> Vec<T> {
     let len = buf.len();
     mem::forget(buf);
     unsafe { Vec::from_raw_parts(ptr, len, cap) }
+}
+
+#[cfg_attr(any(debug_assertions, test), allow(dead_code))]
+#[inline(always)]
+fn reserve_for_uninit_resize<T>(buf: &mut Vec<T>, len: usize) {
+    if len > buf.len() {
+        buf.reserve(len - buf.len());
+    }
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -43,7 +53,7 @@ pub(crate) fn alloc_f64_with_prefix_uninit_tail(len: usize, warm: usize, prefix:
     #[cfg(debug_assertions)]
     {
         for _ in 0..len {
-            buf.push(MaybeUninit::new(f64::from_bits(0x1111_1111_1111_1111)));
+            buf.push(MaybeUninit::new(f64::from_bits(DEBUG_F64_POISON_BITS)));
         }
     }
 
@@ -124,9 +134,7 @@ pub(crate) fn alloc_uninit_f32(len: usize) -> Vec<f32> {
 pub(crate) fn resize_uninit_f32(buf: &mut Vec<f32>, len: usize) {
     #[cfg(not(debug_assertions))]
     {
-        if buf.capacity() < len {
-            buf.reserve_exact(len - buf.capacity());
-        }
+        reserve_for_uninit_resize(buf, len);
         unsafe {
             // SAFETY: callers must fully initialize each element before any read.
             buf.set_len(len);
@@ -136,6 +144,42 @@ pub(crate) fn resize_uninit_f32(buf: &mut Vec<f32>, len: usize) {
     #[cfg(debug_assertions)]
     {
         buf.resize(len, f32::from_bits(DEBUG_F32_POISON_BITS));
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[inline(always)]
+pub(crate) fn resize_uninit_f64(buf: &mut Vec<f64>, len: usize) {
+    #[cfg(not(debug_assertions))]
+    {
+        reserve_for_uninit_resize(buf, len);
+        unsafe {
+            // SAFETY: callers must fully initialize each element before any read.
+            buf.set_len(len);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        buf.resize(len, f64::from_bits(DEBUG_F64_POISON_BITS));
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[inline(always)]
+pub(crate) fn resize_uninit_i32(buf: &mut Vec<i32>, len: usize) {
+    #[cfg(not(debug_assertions))]
+    {
+        reserve_for_uninit_resize(buf, len);
+        unsafe {
+            // SAFETY: callers must fully initialize each element before any read.
+            buf.set_len(len);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        buf.resize(len, DEBUG_I32_POISON_BITS);
     }
 }
 
@@ -270,7 +314,8 @@ mod tests {
     use super::{
         alloc_f32_with_prefix_uninit_tail, alloc_f64_with_prefix_uninit_tail, alloc_uninit_f32,
         alloc_uninit_f64, init_matrix_prefixes_f32, init_matrix_prefixes_f64,
-        make_uninit_matrix_f32, make_uninit_matrix_f64, resize_uninit_f32,
+        make_uninit_matrix_f32, make_uninit_matrix_f64, reserve_for_uninit_resize,
+        resize_uninit_f32, resize_uninit_f64, resize_uninit_i32,
     };
 
     #[test]
@@ -311,6 +356,32 @@ mod tests {
         resize_uninit_f32(&mut values_f32, 4);
         values_f32.copy_from_slice(&[3.0, 4.0, 5.0, 6.0]);
         assert_eq!(values_f32, vec![3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn reserve_for_uninit_resize_grows_from_len_not_capacity() {
+        let mut values = Vec::with_capacity(4);
+        values.extend_from_slice(&[1.0f32, 2.0]);
+
+        reserve_for_uninit_resize(&mut values, 6);
+
+        assert!(values.capacity() >= 6);
+    }
+
+    #[test]
+    fn resize_uninit_i32_buffers_can_be_reused_after_overwrite() {
+        let mut values = vec![1, 2];
+        resize_uninit_i32(&mut values, 5);
+        values.copy_from_slice(&[3, 4, 5, 6, 7]);
+        assert_eq!(values, vec![3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn resize_uninit_f64_buffers_can_be_reused_after_overwrite() {
+        let mut values = vec![1.0, 2.0];
+        resize_uninit_f64(&mut values, 5);
+        values.copy_from_slice(&[3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(values, vec![3.0, 4.0, 5.0, 6.0, 7.0]);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, resize_uninit_i32};
 use crate::composite_validate::ValidationArtifactContext;
 use crate::double_ma::BackendUsed;
 use crate::dynamic_indicator_adapter::{compute_dynamic_indicator_cpu, DynamicIndicatorSeries};
@@ -545,12 +546,14 @@ struct ParsedScoreCsv {
 }
 
 fn log_returns_from_close(close: &[f64]) -> Vec<f64> {
-    let mut out = vec![0.0; close.len()];
+    let mut out = alloc_f64_with_prefix_uninit_tail(close.len(), 1, 0.0);
     for i in 1..close.len() {
         let prev = close[i - 1];
         let next = close[i];
         if prev.is_finite() && next.is_finite() && prev > 0.0 && next > 0.0 {
             out[i] = (next / prev).ln();
+        } else {
+            out[i] = 0.0;
         }
     }
     out
@@ -596,7 +599,7 @@ fn extract_pattern_matrix(
             pattern_ids.len()
         ));
     }
-    let mut matrix = vec![vec![0u8; cols]; rows];
+    let mut matrix: Vec<Vec<u8>> = Vec::with_capacity(rows);
     match &output.series {
         DynamicIndicatorSeries::I32(values) => {
             if values.len() != rows.saturating_mul(cols) {
@@ -604,9 +607,12 @@ fn extract_pattern_matrix(
             }
             for row in 0..rows {
                 let offset = row * cols;
-                for col in 0..cols {
-                    matrix[row][col] = if values[offset + col] == 0 { 0 } else { 1 };
+                let src = &values[offset..offset + cols];
+                let mut out_row = Vec::with_capacity(cols);
+                for &value in src {
+                    out_row.push(u8::from(value != 0));
                 }
+                matrix.push(out_row);
             }
         }
         DynamicIndicatorSeries::Bool(values) => {
@@ -615,9 +621,12 @@ fn extract_pattern_matrix(
             }
             for row in 0..rows {
                 let offset = row * cols;
-                for col in 0..cols {
-                    matrix[row][col] = if values[offset + col] { 1 } else { 0 };
+                let src = &values[offset..offset + cols];
+                let mut out_row = Vec::with_capacity(cols);
+                for &value in src {
+                    out_row.push(u8::from(value));
                 }
+                matrix.push(out_row);
             }
         }
         _ => {
@@ -787,7 +796,7 @@ fn stddev(values: &[f64]) -> f64 {
 }
 
 fn prefix_sum(values: &[f64]) -> Vec<f64> {
-    let mut prefix = vec![0.0; values.len() + 1];
+    let mut prefix = alloc_f64_with_prefix_uninit_tail(values.len() + 1, 1, 0.0);
     for (idx, value) in values.iter().enumerate() {
         prefix[idx + 1] = prefix[idx] + *value;
     }
@@ -795,7 +804,7 @@ fn prefix_sum(values: &[f64]) -> Vec<f64> {
 }
 
 fn prefix_sum_squares(values: &[f64]) -> Vec<f64> {
-    let mut prefix = vec![0.0; values.len() + 1];
+    let mut prefix = alloc_f64_with_prefix_uninit_tail(values.len() + 1, 1, 0.0);
     for (idx, value) in values.iter().enumerate() {
         prefix[idx + 1] = prefix[idx] + (*value * *value);
     }
@@ -2010,8 +2019,10 @@ fn validate_ml_signal_candidates(
         .max(2);
     let gates = sanitize_hard_gates(min_psr, min_dsr, None, None, None);
     let lr = log_returns_from_close(&candles.close);
-    let mut requested = vec![ML_SIGNAL_NO_REQUEST; score_points.len()];
-    let mut desired = vec![0i32; score_points.len()];
+    let mut requested = Vec::new();
+    resize_uninit_i32(&mut requested, score_points.len());
+    let mut desired = Vec::new();
+    resize_uninit_i32(&mut desired, score_points.len());
 
     let mut out = Vec::with_capacity(candidates.len());
     for params in candidates {
@@ -2503,6 +2514,31 @@ mod tests {
                 &params
             ),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn log_returns_from_close_preserves_zero_prefix_and_invalid_rows() {
+        assert!(log_returns_from_close(&[]).is_empty());
+        assert_eq!(log_returns_from_close(&[100.0]), vec![0.0]);
+
+        let out = log_returns_from_close(&[100.0, 110.0, f64::NAN, 90.0, 0.0, 95.0]);
+        assert_eq!(out[0], 0.0);
+        assert!((out[1] - (110.0f64 / 100.0).ln()).abs() <= f64::EPSILON);
+        assert_eq!(out[2], 0.0);
+        assert_eq!(out[3], 0.0);
+        assert_eq!(out[4], 0.0);
+        assert_eq!(out[5], 0.0);
+    }
+
+    #[test]
+    fn prefix_sum_helpers_match_reference() {
+        let values = [1.0, -2.0, 3.5, 0.5];
+
+        assert_eq!(prefix_sum(&values), vec![0.0, 1.0, -1.0, 2.5, 3.0]);
+        assert_eq!(
+            prefix_sum_squares(&values),
+            vec![0.0, 1.0, 5.0, 17.25, 17.5]
         );
     }
 

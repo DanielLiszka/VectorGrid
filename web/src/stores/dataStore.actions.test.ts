@@ -28,7 +28,26 @@ import {
   setMarketDataDir,
   validatePolygonDataset,
 } from '../services/dataService'
+import { DATA_STARTUP_SNAPSHOT_KEY } from '../utils/core/storageKeys'
+import { readStorageJson, writeStorageJson } from '../utils/storage'
 import { useDataStore } from './dataStore'
+
+function installStorageHarness(seed: Record<string, string> = {}): Map<string, string> {
+  const state = new Map<string, string>(Object.entries(seed))
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => (state.has(key) ? String(state.get(key)) : null),
+    setItem: (key: string, value: string) => {
+      state.set(String(key), String(value))
+    },
+    removeItem: (key: string) => {
+      state.delete(String(key))
+    },
+    clear: () => {
+      state.clear()
+    },
+  })
+  return state
+}
 
 vi.mock('../services/dataService', () => ({
   applyTimeframe: vi.fn(async () => ({
@@ -36,6 +55,7 @@ vi.mock('../services/dataService', () => ({
     dataId: 'data-1@15m',
     cacheHit: false,
     cachePath: '',
+    loadSource: 'derived_fresh_resample',
     meta: {
       len: 100,
       hasOpen: true,
@@ -68,6 +88,7 @@ vi.mock('../services/dataService', () => ({
       dataId: 'poly-1',
       cacheHit: false,
       cachePath: 'C:/cache/poly-1.bin',
+      loadSource: 'derived_fresh_resample',
       meta: {
         len: 1500,
         hasOpen: true,
@@ -101,6 +122,7 @@ vi.mock('../services/dataService', () => ({
     dataId: 'data-1',
     cacheHit: false,
     cachePath: 'C:/cache/data-1.bin',
+    loadSource: 'csv_parsed_and_cached',
     meta: {
       len: 500,
       hasOpen: true,
@@ -208,6 +230,7 @@ const defaultLoadResult: DataLoadResult = {
   dataId: 'data-1',
   cacheHit: false,
   cachePath: 'C:/cache/data-1.bin',
+  loadSource: 'csv_parsed_and_cached',
   meta: {
     len: 500,
     hasOpen: true,
@@ -252,9 +275,13 @@ describe('data store actions', () => {
   let pinia: ReturnType<typeof createPinia>
 
   beforeEach(() => {
+    vi.unstubAllGlobals()
+    installStorageHarness()
+    localStorage.clear()
     pinia = createPinia()
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
+    useDataStore(pinia).applyLegacySnapshot({})
     applyTimeframeMock.mockClear()
     clearDataMock.mockClear()
     loadCsvMock.mockClear()
@@ -343,8 +370,12 @@ describe('data store actions', () => {
     expect(store.dataId).toBe('data-1')
     expect(store.datasetLabel).toBe('aapl.csv')
     expect(store.datasetContext).toContain('source=csv')
+    expect(store.datasetContext).toContain('load=csv parsed + cached')
     expect(store.dataLen).toBe('500')
+    expect(store.baseCsvPath).toBe('C:/tmp/aapl.csv')
+    expect(store.baseSourceKind).toBe('csv')
     expect(store.canApplyTimeframe).toBe(true)
+    expect(readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)?.baseCsvPath).toBe('C:/tmp/aapl.csv')
   })
 
   it('applies timeframe using base data id and supports reset to base timeframe', async () => {
@@ -359,6 +390,7 @@ describe('data store actions', () => {
     expect(store.dataId).toBe('data-1@15m')
     expect(store.dataTimeframe).toBe('15m')
     expect(store.datasetRange).toContain('15m')
+    expect(readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)?.selectedTimeframe).toBe('15m')
 
     store.applyTimeframe('')
     await flushAsync()
@@ -403,6 +435,10 @@ describe('data store actions', () => {
     expect(store.polygonHasApiKey).toBe(true)
     expect(store.polygonDatasets.length).toBe(1)
 
+    store.refreshPolygon()
+    await flushAsync()
+    expect(getPolygonCacheInfoMock).toHaveBeenCalledTimes(2)
+
     store.closePolygon()
     await flushAsync()
     expect(store.polygonOpen).toBe(false)
@@ -424,6 +460,7 @@ describe('data store actions', () => {
 
     store.downloadPolygonDataset()
     await flushAsync()
+    await flushAsync()
     expect(downloadPolygonDatasetMock).toHaveBeenCalledWith({
       market: 'stocks',
       symbol: 'AAPL',
@@ -436,6 +473,7 @@ describe('data store actions', () => {
     expect(store.baseDataId).toBe('poly-1-base')
     expect(store.dataTimeframe).toBe('15m')
     expect(store.datasetContext).toContain('source=polygon')
+    expect(store.baseSourceKind).toBe('polygon')
   })
 
   it('validates and repairs the selected Polygon dataset', async () => {
@@ -462,17 +500,38 @@ describe('data store actions', () => {
   it('hydrates startup data using Vue-owned data bootstrap services', async () => {
     const store = useDataStore()
 
-    store.hydrateStartupState()
-    await flushAsync()
+    await store.hydrateStartupState()
 
     expect(getMarketDataDirInfoMock).toHaveBeenCalled()
     expect(listSampleCsvsMock).toHaveBeenCalled()
-    expect(getPolygonCacheInfoMock).toHaveBeenCalled()
+    expect(getPolygonCacheInfoMock).not.toHaveBeenCalled()
     expect(store.marketDataDir).toBe('')
     expect(store.marketDataDirHint).toContain('Using default root')
     expect(store.sampleCsvVisible).toBe(true)
     expect(store.sampleCsvOptions).toEqual(defaultSampleRows)
-    expect(store.polygonCacheDir).toBe(defaultPolygonCacheInfo.cacheDir)
+    expect(store.polygonCacheDir).toBe(defaultMarketDataDirInfo.polygonCacheDir)
+  })
+
+  it('restores the startup dataset snapshot without eagerly scanning Polygon cache', async () => {
+    const store = useDataStore()
+    writeStorageJson(DATA_STARTUP_SNAPSHOT_KEY, {
+      autoRestoreDataset: true,
+      baseCsvPath: 'C:/tmp/aapl.csv',
+      selectedTimeframe: '15m',
+      source: 'csv',
+      baseSourceSizeBytes: 123,
+      baseSourceMtimeUtcMs: 456,
+      savedAtUnixMs: Date.now(),
+    })
+
+    await store.hydrateStartupState()
+
+    expect(loadCsvMock).toHaveBeenCalledWith('C:/tmp/aapl.csv')
+    expect(applyTimeframeMock).toHaveBeenCalledWith('15m', 'data-1')
+    expect(getPolygonCacheInfoMock).not.toHaveBeenCalled()
+    expect(store.baseDataId).toBe('data-1')
+    expect(store.dataId).toBe('data-1@15m')
+    expect(store.dataTimeframe).toBe('15m')
   })
 
   it('clears data state while still calling data service clear hook', async () => {
@@ -483,11 +542,12 @@ describe('data store actions', () => {
     store.clearData()
     await flushAsync()
 
-    expect(clearDataMock).toHaveBeenCalled()
+    expect(clearDataMock).toHaveBeenCalledWith('data-1')
     expect(store.dataId).toBe('—')
     expect(store.baseDataId).toBe('')
     expect(store.datasetLabel).toBe('—')
     expect(store.dataFields).toEqual([])
     expect(store.canApplyTimeframe).toBe(false)
+    expect(readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)?.baseCsvPath).toBe('')
   })
 })

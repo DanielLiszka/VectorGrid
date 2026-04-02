@@ -20,9 +20,24 @@ export interface WorkflowValidationArtifact {
   res: unknown;
 }
 
-interface WorkflowRunSnapshot {
+export interface WorkflowRunSnapshot {
+  ts: string;
+  artifactPath: string;
   req: unknown;
   res: unknown;
+}
+
+export interface WorkflowRunIdentitySnapshot {
+  ts: string;
+  artifactPath: string;
+  hasValidation: boolean;
+}
+
+export interface WorkflowArtifactsApplyResult {
+  applied: boolean;
+  runChanged: boolean;
+  validationChanged: boolean;
+  sourceChanged: boolean;
 }
 
 export interface WorkflowMlSignalArtifact {
@@ -64,6 +79,50 @@ interface WorkflowArtifactsPayload {
 }
 
 let latestWorkflowRunSnapshot: WorkflowRunSnapshot | null = null;
+let latestWorkflowRunSignature = "null";
+let latestWorkflowValidationSignature = "null";
+
+function stableStringify(value: unknown): string {
+  if (value == null) return "null";
+  const kind = typeof value;
+  if (kind === "number" || kind === "boolean") return JSON.stringify(value);
+  if (kind === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (kind !== "object") return JSON.stringify(String(value));
+  const row = value as Record<string, unknown>;
+  const keys = Object.keys(row).sort();
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(row[key])}`)
+    .join(",")}}`;
+}
+
+function workflowRunSignature(run: WorkflowRunArtifact | null): string {
+  if (!run) return "null";
+  return stableStringify({
+    ts: run.ts,
+    artifactPath: run.artifactPath,
+    reportXlsxPath: run.reportXlsxPath,
+    csvPath: run.csvPath,
+    datasetMeta: run.datasetMeta,
+    mlSignal: run.mlSignal,
+    tags: run.tags,
+    req: run.req,
+    res: run.res,
+  });
+}
+
+function workflowValidationSignature(
+  validation: WorkflowValidationArtifact | null,
+): string {
+  if (!validation) return "null";
+  return stableStringify({
+    ts: validation.ts,
+    req: validation.req,
+    res: validation.res,
+  });
+}
 
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
@@ -305,10 +364,21 @@ export const useWorkflowArtifactsStore = defineStore("workflowArtifacts", {
 });
 
 export function readLatestWorkflowRunSnapshot(): {
+  ts: string;
+  artifactPath: string;
   req: unknown;
   res: unknown;
 } | null {
   return latestWorkflowRunSnapshot;
+}
+
+export function readLatestWorkflowRunIdentitySnapshot(): WorkflowRunIdentitySnapshot | null {
+  if (!latestWorkflowRunSnapshot) return null;
+  return {
+    ts: latestWorkflowRunSnapshot.ts,
+    artifactPath: latestWorkflowRunSnapshot.artifactPath,
+    hasValidation: latestWorkflowValidationSignature !== "null",
+  };
 }
 
 function applyNormalizedArtifacts(
@@ -316,10 +386,25 @@ function applyNormalizedArtifacts(
   validation: WorkflowValidationArtifact | null,
   source: WorkflowArtifactsSource,
   targetStore?: WorkflowArtifactsState,
-): void {
-  latestWorkflowRunSnapshot = run
-    ? { req: run.req ?? null, res: run.res ?? null }
-    : null;
+): WorkflowArtifactsApplyResult {
+  const nextRunSignature = workflowRunSignature(run);
+  const nextValidationSignature = workflowValidationSignature(validation);
+  const runChanged = nextRunSignature !== latestWorkflowRunSignature;
+  const validationChanged =
+    nextValidationSignature !== latestWorkflowValidationSignature;
+
+  if (runChanged || validationChanged) {
+    latestWorkflowRunSignature = nextRunSignature;
+    latestWorkflowValidationSignature = nextValidationSignature;
+    latestWorkflowRunSnapshot = run
+      ? {
+          ts: run.ts,
+          artifactPath: run.artifactPath,
+          req: run.req ?? null,
+          res: run.res ?? null,
+        }
+      : null;
+  }
 
   const store =
     targetStore ??
@@ -327,22 +412,55 @@ function applyNormalizedArtifacts(
       const pinia = resolveRuntimePinia();
       return pinia ? useWorkflowArtifactsStore(pinia) : null;
     })();
-  if (!store) return;
+
+  if (!store) {
+    return {
+      applied: runChanged || validationChanged,
+      runChanged,
+      validationChanged,
+      sourceChanged: false,
+    };
+  }
+
+  const sourceChanged = store.source !== source;
+
+  if (!runChanged && !validationChanged) {
+    if (sourceChanged) store.source = source;
+    return {
+      applied: sourceChanged,
+      runChanged: false,
+      validationChanged: false,
+      sourceChanged,
+    };
+  }
+
   store.currentRun = run;
   store.currentValidation = validation;
   store.source = source;
   store.updatedAtUnixMs = Date.now();
+  return {
+    applied: true,
+    runChanged,
+    validationChanged,
+    sourceChanged,
+  };
 }
 
 export function applyWorkflowArtifactsPayload(
   payload: unknown,
   source: WorkflowArtifactsSource,
   targetStore?: WorkflowArtifactsState,
-): boolean {
-  if (!payload || typeof payload !== "object") return false;
+): WorkflowArtifactsApplyResult {
+  if (!payload || typeof payload !== "object") {
+    return {
+      applied: false,
+      runChanged: false,
+      validationChanged: false,
+      sourceChanged: false,
+    };
+  }
   const row = payload as WorkflowArtifactsPayload;
   const run = normalizeRunArtifact(row.currentRun);
   const validation = normalizeValidationArtifact(row.currentValidation);
-  applyNormalizedArtifacts(run, validation, source, targetStore);
-  return true;
+  return applyNormalizedArtifacts(run, validation, source, targetStore);
 }

@@ -346,13 +346,22 @@ struct GroupAcc {
     fast_ma_params: Option<HashMap<String, f64>>,
     slow_ma_params: Option<HashMap<String, f64>>,
     robust_scores: Vec<f64>,
-    robust_params: Vec<(f64, Value)>,
+    representative_params: Vec<RepresentativeParam>,
     max_dds: Vec<f64>,
     cross_scores: Vec<f64>,
     psrs: Vec<f64>,
     dsrs: Vec<f64>,
     dataset_keys: HashSet<String>,
     train_rows: Vec<TrainDatasetRow>,
+}
+
+#[derive(Clone)]
+struct RepresentativeParam {
+    robust_score: f64,
+    params: Value,
+    // Keep canonical_json as the baseline correctness contract, but cache it once
+    // during clustered ingestion so representative dedupe does not recompute it.
+    canonical_sig: Option<String>,
 }
 
 fn compute_meta_group_evidence_flags(group: &MetaCandidateAggregate) -> Vec<String> {
@@ -495,6 +504,7 @@ pub fn meta_select_from_artifacts(
         let slow_ma_params = artifact_ma_params(art, "slow");
         let feature_context = artifact_feature_context(art);
         let run_context = artifact_run_context(art);
+        let cache_representative_signatures = req.grouping_mode == MetaGroupingMode::Clustered;
 
         let mut seen_keys: HashSet<String> = HashSet::new();
         for cand in selected {
@@ -571,7 +581,11 @@ pub fn meta_select_from_artifacts(
                 ..GroupAcc::default()
             });
             entry.robust_scores.push(robust_score);
-            entry.robust_params.push((robust_score, params.clone()));
+            entry.representative_params.push(RepresentativeParam {
+                robust_score,
+                params: params.clone(),
+                canonical_sig: cache_representative_signatures.then(|| canonical_json(params)),
+            });
             entry.max_dds.push(max_dd);
             entry.cross_scores.push(cross_score);
             entry.psrs.push(psr);
@@ -609,18 +623,22 @@ pub fn meta_select_from_artifacts(
             continue;
         }
 
-        if !acc.robust_params.is_empty() {
-            acc.robust_params.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let idx = quantile_index(acc.robust_params.len(), 0.5);
-            if let Some((_, p)) = acc.robust_params.get(idx) {
-                acc.params = p.clone();
+        if !acc.representative_params.is_empty() {
+            acc.representative_params
+                .sort_by(|a, b| a.robust_score.total_cmp(&b.robust_score));
+            let idx = quantile_index(acc.representative_params.len(), 0.5);
+            if let Some(rep) = acc.representative_params.get(idx) {
+                acc.params = rep.params.clone();
             }
         }
 
         let representatives = if req.grouping_mode == MetaGroupingMode::Exact {
             vec![acc.params.clone()]
         } else {
-            pick_representatives(&acc.robust_params, req.cluster_representatives.clamp(1, 3))
+            pick_representatives(
+                &acc.representative_params,
+                req.cluster_representatives.clamp(1, 3),
+            )
         };
         acc.train_rows.sort_by(|a, b| {
             a.dataset
@@ -1365,7 +1383,7 @@ fn quantile_index(len: usize, q: f64) -> usize {
     (qq * (len.saturating_sub(1) as f64)).round() as usize
 }
 
-fn pick_representatives(sorted: &[(f64, Value)], max: usize) -> Vec<Value> {
+fn pick_representatives(sorted: &[RepresentativeParam], max: usize) -> Vec<Value> {
     let max = max.max(1);
     if sorted.is_empty() {
         return Vec::new();
@@ -1391,21 +1409,24 @@ fn pick_representatives(sorted: &[(f64, Value)], max: usize) -> Vec<Value> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<Value> = Vec::new();
     for idx in indices {
-        let Some((_, p)) = sorted.get(idx) else {
+        let Some(rep) = sorted.get(idx) else {
             continue;
         };
-        let sig = canonical_json(p);
+        let sig = rep
+            .canonical_sig
+            .clone()
+            .unwrap_or_else(|| canonical_json(&rep.params));
         if !seen.insert(sig) {
             continue;
         }
-        out.push(p.clone());
+        out.push(rep.params.clone());
         if out.len() >= max {
             break;
         }
     }
 
     if out.is_empty() {
-        out.push(sorted[mid].1.clone());
+        out.push(sorted[mid].params.clone());
     }
 
     out
@@ -1464,6 +1485,28 @@ mod tests {
         let a = json!({"b": 1, "a": 2, "c": {"y": 1, "x": 2}});
         let b = json!({"c": {"x": 2, "y": 1}, "a": 2, "b": 1});
         assert_eq!(canonical_json(&a), canonical_json(&b));
+    }
+
+    #[test]
+    fn pick_representatives_reuses_cached_signatures_for_duplicate_params() {
+        let p1 = json!({"b": 2, "a": 1});
+        let p2 = json!({"a": 1, "b": 2});
+        let reps = vec![
+            RepresentativeParam {
+                robust_score: 1.0,
+                params: p1.clone(),
+                canonical_sig: Some(canonical_json(&p1)),
+            },
+            RepresentativeParam {
+                robust_score: 2.0,
+                params: p2.clone(),
+                canonical_sig: Some(canonical_json(&p2)),
+            },
+        ];
+
+        let out = pick_representatives(&reps, 3);
+        assert_eq!(out.len(), 1);
+        assert_eq!(canonical_json(&out[0]), canonical_json(&p1));
     }
 
     #[test]

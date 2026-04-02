@@ -1,6 +1,6 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
-use crate::alloc_policy::resize_uninit_f32;
+use crate::alloc_policy::{resize_uninit_f32, resize_uninit_i32};
 use crate::composite_gpu_metric_decode::{
     decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
 };
@@ -127,12 +127,7 @@ impl VemrCudaScratch {
     }
 
     fn ensure_host_top_combo_tags_len(&mut self, len: usize) {
-        if self.host_top_combo_tags.capacity() < len {
-            self.host_top_combo_tags
-                .reserve(len - self.host_top_combo_tags.capacity());
-        }
-        // Safety: the device readback fully overwrites this prefix before any read.
-        unsafe { self.host_top_combo_tags.set_len(len) };
+        resize_uninit_i32(&mut self.host_top_combo_tags, len);
     }
 
     fn ensure_host_top_metrics_len(&mut self, len: usize) {
@@ -1011,7 +1006,7 @@ pub fn eval_vemr_metrics_gpu_kernel_device_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_inputs, VemrGpuComboBatch, VemrGpuDeviceSignalMatrices};
+    use super::{validate_inputs, VemrCudaScratch, VemrGpuComboBatch, VemrGpuDeviceSignalMatrices};
 
     fn valid_signals() -> VemrGpuDeviceSignalMatrices<'static> {
         VemrGpuDeviceSignalMatrices {
@@ -1068,6 +1063,18 @@ mod tests {
         };
         let err = validate_inputs(&signals, &combos).expect_err("expected range error");
         assert!(err.contains("invalid eval range"));
+    }
+
+    #[test]
+    fn ensure_host_top_combo_tags_len_grows_from_len_not_capacity() {
+        let mut scratch = VemrCudaScratch::default();
+        scratch.host_top_combo_tags = Vec::with_capacity(4);
+        scratch.host_top_combo_tags.extend_from_slice(&[1, 2]);
+
+        scratch.ensure_host_top_combo_tags_len(6);
+
+        assert_eq!(scratch.host_top_combo_tags.len(), 6);
+        assert!(scratch.host_top_combo_tags.capacity() >= 6);
     }
 
     #[test]

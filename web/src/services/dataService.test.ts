@@ -4,6 +4,7 @@ import {
   applyTimeframe,
   browseCsv,
   browseMarketDataDir,
+  clearData,
   clearPolygonApiKey,
   closePolygon,
   downloadPolygonDataset,
@@ -29,7 +30,7 @@ const invokeCommandMock = vi.mocked(invokeCommand)
 
 describe('dataService market-data directory actions', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    invokeCommandMock.mockReset()
   })
 
   it('normalizes market-data directory info and hint text', async () => {
@@ -77,6 +78,7 @@ describe('dataService market-data directory actions', () => {
         },
         cache_hit: false,
         cache_path: 'C:/cache/a.bin',
+        load_source: 'csv_parsed_and_cached',
       })
 
     const result = await browseCsv()
@@ -86,6 +88,7 @@ describe('dataService market-data directory actions', () => {
     expect(result?.path).toBe('C:/sample.csv')
     expect(result?.dataId).toBe('data-1')
     expect(result?.meta.timeframe).toBe('1m')
+    expect(result?.loadSource).toBe('csv_parsed_and_cached')
   })
 
   it('loads CSV directly and normalizes response shape', async () => {
@@ -104,6 +107,7 @@ describe('dataService market-data directory actions', () => {
       },
       cache_hit: true,
       cache_path: 'C:/cache/data-2.bin',
+      load_source: 'binary_cache',
     })
 
     const result = await loadCsv(' C:/raw.csv ')
@@ -112,6 +116,7 @@ describe('dataService market-data directory actions', () => {
     expect(result.path).toBe('C:/raw.csv')
     expect(result.dataId).toBe('data-2')
     expect(result.cacheHit).toBe(true)
+    expect(result.loadSource).toBe('binary_cache')
     expect(result.meta.len).toBe(250)
     expect(result.meta.hasVolume).toBe(false)
     expect(result.meta.timeframe).toBe('5m')
@@ -123,6 +128,7 @@ describe('dataService market-data directory actions', () => {
       meta: { len: 100, timeframe: '15m', has_close: true },
       cache_hit: false,
       cache_path: '',
+      load_source: 'derived_fresh_resample',
     })
 
     const result = await applyTimeframe('15m', 'data-2')
@@ -133,6 +139,7 @@ describe('dataService market-data directory actions', () => {
     })
     expect(result.dataId).toBe('data-2@15m')
     expect(result.meta.timeframe).toBe('15m')
+    expect(result.loadSource).toBe('derived_fresh_resample')
   })
 
   it('loads sample CSV by index using list_sample_csvs command', async () => {
@@ -146,6 +153,7 @@ describe('dataService market-data directory actions', () => {
         meta: { len: 42, timeframe: '1m', has_close: true },
         cache_hit: false,
         cache_path: '',
+        load_source: 'csv_parsed_cache_write_skipped',
       })
 
     const result = await loadSampleCsv(1)
@@ -153,6 +161,7 @@ describe('dataService market-data directory actions', () => {
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'list_sample_csvs')
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_price_data', { path: 'C:/b.csv' })
     expect(result?.dataId).toBe('data-9')
+    expect(result?.loadSource).toBe('csv_parsed_cache_write_skipped')
   })
 
   it('lists sample CSV entries with normalized labels and paths', async () => {
@@ -173,14 +182,12 @@ describe('dataService market-data directory actions', () => {
 
   it('sets and resets market-data folder via direct commands', async () => {
     invokeCommandMock
-      .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce({
         default_root_dir: 'C:/default',
         configured_root_dir: 'C:/custom',
         effective_root_dir: 'C:/custom',
         polygon_cache_dir: 'C:/custom/polygon-cache',
       })
-      .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce({
         default_root_dir: 'C:/default',
         configured_root_dir: '',
@@ -195,11 +202,17 @@ describe('dataService market-data directory actions', () => {
       dir: 'C:/custom',
       moveExisting: true,
     })
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'get_market_data_dir_info')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'clear_market_data_dir')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(4, 'get_market_data_dir_info')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'clear_market_data_dir')
     expect(setInfo.configuredRootDir).toBe('C:/custom')
     expect(resetInfo.configuredRootDir).toBe('')
+  })
+
+  it('invokes clear_loaded_data for a loaded base dataset id', async () => {
+    invokeCommandMock.mockResolvedValueOnce({ cleared: true, removed_ids: ['data-1'] })
+
+    await clearData(' data-1 ')
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('clear_loaded_data', { baseDataId: 'data-1' })
   })
 
   it('opens market-data directory and falls back to reveal_path', async () => {
@@ -276,6 +289,7 @@ describe('dataService market-data directory actions', () => {
           meta: { len: 1234, timeframe: '1m', has_close: true },
           cache_hit: false,
           cache_path: 'C:/cache/poly-1-base.bin',
+          load_source: 'csv_parsed_and_cached',
         },
         id: 'poly-1',
         meta: {
@@ -285,6 +299,7 @@ describe('dataService market-data directory actions', () => {
         },
         cache_hit: false,
         cache_path: 'C:/cache/poly-1.bin',
+        load_source: 'derived_fresh_resample',
       })
       .mockResolvedValueOnce({
         csv_path: 'C:/polygon/AAPL_1m.csv',
@@ -328,8 +343,10 @@ describe('dataService market-data directory actions', () => {
     expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'polygon_repair_dataset', { csvPath: 'C:/polygon/AAPL_1m.csv' })
     expect(download.downloadedBars).toBe(1234)
     expect(download.baseLoad.dataId).toBe('poly-1-base')
+    expect(download.baseLoad.loadSource).toBe('csv_parsed_and_cached')
     expect(download.load.dataId).toBe('poly-1')
     expect(download.load.meta.timeframe).toBe('15m')
+    expect(download.load.loadSource).toBe('derived_fresh_resample')
     expect(validated.integrity?.duplicates).toBe(1)
     expect(repaired.integrity?.duplicates).toBe(0)
   })

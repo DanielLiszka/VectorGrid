@@ -80,6 +80,7 @@ struct WorkflowSummary {
     schema_version: u32,
     timing_boundary: String,
     timing_boundary_note: String,
+    timing_boundary_exclusions: Vec<String>,
     build_profile: String,
     environment: EnvironmentFingerprint,
     candles_len: usize,
@@ -103,6 +104,7 @@ impl Default for WorkflowSummary {
             schema_version: workflow_schema_version(),
             timing_boundary: workflow_timing_boundary().to_string(),
             timing_boundary_note: workflow_timing_boundary_note().to_string(),
+            timing_boundary_exclusions: workflow_timing_boundary_exclusions(),
             build_profile: build_profile().to_string(),
             environment: environment_fingerprint(),
             candles_len: 0,
@@ -132,6 +134,16 @@ const fn workflow_timing_boundary() -> &'static str {
 
 const fn workflow_timing_boundary_note() -> &'static str {
     "total deterministic workflow wall time including optimize, validate, meta-select, and holdout"
+}
+
+fn workflow_timing_boundary_exclusions() -> Vec<String> {
+    vec![
+        "tauri_analysis_command_latency".to_string(),
+        "workflow_artifact_sync_and_apply".to_string(),
+        "top_table_hydration".to_string(),
+        "heatmap_rendering".to_string(),
+        "drill_and_local_stability_panel_hydration".to_string(),
+    ]
 }
 
 const fn build_profile() -> &'static str {
@@ -616,6 +628,7 @@ fn run_workflow_once(
         schema_version: workflow_schema_version(),
         timing_boundary: workflow_timing_boundary().to_string(),
         timing_boundary_note: workflow_timing_boundary_note().to_string(),
+        timing_boundary_exclusions: workflow_timing_boundary_exclusions(),
         build_profile: build_profile().to_string(),
         environment: environment_fingerprint(),
         candles_len,
@@ -760,7 +773,7 @@ fn main() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{stage_budget_pass, WorkflowSummary};
+    use super::{stage_budget_pass, workflow_timing_boundary_exclusions, WorkflowSummary};
 
     #[test]
     fn workflow_summary_deserializes_legacy_payload_without_envelope() {
@@ -784,6 +797,10 @@ mod tests {
         assert_eq!(parsed.runtime_ms, 42);
         assert_eq!(parsed.schema_version, 1);
         assert_eq!(parsed.timing_boundary, "workflow-regression");
+        assert_eq!(
+            parsed.timing_boundary_exclusions,
+            workflow_timing_boundary_exclusions()
+        );
         assert_eq!(parsed.build_profile, super::build_profile());
         assert_eq!(parsed.stage.optimize_ms_total, 0);
         assert_eq!(parsed.environment.os, std::env::consts::OS);

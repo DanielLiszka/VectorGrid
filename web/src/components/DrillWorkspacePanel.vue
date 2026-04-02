@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted } from 'vue'
+import { computed, nextTick, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useShellMount } from '../composables/useShellMount'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -20,20 +20,19 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'drill'
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
-function nudgeDrillRerender(): void {
-  analysisStore.rerenderDrill()
-}
-
 function reviewTopResults(): void {
   workflowStore.selectResultsTab('top')
 }
 
-onMounted(async () => {
+async function ensureVisibleDrill(): Promise<void> {
   await nextTick()
-  window.setTimeout(() => {
-    nudgeDrillRerender()
-  }, 0)
-})
+  await analysisStore.rerenderDrill()
+}
+
+watch([visible, mountReady], async ([nextVisible, nextReady]) => {
+  if (!nextVisible || !nextReady) return
+  await ensureVisibleDrill()
+}, { immediate: true })
 
 </script>
 

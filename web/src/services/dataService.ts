@@ -68,6 +68,7 @@ interface PolygonDownloadAndLoadResponse {
   meta?: unknown
   cache_hit?: unknown
   cache_path?: unknown
+  load_source?: unknown
 }
 
 interface SampleCsvEntry {
@@ -94,7 +95,16 @@ interface LoadPriceDataResponse {
   meta?: unknown
   cache_hit?: unknown
   cache_path?: unknown
+  load_source?: unknown
 }
+
+export type DataLoadSource =
+  | 'binary_cache'
+  | 'csv_parsed_and_cached'
+  | 'csv_parsed_cache_write_skipped'
+  | 'in_memory_base_reuse'
+  | 'derived_fresh_resample'
+  | 'derived_in_memory_reuse'
 
 export interface DataMetaSummary {
   len: number
@@ -116,6 +126,7 @@ export interface DataLoadResult {
   meta: DataMetaSummary
   cacheHit: boolean
   cachePath: string
+  loadSource: DataLoadSource
 }
 
 export interface DataSampleCsvSummary {
@@ -224,6 +235,28 @@ function normalizeDataMeta(raw: unknown): DataMetaSummary {
   }
 }
 
+function normalizeLoadSource(value: unknown, row?: LoadPriceDataResponse, path = ''): DataLoadSource {
+  const normalized = normalizeText(value).toLowerCase()
+  switch (normalized) {
+    case 'binary_cache':
+    case 'csv_parsed_and_cached':
+    case 'csv_parsed_cache_write_skipped':
+    case 'in_memory_base_reuse':
+    case 'derived_fresh_resample':
+    case 'derived_in_memory_reuse':
+      return normalized
+    default:
+      if (row?.cache_hit) {
+        if (normalizeText(row?.cache_path)) return 'binary_cache'
+        return normalizeText(path) ? 'in_memory_base_reuse' : 'derived_in_memory_reuse'
+      }
+      if (normalizeText(path)) {
+        return normalizeText(row?.cache_path) ? 'csv_parsed_and_cached' : 'csv_parsed_cache_write_skipped'
+      }
+      return 'derived_fresh_resample'
+  }
+}
+
 function normalizeLoadPriceDataResponse(raw: unknown, path: string): DataLoadResult {
   const row = (raw && typeof raw === 'object' ? raw : {}) as LoadPriceDataResponse
   return {
@@ -232,6 +265,7 @@ function normalizeLoadPriceDataResponse(raw: unknown, path: string): DataLoadRes
     meta: normalizeDataMeta(row.meta),
     cacheHit: Boolean(row.cache_hit),
     cachePath: normalizeText(row.cache_path),
+    loadSource: normalizeLoadSource(row.load_source, row, path),
   }
 }
 
@@ -339,8 +373,10 @@ export async function loadCsv(path?: string): Promise<DataLoadResult> {
   return normalizeLoadPriceDataResponse(response, nextPath)
 }
 
-export async function clearData(): Promise<void> {
-  // Data clear is handled in Vue store state. No backend command is required.
+export async function clearData(baseDataId?: string): Promise<void> {
+  const baseId = normalizeText(baseDataId)
+  if (!baseId) return
+  await invokeCommand('clear_loaded_data', { baseDataId: baseId })
 }
 
 export async function applyTimeframe(timeframe: string, baseDataId?: string): Promise<DataLoadResult> {
@@ -362,13 +398,13 @@ export async function setMarketDataDir(dir: string, moveExisting: boolean): Prom
   if (!normalizedDir) {
     throw new Error('Enter a market data folder path first.')
   }
-  await invokeCommand('set_market_data_dir', { dir: normalizedDir, moveExisting: !!moveExisting })
-  return getMarketDataDirInfo()
+  const info = await invokeCommand('set_market_data_dir', { dir: normalizedDir, moveExisting: !!moveExisting })
+  return normalizeMarketDataDirInfo(info)
 }
 
 export async function resetMarketDataDir(): Promise<MarketDataDirInfoSummary> {
-  await invokeCommand('clear_market_data_dir')
-  return getMarketDataDirInfo()
+  const info = await invokeCommand('clear_market_data_dir')
+  return normalizeMarketDataDirInfo(info)
 }
 
 export async function openMarketDataDir(): Promise<MarketDataDirOpenResult> {

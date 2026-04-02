@@ -55,6 +55,7 @@ const {
   canPolygonValidateSelected,
   canPolygonRepairSelected,
   statusLine,
+  baseDataMeta,
   updatedAtUnixMs,
 } = storeToRefs(dataStore)
 const { controlsTab } = storeToRefs(workflowStore)
@@ -104,10 +105,15 @@ const rowLabel = computed(() => {
   const rows = String(dataLen.value || '').trim()
   return rows || '—'
 })
+const effectiveTimeframe = computed(() => {
+  const current = String(dataTimeframe.value || '').trim()
+  if (current) return current
+  return String(baseDataMeta.value?.timeframe || '').trim()
+})
 const dataSummaryChips = computed(() => {
   const chips: string[] = []
   const dataset = String(datasetLabel.value || '').trim()
-  const timeframe = String(dataTimeframe.value || '').trim()
+  const timeframe = String(effectiveTimeframe.value || '').trim()
   const loadedId = String(dataId.value || '').trim()
   const fieldCount = dataFields.value.length
   if (dataset) chips.push(`Dataset: ${dataset}`)

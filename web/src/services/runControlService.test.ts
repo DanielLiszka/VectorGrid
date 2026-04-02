@@ -18,8 +18,9 @@ describe('runControlService', () => {
 
     const result = await requestCancelCurrentRun()
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'cancel_current_run')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'cancel_background_task')
+    const commands = invokeCommandMock.mock.calls.map(([command]) => command)
+    expect(commands).toContain('cancel_current_run')
+    expect(commands).toContain('cancel_background_task')
     expect(result).toEqual({
       requested: true,
       usedLegacyFallback: false,
@@ -28,16 +29,19 @@ describe('runControlService', () => {
   })
 
   it('falls back to cancel_double_ma_optimization when cancel_current_run fails', async () => {
-    invokeCommandMock
-      .mockRejectedValueOnce(new Error('missing'))
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined)
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'cancel_current_run') {
+        throw new Error('missing')
+      }
+      return undefined
+    })
 
     const result = await requestCancelCurrentRun()
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'cancel_current_run')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'cancel_double_ma_optimization')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'cancel_background_task')
+    const commands = invokeCommandMock.mock.calls.map(([command]) => command)
+    expect(commands).toContain('cancel_current_run')
+    expect(commands).toContain('cancel_double_ma_optimization')
+    expect(commands).toContain('cancel_background_task')
     expect(result).toEqual({
       requested: true,
       usedLegacyFallback: true,
@@ -46,14 +50,18 @@ describe('runControlService', () => {
   })
 
   it('keeps a successful cancellation request when the background-task probe fails', async () => {
-    invokeCommandMock
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('background unavailable'))
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'cancel_background_task') {
+        throw new Error('background unavailable')
+      }
+      return undefined
+    })
 
     const result = await requestCancelCurrentRun()
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'cancel_current_run')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'cancel_background_task')
+    const commands = invokeCommandMock.mock.calls.map(([command]) => command)
+    expect(commands).toContain('cancel_current_run')
+    expect(commands).toContain('cancel_background_task')
     expect(result).toEqual({
       requested: true,
       usedLegacyFallback: false,
@@ -62,10 +70,7 @@ describe('runControlService', () => {
   })
 
   it('throws when no cancellation command can be requested', async () => {
-    invokeCommandMock
-      .mockRejectedValueOnce(new Error('missing'))
-      .mockRejectedValueOnce(new Error('missing'))
-      .mockRejectedValueOnce(new Error('missing'))
+    invokeCommandMock.mockRejectedValue(new Error('missing'))
 
     await expect(requestCancelCurrentRun()).rejects.toThrow('Cancellation command is unavailable.')
   })

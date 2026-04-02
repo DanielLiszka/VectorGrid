@@ -9,7 +9,9 @@ export interface CancelCurrentRunResult {
 export async function requestCancelCurrentRun(): Promise<CancelCurrentRunResult> {
   let requested = false
   let usedLegacyFallback = false
-  let backgroundTaskRequested = false
+  const backgroundTaskPromise = invokeCommand('cancel_background_task')
+    .then(() => true)
+    .catch(() => false)
 
   try {
     await invokeCommand('cancel_current_run')
@@ -24,12 +26,9 @@ export async function requestCancelCurrentRun(): Promise<CancelCurrentRunResult>
     }
   }
 
-  try {
-    await invokeCommand('cancel_background_task')
+  const backgroundTaskRequested = await backgroundTaskPromise
+  if (backgroundTaskRequested) {
     requested = true
-    backgroundTaskRequested = true
-  } catch {
-    // optional best-effort path
   }
 
   if (!requested) {

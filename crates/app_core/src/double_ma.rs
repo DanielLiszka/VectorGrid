@@ -9920,6 +9920,59 @@ fn fill_missing_rows_with_nan_f32(values: &mut [f32], cols: usize, row_written: 
     }
 }
 
+fn copy_scalar_fallback_rows_f64<F>(
+    values: &mut [f64],
+    cols: usize,
+    periods: &[u16],
+    mut build_series: F,
+) where
+    F: FnMut(usize) -> Vec<f64>,
+{
+    let mut row_written = vec![false; periods.len()];
+    for (row, &period) in periods.iter().enumerate() {
+        let series = build_series(period as usize);
+        if series.len() != cols {
+            continue;
+        }
+        let dst_off = row.saturating_mul(cols);
+        if dst_off + cols > values.len() {
+            continue;
+        }
+        values[dst_off..dst_off + cols].copy_from_slice(&series);
+        row_written[row] = true;
+    }
+    fill_missing_rows_with_nan_f64(values, cols, &row_written);
+}
+
+fn copy_scalar_fallback_rows_f32<F>(
+    values: &mut [f32],
+    cols: usize,
+    periods: &[u16],
+    mut build_series: F,
+) where
+    F: FnMut(usize) -> Vec<f64>,
+{
+    let mut row_written = vec![false; periods.len()];
+    for (row, &period) in periods.iter().enumerate() {
+        let series = build_series(period as usize);
+        if series.len() != cols {
+            continue;
+        }
+        let dst_off = row.saturating_mul(cols);
+        if dst_off + cols > values.len() {
+            continue;
+        }
+        for (dst, &src) in values[dst_off..dst_off + cols]
+            .iter_mut()
+            .zip(series.iter())
+        {
+            *dst = src as f32;
+        }
+        row_written[row] = true;
+    }
+    fill_missing_rows_with_nan_f32(values, cols, &row_written);
+}
+
 #[inline]
 pub(crate) fn first_finite_idx(series: &[f64]) -> Option<usize> {
     series.iter().position(|v| v.is_finite())
@@ -10181,26 +10234,18 @@ pub(crate) fn ma_matrix_cpu_f64(
             fill_missing_rows_with_nan_f64(&mut values, n, &row_written);
         }
         _ => {
-            for (row, &period) in periods.iter().enumerate() {
-                let series = vector_ta::indicators::moving_averages::ma::ma_with_kernel(
+            copy_scalar_fallback_rows_f64(&mut values, n, periods, |period| {
+                vector_ta::indicators::moving_averages::ma::ma_with_kernel(
                     ma_type,
                     vector_ta::indicators::moving_averages::ma::MaData::Candles {
                         candles,
                         source: ma_source,
                     },
-                    period as usize,
+                    period,
                     vector_ta::utilities::enums::Kernel::Scalar,
                 )
-                .unwrap_or_else(|_| vec![f64::NAN; n]);
-                if series.len() != n {
-                    continue;
-                }
-                let dst_off = row.saturating_mul(n);
-                if dst_off + n > values.len() {
-                    continue;
-                }
-                values[dst_off..dst_off + n].copy_from_slice(&series);
-            }
+                .unwrap_or_else(|_| vec![f64::NAN; n])
+            });
         }
     }
 
@@ -10473,27 +10518,17 @@ pub(crate) fn ma_matrix_cpu_f32_staging(
         }
         _ => {
             // Fall back to row-wise CPU assembly without materializing a full f64 matrix first.
-            for (row, &period) in periods.iter().enumerate() {
-                let series = vector_ta::indicators::moving_averages::ma::ma(
+            copy_scalar_fallback_rows_f32(&mut values, n, periods, |period| {
+                vector_ta::indicators::moving_averages::ma::ma(
                     ma_type,
                     vector_ta::indicators::moving_averages::ma::MaData::Candles {
                         candles,
                         source: ma_source,
                     },
-                    period as usize,
+                    period,
                 )
-                .unwrap_or_else(|_| vec![f64::NAN; n]);
-                if series.len() != n {
-                    continue;
-                }
-                let dst_off = row.saturating_mul(n);
-                if dst_off + n > values.len() {
-                    continue;
-                }
-                for (dst, &src) in values[dst_off..dst_off + n].iter_mut().zip(series.iter()) {
-                    *dst = src as f32;
-                }
-            }
+                .unwrap_or_else(|_| vec![f64::NAN; n])
+            });
             Ok((values, n))
         }
     }
@@ -21597,6 +21632,30 @@ mod tests {
         compare("sma", None);
         compare("gaussian", Some(&gaussian_params));
         compare("frama", None);
+    }
+
+    #[test]
+    fn cpu_ma_matrix_rowwise_scalar_fallback_fills_skipped_rows_with_nan() {
+        let periods = [5u16, 7u16];
+        let cols = 4usize;
+
+        let mut out64 = vec![0.0; periods.len() * cols];
+        copy_scalar_fallback_rows_f64(&mut out64, cols, &periods, |period| match period {
+            5 => vec![1.0, 2.0, 3.0, 4.0],
+            7 => vec![9.0, 8.0, 7.0],
+            _ => unreachable!(),
+        });
+        assert_eq!(&out64[..cols], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(out64[cols..].iter().all(|value| value.is_nan()));
+
+        let mut out32 = vec![0.0f32; periods.len() * cols];
+        copy_scalar_fallback_rows_f32(&mut out32, cols, &periods, |period| match period {
+            5 => vec![1.0, 2.0, 3.0, 4.0],
+            7 => vec![9.0, 8.0, 7.0],
+            _ => unreachable!(),
+        });
+        assert_eq!(&out32[..cols], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(out32[cols..].iter().all(|value| value.is_nan()));
     }
 
     #[cfg(feature = "cuda")]

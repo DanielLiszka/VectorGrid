@@ -6,10 +6,13 @@ Use this document as the prompt for an OpenAI Codex agent that has access to the
 When possible, also make these guide files available to Codex as reference documents:
 - `bundle12_meta_stage5_throughput_plan_v2.md` — primary implementation guide
 - `bundle12_meta_stage5_throughput_addendum.md` — required safe additions and open-question guidance
-- `bundle12_meta_stage5_throughput_plan.md` — older detailed guide; use only if it adds detail not already present in v2
 - `gpt54_feature_review_map.md` — use the Bundle 12 scope guard and posture, especially `## 12. Meta-selection and Stage 5 ML confidence throughput`
 
-The prompt below is intentionally self-contained, but the Codex agent should treat the listed markdown guides as authoritative design documents when they are available.
+Repo-state validation note:
+- the active `bundle12` input set in this folder is `plan_v2` + the addendum + `gpt54_feature_review_map.md`
+- do **not** rely on `bundle12_meta_stage5_throughput_plan.md` unless that file is actually present in the workspace
+
+The prompt below is intentionally self-contained, but the Codex agent should treat the listed markdown guides as authoritative design documents when they are available, subject to the repo-state validation guardrails below.
 
 ---
 
@@ -18,7 +21,7 @@ The prompt below is intentionally self-contained, but the Codex agent should tre
 ## Role and mission
 You are implementing a repo-grounded optimization/performance patch series for **Bundle 12: Meta-selection and Stage 5 ML confidence throughput**.
 
-Your task is to **fully implement the required plan** from:
+Your task is to **fully implement only the repo-valid portions** of:
 - `bundle12_meta_stage5_throughput_plan_v2.md` (primary)
 - `bundle12_meta_stage5_throughput_addendum.md` (required safe additions)
 - `gpt54_feature_review_map.md` → Bundle 12 scope guard
@@ -49,10 +52,21 @@ Stay inside the Bundle 12 scope:
 If there is any ambiguity, follow this precedence order:
 1. `bundle12_meta_stage5_throughput_plan_v2.md`
 2. `bundle12_meta_stage5_throughput_addendum.md`
-3. `bundle12_meta_stage5_throughput_plan.md`
-4. `gpt54_feature_review_map.md` Bundle 12 scope guard
+3. `gpt54_feature_review_map.md` Bundle 12 scope guard
 
 The addendum does **not** replace v2. It adds safe wins that must be folded into the implementation.
+
+## Repo-state validation guardrails
+
+Treat the following as already-validated repo facts:
+- [x] Stage 4 / Stage 5 naming remains the active compatibility alias surface in the frontend/runtime path. Do not rename or split it in this bundle.
+- [x] `web/src/services/metaRequestBuilder.ts` holdout support logic currently matches backend `strategy_supports_holdout(...)`. Do not change the strategy-support matrix unless backend behavior changes in the same patch.
+- [x] `src-tauri/src/commands_meta.rs::normalize_meta_stage4_request(...)` already normalizes Stage 5 confidence thresholds and weights on the backend. Any frontend normalization is additive drift reduction only.
+- [x] `web/src/services/metaService.ts` already owns saved-artifact hydration via `refreshSavedInternal`, `refreshStage4SavedInternal`, and `refreshPolicyEvalSavedInternal`. Extend that surface with optimistic upserts / deferred refreshes; do not invent a new cache layer.
+- [x] Existing adjacent tests already exist and should be extended in place: `web/src/services/metaService.test.ts`, `web/src/services/metaRequestBuilder.test.ts`, `web/src/services/metaStage4RequestBuilder.test.ts`, and the inline Rust test modules in `meta_select.rs`, `ml_confidence.rs`, and `commands_meta.rs`.
+- [x] Existing benchmark / workflow surfaces already exist and should be extended rather than created: `crates/app_core/benches/meta_select_workflow.rs`, `crates/app_core/benches/e2e_workflow_ml.rs`, and `src-tauri/src/bin/ta_workflow_regression.rs`.
+- [x] Mixed-history `MlConfidenceTarget::Auto` behavior remains an open correctness question. Preserve current runtime semantics and document them with tests/comments instead of redesigning them.
+- [x] Manifest/cache redesigns, hashed group-key redesigns, hybrid Auto backfill semantics, and broad Meta UX cleanup remain out of scope for Bundle 12.
 
 ---
 
@@ -63,33 +77,39 @@ The addendum does **not** replace v2. It adds safe wins that must be folded into
 - `crates/app_core/src/ml_confidence.rs`
 - `src-tauri/src/commands_meta.rs`
 - `web/src/services/metaService.ts`
-- `web/src/services/metaRequestBuilder.ts`
-- `web/src/services/metaStage4RequestBuilder.ts`
 
 ### Required benchmark / workflow files
 - `crates/app_core/benches/meta_select_workflow.rs`
 - `crates/app_core/benches/e2e_workflow_ml.rs`
+
+### Inspect-only / touch only if the validated implementation truly needs it
+- `web/src/services/metaRequestBuilder.ts`
+- `web/src/services/metaStage4RequestBuilder.ts`
 - `src-tauri/src/bin/ta_workflow_regression.rs`
 
-### Adjacent tests to update or add if they exist
+### Existing adjacent tests available if touched
 - inline `#[cfg(test)]` sections in the Rust files above
-- nearby service tests for `metaService.ts` and builder files, if present in the repo
+- `web/src/services/metaService.test.ts`
+- `web/src/services/metaRequestBuilder.test.ts`
+- `web/src/services/metaStage4RequestBuilder.test.ts`
 
-If a dedicated test file does not exist, add focused tests in the touched file or the nearest existing test module.
+If a dedicated test surface is still missing for a touched backend path, add focused tests in the touched file or the nearest existing test module.
 
 ---
 
 ## Required implementation outcome
-Implement **Phases 1–4** from `bundle12_meta_stage5_throughput_plan_v2.md`, plus the **safe additions A–E** from the addendum.
+Implement the repo-valid Bundle 12 work in this order:
+1. safe app-path wins around scan/load, status, train/apply payloads, Stage 5 orchestration, and saved-list hydration
+2. single-pass row/scope builders and the `meta_select.rs` grouped-representative micro-optimization
+3. benchmark expansion for the real Stage 5 / policy-eval hot paths
+4. prepared-row / prefix policy-evaluation refactor, but only after the earlier wins are landed and validated
 
-That means the required outcome is:
-1. safe app-path wins
-2. single-pass row/scope builders
-3. benchmark and regression-gate expansion
-4. prepared-row / prefix policy-evaluation refactor
-5. safe addendum items around early prefiltering, surfaced scan errors, duplicate full-model load removal, Stage 5 status synchronization, and optimistic saved-list upserts
+Safe addendum items A–E are required. Optional stretch items remain optional and must not displace the code-grounded items tracked below.
 
-Optional stretch items may be implemented **only after** the required work is complete and validated.
+Repo-state exclusions from the required set:
+- do **not** make `metaRequestBuilder.ts` clamping changes that remove the current `clusterFloatBucket <= 0` behavior
+- do **not** require frontend duplicate normalization in `metaStage4RequestBuilder.ts` just because the backend already normalizes those fields
+- do **not** require `ta_workflow_regression.rs` ML timing expansion for Bundle 12
 
 ---
 
@@ -442,29 +462,23 @@ The lighter safe option is sufficient. A larger response-shape extension is opti
 
 # 5. `web/src/services/metaRequestBuilder.ts`
 
-Keep this file very small and conservative.
+No Bundle 12 change is required here unless a touched test/helper needs a narrow update.
 
-Required change:
-- ensure `clusterFloatBucket` normalizes to a strictly positive default (`0.25`) instead of allowing zero/negative values that effectively collapse clustered mode into an overly exact grouping shape
-
-Do not add new knobs or broader behavior here.
+Preserve current behavior:
+- keep holdout-support logic unchanged unless backend drift is discovered
+- do **not** clamp away the existing `clusterFloatBucket <= 0` clustered-mode behavior
+- do not add new knobs or broader behavior here
 
 ---
 
 # 6. `web/src/services/metaStage4RequestBuilder.ts`
 
-Keep this file very small and conservative.
+No Bundle 12 change is required here unless a touched test/helper needs a narrow update.
 
-Required change:
-- add client-side normalization for probability-ish fields that accepts either unit interval or percentage style input
-
-Use it for:
-- `min_ml_confidence`
-- `accept_confidence`
-- `review_confidence`
-- `max_accept_uncertainty`
-
-Keep backend normalization authoritative. This is just to reduce obvious frontend/backend drift.
+Preserve current behavior:
+- keep Stage 4 / Stage 5 alias compatibility unchanged
+- keep backend normalization authoritative for Stage 5 thresholds
+- do not add broader builder-side behavior in this bundle
 
 ---
 
@@ -491,17 +505,11 @@ Required additions:
 The goal is direct Criterion-boundary evidence for the prepared-row policy-eval refactor.
 
 ## 7C. `src-tauri/src/bin/ta_workflow_regression.rs`
-Extend the regression breakdown to optionally include ML training/apply timing.
+This is **not** required Bundle 12 work in the current repo state.
 
-Required additions:
-- `ml_train_ms`
-- `ml_apply_ms`
-- backward-compatible `#[serde(default)]` handling
-- CLI flag similar to `--include-ml`
-- regression thresholds for ML train/apply stage timings
-- stage-budget checks wired through the same gate mechanism as existing stages
-
-Preserve compatibility with older baseline JSON files.
+Only touch this binary if:
+- a nearby verification helper must be adjusted for compileability after other Bundle 12 changes, or
+- you intentionally choose an optional follow-up after the required Bundle 12 work is already green
 
 ---
 
@@ -628,7 +636,7 @@ Run at least:
 At minimum:
 - make sure the new benches compile
 - if practical, run the new/modified benchmark targets once
-- make sure the workflow regression binary builds with the new ML fields/flags
+- if `ta_workflow_regression.rs` gains the valid optional ML timing extension, build and verify that path too
 
 If full benchmark execution is too slow in the agent environment, at least ensure the targets build cleanly and explain any unrun step.
 
@@ -666,38 +674,84 @@ When you finish, report back in this structure:
 
 # 13. Done checklist
 
-The work is not done until all required items below are true:
+Use this as the tracking checklist. Checked items are already validated for the current repo state; unchecked items are the active implementation surface.
 
-- [ ] `run_meta_selection_blocking` uses stronger filename filtering
-- [ ] `run_meta_selection_blocking` uses buffered JSON parsing
-- [ ] `run_meta_selection_blocking` applies early semantic prefiltering
-- [ ] `run_meta_selection_blocking` partitions train vs holdout during scan
-- [ ] timeframe inference still works after early pruning
-- [ ] ML status no longer ships full model weights/trees by default
-- [ ] ML status surfaces `meta_scan_error`
-- [ ] ML status does not silently swallow meta scan failure
-- [ ] train response no longer ships the full model by default
-- [ ] apply command uses minimal feature DTO
-- [ ] frontend `mlApply` sends only minimal features
-- [ ] Stage 5 no longer loads the full model before summary status is computed
-- [ ] Stage 5 does not do redundant status work after successful auto-train
-- [ ] commands-side scope summary is single-pass
-- [ ] `ml_confidence.rs` target detection + row build is single-pass
-- [ ] mixed-history `Auto` semantics are preserved and explicitly tested/documented
-- [ ] selective holdout evaluation allocates densely against selected groups
-- [ ] saved meta list updates immediately via optimistic upsert
-- [ ] saved Stage 5 list updates immediately via optimistic upsert
-- [ ] saved policy-eval list updates immediately via optimistic upsert
-- [ ] deferred refreshes no longer block hot-path rendering
-- [ ] Stage 5 refreshes or updates ML status only when model state changed
-- [ ] `metaRequestBuilder.ts` clamps `clusterFloatBucket` to a positive default
-- [ ] `metaStage4RequestBuilder.ts` normalizes unit-interval / percent inputs
-- [ ] `meta_select_workflow.rs` has context-rich grouping benches
-- [ ] `e2e_workflow_ml.rs` has Stage 5 / prefix-history benchmark coverage
-- [ ] `ta_workflow_regression.rs` can optionally track ML train/apply stage timings
-- [ ] required Rust tests were added/updated
-- [ ] required frontend tests were added/updated if a nearby test surface exists
-- [ ] relevant tests pass
+## 13A. Validated repo-state items
+
+- [x] Stage 4 / Stage 5 naming remains the active compatibility alias surface; do not rename or split it in this bundle
+- [x] `metaRequestBuilder.ts` holdout support logic already matches backend `strategy_supports_holdout(...)`
+- [x] backend Stage 5 threshold/weight normalization already exists in `normalize_meta_stage4_request(...)`
+- [x] saved-artifact hydration already exists in `metaService.ts`; the remaining work is optimistic upsert + deferred refresh, not a new cache/persistence layer
+- [x] mixed-history `MlConfidenceTarget::Auto` semantics remain an open correctness question and must be preserved rather than redesigned
+- [x] `bundle12_meta_stage5_throughput_plan.md` is not part of the active validated input set unless that file actually exists in the workspace
+- [x] no Bundle 12 builder change is required in `metaRequestBuilder.ts` unless a touched helper/test needs a narrow update
+- [x] no Bundle 12 builder change is required in `metaStage4RequestBuilder.ts` unless a touched helper/test needs a narrow update
+- [x] existing adjacent tests already exist and should be extended in place rather than creating new test surfaces by default
+- [x] `meta_select_workflow.rs` already has the simple benchmark family; the remaining benchmark work is richer grouped/context-heavy coverage
+- [x] `e2e_workflow_ml.rs` already has the end-to-end ML workflow bench; the remaining benchmark work is Stage 5 / prefix-history coverage
+- [x] `ta_workflow_regression.rs` ML timing expansion is not part of the required Bundle 12 set in the current repo state
+
+## 13B. Active implementation checklist
+
+### Rust / backend
+- [x] `ml_confidence.rs` adds `MlConfidenceModelSummary`
+- [x] `ml_confidence.rs` adds `MlConfidenceGroupFeatures`
+- [x] `ml_confidence.rs` adds `predict_ml_confidence_for_features`
+- [x] `predict_ml_confidence_for_group(...)` remains as a compatibility adapter over the same feature ordering/semantics
+- [x] `ml_confidence.rs` fuses `Auto` target detection and dataset build into one scoped walk without changing mixed-history runtime behavior
+- [x] `ml_confidence.rs` exposes a row-based training helper so meta-artifact training becomes thinner and reusable
+- [x] `ml_confidence.rs` exposes the prepared-row API needed by prefix policy evaluation
+- [x] `run_meta_selection_blocking` uses stronger filename filtering for known non-run JSON artifacts
+- [x] `run_meta_selection_blocking` uses buffered JSON parsing
+- [x] `run_meta_selection_blocking` applies early semantic prefiltering
+- [x] `run_meta_selection_blocking` partitions train vs holdout during scan
+- [x] timeframe inference, cancellation, and `meta_read` progress semantics still hold after early pruning
+- [x] ML status no longer ships full model weights/trees by default
+- [x] ML status surfaces `meta_scan_error`
+- [x] ML status does not silently swallow meta scan failure
+- [x] train response no longer ships the full model by default and instead returns `model_summary` + `metrics` + `status`
+- [x] apply command accepts the minimal feature DTO instead of full group JSON
+- [x] Stage 5 no longer loads the full model before summary status is computed
+- [x] Stage 5 does not do redundant status work after successful auto-train
+- [x] commands-side scope summary is single-pass
+- [x] selective holdout evaluation allocates densely against selected groups and remaps back into global results
+- [x] `run_ml_confidence_policy_evaluation_blocking` uses the prepared-row / prefix path after the earlier hot-path wins are complete
+- [x] `meta_select.rs` caches representative param signatures once during candidate ingestion
+- [x] `meta_select.rs` representative dedupe reuses the cached signature instead of recomputing canonical JSON
+
+### Frontend / service layer
+- [x] `metaService.ts` applies ML status updates from summary-only payloads instead of depending on `status.model`
+- [x] `formatMlStatus(...)` uses `status.model_summary`, `status.model_healthy`, and `status.meta_scan_error`
+- [x] `maybeRunMetaMlAutopilot(...)` uses top-level `status.model_healthy`
+- [x] `mlTrain()` uses the returned status payload directly
+- [x] `mlTrain()` no longer does an immediate follow-up `mlRefresh()`
+- [x] frontend `mlApply()` sends only minimal feature DTOs
+- [x] `runMeta()` renders immediately and defers saved-list refresh
+- [x] `runStage5()` renders immediately and defers saved-list refresh
+- [x] `runMlPolicyEvaluation()` renders immediately and defers saved-list refresh
+- [x] saved meta list updates immediately via optimistic upsert
+- [x] saved Stage 5 list updates immediately via optimistic upsert
+- [x] saved policy-eval list updates immediately via optimistic upsert
+- [x] deferred refresh failures do not wipe out the just-rendered result or optimistic saved entry
+- [x] Stage 5 refreshes or updates ML status only when model state changed
+
+### Benchmarks / workflow gates
+- [x] `meta_select_workflow.rs` keeps the existing simple bench and adds context-rich grouped benches
+- [x] `e2e_workflow_ml.rs` adds Stage 5 / prefix-history benchmark coverage
+
+## 13C. Required test and verification checklist
+
+- [x] Rust tests cover summary-only status and explicit `meta_scan_error` surfacing
+- [x] Rust tests include a dedicated dense selected-group holdout parity regression
+- [x] Rust tests cover minimal-feature prediction parity and current mixed-history `Auto` semantics
+- [x] Rust tests include a dedicated end-to-end prepared-row policy-eval parity regression
+- [x] frontend tests are updated in `metaService.test.ts`
+- [x] frontend builder tests are updated only if `metaRequestBuilder.ts` or `metaStage4RequestBuilder.ts` is actually touched
+- [x] relevant Rust tests pass
+- [x] relevant frontend service tests pass
+- [x] `npm run typecheck` passes
+- [x] new or modified benchmark/workflow targets build cleanly
+- [x] benchmark runs or perf measurements are captured via the targeted bench builds and `scripts/run_cpu_perf_gate.ps1 -Mode candidate`
 
 ## Final instruction
 Do the implementation, not just the analysis. Keep the patch series tightly scoped, parity-safe, and benchmark-aware.

@@ -192,6 +192,11 @@ function normalizeBoolean(value: unknown): boolean {
   return text === 'true' || text === '1' || text === 'yes' || text === 'on'
 }
 
+function normalizeFiniteNumber(value: unknown, fallback = 0): number {
+  const num = Number(value)
+  return Number.isFinite(num) ? num : fallback
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   return value as Record<string, unknown>
@@ -807,9 +812,8 @@ async function maybeRunMetaMlAutopilot(): Promise<void> {
   await mlRefresh({ scope })
 
   const status = asRecord(LAST_META_ML_STATUS) ?? {}
-  const modelMeta = asRecord(asRecord(status.model)?.meta) ?? {}
   const modelExists = normalizeBoolean(status.exists)
-  const modelHealthy = normalizeBoolean(modelMeta.healthy)
+  const modelHealthy = normalizeBoolean(status.model_healthy)
   const modelStale = normalizeBoolean(status.stale)
   const retrainRecommended = normalizeBoolean(status.retrain_recommended)
 
@@ -841,17 +845,20 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
   const modelHealthyFlag = status.model_healthy
 
   if (!exists) {
-    return `No ML model saved for ${scope.strategy_kind} / ${scope.timeframe}. · state=${modelState} · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}`
+    const metaScanError = normalizeText(status.meta_scan_error)
+    return `No ML model saved for ${scope.strategy_kind} / ${scope.timeframe}. · state=${modelState} · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}${metaScanError ? ` · meta_scan_error=${metaScanError}` : ''}`
   }
 
   if (errorText) {
-    return `ML model exists but failed to load: ${errorText} · state=${modelState} · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}`
+    const metaScanError = normalizeText(status.meta_scan_error)
+    return `ML model exists but failed to load: ${errorText} · state=${modelState} · available: meta=${availableMeta}, rows=${availableRows}${newest ? ` · newest=${newest}` : ''}${metaScanError ? ` · meta_scan_error=${metaScanError}` : ''}`
   }
 
-  const model = asRecord(status.model)
-  const label = asRecord(model?.label)
-  const modelMeta = asRecord(model?.meta)
+  const modelSummary = asRecord(status.model_summary)
+  const label = asRecord(modelSummary?.label)
+  const modelMeta = asRecord(modelSummary?.meta)
   const modelPath = normalizePath(status.model_path)
+  const metaScanError = normalizeText(status.meta_scan_error)
 
   const healthy = modelHealthyFlag === false || modelMeta?.healthy === false
     ? 'UNHEALTHY'
@@ -888,6 +895,7 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
   parts.push(stale ? 'stale' : 'fresh')
   if (retrain) parts.push('retrain recommended')
   if (retrainReason) parts.push(retrainReason)
+  if (metaScanError) parts.push(`meta_scan_error=${metaScanError}`)
 
   return parts.join(' · ')
 }
@@ -1274,6 +1282,123 @@ function buildPolicyEvalResponseFromArtifact(artifact: Record<string, unknown>, 
     eval_json_bytes: 0,
     result: asRecord(artifact.res)
   }
+}
+
+function sortSavedEntries(entries: Record<string, unknown>[]): Record<string, unknown>[] {
+  return [...entries].sort((lhs, rhs) => normalizeText(rhs.ts).localeCompare(normalizeText(lhs.ts)))
+}
+
+function upsertSavedEntry(
+  entries: Record<string, unknown>[],
+  nextEntry: Record<string, unknown>,
+): Record<string, unknown>[] {
+  const nextPath = normalizePath(nextEntry.path)
+  if (!nextPath) return entries
+  const filtered = entries.filter((entry) => normalizePath(entry.path) !== nextPath)
+  return sortSavedEntries([nextEntry, ...filtered])
+}
+
+function buildMetaSavedEntryFromResponse(response: Record<string, unknown>): Record<string, unknown> {
+  const result = asRecord(response.result) ?? {}
+  return {
+    ts: normalizeText(response.ts) || new Date().toISOString(),
+    path: normalizePath(response.meta_json_path),
+    bytes: Math.max(0, Math.floor(Number(response.meta_json_bytes || 0))),
+    kind: 'vectorgrid_meta_selection',
+    strategy_kind: normalizeText(result.strategy_kind),
+    timeframe: normalizeText(result.timeframe),
+    groups: asRecordArray(result.groups).length,
+    report_xlsx_path: normalizePath(response.report_xlsx_path),
+    tags: []
+  }
+}
+
+function buildStage5SavedEntryFromResponse(response: Record<string, unknown>): Record<string, unknown> {
+  const result = asRecord(response.result) ?? {}
+  return {
+    ts: normalizeText(response.ts) || new Date().toISOString(),
+    path: responseStage5Path(response),
+    bytes: Math.max(0, Math.floor(Number(response.stage5_json_bytes || response.stage4_json_bytes || 0))),
+    kind: 'vectorgrid_meta_stage5_ml_confidence',
+    strategy_kind: normalizeText(result.strategy_kind),
+    timeframe: normalizeText(result.timeframe),
+    groups_selected: Math.max(0, Math.floor(Number(result.groups_selected || 0))),
+    groups_scored: Math.max(0, Math.floor(Number(result.groups_scored || 0))),
+    groups_considered: Math.max(0, Math.floor(Number(result.groups_considered || 0))),
+    min_ml_confidence: Number(result.min_ml_confidence),
+    top_k: Math.max(0, Math.floor(Number(result.top_k || 0))),
+    model_healthy: normalizeBoolean(result.model_healthy),
+    source_meta_json_path: normalizePath(result.source_meta_json_path),
+    tags: []
+  }
+}
+
+function buildPolicyEvalSavedEntryFromResponse(response: Record<string, unknown>): Record<string, unknown> {
+  const result = asRecord(response.result) ?? {}
+  const stage5Blended = asRecord(result.stage5_blended) ?? {}
+  return {
+    ts: normalizeText(response.ts) || new Date().toISOString(),
+    path: normalizePath(response.eval_json_path),
+    bytes: Math.max(0, Math.floor(Number(response.eval_json_bytes || 0))),
+    kind: 'vectorgrid_ml_confidence_policy_evaluation',
+    strategy_kind: normalizeText(result.strategy_kind),
+    timeframe: normalizeText(result.timeframe),
+    artifacts_evaluated: Math.max(0, Math.floor(Number(result.artifacts_evaluated || 0))),
+    artifacts_considered: Math.max(0, Math.floor(Number(result.artifacts_considered || 0))),
+    best_policy: normalizeText(result.best_policy),
+    stage5_precision_at_k: Number(stage5Blended.precision_at_k),
+    stage5_vs_meta_precision_delta: Number(result.stage5_vs_meta_precision_delta),
+    stage5_vs_ml_precision_delta: Number(result.stage5_vs_ml_precision_delta),
+    tags: []
+  }
+}
+
+function scheduleDeferredTask(task: () => Promise<void>): void {
+  void task().catch((error) => {
+    console.warn('Deferred meta refresh failed', error)
+  })
+}
+
+function applyMlStatusPayload(statusRaw: unknown, scope: { strategy_kind: string; timeframe: string }): void {
+  LAST_META_ML_STATUS = asRecord(statusRaw) ?? {}
+  patchAnalysisStore({
+    metaMlStatus: formatMlStatus(LAST_META_ML_STATUS, scope)
+  })
+  updateMetaMlButtons()
+}
+
+function toMlFeatureGroup(group: Record<string, unknown>): Record<string, unknown> {
+  return {
+    samples: Math.max(0, Math.floor(normalizeFiniteNumber(group.samples))),
+    pass_rate: normalizeFiniteNumber(group.pass_rate),
+    robust_score_p10: normalizeFiniteNumber(group.robust_score_p10),
+    robust_score_median: normalizeFiniteNumber(group.robust_score_median),
+    max_dd_p90: normalizeFiniteNumber(group.max_dd_p90),
+    cross_score_median: normalizeFiniteNumber(group.cross_score_median),
+    meta_score: normalizeFiniteNumber(group.meta_score)
+  }
+}
+
+function didStage5ModelStateChange(result: Record<string, unknown> | null): boolean {
+  if (!result) return false
+  if (normalizeBoolean(result.model_trained_now)) return true
+
+  const previousStatus = asRecord(LAST_META_ML_STATUS)
+  const nextModelPath = normalizePath(result.model_path)
+  const nextState = normalizeText(result.model_state)
+  const nextHealthy = result.model_healthy
+
+  if (!previousStatus) {
+    return !!nextModelPath || !!nextState || typeof nextHealthy === 'boolean'
+  }
+
+  const previousModelPath = normalizePath(previousStatus.model_path)
+  const previousState = normalizeText(previousStatus.state)
+  const previousHealthy = previousStatus.model_healthy
+
+  return previousModelPath !== nextModelPath
+    || previousState !== nextState
+    || previousHealthy !== nextHealthy
 }
 
 function selectedMetaSavedEntry(): Record<string, unknown> | null {
@@ -2495,11 +2620,7 @@ export async function mlRefresh(options: MetaMlActionOptions = {}): Promise<void
     const statusRaw = (await invokeCommand('ml_confidence_model_status', {
       scope
     })) as unknown
-    LAST_META_ML_STATUS = asRecord(statusRaw) ?? {}
-    patchAnalysisStore({
-      metaMlStatus: formatMlStatus(LAST_META_ML_STATUS, scope)
-    })
-    updateMetaMlButtons()
+    applyMlStatusPayload(statusRaw, scope)
     setStatusLine('Refreshed ML confidence status.')
   } catch (error) {
     setErrorStatus(error)
@@ -2514,8 +2635,13 @@ export async function mlTrain(options: MetaMlActionOptions = {}): Promise<void> 
       return
     }
 
-    await invokeCommand('train_ml_confidence_model', { scope, cfg: null })
-    await mlRefresh({ scope })
+    const responseRaw = (await invokeCommand('train_ml_confidence_model', { scope, cfg: null })) as unknown
+    const response = asRecord(responseRaw)
+    if (!response) {
+      setStatusLine('ML model training returned an invalid response.')
+      return
+    }
+    applyMlStatusPayload(response.status, scope)
     const store = getAnalysisStore()
     if (store?.metaUseMlConfidence && asRecordArray(asRecord(LAST_META_RUN?.result)?.groups).length > 0) {
       await mlApply({ scope })
@@ -2545,7 +2671,7 @@ export async function mlApply(options: MetaMlActionOptions = {}): Promise<void> 
 
     const raw = (await invokeCommand('apply_ml_confidence_model', {
       scope,
-      groups
+      groups: groups.map((group) => toMlFeatureGroup(group))
     })) as unknown
     const payload = asRecord(raw) ?? {}
     const confidences = Array.isArray(payload.confidences) ? payload.confidences : []
@@ -2557,8 +2683,7 @@ export async function mlApply(options: MetaMlActionOptions = {}): Promise<void> 
       group.ml_confidence = Number.isFinite(conf) ? conf : null
     }
 
-    const healthy = asRecord(LAST_META_ML_STATUS?.model)?.meta
-    const modelHealthy = asRecord(healthy)?.healthy
+    const modelHealthy = LAST_META_ML_STATUS?.model_healthy
     const useMlRank = !!getAnalysisStore()?.metaUseMlConfidence
     if (useMlRank && modelHealthy !== false) {
       groups.sort((a, b) => {
@@ -2632,7 +2757,18 @@ export async function runStage5(options: MetaStage5RunOptions = {}): Promise<voi
     }
 
     renderMetaStage4(response)
-    await refreshStage4SavedInternal(responseStage5Path(response))
+    SAVED_STAGE4 = upsertSavedEntry(SAVED_STAGE4, buildStage5SavedEntryFromResponse(response))
+    updateStage4SavedState(responseStage5Path(response))
+    scheduleDeferredTask(() => refreshStage4SavedInternal(responseStage5Path(response)))
+    const result = asRecord(response.result)
+    if (didStage5ModelStateChange(result)) {
+      scheduleDeferredTask(() => mlRefresh({
+        scope: {
+          strategy_kind: normalizeText(result?.strategy_kind),
+          timeframe: normalizeText(result?.timeframe)
+        }
+      }))
+    }
     selectMetaResultsTab()
     setStatusLine(responseStage5Path(response) ? `Stage 5 complete. Saved: ${responseStage5Path(response)}` : 'Stage 5 complete.')
   } catch (error) {
@@ -2684,7 +2820,9 @@ export async function runMlPolicyEvaluation(options: MetaMlPolicyEvaluationRunOp
     }
 
     renderMlPolicyEvaluation(response)
-    await refreshPolicyEvalSavedInternal(normalizePath(response.eval_json_path))
+    SAVED_POLICY_EVAL = upsertSavedEntry(SAVED_POLICY_EVAL, buildPolicyEvalSavedEntryFromResponse(response))
+    updatePolicyEvalSavedState(normalizePath(response.eval_json_path))
+    scheduleDeferredTask(() => refreshPolicyEvalSavedInternal(normalizePath(response.eval_json_path)))
     setStatusLine(normalizePath(response.eval_json_path) ? `ML policy evaluation complete. Saved: ${normalizePath(response.eval_json_path)}` : 'ML policy evaluation complete.')
   } catch (error) {
     setErrorStatus(error)
@@ -2717,7 +2855,9 @@ export async function runMeta(options: MetaRunOptions = {}): Promise<void> {
     }
 
     renderMetaSelection(response)
-    await refreshSavedInternal(normalizePath(response.meta_json_path))
+    SAVED_META = upsertSavedEntry(SAVED_META, buildMetaSavedEntryFromResponse(response))
+    updateMetaSavedState(normalizePath(response.meta_json_path))
+    scheduleDeferredTask(() => refreshSavedInternal(normalizePath(response.meta_json_path)))
     await maybeRunMetaMlAutopilot()
     if (options.switchTab !== false) {
       selectMetaResultsTab()

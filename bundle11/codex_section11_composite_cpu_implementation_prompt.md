@@ -891,12 +891,9 @@ Implement the outstanding items below. Do not spend time “re-adding” behavio
 - [x] Run the targeted frontend tests for `optimizeRequestBuilder.test.ts`, `optimizeService.test.ts`, and `strategyOptimizationCapabilities.test.ts` with the repo’s actual package-manager/test-runner command.
 - [x] Run the targeted Rust tests needed to validate the `CompositeCpu` backend changes.
 - [x] Run `cargo bench --bench composite_cpu_opt --no-run`.
-- [ ] Run `cargo bench --bench composite_validation_workflow --no-run`.
+- [x] Run `cargo bench --bench composite_validation_workflow --no-run`.
 - [x] Run a lightweight `ta_workflow_regression` smoke if feasible, or explicitly record why it was skipped.
 - [x] In the final write-up, list files changed, checks run, optional items intentionally skipped, and any grounded remaining ambiguity.
-
-Verification note:
-`cargo bench -p ta_app_core --bench composite_validation_workflow --no-run` currently fails outside this section-11 patch because that existing bench references multiple candidate-builder helpers that are cfg-gated behind `cuda` / `cuda-backtest-kernel` while its CPU bench body still calls them in the default build.
 
 ---
 

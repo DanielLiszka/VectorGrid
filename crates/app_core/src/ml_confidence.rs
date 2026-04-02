@@ -281,6 +281,82 @@ pub struct MlConfidenceModel {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MlConfidenceModelSummary {
+    pub version: u32,
+    pub scope: MlConfidenceScope,
+    #[serde(default = "default_model_kind")]
+    pub model_kind: MlConfidenceModelKind,
+    pub label: MlConfidenceLabelConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<MlConfidenceModelMeta>,
+}
+
+impl From<&MlConfidenceModel> for MlConfidenceModelSummary {
+    fn from(model: &MlConfidenceModel) -> Self {
+        Self {
+            version: model.version,
+            scope: model.scope.clone(),
+            model_kind: model.model_kind.clone(),
+            label: model.label.clone(),
+            meta: model.meta.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MlConfidenceGroupFeatures {
+    pub samples: u64,
+    pub pass_rate: f64,
+    pub robust_score_p10: f64,
+    pub robust_score_median: f64,
+    pub max_dd_p90: f64,
+    #[serde(default)]
+    pub cross_score_median: f64,
+    pub meta_score: f64,
+}
+
+impl MlConfidenceGroupFeatures {
+    fn to_feature_vec(&self) -> Option<Vec<f64>> {
+        let x = vec![
+            self.samples as f64,
+            self.pass_rate,
+            self.robust_score_p10,
+            self.robust_score_median,
+            self.max_dd_p90,
+            self.cross_score_median,
+            self.meta_score,
+        ];
+        if x.iter().all(|v| v.is_finite()) {
+            Some(x)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MlConfidenceDatasetRow {
+    pub group_id: String,
+    pub x: Vec<f64>,
+    pub y: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct MlConfidencePreparedArtifactRows {
+    pub ts: Option<String>,
+    pub holdout_gate_rows: Vec<MlConfidenceDatasetRow>,
+    pub holdout_dataset_rows: Vec<MlConfidenceDatasetRow>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MlConfidencePreparedRows {
+    pub scope: MlConfidenceScope,
+    pub artifacts: Vec<MlConfidencePreparedArtifactRows>,
+    pub has_holdout_dataset_rows: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MlConfidenceTreeStump {
     pub feature_index: usize,
     pub threshold: f64,
@@ -305,12 +381,7 @@ const FEATURE_NAMES: [&str; 7] = [
     "meta_score",
 ];
 
-#[derive(Clone, Debug)]
-struct DatasetRow {
-    group_id: String,
-    x: Vec<f64>,
-    y: f64,
-}
+type DatasetRow = MlConfidenceDatasetRow;
 
 #[derive(Clone, Debug)]
 struct DatasetBuildSummary {
@@ -369,32 +440,23 @@ fn extract_meta_scope(meta: &Value) -> Option<(String, String)> {
     Some((strat, tf))
 }
 
-fn extract_features_from_meta_group(g: &Value) -> Option<Vec<f64>> {
-    let samples = g.get("samples").and_then(|v| v.as_u64())? as f64;
-    let pass_rate = g.get("pass_rate").and_then(|v| v.as_f64())?;
-    let robust_p10 = g.get("robust_score_p10").and_then(|v| v.as_f64())?;
-    let robust_median = g.get("robust_score_median").and_then(|v| v.as_f64())?;
-    let max_dd_p90 = g.get("max_dd_p90").and_then(|v| v.as_f64())?;
-    let cross_median = g
-        .get("cross_score_median")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let meta_score = g.get("meta_score").and_then(|v| v.as_f64())?;
+pub fn extract_ml_confidence_group_features(group: &Value) -> Option<MlConfidenceGroupFeatures> {
+    Some(MlConfidenceGroupFeatures {
+        samples: group.get("samples").and_then(|v| v.as_u64())?,
+        pass_rate: group.get("pass_rate").and_then(|v| v.as_f64())?,
+        robust_score_p10: group.get("robust_score_p10").and_then(|v| v.as_f64())?,
+        robust_score_median: group.get("robust_score_median").and_then(|v| v.as_f64())?,
+        max_dd_p90: group.get("max_dd_p90").and_then(|v| v.as_f64())?,
+        cross_score_median: group
+            .get("cross_score_median")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0),
+        meta_score: group.get("meta_score").and_then(|v| v.as_f64())?,
+    })
+}
 
-    let x = vec![
-        samples,
-        pass_rate,
-        robust_p10,
-        robust_median,
-        max_dd_p90,
-        cross_median,
-        meta_score,
-    ];
-    if x.iter().all(|v| v.is_finite()) {
-        Some(x)
-    } else {
-        None
-    }
+fn extract_features_from_meta_group(g: &Value) -> Option<Vec<f64>> {
+    extract_ml_confidence_group_features(g)?.to_feature_vec()
 }
 
 fn label_from_holdout(h: &Value, cfg: &MlConfidenceLabelConfig) -> Option<f64> {
@@ -442,163 +504,239 @@ fn label_from_holdout_row(row: &Value, cfg: &MlConfidenceLabelConfig) -> Option<
     Some((dataset, if ok { 1.0 } else { 0.0 }))
 }
 
-fn scope_has_holdout_rows(
+#[derive(Default)]
+struct PreparedHistoryCounters {
+    skipped_kind: usize,
+    skipped_scope: usize,
+    skipped_missing: usize,
+    gate_missing_holdout: usize,
+    gate_insufficient_datasets: usize,
+    dataset_missing_holdout_rows: usize,
+    dataset_insufficient_datasets: usize,
+    dataset_skipped_row: usize,
+}
+
+fn resolve_target_from_prepared_rows(
+    prepared: &MlConfidencePreparedRows,
+    cfg_target: MlConfidenceTarget,
+    prefix_len: usize,
+) -> MlConfidenceTargetResolved {
+    match cfg_target {
+        MlConfidenceTarget::HoldoutGate => MlConfidenceTargetResolved::HoldoutGate,
+        MlConfidenceTarget::HoldoutDatasetPass => MlConfidenceTargetResolved::HoldoutDatasetPass,
+        MlConfidenceTarget::Auto => {
+            let has_dataset_rows = prepared
+                .artifacts
+                .iter()
+                .take(prefix_len)
+                .any(|artifact| !artifact.holdout_dataset_rows.is_empty());
+            if has_dataset_rows {
+                MlConfidenceTargetResolved::HoldoutDatasetPass
+            } else {
+                MlConfidenceTargetResolved::HoldoutGate
+            }
+        }
+    }
+}
+
+pub fn prepare_ml_confidence_rows_from_meta_artifacts(
     scope: &MlConfidenceScope,
     meta_artifacts: &[Value],
     cfg: &MlConfidenceLabelConfig,
-) -> bool {
+) -> MlConfidencePreparedRows {
     let scope_tf = normalize_timeframe_label(&scope.timeframe);
     let scope_strat = scope.strategy_kind.trim();
+
+    let mut artifacts: Vec<MlConfidencePreparedArtifactRows> = Vec::new();
+    let mut has_holdout_dataset_rows = false;
+    let mut counters = PreparedHistoryCounters::default();
 
     for meta in meta_artifacts {
         let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         if !is_meta_selection_kind(kind) {
+            counters.skipped_kind = counters.skipped_kind.saturating_add(1);
             continue;
         }
         let Some((strat, tf)) = extract_meta_scope(meta) else {
+            counters.skipped_missing = counters.skipped_missing.saturating_add(1);
             continue;
         };
         if strat != scope_strat || tf != scope_tf {
+            counters.skipped_scope = counters.skipped_scope.saturating_add(1);
             continue;
         }
-
         let groups = meta
             .pointer("/res/groups")
             .and_then(|v| v.as_array())
             .map(|xs| xs.as_slice())
             .unwrap_or(&[]);
-        for g in groups {
-            let holdout_rows = g.get("holdout_rows").and_then(|v| v.as_array());
-            let Some(rows) = holdout_rows else {
-                continue;
-            };
-            if rows.len() < cfg.min_holdout_datasets {
-                continue;
-            }
-            if rows
-                .iter()
-                .any(|r| label_from_holdout_row(r, cfg).is_some())
-            {
-                return true;
-            }
-        }
-    }
 
-    false
-}
-
-fn build_dataset_from_meta_artifacts(
-    scope: &MlConfidenceScope,
-    meta_artifacts: &[Value],
-    cfg: &MlConfidenceLabelConfig,
-    target: MlConfidenceTargetResolved,
-) -> (Vec<DatasetRow>, DatasetBuildSummary, Vec<String>) {
-    let mut warnings: Vec<String> = Vec::new();
-    let scope_tf = normalize_timeframe_label(&scope.timeframe);
-    let scope_strat = scope.strategy_kind.trim();
-
-    let mut rows: Vec<DatasetRow> = Vec::new();
-    let mut used_meta = 0usize;
-    let mut newest_meta_ts: Option<String> = None;
-    let mut skipped_kind = 0usize;
-    let mut skipped_scope = 0usize;
-    let mut skipped_missing = 0usize;
-    let mut skipped_no_holdout = 0usize;
-    let mut skipped_label = 0usize;
-    let mut skipped_row = 0usize;
-
-    for meta in meta_artifacts {
-        let kind = meta.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        if !is_meta_selection_kind(kind) {
-            skipped_kind += 1;
-            continue;
-        }
-        let Some((strat, tf)) = extract_meta_scope(meta) else {
-            skipped_missing += 1;
-            continue;
-        };
-        if strat != scope_strat || tf != scope_tf {
-            skipped_scope += 1;
-            continue;
-        }
         let group_id = meta
             .get("ts")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let groups = meta
-            .pointer("/res/groups")
-            .and_then(|v| v.as_array())
-            .map(|xs| xs.as_slice())
-            .unwrap_or(&[]);
-        if groups.is_empty() {
-            continue;
-        }
-
-        used_meta += 1;
-        if let Some(ts) = meta
-            .get("ts")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-        {
-            let is_newest = newest_meta_ts
-                .as_ref()
-                .map(|cur| ts.as_str() > cur.as_str())
-                .unwrap_or(true);
-            if is_newest {
-                newest_meta_ts = Some(ts);
-            }
-        }
+        let mut holdout_gate_rows: Vec<DatasetRow> = Vec::new();
+        let mut holdout_dataset_rows: Vec<DatasetRow> = Vec::new();
         for g in groups {
             let Some(x) = extract_features_from_meta_group(g) else {
                 continue;
             };
 
-            match target {
-                MlConfidenceTargetResolved::HoldoutGate => {
-                    let Some(h) = g.get("holdout") else {
-                        skipped_no_holdout += 1;
+            let Some(h) = g.get("holdout") else {
+                counters.gate_missing_holdout = counters.gate_missing_holdout.saturating_add(1);
+                let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
+                    counters.dataset_missing_holdout_rows =
+                        counters.dataset_missing_holdout_rows.saturating_add(1);
+                    continue;
+                };
+                if holdout_rows.len() < cfg.min_holdout_datasets {
+                    counters.dataset_insufficient_datasets =
+                        counters.dataset_insufficient_datasets.saturating_add(1);
+                    continue;
+                }
+                let mut pushed = 0usize;
+                for r in holdout_rows {
+                    let Some((ds, y)) = label_from_holdout_row(r, cfg) else {
+                        counters.dataset_skipped_row =
+                            counters.dataset_skipped_row.saturating_add(1);
                         continue;
                     };
-                    let Some(y) = label_from_holdout(h, cfg) else {
-                        skipped_label += 1;
-                        continue;
-                    };
-                    rows.push(DatasetRow {
-                        group_id: group_id.clone(),
-                        x,
+                    holdout_dataset_rows.push(DatasetRow {
+                        group_id: ds,
+                        x: x.clone(),
                         y,
                     });
+                    pushed = pushed.saturating_add(1);
                 }
-                MlConfidenceTargetResolved::HoldoutDatasetPass => {
-                    let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array())
-                    else {
-                        skipped_no_holdout += 1;
-                        continue;
-                    };
-                    if holdout_rows.len() < cfg.min_holdout_datasets {
-                        skipped_label += 1;
-                        continue;
-                    }
-                    for r in holdout_rows {
-                        let Some((ds, y)) = label_from_holdout_row(r, cfg) else {
-                            skipped_row += 1;
-                            continue;
-                        };
-                        rows.push(DatasetRow {
-                            group_id: ds,
-                            x: x.clone(),
-                            y,
-                        });
-                    }
+                if pushed > 0 {
+                    has_holdout_dataset_rows = true;
                 }
+                continue;
+            };
+
+            if let Some(y) = label_from_holdout(h, cfg) {
+                holdout_gate_rows.push(DatasetRow {
+                    group_id: group_id.clone(),
+                    x: x.clone(),
+                    y,
+                });
+            } else {
+                counters.gate_insufficient_datasets =
+                    counters.gate_insufficient_datasets.saturating_add(1);
+            }
+
+            let Some(holdout_rows) = g.get("holdout_rows").and_then(|v| v.as_array()) else {
+                counters.dataset_missing_holdout_rows =
+                    counters.dataset_missing_holdout_rows.saturating_add(1);
+                continue;
+            };
+            if holdout_rows.len() < cfg.min_holdout_datasets {
+                counters.dataset_insufficient_datasets =
+                    counters.dataset_insufficient_datasets.saturating_add(1);
+                continue;
+            }
+            let mut pushed = 0usize;
+            for r in holdout_rows {
+                let Some((ds, y)) = label_from_holdout_row(r, cfg) else {
+                    counters.dataset_skipped_row = counters.dataset_skipped_row.saturating_add(1);
+                    continue;
+                };
+                holdout_dataset_rows.push(DatasetRow {
+                    group_id: ds,
+                    x: x.clone(),
+                    y,
+                });
+                pushed = pushed.saturating_add(1);
+            }
+            if pushed > 0 {
+                has_holdout_dataset_rows = true;
             }
         }
+
+        artifacts.push(MlConfidencePreparedArtifactRows {
+            ts: meta
+                .get("ts")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            holdout_gate_rows,
+            holdout_dataset_rows,
+        });
     }
 
-    if used_meta == 0 {
+    let mut warnings: Vec<String> = Vec::new();
+    if artifacts.is_empty() {
         warnings.push("No matching meta artifacts found for this scope.".to_string());
     }
+    if counters.skipped_kind > 0 {
+        warnings.push(format!(
+            "Skipped {} non-meta JSON file(s).",
+            counters.skipped_kind
+        ));
+    }
+    if counters.skipped_scope > 0 {
+        warnings.push(format!(
+            "Skipped {} meta artifact(s) outside scope.",
+            counters.skipped_scope
+        ));
+    }
+    if counters.skipped_missing > 0 {
+        warnings.push(format!(
+            "Skipped {} meta artifact(s) missing strategy/timeframe.",
+            counters.skipped_missing
+        ));
+    }
+
+    MlConfidencePreparedRows {
+        scope: scope.clone(),
+        artifacts,
+        has_holdout_dataset_rows,
+        warnings,
+    }
+}
+
+fn build_dataset_from_prepared_rows(
+    prepared: &MlConfidencePreparedRows,
+    cfg: &MlConfidenceLabelConfig,
+    target: MlConfidenceTargetResolved,
+    prefix_len: usize,
+) -> (Vec<DatasetRow>, DatasetBuildSummary, Vec<String>) {
+    let mut rows: Vec<DatasetRow> = Vec::new();
+    let mut used_meta = 0usize;
+    let mut newest_meta_ts: Option<String> = None;
+    let mut missing_holdout = 0usize;
+    let mut insufficient_datasets = 0usize;
+    for artifact in prepared.artifacts.iter().take(prefix_len) {
+        used_meta = used_meta.saturating_add(1);
+        if let Some(ts) = artifact.ts.as_ref() {
+            let is_newest = newest_meta_ts
+                .as_ref()
+                .map(|cur| ts.as_str() > cur.as_str())
+                .unwrap_or(true);
+            if is_newest {
+                newest_meta_ts = Some(ts.clone());
+            }
+        }
+
+        let source_rows = match target {
+            MlConfidenceTargetResolved::HoldoutGate => &artifact.holdout_gate_rows,
+            MlConfidenceTargetResolved::HoldoutDatasetPass => &artifact.holdout_dataset_rows,
+        };
+        if source_rows.is_empty() {
+            match target {
+                MlConfidenceTargetResolved::HoldoutGate => {
+                    missing_holdout = missing_holdout.saturating_add(1);
+                }
+                MlConfidenceTargetResolved::HoldoutDatasetPass => {
+                    insufficient_datasets = insufficient_datasets.saturating_add(1);
+                }
+            }
+            continue;
+        }
+        rows.extend(source_rows.iter().cloned());
+    }
+
+    let mut warnings = prepared.warnings.clone();
     if rows.is_empty() {
         let msg = match target {
             MlConfidenceTargetResolved::HoldoutGate => {
@@ -610,36 +748,17 @@ fn build_dataset_from_meta_artifacts(
         };
         warnings.push(msg.to_string());
     }
-    if skipped_kind > 0 {
-        warnings.push(format!("Skipped {skipped_kind} non-meta JSON file(s)."));
-    }
-    if skipped_scope > 0 {
+    if missing_holdout > 0 {
         warnings.push(format!(
-            "Skipped {skipped_scope} meta artifact(s) outside scope."
+            "Skipped {missing_holdout} meta artifact(s) without usable holdout aggregates."
         ));
     }
-    if skipped_missing > 0 {
+    if insufficient_datasets > 0 {
         warnings.push(format!(
-            "Skipped {skipped_missing} meta artifact(s) missing strategy/timeframe."
-        ));
-    }
-    if skipped_no_holdout > 0 {
-        warnings.push(format!(
-            "Skipped {skipped_no_holdout} meta group(s) without holdout results."
-        ));
-    }
-    if skipped_label > 0 {
-        warnings.push(format!(
-            "Skipped {skipped_label} meta group(s) with insufficient holdout datasets (<{}).",
+            "Skipped {insufficient_datasets} meta artifact(s) with insufficient holdout datasets (<{}).",
             cfg.min_holdout_datasets
         ));
     }
-    if skipped_row > 0 {
-        warnings.push(format!(
-            "Skipped {skipped_row} holdout row(s) missing required fields."
-        ));
-    }
-
     (
         rows,
         DatasetBuildSummary {
@@ -1299,37 +1418,13 @@ fn calibration_bins(ps: &[f64], ys: &[f64], bins: usize) -> Vec<MlConfidenceCali
     out
 }
 
-pub fn train_ml_confidence_model_from_meta_artifacts(
+fn train_ml_confidence_model_from_rows_inner(
     scope: MlConfidenceScope,
-    meta_artifacts: &[Value],
+    rows: &[DatasetRow],
     cfg: MlConfidenceTrainConfig,
+    build: DatasetBuildSummary,
+    mut warnings: Vec<String>,
 ) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
-    let timeframe = normalize_timeframe_label(&scope.timeframe);
-    if timeframe.is_empty() {
-        return Err("timeframe is required (e.g. '1m')".to_string());
-    }
-    if scope.strategy_kind.trim().is_empty() {
-        return Err("strategy_kind is required".to_string());
-    }
-    let scope = MlConfidenceScope {
-        strategy_kind: scope.strategy_kind.trim().to_string(),
-        timeframe,
-    };
-
-    let target = match cfg.target {
-        MlConfidenceTarget::HoldoutGate => MlConfidenceTargetResolved::HoldoutGate,
-        MlConfidenceTarget::HoldoutDatasetPass => MlConfidenceTargetResolved::HoldoutDatasetPass,
-        MlConfidenceTarget::Auto => {
-            if scope_has_holdout_rows(&scope, meta_artifacts, &cfg.label) {
-                MlConfidenceTargetResolved::HoldoutDatasetPass
-            } else {
-                MlConfidenceTargetResolved::HoldoutGate
-            }
-        }
-    };
-
-    let (rows, build, mut warnings) =
-        build_dataset_from_meta_artifacts(&scope, meta_artifacts, &cfg.label, target);
     let target_used = match build.target {
         MlConfidenceTargetResolved::HoldoutGate => MlConfidenceTarget::HoldoutGate,
         MlConfidenceTargetResolved::HoldoutDatasetPass => MlConfidenceTarget::HoldoutDatasetPass,
@@ -1354,7 +1449,7 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
     let unique_groups = {
         use std::collections::HashSet;
         let mut s = HashSet::new();
-        for r in &rows {
+        for r in rows {
             s.insert(r.group_id.clone());
         }
         s.len()
@@ -1541,8 +1636,81 @@ pub fn train_ml_confidence_model_from_meta_artifacts(
     Ok((model, metrics))
 }
 
-pub fn predict_ml_confidence_for_group(model: &MlConfidenceModel, group: &Value) -> Option<f64> {
-    let x0 = extract_features_from_meta_group(group)?;
+pub fn train_ml_confidence_model_from_rows(
+    scope: MlConfidenceScope,
+    rows: &[MlConfidenceDatasetRow],
+    cfg: MlConfidenceTrainConfig,
+    target_used: MlConfidenceTarget,
+    meta_artifacts_used: usize,
+    newest_meta_ts_used: Option<String>,
+    warnings: Vec<String>,
+) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
+    let timeframe = normalize_timeframe_label(&scope.timeframe);
+    if timeframe.is_empty() {
+        return Err("timeframe is required (e.g. '1m')".to_string());
+    }
+    if scope.strategy_kind.trim().is_empty() {
+        return Err("strategy_kind is required".to_string());
+    }
+    let scope = MlConfidenceScope {
+        strategy_kind: scope.strategy_kind.trim().to_string(),
+        timeframe,
+    };
+
+    let build = DatasetBuildSummary {
+        used_meta: meta_artifacts_used,
+        newest_meta_ts: newest_meta_ts_used,
+        target: match target_used {
+            MlConfidenceTarget::HoldoutGate => MlConfidenceTargetResolved::HoldoutGate,
+            MlConfidenceTarget::HoldoutDatasetPass | MlConfidenceTarget::Auto => {
+                MlConfidenceTargetResolved::HoldoutDatasetPass
+            }
+        },
+    };
+    train_ml_confidence_model_from_rows_inner(scope, rows, cfg, build, warnings)
+}
+
+pub fn train_ml_confidence_model_from_prepared_rows(
+    scope: MlConfidenceScope,
+    prepared: &MlConfidencePreparedRows,
+    cfg: MlConfidenceTrainConfig,
+    prefix_len: Option<usize>,
+) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
+    let effective_prefix = prefix_len
+        .unwrap_or(prepared.artifacts.len())
+        .min(prepared.artifacts.len());
+    let target = resolve_target_from_prepared_rows(prepared, cfg.target.clone(), effective_prefix);
+    let (rows, build, warnings) =
+        build_dataset_from_prepared_rows(prepared, &cfg.label, target, effective_prefix);
+    train_ml_confidence_model_from_rows_inner(scope, &rows, cfg, build, warnings)
+}
+
+pub fn train_ml_confidence_model_from_meta_artifacts(
+    scope: MlConfidenceScope,
+    meta_artifacts: &[Value],
+    cfg: MlConfidenceTrainConfig,
+) -> Result<(MlConfidenceModel, MlConfidenceTrainMetrics), String> {
+    let timeframe = normalize_timeframe_label(&scope.timeframe);
+    if timeframe.is_empty() {
+        return Err("timeframe is required (e.g. '1m')".to_string());
+    }
+    if scope.strategy_kind.trim().is_empty() {
+        return Err("strategy_kind is required".to_string());
+    }
+    let scope = MlConfidenceScope {
+        strategy_kind: scope.strategy_kind.trim().to_string(),
+        timeframe,
+    };
+    let prepared =
+        prepare_ml_confidence_rows_from_meta_artifacts(&scope, meta_artifacts, &cfg.label);
+    train_ml_confidence_model_from_prepared_rows(scope, &prepared, cfg, None)
+}
+
+pub fn predict_ml_confidence_for_features(
+    model: &MlConfidenceModel,
+    features: &MlConfidenceGroupFeatures,
+) -> Option<f64> {
+    let x0 = features.to_feature_vec()?;
     let p_raw = match model.model_kind {
         MlConfidenceModelKind::Logistic => {
             if model.weights.len() != model.mean.len()
@@ -1571,10 +1739,111 @@ pub fn predict_ml_confidence_for_group(model: &MlConfidenceModel, group: &Value)
     }
 }
 
+pub fn predict_ml_confidence_for_group(model: &MlConfidenceModel, group: &Value) -> Option<f64> {
+    let features = extract_ml_confidence_group_features(group)?;
+    predict_ml_confidence_for_features(model, &features)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn mixed_history_scope_cfg_and_artifacts(
+    ) -> (MlConfidenceScope, MlConfidenceTrainConfig, Vec<Value>) {
+        let scope = MlConfidenceScope {
+            strategy_kind: "CompositeMo".to_string(),
+            timeframe: "1m".to_string(),
+        };
+
+        let mut cfg = MlConfidenceTrainConfig::default();
+        cfg.target = MlConfidenceTarget::Auto;
+        cfg.label.min_holdout_datasets = 1;
+        cfg.label.min_holdout_pass_rate = 0.60;
+        cfg.label.min_holdout_score_p10 = 0.0;
+        cfg.label.max_holdout_max_dd_p90 = Some(0.60);
+
+        let gate_group = |good: bool, gid: usize| {
+            json!({
+                "samples": 48,
+                "pass_rate": if good { 0.82 } else { 0.28 },
+                "robust_score_p10": if good { 0.18 } else { -0.10 },
+                "robust_score_median": if good { 0.24 } else { -0.04 },
+                "max_dd_p90": if good { 0.22 } else { 0.58 },
+                "cross_score_median": if good { 0.08 } else { -0.04 },
+                "meta_score": if good { 0.26 } else { -0.16 },
+                "key": format!("gate-{gid:03}"),
+                "holdout": {
+                    "datasets": 12,
+                    "pass_rate": if good { 0.80 } else { 0.20 },
+                    "score_p10": if good { 0.11 } else { -0.09 },
+                    "score_median": if good { 0.18 } else { -0.02 },
+                    "sharpe_median": if good { 1.2 } else { -0.3 },
+                    "max_dd_p90": if good { 0.24 } else { 0.58 },
+                    "pnl_median": if good { 1.4 } else { -0.8 }
+                }
+            })
+        };
+
+        let dataset_group = |good: bool, gid: usize| {
+            let mut rows = Vec::new();
+            for ds in 0..8usize {
+                let pass = if good { ds != 0 } else { ds == 0 };
+                rows.push(json!({
+                    "dataset": format!("DS{gid:03}_{ds:02}"),
+                    "score_median": if pass { 0.22 } else { -0.12 },
+                    "score_p10": if pass { 0.10 } else { -0.18 },
+                    "sharpe_median": if pass { 1.0 } else { -0.6 },
+                    "max_dd_worst": if pass { 0.26 } else { 0.62 },
+                    "pnl_median": if pass { 1.1 } else { -0.9 },
+                    "pass": pass
+                }));
+            }
+            json!({
+                "samples": 52,
+                "pass_rate": if good { 0.84 } else { 0.24 },
+                "robust_score_p10": if good { 0.20 } else { -0.12 },
+                "robust_score_median": if good { 0.27 } else { -0.05 },
+                "max_dd_p90": if good { 0.20 } else { 0.60 },
+                "cross_score_median": if good { 0.09 } else { -0.06 },
+                "meta_score": if good { 0.30 } else { -0.20 },
+                "key": format!("rows-{gid:03}"),
+                "holdout": {
+                    "datasets": 8,
+                    "pass_rate": if good { 0.88 } else { 0.12 },
+                    "score_p10": if good { 0.10 } else { -0.18 },
+                    "score_median": if good { 0.18 } else { -0.05 },
+                    "sharpe_median": if good { 1.1 } else { -0.4 },
+                    "max_dd_p90": if good { 0.22 } else { 0.55 },
+                    "pnl_median": if good { 1.0 } else { -1.0 }
+                },
+                "holdout_rows": rows
+            })
+        };
+
+        let gate_only_meta = json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": "2026-03-01T00:00:00Z",
+            "req": { "strategy_kind": "CompositeMo", "timeframe": "1m" },
+            "res": {
+                "strategy_kind": "CompositeMo",
+                "timeframe": "1m",
+                "groups": (0..30usize).map(|i| gate_group(i % 2 == 0, i)).collect::<Vec<_>>()
+            }
+        });
+        let dataset_meta = json!({
+            "kind": "vectorgrid_meta_selection",
+            "ts": "2026-03-02T00:00:00Z",
+            "req": { "strategy_kind": "CompositeMo", "timeframe": "1m" },
+            "res": {
+                "strategy_kind": "CompositeMo",
+                "timeframe": "1m",
+                "groups": (0..10usize).map(|i| dataset_group(i % 2 == 0, i)).collect::<Vec<_>>()
+            }
+        });
+
+        (scope, cfg, vec![gate_only_meta, dataset_meta])
+    }
 
     #[test]
     fn trains_and_predicts_confidence_from_meta_artifacts() {
@@ -1691,6 +1960,82 @@ mod tests {
         let p_good = predict_ml_confidence_for_group(&model, &good_g).unwrap();
         let p_bad = predict_ml_confidence_for_group(&model, &bad_g).unwrap();
         assert!(p_good > p_bad);
+    }
+
+    #[test]
+    fn prepared_rows_match_raw_training_and_feature_prediction() {
+        let (scope, cfg, metas) = mixed_history_scope_cfg_and_artifacts();
+        let prepared = prepare_ml_confidence_rows_from_meta_artifacts(&scope, &metas, &cfg.label);
+
+        let (raw_model, raw_metrics) =
+            train_ml_confidence_model_from_meta_artifacts(scope.clone(), &metas, cfg.clone())
+                .unwrap();
+        let (prepared_model, prepared_metrics) =
+            train_ml_confidence_model_from_prepared_rows(scope, &prepared, cfg, None).unwrap();
+
+        assert_eq!(raw_metrics.target, MlConfidenceTarget::HoldoutDatasetPass);
+        assert_eq!(raw_metrics.target, prepared_metrics.target);
+        assert_eq!(raw_metrics.rows, prepared_metrics.rows);
+        assert_eq!(raw_metrics.positives, prepared_metrics.positives);
+        assert_eq!(raw_metrics.negatives, prepared_metrics.negatives);
+        assert_eq!(
+            raw_metrics.meta_artifacts_used,
+            prepared_metrics.meta_artifacts_used
+        );
+        assert_eq!(
+            raw_metrics.newest_meta_ts_used,
+            prepared_metrics.newest_meta_ts_used
+        );
+
+        let good_group = json!({
+            "samples": 52,
+            "pass_rate": 0.84,
+            "robust_score_p10": 0.20,
+            "robust_score_median": 0.27,
+            "max_dd_p90": 0.20,
+            "cross_score_median": 0.09,
+            "meta_score": 0.30
+        });
+        let features = extract_ml_confidence_group_features(&good_group).unwrap();
+        let p_group = predict_ml_confidence_for_group(&raw_model, &good_group).unwrap();
+        let p_features = predict_ml_confidence_for_features(&raw_model, &features).unwrap();
+        let p_prepared = predict_ml_confidence_for_features(&prepared_model, &features).unwrap();
+
+        assert!((p_group - p_features).abs() < 1e-12);
+        assert!((p_group - p_prepared).abs() < 1e-12);
+    }
+
+    #[test]
+    fn prepared_row_prefix_auto_target_preserves_meta_usage() {
+        let (scope, cfg, metas) = mixed_history_scope_cfg_and_artifacts();
+        let prepared = prepare_ml_confidence_rows_from_meta_artifacts(&scope, &metas, &cfg.label);
+
+        let (_gate_model, gate_metrics) = train_ml_confidence_model_from_prepared_rows(
+            scope.clone(),
+            &prepared,
+            cfg.clone(),
+            Some(1),
+        )
+        .unwrap();
+        let (_dataset_model, dataset_metrics) =
+            train_ml_confidence_model_from_prepared_rows(scope, &prepared, cfg, Some(2)).unwrap();
+
+        assert_eq!(gate_metrics.target, MlConfidenceTarget::HoldoutGate);
+        assert_eq!(gate_metrics.meta_artifacts_used, Some(1));
+        assert_eq!(
+            gate_metrics.newest_meta_ts_used.as_deref(),
+            Some("2026-03-01T00:00:00Z")
+        );
+
+        assert_eq!(
+            dataset_metrics.target,
+            MlConfidenceTarget::HoldoutDatasetPass
+        );
+        assert_eq!(dataset_metrics.meta_artifacts_used, Some(2));
+        assert_eq!(
+            dataset_metrics.newest_meta_ts_used.as_deref(),
+            Some("2026-03-02T00:00:00Z")
+        );
     }
 
     #[test]

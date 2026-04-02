@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
 import { markRaw } from 'vue'
 import {
+  canonicalSymbol,
   clearKeys as clearKeysAction,
   loadPersistedExecutionKeys,
+  optimisticOrderRowFromExecution,
   refreshOrders as refreshOrdersAction,
   refreshStatuses as refreshStatusesAction,
   runOnce as runOnceAction,
@@ -10,7 +12,10 @@ import {
   startRunner as startRunnerAction,
   stopLive as stopLiveAction,
   stopRunner as stopRunnerAction,
+  subscribeExecutionRuntimeEvents,
   testConnection as testConnectionAction,
+  type ParsedLiveStatus,
+  type ParsedRunnerEvent,
   type ExecutionActionResult,
 } from '../services/executionService'
 
@@ -77,6 +82,52 @@ export interface ExecutionOrderRow {
   cells: string[]
 }
 
+type ExecutionPendingKey =
+  | 'refreshStatuses'
+  | 'testConnection'
+  | 'runOnce'
+  | 'refreshOrders'
+  | 'startLive'
+  | 'stopLive'
+  | 'startRunner'
+  | 'stopRunner'
+  | 'clearKeys'
+
+interface ExecutionPendingState {
+  refreshStatuses: boolean
+  testConnection: boolean
+  runOnce: boolean
+  refreshOrders: boolean
+  startLive: boolean
+  stopLive: boolean
+  startRunner: boolean
+  stopRunner: boolean
+  clearKeys: boolean
+}
+
+function createPendingState(): ExecutionPendingState {
+  return {
+    refreshStatuses: false,
+    testConnection: false,
+    runOnce: false,
+    refreshOrders: false,
+    startLive: false,
+    stopLive: false,
+    startRunner: false,
+    stopRunner: false,
+    clearKeys: false,
+  }
+}
+
+interface ExecutionStoreRuntimeHost {
+  _runtimeSubscriptionsPromise?: Promise<void> | null
+  _runtimeSubscriptionsTeardown?: (() => void) | null
+}
+
+function runtimeHost(store: unknown): ExecutionStoreRuntimeHost {
+  return store as ExecutionStoreRuntimeHost
+}
+
 function normalizedOrderRows(values: unknown): ExecutionOrderRow[] {
   if (!Array.isArray(values)) return []
   const rows: ExecutionOrderRow[] = []
@@ -95,31 +146,53 @@ function normalizedOrderRows(values: unknown): ExecutionOrderRow[] {
   return markRaw(rows)
 }
 
+function prependOptimisticOrderRows(state: ExecutionState, rows: ExecutionOrderRow[]): void {
+  const optimistic = normalizedOrderRows(rows)
+  if (!optimistic.length) return
+  const seenOrderIds = new Set<string>()
+  const merged: ExecutionOrderRow[] = []
+  for (const row of [...optimistic, ...state.orderRows]) {
+    const orderId = String(row.cells?.[6] || '').trim()
+    if (orderId && seenOrderIds.has(orderId)) continue
+    if (orderId) seenOrderIds.add(orderId)
+    merged.push(row)
+  }
+  state.orderRows = markRaw(normalizedOrderRows(merged).slice(0, 50))
+  state.orderCount = state.orderRows.length
+}
+
 function markVue(state: ExecutionState): void {
   state.source = 'vue'
   state.updatedAtUnixMs = Date.now()
 }
 
 function setAvailability(state: ExecutionState): void {
-  if (state.isBusy) {
-    state.canTestConnection = false
-    state.canRunOnce = false
-    state.canRefreshOrders = false
-    state.canStartLive = false
-    state.canStopLive = false
-    state.canStartRunner = false
-    state.canStopRunner = false
-    state.canClearKeys = false
-    return
-  }
-  state.canTestConnection = true
-  state.canRunOnce = true
-  state.canRefreshOrders = true
-  state.canStartLive = !state.liveActive
-  state.canStopLive = state.liveActive
-  state.canStartRunner = !state.runnerActive
-  state.canStopRunner = state.runnerActive
-  state.canClearKeys = true
+  state.isBusy = Object.values(state.pending).some(Boolean)
+  const liveSymbol = canonicalSymbol(state.liveSymbol)
+  const requestedSymbol = canonicalSymbol(state.symbol)
+  const liveMatchesRequested = !!liveSymbol && liveSymbol === requestedSymbol
+  const primaryBusy =
+    state.pending.testConnection ||
+    state.pending.runOnce ||
+    state.pending.refreshOrders ||
+    state.pending.startLive ||
+    state.pending.startRunner ||
+    state.pending.clearKeys
+
+  state.canTestConnection = !primaryBusy
+  state.canRunOnce = !primaryBusy
+  state.canRefreshOrders = !primaryBusy
+  state.canStartLive = !primaryBusy && !state.liveActive && !state.pending.stopLive
+  state.canStopLive = state.liveActive && !state.pending.stopLive
+  state.canStartRunner =
+    !primaryBusy &&
+    !state.pending.startRunner &&
+    !state.pending.stopRunner &&
+    !state.runnerActive &&
+    state.liveActive &&
+    liveMatchesRequested
+  state.canStopRunner = state.runnerActive && !state.pending.stopRunner
+  state.canClearKeys = !primaryBusy
 }
 
 function applyActionResult(state: ExecutionState, result: ExecutionActionResult): void {
@@ -147,9 +220,14 @@ function applyActionResult(state: ExecutionState, result: ExecutionActionResult)
   if (Array.isArray(result.orderRows)) {
     state.orderRows = normalizedOrderRows(result.orderRows)
   }
+  if (Array.isArray(result.prependOrderRows)) {
+    prependOptimisticOrderRows(state, result.prependOrderRows)
+  }
   if (typeof result.orderCount === 'number' && Number.isFinite(result.orderCount)) {
     state.orderCount = Math.max(0, Math.floor(result.orderCount))
   } else if (Array.isArray(result.orderRows)) {
+    state.orderCount = state.orderRows.length
+  } else if (Array.isArray(result.prependOrderRows)) {
     state.orderCount = state.orderRows.length
   }
   if (typeof result.liveActive === 'boolean') {
@@ -157,6 +235,12 @@ function applyActionResult(state: ExecutionState, result: ExecutionActionResult)
   }
   if (typeof result.runnerActive === 'boolean') {
     state.runnerActive = result.runnerActive
+  }
+  if (typeof result.liveSymbol === 'string') {
+    state.liveSymbol = result.liveSymbol
+  }
+  if (typeof result.liveDelayed === 'boolean') {
+    state.liveDelayed = result.liveDelayed
   }
 }
 
@@ -184,6 +268,9 @@ interface ExecutionState {
   outputPreview: string
   liveActive: boolean
   runnerActive: boolean
+  liveSymbol: string
+  liveDelayed: boolean
+  pending: ExecutionPendingState
   isBusy: boolean
   canTestConnection: boolean
   canRunOnce: boolean
@@ -226,13 +313,16 @@ export const useExecutionStore = defineStore('execution', {
       outputPreview: '-',
       liveActive: false,
       runnerActive: false,
+      liveSymbol: '',
+      liveDelayed: true,
+      pending: createPendingState(),
       isBusy: false,
       canTestConnection: true,
       canRunOnce: true,
       canRefreshOrders: true,
       canStartLive: true,
       canStopLive: false,
-      canStartRunner: true,
+      canStartRunner: false,
       canStopRunner: false,
       canClearKeys: true,
       statusLine: 'Ready.',
@@ -266,6 +356,9 @@ export const useExecutionStore = defineStore('execution', {
       this.outputPreview = String(snapshot.outputPreview ?? this.outputPreview ?? '-').trim() || '-'
       this.liveActive = Boolean(snapshot.liveActive ?? (snapshot.canStartLive != null ? !snapshot.canStartLive : this.liveActive))
       this.runnerActive = Boolean(snapshot.runnerActive ?? (snapshot.canStartRunner != null ? !snapshot.canStartRunner : this.runnerActive))
+      this.liveSymbol = String((snapshot as Partial<ExecutionState>).liveSymbol ?? this.liveSymbol ?? '').trim()
+      this.liveDelayed = Boolean((snapshot as Partial<ExecutionState>).liveDelayed ?? this.liveDelayed)
+      this.pending = createPendingState()
       this.canTestConnection = Boolean(snapshot.canTestConnection ?? this.canTestConnection)
       this.canRunOnce = Boolean(snapshot.canRunOnce ?? this.canRunOnce)
       this.canRefreshOrders = Boolean(snapshot.canRefreshOrders ?? this.canRefreshOrders)
@@ -283,6 +376,7 @@ export const useExecutionStore = defineStore('execution', {
       const key = String(field || '').trim()
       const next = String(value || '')
       if (applyVueTextFieldUpdate(this, key, next)) {
+        setAvailability(this)
         markVue(this)
       }
     },
@@ -291,6 +385,7 @@ export const useExecutionStore = defineStore('execution', {
       const key = String(field || '').trim()
       const next = String(value || '')
       if (applyVueTextFieldUpdate(this, key, next)) {
+        setAvailability(this)
         markVue(this)
       }
     },
@@ -299,6 +394,7 @@ export const useExecutionStore = defineStore('execution', {
       const key = String(field || '').trim()
       const next = !!checked
       if (applyVueCheckboxFieldUpdate(this, key, next)) {
+        setAvailability(this)
         markVue(this)
       }
     },
@@ -321,15 +417,33 @@ export const useExecutionStore = defineStore('execution', {
       }
     },
 
-    beginAction(statusLine: string): void {
+    async ensureRuntimeSubscriptions(): Promise<void> {
+      const host = runtimeHost(this)
+      if (host._runtimeSubscriptionsTeardown) return
+      if (!host._runtimeSubscriptionsPromise) {
+        host._runtimeSubscriptionsPromise = subscribeExecutionRuntimeEvents({
+          onPolygonLiveStatus: (event: ParsedLiveStatus) => this.applyPolygonLiveStatusEvent(event),
+          onRunnerEvent: (event: ParsedRunnerEvent) => this.applyLiveExecutionRunnerEvent(event),
+        })
+          .then((teardown) => {
+            host._runtimeSubscriptionsTeardown = teardown
+          })
+          .finally(() => {
+            host._runtimeSubscriptionsPromise = null
+          })
+      }
+      await host._runtimeSubscriptionsPromise
+    },
+
+    beginAction(key: ExecutionPendingKey, statusLine: string): void {
       if (statusLine.trim()) this.statusLine = statusLine
-      this.isBusy = true
+      this.pending[key] = true
       setAvailability(this)
       markVue(this)
     },
 
-    finishAction(): void {
-      this.isBusy = false
+    finishAction(key: ExecutionPendingKey): void {
+      this.pending[key] = false
       setAvailability(this)
       markVue(this)
     },
@@ -348,91 +462,129 @@ export const useExecutionStore = defineStore('execution', {
       markVue(this)
     },
 
+    applyPolygonLiveStatusEvent(event: ParsedLiveStatus): void {
+      this.liveActive = event.active
+      this.liveSymbol = event.active ? event.symbol : ''
+      this.liveDelayed = event.active ? event.delayed : false
+      this.liveStatusHint = event.hint
+      if (event.message) {
+        this.statusLine = event.message
+        this.statusHint = event.message
+      }
+      setAvailability(this)
+      markVue(this)
+    },
+
+    applyLiveExecutionRunnerEvent(event: ParsedRunnerEvent): void {
+      if (typeof event.active === 'boolean') {
+        this.runnerActive = event.active
+      }
+      this.runnerStatusHint = event.hint
+      if (event.message) {
+        this.statusLine = event.message
+        this.statusHint = event.message
+      }
+      if (event.execution) {
+        const optimisticRow = optimisticOrderRowFromExecution(event.execution)
+        if (optimisticRow) {
+          prependOptimisticOrderRows(this, [optimisticRow])
+        }
+      }
+      setAvailability(this)
+      markVue(this)
+    },
+
     async refreshStatuses(): Promise<void> {
-      if (this.isBusy) return
-      this.beginAction('Refreshing execution status...')
+      if (this.pending.refreshStatuses) return
+      await this.ensureRuntimeSubscriptions().catch(() => {})
+      this.beginAction('refreshStatuses', 'Refreshing execution status...')
       try {
         const result = await refreshStatusesAction()
         this.applyActionResult(result)
       } catch (error) {
         this.failAction('Execution status refresh failed', error)
       } finally {
-        this.finishAction()
+        this.finishAction('refreshStatuses')
       }
     },
 
     testConnection(): void {
-      if (this.isBusy) return
-      this.beginAction('Testing account...')
+      if (!this.canTestConnection) return
+      this.beginAction('testConnection', 'Testing account...')
       void testConnectionAction(this.buildActionOptions())
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Connection test failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('testConnection'))
     },
 
     runOnce(): void {
-      if (this.isBusy) return
-      this.beginAction('Executing signal...')
+      if (!this.canRunOnce) return
+      void this.ensureRuntimeSubscriptions().catch(() => {})
+      this.beginAction('runOnce', 'Executing signal...')
       void runOnceAction(this.buildActionOptions())
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Execution failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('runOnce'))
     },
 
     refreshOrders(): void {
-      if (this.isBusy) return
-      this.beginAction('Refreshing broker orders...')
+      if (!this.canRefreshOrders) return
+      this.beginAction('refreshOrders', 'Refreshing broker orders...')
       void refreshOrdersAction(this.buildActionOptions())
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Order refresh failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('refreshOrders'))
     },
 
     startLive(): void {
-      if (this.isBusy) return
-      this.beginAction('Starting live candles...')
+      if (!this.canStartLive) return
+      void this.ensureRuntimeSubscriptions().catch(() => {})
+      this.beginAction('startLive', 'Starting live candles...')
       void startLiveAction(this.buildActionOptions())
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Live start failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('startLive'))
     },
 
     stopLive(): void {
-      if (this.isBusy) return
-      this.beginAction('Stopping live candles...')
+      if (!this.canStopLive) return
+      void this.ensureRuntimeSubscriptions().catch(() => {})
+      this.beginAction('stopLive', 'Stopping live candles...')
       void stopLiveAction()
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Live stop failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('stopLive'))
     },
 
     startRunner(): void {
-      if (this.isBusy) return
-      this.beginAction('Starting auto-runner...')
+      if (!this.canStartRunner) return
+      void this.ensureRuntimeSubscriptions().catch(() => {})
+      this.beginAction('startRunner', 'Starting auto-runner...')
       void startRunnerAction(this.buildActionOptions())
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Auto-runner start failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('startRunner'))
     },
 
     stopRunner(): void {
-      if (this.isBusy) return
-      this.beginAction('Stopping auto-runner...')
+      if (!this.canStopRunner) return
+      void this.ensureRuntimeSubscriptions().catch(() => {})
+      this.beginAction('stopRunner', 'Stopping auto-runner...')
       void stopRunnerAction()
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Auto-runner stop failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('stopRunner'))
     },
 
     clearKeys(): void {
-      if (this.isBusy) return
-      this.beginAction('Clearing execution keys...')
+      if (!this.canClearKeys) return
+      this.beginAction('clearKeys', 'Clearing execution keys...')
       this.apiKey = ''
       this.apiSecret = ''
       void clearKeysAction()
         .then((result) => this.applyActionResult(result))
         .catch((error) => this.failAction('Clear keys failed', error))
-        .finally(() => this.finishAction())
+        .finally(() => this.finishAction('clearKeys'))
     },
   },
 })

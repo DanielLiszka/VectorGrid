@@ -27,6 +27,7 @@ vi.mock('../services/dataService', () => ({
     dataId: 'data-1',
     cacheHit: false,
     cachePath: '',
+    loadSource: 'csv_parsed_cache_write_skipped',
     meta: {
       len: 1,
       hasOpen: true,

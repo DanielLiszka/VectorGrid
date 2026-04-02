@@ -93,12 +93,10 @@ fn print_bench_metadata(group_name: &str, details: &[(&str, String)]) {
     println!("benchmark metadata {group_name}: {}", fields.join(" "));
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_asr_candidates(n: usize) -> Vec<CompositeParams> {
     make_asr_candidates_with_config(n, "sma", 0, StrategyConfig::default())
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_asr_candidates_with_zscore_mode(
     n: usize,
     z_ma_type: &str,
@@ -107,7 +105,6 @@ fn make_asr_candidates_with_zscore_mode(
     make_asr_candidates_with_config(n, z_ma_type, z_devtype, StrategyConfig::default())
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_asr_candidates_with_config(
     n: usize,
     z_ma_type: &str,
@@ -151,7 +148,6 @@ fn make_asr_candidates_with_config(
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_vcc_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -187,7 +183,6 @@ fn make_vcc_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_vemr_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -223,7 +218,6 @@ fn make_vemr_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_rocb_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -259,7 +253,6 @@ fn make_rocb_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_vcet_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -295,7 +288,6 @@ fn make_vcet_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_mkcs_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -331,7 +323,6 @@ fn make_mkcs_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_carm_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -367,7 +358,6 @@ fn make_carm_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_cdmc_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -403,7 +393,6 @@ fn make_cdmc_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_kqsr_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -439,7 +428,6 @@ fn make_kqsr_candidates(n: usize) -> Vec<CompositeParams> {
     out
 }
 
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn make_kvdf_candidates(n: usize) -> Vec<CompositeParams> {
     let mut out = Vec::with_capacity(n);
     for i in 0..n {

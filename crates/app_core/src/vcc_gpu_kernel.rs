@@ -1,6 +1,6 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
-use crate::alloc_policy::alloc_uninit_copy;
+use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, resize_uninit_f64};
 use crate::composite_gpu_metric_decode::{
     decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
 };
@@ -121,18 +121,7 @@ impl VccKernelScratch {
     }
 
     fn ensure_host_slice_out(&mut self, required: usize) {
-        if self.host_slice_out.capacity() < required {
-            self.host_slice_out = alloc_uninit_copy(required);
-        } else {
-            #[cfg(not(debug_assertions))]
-            unsafe {
-                self.host_slice_out.set_len(required);
-            }
-            #[cfg(debug_assertions)]
-            {
-                self.host_slice_out.resize(required, f64::NAN);
-            }
-        }
+        resize_uninit_f64(&mut self.host_slice_out, required);
     }
 }
 
@@ -201,7 +190,7 @@ thread_local! {
 
 #[inline]
 fn compute_log_returns_f64(close_f64: &[f64]) -> Vec<f64> {
-    let mut out = vec![0.0f64; close_f64.len()];
+    let mut out = alloc_f64_with_prefix_uninit_tail(close_f64.len(), 1, 0.0);
     for t in 1..close_f64.len() {
         let p = close_f64[t];
         let pm = close_f64[t - 1];
@@ -1127,5 +1116,19 @@ mod tests {
 
         let err = validate_inputs_device_rows(&signals, &combos).expect_err("close_f32 mismatch");
         assert!(err.contains("close_f32 length mismatch"));
+    }
+
+    #[test]
+    fn compute_log_returns_f64_preserves_zero_prefix_and_invalid_rows() {
+        assert!(compute_log_returns_f64(&[]).is_empty());
+        assert_eq!(compute_log_returns_f64(&[100.0]), vec![0.0]);
+
+        let out = compute_log_returns_f64(&[100.0, 110.0, f64::NAN, 90.0, 0.0, 95.0]);
+        assert_eq!(out[0], 0.0);
+        assert!((out[1] - (110.0f64 / 100.0).ln()).abs() <= f64::EPSILON);
+        assert_eq!(out[2], 0.0);
+        assert_eq!(out[3], 0.0);
+        assert_eq!(out[4], 0.0);
+        assert_eq!(out[5], 0.0);
     }
 }

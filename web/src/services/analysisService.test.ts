@@ -9,7 +9,9 @@ import {
   drillClearTradeSelection,
   drillNextTrade,
   drillPrevTrade,
+  invalidateAnalysisExecutionCaches,
   refreshAnalysisFromWorkflowRun,
+  restoreHeatmapVisible,
   refreshParetoFromWorkflowRun,
   refreshTopTableFromWorkflowRun,
   rerenderDrill,
@@ -44,6 +46,20 @@ vi.mock("../tauri/invoke", () => ({
 const invokeCommandMock = vi.mocked(invokeCommand);
 let pinia: ReturnType<typeof createPinia>;
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function seedWorkflowRun(payload: {
   ts?: string;
   artifactPath?: string;
@@ -65,13 +81,50 @@ function seedWorkflowRun(payload: {
   };
 }
 
+function mountDrillDom(): void {
+  document.body.innerHTML = `
+    <div id="drillEmptyHintVue"></div>
+    <div id="drillWrapVue" style="display:none;"></div>
+    <div id="drillMetaVue">-</div>
+    <div id="drillStatusVue">-</div>
+    <canvas id="equityCanvasVue" width="1024" height="160"></canvas>
+    <canvas id="drawdownCanvasVue" width="1024" height="160"></canvas>
+    <div id="tradeStatsWrapVue" style="display:none;"></div>
+    <div id="tradeStatsVue">-</div>
+    <tbody id="tradeTableBodyVue"></tbody>
+    <div id="stabilityWrapVue" style="display:none;"></div>
+    <div id="stabilityStatusVue">-</div>
+    <div id="stabilityMetaVue">-</div>
+    <div id="rejectMetaVue">-</div>
+    <div id="stabilityTableWrapVue" style="display:none;"></div>
+    <tbody id="stabilityTableBodyVue"></tbody>
+  `;
+}
+
+function mountHeatmapDom(): void {
+  document.body.innerHTML = `
+    <div id="heatmapEmptyHintVue"></div>
+    <div id="heatmapWrapVue" style="display:none;"></div>
+    <div id="heatmapMetaVue">-</div>
+    <canvas id="heatmapCanvasVue" width="512" height="512"></canvas>
+    <canvas id="heatmapOverlayVue" width="512" height="512"></canvas>
+    <div id="heatmapTooltipVue" style="display:none;"></div>
+    <canvas id="heatmapLegendVue" width="512" height="18"></canvas>
+    <span id="heatmapLegendMinVue">-</span>
+    <span id="heatmapLegendMidVue">-</span>
+    <span id="heatmapLegendMaxVue">-</span>
+  `;
+}
+
 describe("analysis service", () => {
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
     bindRuntimePinia(pinia);
+    useAnalysisStore(pinia);
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    invalidateAnalysisExecutionCaches();
     if (typeof document !== "undefined") document.body.innerHTML = "";
     if (typeof HTMLCanvasElement !== "undefined") {
       vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
@@ -95,6 +148,7 @@ describe("analysis service", () => {
           }) as never,
       );
     }
+    invalidateAnalysisExecutionCaches()
     invokeCommandMock.mockResolvedValue({
       ts: "2026-02-26T11:59:00.000Z",
       run: {
@@ -295,6 +349,324 @@ describe("analysis service", () => {
     expect(store.topTableRows[1]?.selected).toBe(true);
   });
 
+  it("omits drill-only fields and propagates DoubleMa score_mode in local stability requests", async () => {
+    useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-1",
+        ma_source: "close",
+        objective: "Sharpe",
+        score_mode: "balanced_risk_adjusted_10",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        strategy: {},
+        halftrend_filter: null,
+      },
+      res: {
+        followup_cache_key: "cache-token-1",
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.2, sharpe: 1.2, max_dd: 0.1, trades: 20, exposure: 0.5 },
+          ],
+        ],
+      },
+    });
+    refreshTopTableFromWorkflowRun();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "compute_double_ma_local_stability") {
+        return {
+          base: {
+            fast_len: 7,
+            slow_len: 30,
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") {
+        return [] as never;
+      }
+      return undefined as never;
+    });
+
+    await selectTopRow(0);
+
+    const stabilityCall = invokeCommandMock.mock.calls.find(
+      ([command]) => command === "compute_double_ma_local_stability",
+    );
+    expect(stabilityCall).toBeTruthy();
+    const req = (stabilityCall?.[1] as { req?: Record<string, unknown> }).req ?? {};
+    expect(req.backend_hint).toEqual({ backend: "GpuKernel", device_id: 0 });
+    expect(req.followup_cache_key).toBe("cache-token-1");
+    expect(req.score_mode).toBe("balanced_risk_adjusted_10");
+    expect(req).not.toHaveProperty("bins");
+  });
+
+  it("deduplicates identical in-flight drill, price-bar, and stability work", async () => {
+    useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-1",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "CpuOnly" },
+        strategy: {},
+        halftrend_filter: null,
+      },
+      res: {
+        followup_cache_key: "cache-token-1",
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.2, sharpe: 1.2, max_dd: 0.1, trades: 20, exposure: 0.5 },
+          ],
+        ],
+      },
+    });
+    refreshTopTableFromWorkflowRun();
+    const drillDeferred = createDeferred<unknown>();
+    const barsDeferred = createDeferred<unknown>();
+    const stabilityDeferred = createDeferred<unknown>();
+    let drillCalls = 0;
+    let barCalls = 0;
+    let stabilityCalls = 0;
+
+    invokeCommandMock.mockImplementation((async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        drillCalls += 1;
+        return await drillDeferred.promise;
+      }
+      if (command === "get_price_bars") {
+        barCalls += 1;
+        return await barsDeferred.promise;
+      }
+      if (command === "compute_double_ma_local_stability") {
+        stabilityCalls += 1;
+        return await stabilityDeferred.promise;
+      }
+      return undefined;
+    }) as never);
+
+    const first = selectTopRow(0);
+    drillDeferred.resolve({
+      equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+      drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+      trades: [],
+      trade_stats: null,
+      indicator_bars: [],
+    });
+    await Promise.resolve();
+
+    const second = selectTopRow(0);
+    await Promise.resolve();
+    barsDeferred.resolve([]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const third = selectTopRow(0);
+    await Promise.resolve();
+    stabilityDeferred.resolve({
+      base: {
+        fast_len: 7,
+        slow_len: 30,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      objective: "Sharpe",
+      radius: 1,
+      step: 1,
+      start_t: 1,
+      points: [],
+      summary: { base: 0, min: 0, median: 0, max: 0 },
+    });
+
+    await Promise.all([first, second, third]);
+
+    expect(drillCalls).toBe(1);
+    expect(barCalls).toBe(1);
+    expect(stabilityCalls).toBe(1);
+  });
+
+  it("suppresses stale drill meta updates after delayed price-bar fetches", async () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-1",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "CpuOnly" },
+        strategy: {},
+        halftrend_filter: null,
+      },
+      res: {
+        followup_cache_key: "cache-token-1",
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "ema",
+              slow_len: 20,
+            },
+            { pnl: 0.1, sharpe: 0.5, max_dd: 0.2, trades: 10, exposure: 0.4 },
+          ],
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.2, sharpe: 1.2, max_dd: 0.1, trades: 20, exposure: 0.5 },
+          ],
+        ],
+      },
+    });
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+    const barsDeferred = createDeferred<unknown>();
+
+    invokeCommandMock.mockImplementation(async (command: unknown, args?: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        const req = (args as { req?: Record<string, unknown> })?.req ?? {};
+        const fastLen = Number((req.params as Record<string, unknown>)?.fast_len ?? 0);
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [fastLen, fastLen] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "get_price_bars") {
+        return await barsDeferred.promise;
+      }
+      if (command === "compute_double_ma_local_stability") {
+        return {
+          base: {
+            fast_len: 7,
+            slow_len: 30,
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      return undefined as never;
+    });
+
+    const first = selectTopRow(0);
+    await Promise.resolve();
+    const second = selectTopRow(1);
+    await Promise.resolve();
+    barsDeferred.resolve([]);
+    await Promise.all([first, second]);
+
+    expect(store.topTableRows[1]?.selected).toBe(true);
+    expect(String(store.drillMeta || "")).toContain("ema(7) vs ema(30)");
+    expect(String(store.drillMeta || "")).not.toContain("ema(5) vs ema(20)");
+  });
+
+  it("rerenders drill from cached state without recomputing the backend follow-up commands", async () => {
+    mountDrillDom();
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        data_id: "dataset-1",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "CpuOnly" },
+        strategy: {},
+        halftrend_filter: null,
+      },
+      res: {
+        followup_cache_key: "cache-token-1",
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.2, sharpe: 1.2, max_dd: 0.1, trades: 20, exposure: 0.5 },
+          ],
+        ],
+      },
+    });
+    refreshTopTableFromWorkflowRun();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_double_ma_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "compute_double_ma_local_stability") {
+        return {
+          base: {
+            fast_len: 7,
+            slow_len: 30,
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") {
+        return [] as never;
+      }
+      return undefined as never;
+    });
+
+    await selectTopRow(0);
+    const callsAfterFirstRender = invokeCommandMock.mock.calls.length;
+
+    await rerenderDrill();
+
+    expect(invokeCommandMock.mock.calls.length).toBe(callsAfterFirstRender);
+  });
+
   it("clears top filters in Vue store state", async () => {
     const store = useAnalysisStore(pinia);
     store.filterMinPnl = "1.0";
@@ -382,6 +754,81 @@ describe("analysis service", () => {
     expect(String(store.topSelectionGuardrail || "")).toContain(
       "Top K above 0",
     );
+  });
+
+  it("restores the visible heatmap without repainting the base grid", () => {
+    mountHeatmapDom();
+    useAnalysisStore(pinia);
+    let heatmapCanvasFillRectCalls = 0;
+    const fillRect = vi.fn();
+    const overlayFillRect = vi.fn();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      function (this: HTMLCanvasElement) {
+        const id = this.id;
+        return ({
+          clearRect: () => undefined,
+          fillRect: (...args: unknown[]) => {
+            if (id === "heatmapCanvasVue") {
+              heatmapCanvasFillRectCalls += 1;
+              fillRect(...args);
+            } else if (id === "heatmapOverlayVue") {
+              overlayFillRect(...args);
+            }
+          },
+          strokeRect: () => undefined,
+          beginPath: () => undefined,
+          arc: () => undefined,
+          fill: () => undefined,
+          stroke: () => undefined,
+          fillText: () => undefined,
+          moveTo: () => undefined,
+          lineTo: () => undefined,
+          save: () => undefined,
+          restore: () => undefined,
+          translate: () => undefined,
+          rotate: () => undefined,
+          createLinearGradient: () => ({ addColorStop: () => undefined }),
+        }) as never;
+      },
+    );
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        top_k: 20,
+        heatmap_bins: 2,
+        fast_ma_type: "ema",
+        slow_ma_type: "ema",
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "ema",
+              slow_len: 20,
+            },
+            { pnl: 0.1, sharpe: 0.5, max_dd: 0.2, trades: 10, exposure: 0.4 },
+          ],
+        ],
+        heatmap: {
+          bins_fast: 2,
+          bins_slow: 2,
+          fast_min: 5,
+          fast_max: 9,
+          slow_min: 20,
+          slow_max: 30,
+          values: [0.1, 0.2, -0.1, 0.05],
+        },
+      },
+    });
+
+    expect(refreshAnalysisFromWorkflowRun()).toBe(true);
+    const basePaintCalls = heatmapCanvasFillRectCalls;
+
+    expect(restoreHeatmapVisible()).toBe(true);
+    expect(heatmapCanvasFillRectCalls).toBe(basePaintCalls);
   });
 
   it("marks heatmap as disabled when heatmap_bins is 0", () => {

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, watch } from 'vue'
+import { computed, nextTick, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useShellMount } from '../composables/useShellMount'
-import { refreshHeatmapFromWorkflowRun } from '../services/analysisService'
+import { refreshHeatmapFromWorkflowRun, restoreHeatmapVisible } from '../services/analysisService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
@@ -23,17 +23,17 @@ const visible = computed(() => String(resultsTab.value || '').trim() === 'heatma
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
-onMounted(async () => {
+async function ensureVisibleHeatmap(): Promise<void> {
   await nextTick()
-  await nextTick()
-  refreshHeatmapFromWorkflowRun()
-})
+  if (!restoreHeatmapVisible()) {
+    refreshHeatmapFromWorkflowRun()
+  }
+}
 
-watch(visible, async (nextVisible) => {
-  if (!nextVisible) return
-  await nextTick()
-  refreshHeatmapFromWorkflowRun()
-})
+watch([visible, mountReady], async ([nextVisible, nextReady]) => {
+  if (!nextVisible || !nextReady) return
+  await ensureVisibleHeatmap()
+}, { immediate: true })
 
 function reviewTopResults(): void {
   workflowStore.selectResultsTab('top')
