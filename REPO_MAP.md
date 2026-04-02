@@ -56,7 +56,7 @@ When a high-level doc disagrees with the code, trust the code-facing routing fil
 - `crates/app_core/src`: main engine for optimization, validation, CUDA/runtime plumbing, meta/ML workflows.
 - `crates/strategies/src`: shared strategy definitions and shared strategy logic.
 - `crates/optimizer/src`: optimizer/search/support primitives.
-- `scripts/`: workflow gates, perf gates, parity checks, profiling helpers, benchmark faceoff runners, baseline/sample exporters, and maintenance helpers.
+- `scripts/`: authoritative gates, specialized/manual gates, parity checks, profiling helpers, benchmark faceoff runners, telemetry/sample exporters, and maintenance helpers.
 
 The repo is large, but the real execution families are fewer than the file count suggests:
 
@@ -1311,21 +1311,30 @@ Verification in this repo is layered:
 
 ### Important scripts
 
-Gates and profiling:
+Authoritative gates:
 
 - `scripts/run_workflow_gate.ps1`
 - `scripts/run_cpu_perf_gate.ps1`
 - `scripts/run_gpu_perf_gate.ps1`
+
+Specialized/manual gates:
+
 - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1`
+  - specialized ALMA contract-row gate, not the default PR perf authority
+
+Profiling:
+
 - `scripts/profile_gpu_backtest_ncu.ps1`
 - `scripts/profile_gpu_backtest_nsys.ps1`
 
-Parity and baseline helpers:
+Supplemental verification and baseline helpers:
 
+- `scripts/run_output_parity_check.mjs`
+  - canonical repo entrypoint for deterministic headless JSON/XLSX parity regeneration plus structural parity checking
 - `scripts/check_output_parity.mjs`
+  - structural parity checker only; not a semantic diff and not a perf gate
 - `scripts/output_parity_pairs.json`
 - `scripts/workflow_benchmark_pack.json`
-- `scripts/export_baseline_samples.mjs`
 - `scripts/baselines/workflow_regression_baseline.json`
 - `scripts/baselines/cpu_perf_baseline.json`
 - `scripts/baselines/gpu_perf_baseline.json`
@@ -1345,7 +1354,11 @@ Maintenance and review helpers:
 
 - `scripts/check_migration_freeze_scope.mjs`
 - `scripts/post_release_telemetry_review.mjs`
+  - supplemental post-release review, not an authority gate
 - `scripts/capture_optimization_memory.ps1`
+  - telemetry-only workflow-process memory sampling, not a perf gate
+- `scripts/export_baseline_samples.mjs`
+  - sample/export helper; not parity authority by itself
 
 ### CI and release surfaces
 
@@ -1379,6 +1392,8 @@ These are useful when the task is benchmarking, profiling, or reproducing specif
 - `crates/app_core/benches/composite_mo_opt.rs`
 - `crates/app_core/benches/dynamic_strategy_cpu.rs`
 - `crates/app_core/benches/meta_select_workflow.rs`
+- `crates/app_core/benches/ml_signal_workflow.rs`
+- `crates/app_core/benches/ml_signal_validation.rs`
 - `crates/app_core/benches/e2e_workflow_ml.rs`
 - `crates/app_core/benches/gpu_native_expansion_opt.rs`
 - `crates/app_core/benches/asr_opt.rs`
@@ -1391,16 +1406,25 @@ These are useful when the task is benchmarking, profiling, or reproducing specif
 - `crates/app_core/src/bin/real_data_optimizer_eval.rs`
 - `crates/app_core/src/bin/stage6b_kernel_report.rs`
 
+Notes:
+
+- `profile_gpu_dynamic_runner.rs`
+  - gate-backed only through `scripts/run_gpu_perf_gate.ps1`; `--emit-json` cache-attribution output is currently supplemental evidence
+- `ml_signal_workflow.rs` and `ml_signal_validation.rs`
+  - supplemental MlSignal timing surfaces; not current perf-gate authority
+- `e2e_workflow_ml.rs`
+  - Stage 5 ML confidence plus CompositeCpu/meta/holdout workflow evidence, not the primary MlSignal perf-authority surface
+
 ### Tauri-side headless and workflow tools
 
 - `src-tauri/src/bin/ta_workflow_regression.rs`
   - deterministic optimize -> validate -> meta -> holdout regression gate used by CI and scripts
 - `src-tauri/src/bin/ta_profile_route_matrix.rs`
-  - route-policy profiling for composite-profile-style cases
+  - supplemental/manual route-policy profiling for composite-profile-style cases
 - `src-tauri/src/bin/ta_headless_validate.rs`
-  - headless validation helper
+  - supplemental/manual headless report-generation and structural-parity helper, not a perf gate
 - `src-tauri/src/bin/ta_double_ma_validation_cost.rs`
-  - validation-cost measurement helper
+  - supplemental/manual validation-cost measurement helper
 - `src-tauri/src/bin/ta_app_path_faceoff.rs`
   - app-path benchmark/faceoff utility
 - `src-tauri/src/bin/ta_refactor_snapshots.rs`

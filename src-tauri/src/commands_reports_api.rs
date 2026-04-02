@@ -41,6 +41,19 @@ pub async fn save_report_xlsx(
 }
 
 #[tauri::command]
+pub async fn save_report_xlsx_from_artifact(
+    path: String,
+    max_rows: Option<u32>,
+    app: tauri::AppHandle,
+) -> Result<SaveReportXlsxResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        commands_reports::save_report_xlsx_from_artifact_blocking(path, max_rows, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn open_reports_dir(app: tauri::AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || open_reports_dir_blocking(app))
         .await

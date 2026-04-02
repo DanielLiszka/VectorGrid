@@ -3,6 +3,8 @@ use crate::strategy_plan::{
     CompiledStrategyPlan, CompiledValueRef, IndicatorRouteKind, StrategyPlanBackend,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 pub const STRATEGY_GPU_PROGRAM_SCHEMA_VERSION: u16 = 1;
 pub const STRATEGY_GPU_EXECUTABLE_ABI_VERSION: u32 = 1;
@@ -63,6 +65,10 @@ pub struct CompiledGpuPredicateProgram {
     pub schema_version: u16,
     pub profile: StrategyProfileKind,
     pub plan_fingerprint_hex: String,
+    #[serde(default)]
+    pub compiled_plan_fingerprint_hex: String,
+    #[serde(default)]
+    pub executable_fingerprint_hex: String,
     pub indicator_slots: Vec<GpuIndicatorSlot>,
     pub conditions: Vec<GpuConditionPredicate>,
     pub groups: Vec<GpuConditionGroupSlice>,
@@ -114,6 +120,10 @@ pub struct GpuIndicatorSlotAbi {
 pub struct CompiledGpuPredicateProgramAbi {
     pub abi_version: u32,
     pub plan_fingerprint_hex: String,
+    #[serde(default)]
+    pub compiled_plan_fingerprint_hex: String,
+    #[serde(default)]
+    pub executable_fingerprint_hex: String,
     pub indicator_slots: Vec<GpuIndicatorSlotAbi>,
     pub conditions: Vec<GpuConditionAbi>,
     pub groups: Vec<GpuConditionGroupAbi>,
@@ -171,6 +181,51 @@ fn encode_optional_group_binding(value: Option<u32>) -> i32 {
     value.map(|v| v as i32).unwrap_or(-1)
 }
 
+fn fingerprint_serialized<T: Serialize>(value: &T, label: &str) -> Result<String, String> {
+    let serialized = serde_json::to_vec(value).map_err(|e| format!("serialize {label}: {e}"))?;
+    let mut hasher = DefaultHasher::new();
+    serialized.hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+pub(crate) fn fingerprint_compiled_strategy_plan_for_gpu_program(
+    plan: &CompiledStrategyPlan,
+) -> Result<String, String> {
+    fingerprint_serialized(plan, "compiled strategy plan")
+}
+
+fn fingerprint_gpu_predicate_program_executable(
+    program: &CompiledGpuPredicateProgram,
+) -> Result<String, String> {
+    #[derive(Serialize)]
+    struct ExecutableFingerprintInput<'a> {
+        abi_version: u32,
+        schema_version: u16,
+        profile: StrategyProfileKind,
+        compiled_plan_fingerprint_hex: &'a str,
+        indicator_slots: &'a [GpuIndicatorSlot],
+        conditions: &'a [GpuConditionPredicate],
+        groups: &'a [GpuConditionGroupSlice],
+        group_condition_indexes: &'a [u32],
+        signals: &'a GpuSignalBindings,
+    }
+
+    fingerprint_serialized(
+        &ExecutableFingerprintInput {
+            abi_version: STRATEGY_GPU_EXECUTABLE_ABI_VERSION,
+            schema_version: program.schema_version,
+            profile: program.profile,
+            compiled_plan_fingerprint_hex: program.compiled_plan_fingerprint_hex.as_str(),
+            indicator_slots: program.indicator_slots.as_slice(),
+            conditions: program.conditions.as_slice(),
+            groups: program.groups.as_slice(),
+            group_condition_indexes: program.group_condition_indexes.as_slice(),
+            signals: &program.signals,
+        },
+        "compiled gpu predicate executable",
+    )
+}
+
 pub fn compile_gpu_predicate_program_abi(
     program: &CompiledGpuPredicateProgram,
 ) -> CompiledGpuPredicateProgramAbi {
@@ -218,6 +273,8 @@ pub fn compile_gpu_predicate_program_abi(
     CompiledGpuPredicateProgramAbi {
         abi_version: STRATEGY_GPU_EXECUTABLE_ABI_VERSION,
         plan_fingerprint_hex: program.plan_fingerprint_hex.clone(),
+        compiled_plan_fingerprint_hex: program.compiled_plan_fingerprint_hex.clone(),
+        executable_fingerprint_hex: program.executable_fingerprint_hex.clone(),
         indicator_slots,
         conditions,
         groups,
@@ -353,17 +410,21 @@ pub fn compile_gpu_predicate_program(
             "short_exit_group",
         )?,
     };
-
-    Ok(CompiledGpuPredicateProgram {
+    let compiled_plan_fingerprint_hex = fingerprint_compiled_strategy_plan_for_gpu_program(plan)?;
+    let mut program = CompiledGpuPredicateProgram {
         schema_version: STRATEGY_GPU_PROGRAM_SCHEMA_VERSION,
         profile: plan.profile,
         plan_fingerprint_hex: plan.ir_fingerprint_hex.clone(),
+        compiled_plan_fingerprint_hex,
+        executable_fingerprint_hex: String::new(),
         indicator_slots,
         conditions,
         groups,
         group_condition_indexes,
         signals,
-    })
+    };
+    program.executable_fingerprint_hex = fingerprint_gpu_predicate_program_executable(&program)?;
+    Ok(program)
 }
 
 #[cfg(test)]
@@ -406,6 +467,8 @@ mod tests {
         let program = compile_gpu_predicate_program(&plan).expect("gpu program should compile");
         assert_eq!(program.schema_version, STRATEGY_GPU_PROGRAM_SCHEMA_VERSION);
         assert_eq!(program.profile, StrategyProfileKind::DoubleMa);
+        assert!(!program.compiled_plan_fingerprint_hex.is_empty());
+        assert!(!program.executable_fingerprint_hex.is_empty());
         assert_eq!(program.indicator_slots.len(), plan.indicator_plan.len());
         assert_eq!(program.conditions.len(), plan.conditions.len());
         assert_eq!(program.groups.len(), plan.groups.len());
@@ -456,12 +519,72 @@ mod tests {
         let abi = compile_gpu_predicate_program_abi(&program);
         assert_eq!(abi.abi_version, STRATEGY_GPU_EXECUTABLE_ABI_VERSION);
         assert_eq!(abi.plan_fingerprint_hex, program.plan_fingerprint_hex);
+        assert_eq!(
+            abi.compiled_plan_fingerprint_hex,
+            program.compiled_plan_fingerprint_hex
+        );
+        assert_eq!(
+            abi.executable_fingerprint_hex,
+            program.executable_fingerprint_hex
+        );
         assert_eq!(abi.indicator_slots.len(), program.indicator_slots.len());
         assert_eq!(abi.conditions.len(), program.conditions.len());
         assert_eq!(abi.groups.len(), program.groups.len());
         assert_eq!(
             abi.group_condition_indexes.len(),
             program.group_condition_indexes.len()
+        );
+    }
+
+    #[test]
+    fn compile_gpu_program_executable_fingerprint_tracks_compiled_route_shape() {
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput {
+                ma_source: "close".to_string(),
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "alma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy: StrategyConfig::default(),
+                halftrend_filter: None,
+                halftrend: None,
+                macz: None,
+                ott: None,
+                signal_mode: None,
+            },
+        )
+        .expect("static ir should build");
+        let base_plan =
+            compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None).expect("base plan");
+        let first_indicator = base_plan
+            .indicator_plan
+            .first()
+            .expect("indicator expected")
+            .indicator_id
+            .clone();
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert(first_indicator, IndicatorRouteKind::Cpu);
+        let overridden_plan = compile_strategy_plan(
+            &ir,
+            StrategyPlanBackend::GpuUnified,
+            Some(&overrides),
+        )
+        .expect("overridden plan");
+        assert_eq!(base_plan.ir_fingerprint_hex, overridden_plan.ir_fingerprint_hex);
+
+        let base_program =
+            compile_gpu_predicate_program(&base_plan).expect("base gpu program should compile");
+        let overridden_program = compile_gpu_predicate_program(&overridden_plan)
+            .expect("overridden gpu program should compile");
+
+        assert_ne!(
+            base_program.compiled_plan_fingerprint_hex,
+            overridden_program.compiled_plan_fingerprint_hex
+        );
+        assert_ne!(
+            base_program.executable_fingerprint_hex,
+            overridden_program.executable_fingerprint_hex
         );
     }
 }

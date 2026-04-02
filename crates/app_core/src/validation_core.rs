@@ -62,7 +62,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composite_validate::WalkForwardStats;
+    use crate::validation_shared::WalkForwardStats;
     use crate::cscv_pbo::CscvCandidatePboStats;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
     use crate::validation_pipeline::{

@@ -9,9 +9,15 @@ import {
   batchRevealSummary,
   batchSelectAll,
   batchSelectNone,
+  loadPolicyEvalSaved,
+  loadSaved,
+  loadStage5Saved,
   mlApply,
   mlRefresh,
   mlTrain,
+  refreshPolicyEvalSaved,
+  refreshSaved,
+  refreshStage5Saved,
   runBatch,
   runMlPolicyEvaluation,
   runMeta,
@@ -21,6 +27,7 @@ import {
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useValidationStore } from '../stores/validationStore'
+import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 
 vi.mock('../tauri/invoke', () => ({
   invokeCommand: vi.fn(async () => undefined),
@@ -310,9 +317,13 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
 
   if (command === 'list_run_artifacts') return []
   if (command === 'save_batch_summary') return { path: 'C:/runs/vectorgrid_batch_1.json' }
-  if (command === 'list_meta_artifacts') return []
-  if (command === 'list_stage5_artifacts') return []
-  if (command === 'list_ml_policy_eval_artifacts') return []
+  if (command === 'list_artifact_library') {
+    return {
+      meta: [],
+      stage5: [],
+      policyEvals: [],
+    }
+  }
   return undefined
 }
 
@@ -347,9 +358,9 @@ describe('meta service', () => {
       mcEnable: false,
     })
 
-    const deferredSaved = createDeferred<unknown[]>()
+    const deferredSaved = createDeferred<unknown>()
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'list_meta_artifacts') return deferredSaved.promise
+      if (command === 'list_artifact_library') return deferredSaved.promise
       return invokeDefaultMock(command)
     })
 
@@ -360,14 +371,18 @@ describe('meta service', () => {
     expect(analysisStore.metaSavedSelected).toBe('C:/runs/vectorgrid_meta.json')
     expect(analysisStore.aggregateSummarySavedMeta).toBe('1')
 
-    deferredSaved.resolve([])
+    deferredSaved.resolve({
+      meta: [],
+      stage5: [],
+      policyEvals: [],
+    })
     await runPromise
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_selection')
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(25)
-    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_meta_artifacts')).toBe(true)
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_artifact_library')).toBe(true)
   })
 
   it('runs stage5 with auto-built request without waiting on saved refresh or redundant ML status refresh', async () => {
@@ -383,7 +398,7 @@ describe('meta service', () => {
     await mlRefresh()
     invokeCommandMock.mockClear()
 
-    const deferredSaved = createDeferred<unknown[]>()
+    const deferredSaved = createDeferred<unknown>()
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === 'run_meta_stage5_ml_confidence') {
         return {
@@ -414,7 +429,7 @@ describe('meta service', () => {
           },
         }
       }
-      if (command === 'list_stage5_artifacts') return deferredSaved.promise
+      if (command === 'list_artifact_library') return deferredSaved.promise
       return invokeDefaultMock(command)
     })
 
@@ -429,7 +444,11 @@ describe('meta service', () => {
     expect(analysisStore.stage4SavedSelected).toBe('C:/runs/vectorgrid_stage5.json')
     expect(invokeCommandMock.mock.calls.filter(([command]) => command === 'ml_confidence_model_status')).toHaveLength(0)
 
-    deferredSaved.resolve([])
+    deferredSaved.resolve({
+      meta: [],
+      stage5: [],
+      policyEvals: [],
+    })
     await runPromise
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'run_meta_stage5_ml_confidence')
@@ -437,7 +456,7 @@ describe('meta service', () => {
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
     expect((call?.[1] as { req?: { source_meta_path?: string | null } }).req?.source_meta_path).toBe('C:/runs/vectorgrid_meta.json')
-    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_stage5_artifacts')).toBe(true)
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_artifact_library')).toBe(true)
   })
 
   it('runs ML policy evaluation with auto-built request without waiting on saved refresh', async () => {
@@ -452,7 +471,7 @@ describe('meta service', () => {
     await runMeta()
     invokeCommandMock.mockClear()
 
-    const deferredSaved = createDeferred<unknown[]>()
+    const deferredSaved = createDeferred<unknown>()
     invokeCommandMock.mockImplementation(async (command: string) => {
       if (command === 'evaluate_ml_confidence_policy') {
         return {
@@ -482,7 +501,7 @@ describe('meta service', () => {
           },
         }
       }
-      if (command === 'list_ml_policy_eval_artifacts') return deferredSaved.promise
+      if (command === 'list_artifact_library') return deferredSaved.promise
       return invokeDefaultMock(command)
     })
 
@@ -496,14 +515,18 @@ describe('meta service', () => {
     expect(settled).toBe(true)
     expect(analysisStore.policyEvalSavedSelected).toBe('C:/runs/vectorgrid_ml_policy_eval.json')
 
-    deferredSaved.resolve([])
+    deferredSaved.resolve({
+      meta: [],
+      stage5: [],
+      policyEvals: [],
+    })
     await runPromise
 
     const call = invokeCommandMock.mock.calls.find(([command]) => command === 'evaluate_ml_confidence_policy')
     expect(call).toBeTruthy()
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.strategy_kind).toBe('CompositeMo')
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
-    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_ml_policy_eval_artifacts')).toBe(true)
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_artifact_library')).toBe(true)
 
     expect(analysisStore.metaPolicyEvalStatus).toContain('Policy evaluation complete')
     expect(analysisStore.metaPolicyEvalOutputPreview).toContain('stage5_blended')
@@ -687,8 +710,13 @@ describe('meta service', () => {
           },
         }
       }
-      if (command === 'list_stage5_artifacts') return []
-      if (command === 'list_meta_artifacts') return []
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [],
+          stage5: [],
+          policyEvals: [],
+        }
+      }
       return undefined
     })
 
@@ -710,6 +738,107 @@ describe('meta service', () => {
     })
   })
 
+  it('refreshes saved artifact lists from artifact library snapshot', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.metaSavedSelected = 'C:/runs/meta_saved.json'
+    analysisStore.stage4SavedSelected = 'C:/runs/stage5_saved.json'
+    analysisStore.policyEvalSavedSelected = 'C:/runs/policy_saved.json'
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [{ path: 'C:/runs/meta_saved.json', ts: '2026-02-26T10:00:00Z' }],
+          stage5: [{ path: 'C:/runs/stage5_saved.json', ts: '2026-02-26T10:02:00Z' }],
+          policyEvals: [{ path: 'C:/runs/policy_saved.json', ts: '2026-02-26T10:03:00Z' }],
+        }
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshSaved()
+    await refreshStage5Saved()
+    await refreshPolicyEvalSaved()
+
+    expect(analysisStore.metaSavedSelected).toBe('C:/runs/meta_saved.json')
+    expect(analysisStore.stage4SavedSelected).toBe('C:/runs/stage5_saved.json')
+    expect(analysisStore.policyEvalSavedSelected).toBe('C:/runs/policy_saved.json')
+    expect(
+      invokeCommandMock.mock.calls.filter(([command]) => command === 'list_artifact_library'),
+    ).toHaveLength(3)
+  })
+
+  it('loads saved meta/stage5/policy-eval replays through typed artifact commands', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.metaSavedSelected = 'C:/runs/meta_saved.json'
+    analysisStore.stage4SavedSelected = 'C:/runs/stage5_saved.json'
+    analysisStore.policyEvalSavedSelected = 'C:/runs/policy_saved.json'
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [{
+            path: 'C:/runs/meta_saved.json',
+            ts: '2026-02-26T10:00:00Z',
+            report_xlsx_path: 'C:/reports/meta_saved.xlsx',
+          }],
+          stage5: [{ path: 'C:/runs/stage5_saved.json', ts: '2026-02-26T10:02:00Z' }],
+          policyEvals: [{ path: 'C:/runs/policy_saved.json', ts: '2026-02-26T10:03:00Z' }],
+        }
+      }
+      if (command === 'load_meta_artifact_replay') {
+        return {
+          ts: '2026-02-26T10:00:00Z',
+          meta_json_path: 'C:/runs/meta_saved.json',
+          report_xlsx_path: 'C:/reports/meta_saved.xlsx',
+          result: {
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            groups: [],
+          },
+        }
+      }
+      if (command === 'load_stage5_artifact_replay') {
+        return {
+          ts: '2026-02-26T10:02:00Z',
+          stage5_json_path: 'C:/runs/stage5_saved.json',
+          result: {
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            selected_groups: [],
+          },
+        }
+      }
+      if (command === 'load_ml_policy_eval_artifact_replay') {
+        return {
+          ts: '2026-02-26T10:03:00Z',
+          eval_json_path: 'C:/runs/policy_saved.json',
+          result: {
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            stage5_blended: { precision_at_k: 1 },
+          },
+        }
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshSaved()
+    await loadSaved()
+    await refreshStage5Saved()
+    await loadStage5Saved()
+    await refreshPolicyEvalSaved()
+    await loadPolicyEvalSaved()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_meta_artifact_replay', {
+      path: 'C:/runs/meta_saved.json',
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_stage5_artifact_replay', {
+      path: 'C:/runs/stage5_saved.json',
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_ml_policy_eval_artifact_replay', {
+      path: 'C:/runs/policy_saved.json',
+    })
+    expect(analysisStore.statusLine).toContain('Loaded policy evaluation')
+  })
+
   it('runs batch via vue-owned orchestration path and saves summary', async () => {
     const optimizeStore = useOptimizeStore(pinia)
     optimizeStore.strategyKind = 'CompositeMo'
@@ -719,6 +848,30 @@ describe('meta service', () => {
     validationStore.autoExportXlsx = true
     validationStore.autoRevealReport = true
     validationStore.updatedAtUnixMs = Date.now()
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-26T10:00:00Z',
+        artifact_path: 'C:/runs/vectorgrid_run.json',
+        csv_path: 'C:/a.csv',
+        dataset_meta: {
+          csv_path: 'C:/a.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        ml_signal: {
+          stage: 'stage5',
+          model_summary: 'cached model',
+        },
+        tags: ['existing'],
+        req: {
+          strategy_kind: 'CompositeMo',
+        },
+        res: {
+          top: [],
+        },
+      },
+      currentValidation: null,
+    })
 
     buildOptimizationRequestMock.mockResolvedValue({
       strategy_kind: 'CompositeMo',
@@ -748,6 +901,15 @@ describe('meta service', () => {
     expect(validationStore.autoRun).toBe(true)
     expect(validationStore.autoExportXlsx).toBe(true)
     expect(validationStore.autoRevealReport).toBe(true)
+    const workflowArtifacts = useWorkflowArtifactsStore(pinia)
+    expect(workflowArtifacts.currentRun?.datasetMeta).toMatchObject({
+      csv_path: 'C:/a.csv',
+      timeframe: '1m',
+      label: 'AAPL',
+    })
+    expect(workflowArtifacts.currentRun?.mlSignal).toMatchObject({
+      stage: 'stage5',
+    })
   })
 
   it('refreshes, selects, clears, toggles, and reveals batch datasets in vue path', async () => {

@@ -172,6 +172,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
+pub use crate::validation_shared::{
+    CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta, CrossTickerGateConfig,
+    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
+    ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
+    SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
+    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfig,
+    WalkForwardConfigOptional, WalkForwardStats,
+};
+use crate::validation_shared::{canonical_json_key, ValidationAuxWorkMask};
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::validation_shared::{canonical_json_eq, canonical_json_key_bytes};
+
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::composite_profile_route::composite_profile_from_strategy;
 #[cfg(feature = "cuda")]
@@ -316,18 +328,14 @@ fn clear_validation_strategy_route_diagnostics(candidates: &[CompositeParams]) {
     let Some(first) = candidates.first() else {
         return;
     };
-    if first.asr.is_some() {
-        clear_asr_route_diagnostics();
-    } else if first.vcc.is_some() {
-        clear_vcc_route_diagnostics();
-    } else if first.vemr.is_some() {
-        clear_vemr_route_diagnostics();
-    } else if first.vcet.is_some() {
-        clear_vcet_route_diagnostics();
-    } else if first.kqsr.is_some() {
-        clear_kqsr_route_diagnostics();
-    } else if first.kvdf.is_some() {
-        clear_kvdf_route_diagnostics();
+    match composite_validation_family(first) {
+        CompositeValidationFamily::Asr => clear_asr_route_diagnostics(),
+        CompositeValidationFamily::Vcc => clear_vcc_route_diagnostics(),
+        CompositeValidationFamily::Vemr => clear_vemr_route_diagnostics(),
+        CompositeValidationFamily::Vcet => clear_vcet_route_diagnostics(),
+        CompositeValidationFamily::Kqsr => clear_kqsr_route_diagnostics(),
+        CompositeValidationFamily::Kvdf => clear_kvdf_route_diagnostics(),
+        _ => {}
     }
 }
 
@@ -335,25 +343,61 @@ fn take_validation_strategy_route_diagnostics(
     candidates: &[CompositeParams],
 ) -> Option<Vec<String>> {
     let first = candidates.first()?;
-    if first.asr.is_some() {
-        take_asr_route_diagnostics()
-    } else if first.vcc.is_some() {
-        take_vcc_route_diagnostics()
-    } else if first.vemr.is_some() {
-        take_vemr_route_diagnostics()
-    } else if first.vcet.is_some() {
-        take_vcet_route_diagnostics()
-    } else if first.kqsr.is_some() {
-        take_kqsr_route_diagnostics()
-    } else if first.kvdf.is_some() {
-        take_kvdf_route_diagnostics()
+    match composite_validation_family(first) {
+        CompositeValidationFamily::Asr => take_asr_route_diagnostics(),
+        CompositeValidationFamily::Vcc => take_vcc_route_diagnostics(),
+        CompositeValidationFamily::Vemr => take_vemr_route_diagnostics(),
+        CompositeValidationFamily::Vcet => take_vcet_route_diagnostics(),
+        CompositeValidationFamily::Kqsr => take_kqsr_route_diagnostics(),
+        CompositeValidationFamily::Kvdf => take_kvdf_route_diagnostics(),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompositeValidationFamily {
+    Base,
+    Asr,
+    Vcc,
+    Vemr,
+    Rocb,
+    Vcet,
+    Mkcs,
+    Kqsr,
+    Carm,
+    Kvdf,
+    Cdmc,
+}
+
+fn composite_validation_family(cand: &CompositeParams) -> CompositeValidationFamily {
+    if cand.asr.is_some() {
+        CompositeValidationFamily::Asr
+    } else if cand.vcc.is_some() {
+        CompositeValidationFamily::Vcc
+    } else if cand.vemr.is_some() {
+        CompositeValidationFamily::Vemr
+    } else if cand.rocb.is_some() {
+        CompositeValidationFamily::Rocb
+    } else if cand.vcet.is_some() {
+        CompositeValidationFamily::Vcet
+    } else if cand.mkcs.is_some() {
+        CompositeValidationFamily::Mkcs
+    } else if cand.kqsr.is_some() {
+        CompositeValidationFamily::Kqsr
+    } else if cand.carm.is_some() {
+        CompositeValidationFamily::Carm
+    } else if cand.kvdf.is_some() {
+        CompositeValidationFamily::Kvdf
+    } else if cand.cdmc.is_some() {
+        CompositeValidationFamily::Cdmc
     } else {
-        None
+        CompositeValidationFamily::Base
     }
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 struct GpuCompositeFixedCandidateValidationEval {
+    family: CompositeValidationFamily,
     metrics: Vec<Metrics>,
     start_ts: Vec<usize>,
     candidate_indices: HashMap<Vec<u8>, usize>,
@@ -416,42 +460,30 @@ fn composite_auto_cpu_preference_reason(req: &CompositeValidationRequest) -> Opt
         return None;
     }
     let first = req.candidates.first()?;
-    if first.asr.is_some() {
-        return Some(
+    match composite_validation_family(first) {
+        CompositeValidationFamily::Asr => Some(
             "Auto composite validation currently prefers CpuOnly for ASR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
-        );
-    }
-    if first.vemr.is_some() {
-        return Some(
+        ),
+        CompositeValidationFamily::Vemr => Some(
             "Auto composite validation currently prefers CpuOnly for VEMR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
-        );
-    }
-    if first.rocb.is_some() {
-        return Some(
+        ),
+        CompositeValidationFamily::Rocb => Some(
             "Auto composite validation currently prefers CpuOnly for ROCB because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
-        );
-    }
-    if first.mkcs.is_some() {
-        return Some(
+        ),
+        CompositeValidationFamily::Mkcs => Some(
             "Auto composite validation currently prefers CpuOnly for MKCS because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
-        );
-    }
-    if first.carm.is_some() {
-        return Some(
+        ),
+        CompositeValidationFamily::Carm => Some(
             "Auto composite validation currently prefers CpuOnly for CARM because current advanced-stack benches show CPU faster than GPU on measured workloads.",
-        );
-    }
-    if first.kqsr.is_some() {
-        return Some(
+        ),
+        CompositeValidationFamily::Kqsr => Some(
             "Auto composite validation currently prefers CpuOnly for KQSR because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
-        );
-    }
-    if first.kvdf.is_some() {
-        return Some(
+        ),
+        CompositeValidationFamily::Kvdf => Some(
             "Auto composite validation currently prefers CpuOnly for KVDF because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 workload.",
-        );
+        ),
+        _ => None,
     }
-    None
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -621,12 +653,6 @@ fn composite_gpu_validation_feature_blocker(req: &CompositeValidationRequest) ->
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-fn serialized_eq<T: Serialize>(a: &T, b: &T) -> Result<bool, String> {
-    Ok(serde_json::to_vec(a).map_err(|e| e.to_string())?
-        == serde_json::to_vec(b).map_err(|e| e.to_string())?)
-}
-
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn is_plain_base_composite_candidate(cand: &CompositeParams) -> bool {
     cand.asr.is_none()
         && cand.vcc.is_none()
@@ -642,8 +668,24 @@ fn is_plain_base_composite_candidate(cand: &CompositeParams) -> bool {
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn serialized_eq<T: Serialize>(a: &T, b: &T) -> Result<bool, String> {
+    canonical_json_eq(a, b)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn serialize_composite_candidate_key(params: &CompositeParams) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(params).map_err(|e| e.to_string())
+    canonical_json_key_bytes(params)
+}
+
+fn fallback_composite_candidate_key(params: &CompositeParams) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
+    )
+}
+
+fn canonical_composite_candidate_key(params: &CompositeParams) -> String {
+    canonical_json_key(params).unwrap_or_else(|_| fallback_composite_candidate_key(params))
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -1066,6 +1108,7 @@ fn try_prepare_asr_gpu_fixed_candidate_validation(
     };
 
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Asr,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -1390,8 +1433,7 @@ fn compute_base_composite_gpu_reopt_walk_forward_stats(
                     .to_string(),
             );
         }
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("base:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((key, (cand.fast_len, cand.slow_len), finalist_start_ts[idx]));
     }
 
@@ -1796,8 +1838,7 @@ fn compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
         max_z = max_z.max(periods.z);
         periods_by_candidate.push((periods.squeeze, periods.trend, periods.er, periods.z));
 
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("asr:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((
             key,
             serialize_composite_candidate_key(cand)?,
@@ -2321,6 +2362,7 @@ fn try_prepare_rocb_gpu_fixed_candidate_validation(
     };
 
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Rocb,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -2551,6 +2593,7 @@ fn try_prepare_mkcs_gpu_fixed_candidate_validation(
     };
 
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Mkcs,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -2824,8 +2867,7 @@ fn compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
         max_breakout = max_breakout.max(periods.breakout);
         periods_by_candidate.push((periods.stddev, periods.breakout));
 
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("mkcs:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((
             key,
             serialize_composite_candidate_key(cand)?,
@@ -3323,8 +3365,7 @@ fn compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
         max_atr = max_atr.max(periods.atr);
         periods_by_candidate.push((periods.channel, periods.atr));
 
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("rocb:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((
             key,
             serialize_composite_candidate_key(cand)?,
@@ -3880,6 +3921,7 @@ fn try_prepare_vcet_gpu_fixed_candidate_validation(
     };
 
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Vcet,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -4175,6 +4217,7 @@ fn try_prepare_vemr_gpu_fixed_candidate_validation(
     };
 
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Vemr,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -4513,8 +4556,7 @@ fn compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
         max_atr = max_atr.max(periods.atr);
         periods_by_candidate.push((periods.z, periods.bb, periods.atr));
 
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("vemr:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((
             key,
             serialize_composite_candidate_key(cand)?,
@@ -5169,6 +5211,7 @@ fn try_prepare_vcc_gpu_fixed_candidate_validation(
     };
 
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Vcc,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -5561,8 +5604,7 @@ fn compute_vcc_gpu_reopt_walk_forward_stats_for_candidates(
         max_trend = max_trend.max(periods.trend);
         periods_by_candidate.push((periods.squeeze, periods.momentum, periods.trend));
 
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("vcc:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((
             key,
             serialize_composite_candidate_key(cand)?,
@@ -6158,6 +6200,7 @@ fn try_prepare_base_composite_gpu_fixed_candidate_validation(
     };
 
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Base,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -6620,6 +6663,7 @@ fn try_prepare_kqsr_gpu_fixed_candidate_validation(
         _ => Some(validation_backend_label(&req.backend).to_string()),
     };
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Kqsr,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -6860,8 +6904,7 @@ fn compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
                 .map_err(|_| "KQSR reopt start_t exceeds i32 range".to_string())?,
         );
         finalist_entries.push((
-            serde_json::to_string(cand)
-                .unwrap_or_else(|_| format!("kqsr:{}:{}", cand.fast_len, cand.slow_len)),
+            canonical_composite_candidate_key(cand),
             serialize_composite_candidate_key(cand)?,
             finalist_start_ts[idx],
         ));
@@ -7490,6 +7533,7 @@ fn try_prepare_carm_gpu_fixed_candidate_validation(
         _ => Some(validation_backend_label(&req.backend).to_string()),
     };
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Carm,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -7702,8 +7746,7 @@ fn compute_carm_gpu_reopt_walk_forward_stats_for_candidates(
                 .map_err(|_| "CARM reopt start_t exceeds i32 range".to_string())?,
         );
         finalist_entries.push((
-            serde_json::to_string(cand)
-                .unwrap_or_else(|_| format!("carm:{}:{}", cand.fast_len, cand.slow_len)),
+            canonical_composite_candidate_key(cand),
             serialize_composite_candidate_key(cand)?,
             finalist_start_ts[idx],
         ));
@@ -8186,8 +8229,7 @@ fn compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
                 .map_err(|_| "KVDF GPU reopt start_t exceeds i32 range".to_string())?,
         );
 
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("kvdf:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((
             key,
             serialize_composite_candidate_key(cand)?,
@@ -8712,6 +8754,7 @@ fn try_prepare_kvdf_gpu_fixed_candidate_validation(
         _ => Some(validation_backend_label(&req.backend).to_string()),
     };
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Kvdf,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -8993,8 +9036,7 @@ fn compute_cdmc_gpu_reopt_walk_forward_stats_for_candidates(
                 .map_err(|_| "CDMC GPU reopt start_t exceeds i32 range".to_string())?,
         );
 
-        let key = serde_json::to_string(cand)
-            .unwrap_or_else(|_| format!("cdmc:{}:{}", cand.fast_len, cand.slow_len));
+        let key = canonical_composite_candidate_key(cand);
         finalist_entries.push((
             key,
             serialize_composite_candidate_key(cand)?,
@@ -9404,6 +9446,7 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
         _ => Some(validation_backend_label(&req.backend).to_string()),
     };
     Ok(GpuCompositeFixedCandidateValidationEval {
+        family: CompositeValidationFamily::Cdmc,
         metrics,
         start_ts,
         candidate_indices: composite_candidate_index_map(&req.candidates)?,
@@ -9418,6 +9461,49 @@ fn try_prepare_cdmc_gpu_fixed_candidate_validation(
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn prepare_composite_gpu_eval_for_family(
+    family: CompositeValidationFamily,
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+) -> Result<GpuCompositeFixedCandidateValidationEval, String> {
+    match family {
+        CompositeValidationFamily::Asr => {
+            try_prepare_asr_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Rocb => {
+            try_prepare_rocb_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Vcet => {
+            try_prepare_vcet_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Mkcs => {
+            try_prepare_mkcs_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Vemr => {
+            try_prepare_vemr_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Vcc => {
+            try_prepare_vcc_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Kqsr => {
+            try_prepare_kqsr_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Carm => {
+            try_prepare_carm_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Kvdf => {
+            try_prepare_kvdf_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Cdmc => {
+            try_prepare_cdmc_gpu_fixed_candidate_validation(req, candles)
+        }
+        CompositeValidationFamily::Base => {
+            try_prepare_base_composite_gpu_fixed_candidate_validation(req, candles)
+        }
+    }
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 fn try_prepare_composite_gpu_fixed_candidate_validation(
     req: &CompositeValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
@@ -9426,358 +9512,213 @@ fn try_prepare_composite_gpu_fixed_candidate_validation(
         .candidates
         .first()
         .ok_or_else(|| "no candidates to validate".to_string())?;
-    if first.asr.is_some() {
-        return try_prepare_asr_gpu_fixed_candidate_validation(req, candles);
+    prepare_composite_gpu_eval_for_family(composite_validation_family(first), req, candles)
+}
+
+fn build_composite_finalist_series<'a>(
+    candles: &'a vector_ta::utilities::data_loader::Candles,
+    lr: &'a [f64],
+    ma_prices: &'a [f64],
+    base_first_valid: usize,
+    ma_source: &'a str,
+    fast_ma_params: Option<&'a HashMap<String, f64>>,
+    slow_ma_params: Option<&'a HashMap<String, f64>>,
+    finalist_params: &'a [CompositeParams],
+    #[cfg(feature = "cuda")] backend: &'a Backend,
+    #[cfg(feature = "cuda")] prepared_cuda_inputs: Option<&'a PreparedCudaIndicatorInputs>,
+) -> Result<Vec<(String, CandidateSeries<'a>)>, String> {
+    let mut finalist_series: Vec<(String, CandidateSeries<'a>)> =
+        Vec::with_capacity(finalist_params.len());
+    for params in finalist_params {
+        finalist_series.push((
+            canonical_composite_candidate_key(params),
+            build_candidate_series(
+                candles,
+                lr,
+                ma_prices,
+                base_first_valid,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                params,
+                #[cfg(feature = "cuda")]
+                backend,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs,
+            )?,
+        ));
     }
-    if first.rocb.is_some() {
-        return try_prepare_rocb_gpu_fixed_candidate_validation(req, candles);
+    Ok(finalist_series)
+}
+
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn composite_gpu_walk_forward_for_candidate<'a, F>(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    gpu_eval: &GpuCompositeFixedCandidateValidationEval,
+    idx: usize,
+    params: &CompositeParams,
+    cfg: &WalkForwardConfigOptional,
+    build_series: F,
+) -> Result<Option<WalkForwardStats>, String>
+where
+    F: FnOnce() -> Result<CandidateSeries<'a>, String>,
+{
+    match gpu_eval.family {
+        CompositeValidationFamily::Asr => {
+            compute_asr_gpu_walk_forward_stats_for_candidate(req, candles, params, cfg).map(Some)
+        }
+        CompositeValidationFamily::Mkcs => {
+            compute_mkcs_gpu_walk_forward_stats_for_candidate(req, candles, params, cfg).map(Some)
+        }
+        CompositeValidationFamily::Rocb => {
+            compute_rocb_gpu_walk_forward_stats_for_candidate(req, candles, params, cfg).map(Some)
+        }
+        CompositeValidationFamily::Vemr => {
+            compute_vemr_gpu_walk_forward_stats_for_candidate(req, candles, params, cfg).map(Some)
+        }
+        CompositeValidationFamily::Vcc
+        | CompositeValidationFamily::Vcet
+        | CompositeValidationFamily::Carm
+        | CompositeValidationFamily::Cdmc => {
+            let series = build_series()?;
+            Ok(Some(crate::validation_pipeline::compute_walk_forward_stats(
+                series_n(&series),
+                series_start_t(&series),
+                cfg,
+                |t0, end| eval_metrics_window(&series, t0, end),
+            )))
+        }
+        _ => Ok(gpu_eval
+            .walk_forward_stats
+            .as_ref()
+            .and_then(|stats| stats.get(idx).cloned())),
     }
-    if first.vcet.is_some() {
-        return try_prepare_vcet_gpu_fixed_candidate_validation(req, candles);
-    }
-    if first.mkcs.is_some() {
-        return try_prepare_mkcs_gpu_fixed_candidate_validation(req, candles);
-    }
-    if first.vemr.is_some() {
-        return try_prepare_vemr_gpu_fixed_candidate_validation(req, candles);
-    }
-    if first.vcc.is_some() {
-        return try_prepare_vcc_gpu_fixed_candidate_validation(req, candles);
-    }
-    if first.kqsr.is_some() {
-        return try_prepare_kqsr_gpu_fixed_candidate_validation(req, candles);
-    }
-    if first.carm.is_some() {
-        return try_prepare_carm_gpu_fixed_candidate_validation(req, candles);
-    }
-    if first.kvdf.is_some() {
-        return try_prepare_kvdf_gpu_fixed_candidate_validation(req, candles);
-    }
-    if first.cdmc.is_some() {
-        return try_prepare_cdmc_gpu_fixed_candidate_validation(req, candles);
-    }
-    try_prepare_base_composite_gpu_fixed_candidate_validation(req, candles)
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ValidationArtifactContext {
-    #[serde(default)]
-    pub strategy_kind: String,
-    #[serde(default)]
-    pub csv_path: Option<String>,
-    #[serde(default)]
-    pub timeframe: Option<String>,
-    #[serde(default)]
-    pub label: Option<String>,
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn lookup_composite_gpu_cscv_slice_stats(
+    gpu_eval: &GpuCompositeFixedCandidateValidationEval,
+    params: &CompositeParams,
+) -> Result<Option<Vec<SliceReturnStats>>, String> {
+    let Some(slice_map) = gpu_eval.cscv_slices.as_ref() else {
+        return Ok(None);
+    };
+    let key = serialize_composite_candidate_key(params)?;
+    Ok(slice_map.get(&key).cloned())
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct WalkForwardConfig {
-    pub window_bars: usize,
-    pub step_bars: usize,
-}
-
-fn default_walk_forward_window_bars() -> usize {
-    20_000
-}
-
-fn default_walk_forward_step_bars() -> usize {
-    20_000
-}
-
-fn default_reopt_walk_forward_top_n() -> usize {
-    8
-}
-
-fn default_spa_slices() -> usize {
-    16
-}
-
-fn default_spa_bootstrap_samples() -> usize {
-    500
-}
-
-fn default_spa_block_length() -> usize {
-    4
-}
-
-fn default_spa_benchmark() -> SpaBenchmarkKind {
-    SpaBenchmarkKind::BuyAndHold
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct WalkForwardConfigOptional {
-    #[serde(default = "default_walk_forward_window_bars")]
-    pub window_bars: usize,
-    #[serde(default = "default_walk_forward_step_bars")]
-    pub step_bars: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ReoptWalkForwardConfigOptional {
-    #[serde(default = "default_walk_forward_window_bars")]
-    pub window_bars: usize,
-    #[serde(default = "default_walk_forward_step_bars")]
-    pub step_bars: usize,
-    #[serde(default = "default_reopt_walk_forward_top_n")]
-    pub top_n_candidates: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpaBenchmarkKind {
-    Flat,
-    BuyAndHold,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SpaConfigOptional {
-    #[serde(default = "default_spa_slices")]
-    pub slices: usize,
-    #[serde(default = "default_spa_bootstrap_samples")]
-    pub bootstrap_samples: usize,
-    #[serde(default = "default_spa_block_length")]
-    pub block_length: usize,
-    #[serde(default = "default_spa_benchmark")]
-    pub benchmark: SpaBenchmarkKind,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct WalkForwardStats {
-    pub windows: usize,
-    pub sharpe_median: f64,
-    pub sharpe_worst: f64,
-    pub max_dd_median: f64,
-    pub max_dd_worst: f64,
-    pub pnl_median: f64,
-    pub pnl_worst: f64,
-    pub downside_vol_ratio_median: f64,
-    pub downside_vol_ratio_worst: f64,
-    pub ulcer_index_median: f64,
-    pub ulcer_index_worst: f64,
-    pub martin_ratio_median: f64,
-    pub martin_ratio_worst: f64,
-    pub trades_median: u32,
-    pub trades_worst: u32,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ReoptWalkForwardWindowStats {
-    pub train_start: usize,
-    pub train_end: usize,
-    pub test_end: usize,
-    pub winner_key: String,
-    pub train_score: f64,
-    pub train_pnl: f64,
-    pub train_sharpe: f64,
-    pub train_ulcer_index: f64,
-    pub train_martin_ratio: f64,
-    pub forward_pnl: f64,
-    pub forward_sharpe: f64,
-    pub forward_max_dd: f64,
-    pub forward_ulcer_index: f64,
-    pub forward_martin_ratio: f64,
-    pub forward_trades: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pnl_efficiency: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sharpe_efficiency: Option<f64>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ReoptWalkForwardStats {
-    pub windows: usize,
-    pub top_n_candidates: usize,
-    pub unique_winners: usize,
-    pub winner_changes: usize,
-    pub dominant_winner_frac: f64,
-    pub winner_param_drift_mean: f64,
-    pub winner_param_drift_max: f64,
-    pub train_score_median: f64,
-    pub forward_positive_pnl_frac: f64,
-    pub forward_sharpe_median: f64,
-    pub forward_sharpe_worst: f64,
-    pub forward_max_dd_median: f64,
-    pub forward_max_dd_worst: f64,
-    pub forward_pnl_median: f64,
-    pub forward_pnl_worst: f64,
-    pub forward_ulcer_index_median: f64,
-    pub forward_ulcer_index_worst: f64,
-    pub forward_martin_ratio_median: f64,
-    pub forward_martin_ratio_worst: f64,
-    pub forward_trades_median: u32,
-    pub forward_trades_worst: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_pnl_efficiency_median: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_pnl_efficiency_worst: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_sharpe_efficiency_median: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_sharpe_efficiency_worst: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub window_sharpe_efficiency_std: Option<f64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub winner_sequence: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub window_stats: Vec<ReoptWalkForwardWindowStats>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SpaValidationStats {
-    pub scope: String,
-    pub candidate_count: usize,
-    pub slice_count: usize,
-    pub bootstrap_samples: usize,
-    pub block_length: usize,
-    pub benchmark: SpaBenchmarkKind,
-    pub best_candidate_key: String,
-    pub best_candidate_mean_diff: f64,
-    pub best_candidate_t_stat: f64,
-    pub p_value: f64,
-    pub passed: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub skipped_reason: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PerturbConfig {
-    #[serde(default)]
-    pub iterations: usize,
-    #[serde(default)]
-    pub pct_min: f64,
-    #[serde(default)]
-    pub pct_max: f64,
-    #[serde(default)]
-    pub flip_bool_prob: f64,
-}
-
-fn default_mc_sims() -> usize {
-    500
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TradeBootstrapConfig {
-    #[serde(default = "default_mc_sims")]
-    pub simulations: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stationary_mean_block_len: Option<usize>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct TradeBootstrapStats {
-    pub simulations: usize,
-    pub trade_count: usize,
-    pub prob_pnl_positive: f64,
-    pub pnl_p05: f64,
-    pub pnl_p50: f64,
-    pub pnl_p95: f64,
-    pub max_dd_p50: f64,
-    pub max_dd_p95: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stationary_mean_block_len: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stationary_prob_pnl_positive: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stationary_pnl_p05: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stationary_pnl_p50: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stationary_pnl_p95: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stationary_max_dd_p50: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stationary_max_dd_p95: Option<f64>,
-}
-
-fn default_cross_max_datasets() -> usize {
-    8
-}
-
-fn default_cross_gate_enabled() -> bool {
-    true
-}
-
-fn default_cross_gate_require_pareto() -> bool {
-    true
-}
-
-fn default_cross_gate_min_score() -> f64 {
-    0.0
-}
-
-fn default_cross_gate_min_pnl_positive_frac() -> f64 {
-    0.5
-}
-
-fn default_cross_gate_min_sharpe_median() -> f64 {
-    0.0
-}
-
-fn default_cross_gate_min_datasets() -> usize {
-    1
-}
-
-fn default_cross_ticker_mode() -> CrossTickerMode {
-    CrossTickerMode::Lightweight
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct CrossTickerDataset {
-    pub csv_path: String,
-    #[serde(default)]
-    pub label: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CrossTickerMode {
-    Lightweight,
-    PreservedFinalists,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CrossTickerGateConfig {
-    #[serde(default = "default_cross_gate_enabled")]
-    pub enabled: bool,
-    #[serde(default = "default_cross_gate_require_pareto")]
-    pub require_pareto: bool,
-    #[serde(default = "default_cross_gate_min_score")]
-    pub min_score: f64,
-    #[serde(default = "default_cross_gate_min_pnl_positive_frac")]
-    pub min_pnl_positive_frac: f64,
-    #[serde(default = "default_cross_gate_min_sharpe_median")]
-    pub min_sharpe_median: f64,
-    #[serde(default)]
-    pub max_dd_worst: Option<f64>,
-    #[serde(default = "default_cross_gate_min_datasets")]
-    pub min_datasets: usize,
-}
-
-impl Default for CrossTickerGateConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_cross_gate_enabled(),
-            require_pareto: default_cross_gate_require_pareto(),
-            min_score: default_cross_gate_min_score(),
-            min_pnl_positive_frac: default_cross_gate_min_pnl_positive_frac(),
-            min_sharpe_median: default_cross_gate_min_sharpe_median(),
-            max_dd_worst: None,
-            min_datasets: default_cross_gate_min_datasets(),
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+fn compute_composite_gpu_reopt_walk_forward_for_family(
+    req: &CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    lr: &[f64],
+    ma_prices: &[f64],
+    base_first_valid: usize,
+    ma_source: &str,
+    fast_ma_params: Option<&HashMap<String, f64>>,
+    slow_ma_params: Option<&HashMap<String, f64>>,
+    prepared_cuda_inputs: Option<&PreparedCudaIndicatorInputs>,
+    gpu_eval: &GpuCompositeFixedCandidateValidationEval,
+    finalist_params: &[CompositeParams],
+    finalist_start_ts: &[usize],
+    cfg: &ReoptWalkForwardConfigOptional,
+) -> Result<Option<ReoptWalkForwardStats>, String> {
+    match gpu_eval.family {
+        CompositeValidationFamily::Base => {
+            if let Some(inputs) = gpu_eval.base_composite_ctx.as_ref() {
+                compute_base_composite_gpu_reopt_walk_forward_stats(
+                    req,
+                    candles,
+                    inputs,
+                    finalist_params,
+                    finalist_start_ts,
+                    cfg,
+                )
+            } else {
+                Ok(None)
+            }
+        }
+        CompositeValidationFamily::Asr => compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
+            req,
+            candles,
+            finalist_params,
+            finalist_start_ts,
+            cfg,
+        ),
+        CompositeValidationFamily::Mkcs => {
+            compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
+                req,
+                candles,
+                finalist_params,
+                finalist_start_ts,
+                cfg,
+            )
+        }
+        CompositeValidationFamily::Rocb => {
+            compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
+                req,
+                candles,
+                finalist_params,
+                finalist_start_ts,
+                cfg,
+            )
+        }
+        CompositeValidationFamily::Vemr => {
+            compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
+                req,
+                candles,
+                finalist_params,
+                finalist_start_ts,
+                cfg,
+            )
+        }
+        CompositeValidationFamily::Kqsr => {
+            compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
+                req,
+                candles,
+                finalist_params,
+                finalist_start_ts,
+                cfg,
+            )
+        }
+        CompositeValidationFamily::Kvdf => {
+            compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
+                req,
+                candles,
+                finalist_params,
+                finalist_start_ts,
+                cfg,
+            )
+        }
+        CompositeValidationFamily::Vcc
+        | CompositeValidationFamily::Vcet
+        | CompositeValidationFamily::Carm
+        | CompositeValidationFamily::Cdmc => {
+            let finalist_series = build_composite_finalist_series(
+                candles,
+                lr,
+                ma_prices,
+                base_first_valid,
+                ma_source,
+                fast_ma_params,
+                slow_ma_params,
+                finalist_params,
+                #[cfg(feature = "cuda")]
+                &req.backend,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs,
+            )?;
+            Ok(crate::validation_pipeline::compute_reopt_walk_forward_stats(
+                &finalist_series,
+                candles.close.len(),
+                cfg,
+                |(_, series)| series_start_t(series),
+                |(_, series), t0, end| eval_metrics_window(series, t0, end),
+                |(key, _)| key.clone(),
+            ))
         }
     }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct CrossTickerConfig {
-    #[serde(default)]
-    pub datasets: Vec<CrossTickerDataset>,
-    #[serde(default = "default_cross_max_datasets")]
-    pub max_datasets: usize,
-    #[serde(default = "default_cross_ticker_mode")]
-    pub mode: CrossTickerMode,
-    #[serde(default)]
-    pub gate: CrossTickerGateConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -9824,48 +9765,6 @@ pub struct CompositeValidationRequest {
     pub max_pbo: Option<f64>,
     #[serde(default)]
     pub validation_context: Option<ValidationArtifactContext>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct PerturbStats {
-    pub iterations: usize,
-    pub pct_min: f64,
-    pub pct_max: f64,
-    pub sharpe_mean: f64,
-    pub sharpe_worst: f64,
-    pub max_dd_mean: f64,
-    pub max_dd_worst: f64,
-    pub pnl_mean: f64,
-    pub pnl_worst: f64,
-    pub pnl_positive_frac: f64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct CrossTickerDatasetMeta {
-    pub label: String,
-    pub csv_path: String,
-    pub bars: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct CrossTickerValidationSummary {
-    pub mode: CrossTickerMode,
-    pub datasets: Vec<CrossTickerDatasetMeta>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct CrossTickerStats {
-    pub datasets: usize,
-    pub sharpe_median: f64,
-    pub sharpe_worst: f64,
-    pub max_dd_median: f64,
-    pub max_dd_worst: f64,
-    pub pnl_median: f64,
-    pub pnl_worst: f64,
-    pub trades_median: u32,
-    pub trades_worst: u32,
-    pub pnl_positive_frac: f64,
-    pub score: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -12497,10 +12396,26 @@ fn compute_gpu_perturb_stats_for_composite_candidate(
 }
 
 pub fn run_composite_validation_blocking_with_candles(
+    req: CompositeValidationRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    cancel: &AtomicBool,
+    progress: Option<&dyn ProgressSink>,
+) -> Result<CompositeValidationResult, String> {
+    run_composite_validation_blocking_with_candles_with_aux_mask(
+        req,
+        candles,
+        cancel,
+        progress,
+        ValidationAuxWorkMask::full(),
+    )
+}
+
+pub fn run_composite_validation_blocking_with_candles_with_aux_mask(
     mut req: CompositeValidationRequest,
     candles: &vector_ta::utilities::data_loader::Candles,
     cancel: &AtomicBool,
     progress: Option<&dyn ProgressSink>,
+    aux_work_mask: ValidationAuxWorkMask,
 ) -> Result<CompositeValidationResult, String> {
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
@@ -12608,50 +12523,30 @@ pub fn run_composite_validation_blocking_with_candles(
                     "GPU composite validation warmup index out of bounds".to_string()
                 })?;
                 let walk_forward = if let Some(cfg) = walk_cfg.as_ref() {
-                    if p.vcc.is_some() || p.vcet.is_some() || p.carm.is_some() || p.cdmc.is_some() {
-                        let series = build_candidate_series(
-                            candles,
-                            &lr,
-                            ma_prices,
-                            base_first_valid,
-                            &ma_source,
-                            fast_ma_params.as_ref(),
-                            slow_ma_params.as_ref(),
-                            p,
-                            #[cfg(feature = "cuda")]
-                            &req.backend,
-                            #[cfg(feature = "cuda")]
-                            prepared_cuda_inputs.as_ref(),
-                        )?;
-                        Some(crate::validation_pipeline::compute_walk_forward_stats(
-                            series_n(&series),
-                            series_start_t(&series),
-                            cfg,
-                            |t0, end| eval_metrics_window(&series, t0, end),
-                        ))
-                    } else if let Some(stats) = gpu_eval.walk_forward_stats.as_ref() {
-                        Some(stats.get(idx).cloned().ok_or_else(|| {
-                            "GPU composite validation walk_forward index out of bounds".to_string()
-                        })?)
-                    } else if p.asr.is_some() {
-                        Some(compute_asr_gpu_walk_forward_stats_for_candidate(
-                            &req, candles, p, cfg,
-                        )?)
-                    } else if p.mkcs.is_some() {
-                        Some(compute_mkcs_gpu_walk_forward_stats_for_candidate(
-                            &req, candles, p, cfg,
-                        )?)
-                    } else if p.rocb.is_some() {
-                        Some(compute_rocb_gpu_walk_forward_stats_for_candidate(
-                            &req, candles, p, cfg,
-                        )?)
-                    } else if p.vemr.is_some() {
-                        Some(compute_vemr_gpu_walk_forward_stats_for_candidate(
-                            &req, candles, p, cfg,
-                        )?)
-                    } else {
-                        None
-                    }
+                    composite_gpu_walk_forward_for_candidate(
+                        &req,
+                        candles,
+                        gpu_eval,
+                        idx,
+                        p,
+                        cfg,
+                        || {
+                            build_candidate_series(
+                                candles,
+                                &lr,
+                                ma_prices,
+                                base_first_valid,
+                                &ma_source,
+                                fast_ma_params.as_ref(),
+                                slow_ma_params.as_ref(),
+                                p,
+                                #[cfg(feature = "cuda")]
+                                &req.backend,
+                                #[cfg(feature = "cuda")]
+                                prepared_cuda_inputs.as_ref(),
+                            )
+                        },
+                    )?
                 } else {
                     None
                 };
@@ -12747,32 +12642,7 @@ pub fn run_composite_validation_blocking_with_candles(
 
             let walk_forward = if let Some(cfg) = walk_cfg.as_ref() {
                 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-                if gpu_fixed_eval.is_some() && p.asr.is_some() {
-                    Some(compute_asr_gpu_walk_forward_stats_for_candidate(
-                        &req, candles, p, cfg,
-                    )?)
-                } else if gpu_fixed_eval.is_some() && p.mkcs.is_some() {
-                    Some(compute_mkcs_gpu_walk_forward_stats_for_candidate(
-                        &req, candles, p, cfg,
-                    )?)
-                } else if gpu_fixed_eval.is_some() && p.rocb.is_some() {
-                    Some(compute_rocb_gpu_walk_forward_stats_for_candidate(
-                        &req, candles, p, cfg,
-                    )?)
-                } else if gpu_fixed_eval.is_some() && p.vemr.is_some() {
-                    Some(compute_vemr_gpu_walk_forward_stats_for_candidate(
-                        &req, candles, p, cfg,
-                    )?)
-                } else if gpu_fixed_eval.is_some()
-                    && (p.vcc.is_some() || p.vcet.is_some() || p.carm.is_some() || p.cdmc.is_some())
                 {
-                    Some(crate::validation_pipeline::compute_walk_forward_stats(
-                        n_total,
-                        start_t0,
-                        cfg,
-                        |t0, end| eval_metrics_window(&series, t0, end),
-                    ))
-                } else {
                     Some(crate::validation_pipeline::compute_walk_forward_stats(
                         n_total,
                         start_t0,
@@ -12882,18 +12752,11 @@ pub fn run_composite_validation_blocking_with_candles(
         },
         |cand, cscv_start_t, slice_bars, slices| {
             #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-            if gpu_fixed_eval.is_some()
-                && cand.params.vcet.is_none()
-                && cand.params.carm.is_none()
-                && cand.params.cdmc.is_none()
-            {
-                if let Some(slice_map) =
-                    gpu_fixed_eval.as_ref().and_then(|g| g.cscv_slices.as_ref())
+            if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
+                if let Some(slice_stats) =
+                    lookup_composite_gpu_cscv_slice_stats(gpu_eval, &cand.params)?
                 {
-                    let key = serialize_composite_candidate_key(&cand.params)?;
-                    if let Some(slice_stats) = slice_map.get(&key) {
-                        return Ok(slice_stats.clone());
-                    }
+                    return Ok(slice_stats);
                 }
             }
             let series = build_candidate_series(
@@ -12919,7 +12782,11 @@ pub fn run_composite_validation_blocking_with_candles(
         },
     )?;
 
-    let regime_eval_count = DEFAULT_COMPOSITE_REGIME_SLICE_FINALISTS.min(out.len());
+    let regime_eval_count = if aux_work_mask.regime_slice_robustness {
+        DEFAULT_COMPOSITE_REGIME_SLICE_FINALISTS.min(out.len())
+    } else {
+        0
+    };
     for cand in out.iter_mut().take(regime_eval_count) {
         let series = build_candidate_series(
             candles,
@@ -12938,7 +12805,11 @@ pub fn run_composite_validation_blocking_with_candles(
         cand.regime_slice_robustness = compute_composite_regime_slice_robustness_stats(&series);
     }
 
-    let friction_eval_count = DEFAULT_COMPOSITE_FRICTION_STRESS_FINALISTS.min(out.len());
+    let friction_eval_count = if aux_work_mask.friction_stress {
+        DEFAULT_COMPOSITE_FRICTION_STRESS_FINALISTS.min(out.len())
+    } else {
+        0
+    };
     if friction_eval_count > 0 {
         let finalist_params: Vec<CompositeParams> = out
             .iter()
@@ -12978,147 +12849,40 @@ pub fn run_composite_validation_blocking_with_candles(
                     .take(cfg.top_n_candidates.max(1))
                     .map(|cand| candles.close.len().saturating_sub(cand.track_record_bars))
                     .collect();
-                if let Some(first_params) = finalist_params.first() {
-                    if let Some(inputs) = gpu_fixed_eval
-                        .as_ref()
-                        .and_then(|eval| eval.base_composite_ctx.as_ref())
-                    {
-                        compute_base_composite_gpu_reopt_walk_forward_stats(
-                            &req,
-                            candles,
-                            inputs,
-                            &finalist_params,
-                            &finalist_start_ts,
-                            cfg,
-                        )?
-                    } else if first_params.asr.is_some() {
-                        compute_asr_gpu_reopt_walk_forward_stats_for_candidates(
-                            &req,
-                            candles,
-                            &finalist_params,
-                            &finalist_start_ts,
-                            cfg,
-                        )?
-                    } else if first_params.mkcs.is_some() {
-                        compute_mkcs_gpu_reopt_walk_forward_stats_for_candidates(
-                            &req,
-                            candles,
-                            &finalist_params,
-                            &finalist_start_ts,
-                            cfg,
-                        )?
-                    } else if first_params.rocb.is_some() {
-                        compute_rocb_gpu_reopt_walk_forward_stats_for_candidates(
-                            &req,
-                            candles,
-                            &finalist_params,
-                            &finalist_start_ts,
-                            cfg,
-                        )?
-                    } else if first_params.vemr.is_some() {
-                        compute_vemr_gpu_reopt_walk_forward_stats_for_candidates(
-                            &req,
-                            candles,
-                            &finalist_params,
-                            &finalist_start_ts,
-                            cfg,
-                        )?
-                    } else if first_params.kqsr.is_some() {
-                        compute_kqsr_gpu_reopt_walk_forward_stats_for_candidates(
-                            &req,
-                            candles,
-                            &finalist_params,
-                            &finalist_start_ts,
-                            cfg,
-                        )?
-                    } else if first_params.vcc.is_some()
-                        || first_params.carm.is_some()
-                        || first_params.vcet.is_some()
-                        || first_params.cdmc.is_some()
-                    {
-                        let mut finalist_series: Vec<(String, CandidateSeries<'_>)> =
-                            Vec::with_capacity(finalist_params.len());
-                        for params in &finalist_params {
-                            let key = serde_json::to_string(params).unwrap_or_else(|_| {
-                                format!(
-                                    "{}:{}:{}:{}",
-                                    params.fast_ma_type,
-                                    params.fast_len,
-                                    params.slow_ma_type,
-                                    params.slow_len
-                                )
-                            });
-                            finalist_series.push((
-                                key,
-                                build_candidate_series(
-                                    candles,
-                                    &lr,
-                                    ma_prices,
-                                    base_first_valid,
-                                    &ma_source,
-                                    fast_ma_params.as_ref(),
-                                    slow_ma_params.as_ref(),
-                                    params,
-                                    #[cfg(feature = "cuda")]
-                                    &req.backend,
-                                    #[cfg(feature = "cuda")]
-                                    prepared_cuda_inputs.as_ref(),
-                                )?,
-                            ));
-                        }
-                        crate::validation_pipeline::compute_reopt_walk_forward_stats(
-                            &finalist_series,
-                            candles.close.len(),
-                            cfg,
-                            |(_, series)| series_start_t(series),
-                            |(_, series), t0, end| eval_metrics_window(series, t0, end),
-                            |(key, _)| key.clone(),
-                        )
-                    } else if first_params.kvdf.is_some() {
-                        compute_kvdf_gpu_reopt_walk_forward_stats_for_candidates(
-                            &req,
-                            candles,
-                            &finalist_params,
-                            &finalist_start_ts,
-                            cfg,
-                        )?
-                    } else {
-                        None
-                    }
+                if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
+                    compute_composite_gpu_reopt_walk_forward_for_family(
+                        &req,
+                        candles,
+                        &lr,
+                        ma_prices,
+                        base_first_valid,
+                        &ma_source,
+                        fast_ma_params.as_ref(),
+                        slow_ma_params.as_ref(),
+                        prepared_cuda_inputs.as_ref(),
+                        gpu_eval,
+                        &finalist_params,
+                        &finalist_start_ts,
+                        cfg,
+                    )?
                 } else {
                     None
                 }
             } else {
-                let mut finalist_series: Vec<(String, CandidateSeries<'_>)> =
-                    Vec::with_capacity(finalist_params.len());
-                for params in finalist_params {
-                    let key = serde_json::to_string(&params).unwrap_or_else(|_| {
-                        format!(
-                            "{}:{}:{}:{}",
-                            params.fast_ma_type,
-                            params.fast_len,
-                            params.slow_ma_type,
-                            params.slow_len
-                        )
-                    });
-                    finalist_series.push((
-                        key,
-                        build_candidate_series(
-                            candles,
-                            &lr,
-                            ma_prices,
-                            base_first_valid,
-                            &ma_source,
-                            fast_ma_params.as_ref(),
-                            slow_ma_params.as_ref(),
-                            &params,
-                            #[cfg(feature = "cuda")]
-                            &req.backend,
-                            #[cfg(feature = "cuda")]
-                            prepared_cuda_inputs.as_ref(),
-                        )?,
-                    ));
-                }
+                let finalist_series = build_composite_finalist_series(
+                    candles,
+                    &lr,
+                    ma_prices,
+                    base_first_valid,
+                    &ma_source,
+                    fast_ma_params.as_ref(),
+                    slow_ma_params.as_ref(),
+                    &finalist_params,
+                    #[cfg(feature = "cuda")]
+                    &req.backend,
+                    #[cfg(feature = "cuda")]
+                    prepared_cuda_inputs.as_ref(),
+                )?;
                 crate::validation_pipeline::compute_reopt_walk_forward_stats(
                     &finalist_series,
                     candles.close.len(),
@@ -13131,33 +12895,20 @@ pub fn run_composite_validation_blocking_with_candles(
         }
         #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
         {
-            let mut finalist_series: Vec<(String, CandidateSeries<'_>)> =
-                Vec::with_capacity(finalist_params.len());
-            for params in finalist_params {
-                let key = serde_json::to_string(&params).unwrap_or_else(|_| {
-                    format!(
-                        "{}:{}:{}:{}",
-                        params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
-                    )
-                });
-                finalist_series.push((
-                    key,
-                    build_candidate_series(
-                        candles,
-                        &lr,
-                        ma_prices,
-                        base_first_valid,
-                        &ma_source,
-                        fast_ma_params.as_ref(),
-                        slow_ma_params.as_ref(),
-                        &params,
-                        #[cfg(feature = "cuda")]
-                        &req.backend,
-                        #[cfg(feature = "cuda")]
-                        prepared_cuda_inputs.as_ref(),
-                    )?,
-                ));
-            }
+            let finalist_series = build_composite_finalist_series(
+                candles,
+                &lr,
+                ma_prices,
+                base_first_valid,
+                &ma_source,
+                fast_ma_params.as_ref(),
+                slow_ma_params.as_ref(),
+                &finalist_params,
+                #[cfg(feature = "cuda")]
+                &req.backend,
+                #[cfg(feature = "cuda")]
+                prepared_cuda_inputs.as_ref(),
+            )?;
             crate::validation_pipeline::compute_reopt_walk_forward_stats(
                 &finalist_series,
                 candles.close.len(),
@@ -13190,12 +12941,7 @@ pub fn run_composite_validation_blocking_with_candles(
             let mut candidate_slice_returns: Vec<Vec<f64>> = Vec::with_capacity(out.len());
             for cand in &out {
                 let params = cand.params.clone();
-                let key = serde_json::to_string(&params).unwrap_or_else(|_| {
-                    format!(
-                        "{}:{}:{}:{}",
-                        params.fast_ma_type, params.fast_len, params.slow_ma_type, params.slow_len
-                    )
-                });
+                let key = canonical_composite_candidate_key(&params);
                 candidate_keys.push(key);
                 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
                 if let Some(gpu_eval) = gpu_fixed_eval.as_ref() {
@@ -14346,6 +14092,61 @@ mod tests {
             assert!(stress.worst_max_dd.is_finite());
             assert!(stress.mean_rank.is_finite());
         }
+    }
+
+    #[test]
+    fn composite_validation_preserved_finalists_mask_skips_auxiliary_top_finalist_work() {
+        let candles = make_trending_candles(5000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeValidationRequest {
+            data_id: "composite-preserved-finalists-mask".to_string(),
+            backend: Backend::CpuOnly,
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            candidates: vec![
+                mkcs_validation_test_candidate(8, 24),
+                mkcs_validation_test_candidate(12, 36),
+            ],
+            walk_forward: Some(WalkForwardConfigOptional {
+                window_bars: 1500,
+                step_bars: 750,
+            }),
+            reopt_walk_forward: None,
+            perturb: None,
+            trade_bootstrap: None,
+            cross_ticker: None,
+            cscv_pbo: Some(CscvPboConfig {
+                slices: 8,
+                max_combinations: 256,
+                threshold: 0.0,
+            }),
+            spa: None,
+            seed: 47,
+            max_candidates: 8,
+            validation_engine: ValidationEngine::Vectorized,
+            iterative: IterativeSimConfig::default(),
+            min_psr: Some(0.4),
+            min_dsr: None,
+            min_cscv_oos_rank_frac: None,
+            min_cscv_oos_metric: None,
+            max_pbo: None,
+            validation_context: None,
+        };
+
+        let res = run_composite_validation_blocking_with_candles_with_aux_mask(
+            req,
+            &candles,
+            &cancel,
+            None,
+            ValidationAuxWorkMask::preserved_finalists(),
+        )
+        .expect("validation run");
+        assert_eq!(res.candidates.len(), 2);
+        assert!(res.candidates.iter().all(|cand| cand.walk_forward.is_some()));
+        assert!(res.candidates.iter().all(|cand| cand.regime_slice_robustness.is_none()));
+        assert!(res.candidates.iter().all(|cand| cand.friction_stress.is_none()));
     }
 
     #[test]
@@ -17388,8 +17189,8 @@ mod tests {
         assert_eq!(a.candidates.len(), b.candidates.len());
         for (ca, cb) in a.candidates.iter().zip(b.candidates.iter()) {
             assert_eq!(
-                serde_json::to_string(&ca.params).expect("params a"),
-                serde_json::to_string(&cb.params).expect("params b")
+                canonical_composite_candidate_key(&ca.params),
+                canonical_composite_candidate_key(&cb.params)
             );
             assert!((ca.robust_score - cb.robust_score).abs() < 1e-12);
             assert!((ca.in_sample.pnl - cb.in_sample.pnl).abs() < 1e-12);

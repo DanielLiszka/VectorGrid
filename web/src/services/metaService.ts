@@ -223,25 +223,6 @@ function fmtPct(value: unknown, digits: number): string {
   return Number.isFinite(num) ? `${(num * 100).toFixed(digits)}%` : '-'
 }
 
-function isMetaSelectionKind(kind: unknown): boolean {
-  const normalized = normalizeText(kind)
-  return normalized === 'vectorbt_meta_selection' || normalized === 'vectorgrid_meta_selection'
-}
-
-function isMetaStageResultKind(kind: unknown): boolean {
-  const normalized = normalizeText(kind)
-  return normalized === 'vectorbt_meta_stage4_experimental'
-    || normalized === 'vectorgrid_meta_stage4_experimental'
-    || normalized === 'vectorbt_meta_stage5_ml_confidence'
-    || normalized === 'vectorgrid_meta_stage5_ml_confidence'
-}
-
-function isMlConfidencePolicyEvalKind(kind: unknown): boolean {
-  const normalized = normalizeText(kind)
-  return normalized === 'vectorbt_ml_confidence_policy_evaluation'
-    || normalized === 'vectorgrid_ml_confidence_policy_evaluation'
-}
-
 function fileBasename(path: string): string {
   const normalized = normalizePath(path).replace(/\\/g, '/')
   if (!normalized) return ''
@@ -1235,53 +1216,31 @@ function updatePolicyEvalSavedState(preferredPath = ''): void {
   })
 }
 
+async function refreshArtifactLibraryInternal(options: {
+  preferredMetaPath?: string
+  preferredStage5Path?: string
+  preferredPolicyEvalPath?: string
+} = {}): Promise<void> {
+  const rows = (await invokeCommand('list_artifact_library')) as unknown
+  const library = asRecord(rows) ?? {}
+  SAVED_META = asRecordArray(library.meta)
+  SAVED_STAGE4 = asRecordArray(library.stage5 ?? library.stage_5)
+  SAVED_POLICY_EVAL = asRecordArray(library.policyEvals ?? library.policy_evals)
+  updateMetaSavedState(options.preferredMetaPath ?? '')
+  updateStage4SavedState(options.preferredStage5Path ?? '')
+  updatePolicyEvalSavedState(options.preferredPolicyEvalPath ?? '')
+}
+
 async function refreshSavedInternal(preferredPath = ''): Promise<void> {
-  const rows = (await invokeCommand('list_meta_artifacts')) as unknown
-  SAVED_META = asRecordArray(rows)
-  updateMetaSavedState(preferredPath)
+  await refreshArtifactLibraryInternal({ preferredMetaPath: preferredPath })
 }
 
 async function refreshStage4SavedInternal(preferredPath = ''): Promise<void> {
-  const rows = (await invokeCommand('list_stage5_artifacts')) as unknown
-  SAVED_STAGE4 = asRecordArray(rows)
-  updateStage4SavedState(preferredPath)
+  await refreshArtifactLibraryInternal({ preferredStage5Path: preferredPath })
 }
 
 async function refreshPolicyEvalSavedInternal(preferredPath = ''): Promise<void> {
-  const rows = (await invokeCommand('list_ml_policy_eval_artifacts')) as unknown
-  SAVED_POLICY_EVAL = asRecordArray(rows)
-  updatePolicyEvalSavedState(preferredPath)
-}
-
-function buildMetaSelectionResponseFromArtifact(artifact: Record<string, unknown>, path: string): Record<string, unknown> {
-  return {
-    ts: normalizeText(artifact.ts) || new Date().toISOString(),
-    report_xlsx_path: normalizePath(artifact.report_xlsx_path),
-    report_xlsx_bytes: 0,
-    meta_json_path: normalizePath(path),
-    meta_json_bytes: 0,
-    result: asRecord(artifact.res)
-  }
-}
-
-function buildStage4ResponseFromArtifact(artifact: Record<string, unknown>, path: string): Record<string, unknown> {
-  return {
-    ts: normalizeText(artifact.ts) || new Date().toISOString(),
-    stage4_json_path: normalizePath(path),
-    stage4_json_bytes: 0,
-    stage5_json_path: normalizePath(path),
-    stage5_json_bytes: 0,
-    result: asRecord(artifact.res)
-  }
-}
-
-function buildPolicyEvalResponseFromArtifact(artifact: Record<string, unknown>, path: string): Record<string, unknown> {
-  return {
-    ts: normalizeText(artifact.ts) || new Date().toISOString(),
-    eval_json_path: normalizePath(path),
-    eval_json_bytes: 0,
-    result: asRecord(artifact.res)
-  }
+  await refreshArtifactLibraryInternal({ preferredPolicyEvalPath: preferredPath })
 }
 
 function sortSavedEntries(entries: Record<string, unknown>[]): Record<string, unknown>[] {
@@ -1787,6 +1746,8 @@ async function applyRunTags(tags: string[]): Promise<void> {
         artifact_path: run.artifactPath,
         report_xlsx_path: run.reportXlsxPath,
         csv_path: run.csvPath,
+        dataset_meta: run.datasetMeta,
+        ml_signal: run.mlSignal,
         tags,
         req: run.req,
         res: run.res
@@ -2320,17 +2281,14 @@ export async function loadSaved(): Promise<void> {
       return
     }
 
-    const artifactRaw = (await invokeCommand('load_run_artifact', {
+    const responseRaw = (await invokeCommand('load_meta_artifact_replay', {
       path
     })) as unknown
-    const artifact = asRecord(artifactRaw)
-    const kind = normalizeText(artifact?.kind)
-    if (!isMetaSelectionKind(kind)) {
-      setStatusLine(`Not a meta artifact: kind='${kind}'`)
+    const response = asRecord(responseRaw)
+    if (!response) {
+      setStatusLine('Saved meta artifact payload was empty.')
       return
     }
-
-    const response = buildMetaSelectionResponseFromArtifact(artifact ?? {}, path)
     renderMetaSelection(response)
     await refreshSavedInternal(path)
     selectMetaResultsTab()
@@ -2445,17 +2403,14 @@ export async function loadStage5Saved(): Promise<void> {
       return
     }
 
-    const artifactRaw = (await invokeCommand('load_run_artifact', {
+    const responseRaw = (await invokeCommand('load_stage5_artifact_replay', {
       path
     })) as unknown
-    const artifact = asRecord(artifactRaw)
-    const kind = normalizeText(artifact?.kind)
-    if (!isMetaStageResultKind(kind)) {
-      setStatusLine(`Not a Stage 5 artifact: kind='${kind}'`)
+    const response = asRecord(responseRaw)
+    if (!response) {
+      setStatusLine('Saved Stage 5 artifact payload was empty.')
       return
     }
-
-    const response = buildStage4ResponseFromArtifact(artifact ?? {}, path)
     renderMetaStage4(response)
     await refreshStage4SavedInternal(path)
     selectMetaResultsTab()
@@ -2551,15 +2506,14 @@ export async function loadPolicyEvalSaved(): Promise<void> {
       return
     }
 
-    const artifactRaw = (await invokeCommand('load_run_artifact', { path })) as unknown
-    const artifact = asRecord(artifactRaw)
-    const kind = normalizeText(artifact?.kind)
-    if (!isMlConfidencePolicyEvalKind(kind)) {
-      setStatusLine(`Not a policy evaluation artifact: kind='${kind}'`)
+    const responseRaw = (await invokeCommand('load_ml_policy_eval_artifact_replay', {
+      path
+    })) as unknown
+    const response = asRecord(responseRaw)
+    if (!response) {
+      setStatusLine('Saved policy evaluation payload was empty.')
       return
     }
-
-    const response = buildPolicyEvalResponseFromArtifact(artifact ?? {}, path)
     renderMlPolicyEvaluation(response)
     await refreshPolicyEvalSavedInternal(path)
     selectMetaResultsTab()

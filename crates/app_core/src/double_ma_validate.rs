@@ -1,8 +1,8 @@
-use crate::composite_validate::{
-    CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
-    ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, SpaBenchmarkKind, SpaConfigOptional,
-    SpaValidationStats, TradeBootstrapConfig, TradeBootstrapStats, ValidationArtifactContext,
-    WalkForwardConfigOptional, WalkForwardStats,
+use crate::validation_shared::{
+    canonical_json_key, CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary,
+    PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
+    SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
+    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfigOptional, WalkForwardStats,
 };
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
@@ -21,13 +21,14 @@ use crate::validation_pipeline::{
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
+
+pub use crate::validation_shared::ValidationAuxWorkMask;
 
 fn default_ma_source() -> String {
     "close".to_string()
@@ -216,40 +217,6 @@ fn gpu_exact_combo_metrics_for_ranges(
             &plan.first_strategy,
             ranges,
         ),
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ValidationAuxWorkMask {
-    pub regime_slice_robustness: bool,
-    pub friction_stress: bool,
-    pub entry_margin_fragility: bool,
-    pub underwater_duration: bool,
-    pub checkpoint_robustness: bool,
-    pub benchmark_slice_summary: bool,
-}
-
-impl ValidationAuxWorkMask {
-    pub const fn full() -> Self {
-        Self {
-            regime_slice_robustness: true,
-            friction_stress: true,
-            entry_margin_fragility: true,
-            underwater_duration: true,
-            checkpoint_robustness: true,
-            benchmark_slice_summary: true,
-        }
-    }
-
-    pub const fn preserved_finalists() -> Self {
-        Self {
-            regime_slice_robustness: false,
-            friction_stress: false,
-            entry_margin_fragility: false,
-            underwater_duration: false,
-            checkpoint_robustness: false,
-            benchmark_slice_summary: false,
-        }
     }
 }
 
@@ -759,31 +726,6 @@ fn compute_gpu_reopt_walk_forward_stats_for_candidates(
     _execution_profile: &mut ValidationExecutionProfile,
 ) -> Result<Option<ReoptWalkForwardStats>, String> {
     Err("GPU reopt_walk_forward requires cuda and cuda-backtest-kernel features".to_string())
-}
-
-fn canonicalize_json_value(value: &JsonValue) -> JsonValue {
-    match value {
-        JsonValue::Array(items) => {
-            JsonValue::Array(items.iter().map(canonicalize_json_value).collect())
-        }
-        JsonValue::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort_unstable();
-            let mut out = serde_json::Map::with_capacity(map.len());
-            for key in keys {
-                if let Some(next) = map.get(key) {
-                    out.insert(key.clone(), canonicalize_json_value(next));
-                }
-            }
-            JsonValue::Object(out)
-        }
-        _ => value.clone(),
-    }
-}
-
-fn canonical_json_key<T: Serialize>(value: &T) -> Result<String, String> {
-    let json = serde_json::to_value(value).map_err(|e| e.to_string())?;
-    serde_json::to_string(&canonicalize_json_value(&json)).map_err(|e| e.to_string())
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]

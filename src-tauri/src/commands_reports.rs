@@ -1,4 +1,4 @@
-use super::SaveReportXlsxResponse;
+use super::{run_artifacts, SaveReportXlsxResponse};
 use serde_json::Value;
 use std::path::Path;
 use ta_app_core::MetaSelectionResult;
@@ -78,6 +78,125 @@ pub(crate) fn save_report_xlsx_blocking(
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
     })
+}
+
+fn build_report_data_from_dataset_meta(dataset_meta: Option<&Value>) -> Value {
+    let Some(dataset_meta) = dataset_meta.and_then(Value::as_object) else {
+        return serde_json::json!({
+            "meta": Value::Null,
+            "ctx": serde_json::Map::<String, Value>::new(),
+        });
+    };
+
+    let mut meta = serde_json::Map::<String, Value>::new();
+    let mut ctx = serde_json::Map::<String, Value>::new();
+
+    for key in [
+        "timeframe",
+        "base_timeframe",
+        "derived_timeframe",
+        "source",
+        "market",
+        "symbol",
+        "label",
+        "csv_path",
+        "resample_rule",
+        "resample_anchor",
+        "source_content_fingerprint",
+    ] {
+        let Some(value) = dataset_meta.get(key).cloned() else {
+            continue;
+        };
+        let text = value.as_str().map(|text| text.trim()).unwrap_or("");
+        if text.is_empty() {
+            continue;
+        }
+        if matches!(key, "label" | "symbol" | "source" | "market" | "csv_path") {
+            ctx.insert(key.to_string(), Value::String(text.to_string()));
+        } else {
+            meta.insert(key.to_string(), Value::String(text.to_string()));
+            if matches!(
+                key,
+                "timeframe"
+                    | "base_timeframe"
+                    | "derived_timeframe"
+                    | "resample_rule"
+                    | "resample_anchor"
+            ) {
+                ctx.insert(key.to_string(), Value::String(text.to_string()));
+            }
+        }
+    }
+
+    for key in [
+        "len",
+        "min_ts",
+        "max_ts",
+        "source_size_bytes",
+        "source_mtime_utc_ms",
+    ] {
+        let Some(value) = dataset_meta.get(key) else {
+            continue;
+        };
+        let Some(number) = value.as_f64().filter(|number| number.is_finite()) else {
+            continue;
+        };
+        if number.fract() == 0.0 {
+            meta.insert(
+                key.to_string(),
+                Value::Number(serde_json::Number::from(number as i64)),
+            );
+        } else if let Some(number) = serde_json::Number::from_f64(number) {
+            meta.insert(key.to_string(), Value::Number(number));
+        }
+    }
+
+    for key in ["resample_applied", "adjusted"] {
+        if let Some(boolean) = dataset_meta.get(key).and_then(Value::as_bool) {
+            ctx.insert(key.to_string(), Value::Bool(boolean));
+        }
+    }
+
+    serde_json::json!({
+        "meta": if meta.is_empty() { Value::Null } else { Value::Object(meta) },
+        "ctx": Value::Object(ctx),
+    })
+}
+
+fn build_validation_report_from_artifact(artifact: &Value) -> Result<Value, String> {
+    if artifact.pointer("/validation/res").is_none() {
+        return Err("saved run artifact does not contain validation data".to_string());
+    }
+
+    let ts = artifact
+        .get("ts")
+        .cloned()
+        .unwrap_or_else(|| Value::String(chrono::Utc::now().to_rfc3339()));
+
+    Ok(serde_json::json!({
+        "version": 1,
+        "kind": "vectorgrid_report",
+        "ts": ts,
+        "data": build_report_data_from_dataset_meta(artifact.pointer("/dataset_meta")),
+        "run": {
+            "req": artifact.pointer("/run/req").cloned().unwrap_or(Value::Null),
+            "res": artifact.pointer("/run/res").cloned().unwrap_or(Value::Null),
+        },
+        "validation": {
+            "req": artifact.pointer("/validation/req").cloned().unwrap_or(Value::Null),
+            "res": artifact.pointer("/validation/res").cloned().unwrap_or(Value::Null),
+        }
+    }))
+}
+
+pub(crate) fn save_report_xlsx_from_artifact_blocking(
+    path: String,
+    max_rows: Option<u32>,
+    app: tauri::AppHandle,
+) -> Result<SaveReportXlsxResponse, String> {
+    let artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
+    let report = build_validation_report_from_artifact(&artifact)?;
+    save_report_xlsx_blocking(report, max_rows, app)
 }
 
 // Legacy/reference builder kept only for workbook-history comparison and staged
@@ -3192,6 +3311,49 @@ mod tests {
     }
 
     #[test]
+    fn artifact_report_builder_uses_persisted_dataset_meta() {
+        let artifact = json!({
+          "ts": "2026-04-02T12:00:00Z",
+          "dataset_meta": {
+            "csv_path": "C:/data/AAPL.csv",
+            "timeframe": "1h",
+            "label": "AAPL artifact",
+            "symbol": "AAPL",
+            "len": 4321,
+            "min_ts": 111,
+            "max_ts": 222,
+            "source": "artifact-source"
+          },
+          "run": {
+            "req": { "strategy_kind": "DoubleMa" },
+            "res": { "top": [] }
+          },
+          "validation": {
+            "req": { "candidates": [] },
+            "res": { "candidates": [] }
+          }
+        });
+
+        let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
+        assert_eq!(
+            report.pointer("/data/meta/timeframe").and_then(Value::as_str),
+            Some("1h")
+        );
+        assert_eq!(
+            report.pointer("/data/meta/len").and_then(Value::as_i64),
+            Some(4321)
+        );
+        assert_eq!(
+            report.pointer("/data/ctx/label").and_then(Value::as_str),
+            Some("AAPL artifact")
+        );
+        assert_eq!(
+            report.pointer("/data/ctx/csv_path").and_then(Value::as_str),
+            Some("C:/data/AAPL.csv")
+        );
+    }
+
+    #[test]
     fn cross_ticker_validation_smoke_populates_stats() {
         let base_dir = make_temp_dir("vectorta_cross_ticker_test");
         let app_cache_dir = base_dir.join("data_cache");
@@ -3294,6 +3456,12 @@ mod tests {
             None,
             ta_app_core::ValidationEngine::Vectorized,
             ta_app_core::IterativeSimConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .expect("cross validation");
 

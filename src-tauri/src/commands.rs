@@ -32,9 +32,12 @@ pub use commands_analysis::{
     compute_double_ma_drilldown, compute_double_ma_local_stability,
 };
 pub use commands_artifacts::{
-    delete_run_artifact, list_meta_artifacts, list_ml_policy_eval_artifacts, list_run_artifacts,
-    list_stage4_artifacts, list_stage5_artifacts, load_run_artifact, open_runs_dir,
-    save_batch_summary, save_run_artifact, update_artifact_tags,
+    delete_run_artifact, list_artifact_library, list_meta_artifacts,
+    list_ml_policy_eval_artifacts, list_run_artifacts, list_stage4_artifacts,
+    list_stage5_artifacts, load_meta_artifact_replay, load_ml_policy_eval_artifact_replay,
+    load_run_artifact, load_run_artifact_detail, load_run_artifact_hydration,
+    load_stage5_artifact_replay, open_runs_dir, save_batch_summary, save_run_artifact,
+    update_artifact_tags,
 };
 pub use commands_data::{
     clear_loaded_data, clear_market_data_dir, get_market_data_dir_info, list_dynamic_indicators,
@@ -88,7 +91,7 @@ pub(crate) use commands_reports::{
 };
 pub use commands_reports_api::{
     build_report_xlsx, build_validation_shortlist_csv, open_path, open_reports_dir, reveal_path,
-    save_report_xlsx, SaveReportXlsxResponse,
+    save_report_xlsx, save_report_xlsx_from_artifact, SaveReportXlsxResponse,
 };
 pub use commands_system::{get_gpu_status, set_window_effect, GpuStatus};
 #[allow(unused_imports)]
@@ -98,8 +101,11 @@ pub use commands_validation::{
     run_double_ma_validation, PriceBar,
 };
 pub use run_artifacts::{
-    MetaArtifactSummary, MlPolicyEvalArtifactSummary, RunArtifactSummary, SaveBatchSummaryResponse,
-    SaveRunArtifactResponse, Stage4ArtifactSummary, Stage5ArtifactSummary,
+    ArtifactLibrarySnapshot, MetaArtifactReplayResponse, MetaArtifactSummary,
+    MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary, RunArtifactDetailResponse,
+    RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse,
+    Stage4ArtifactSummary, Stage5ArtifactReplayResponse, Stage5ArtifactSummary,
+    WorkflowArtifactsHydrationPayload,
 };
 
 pub use ta_app_core::{

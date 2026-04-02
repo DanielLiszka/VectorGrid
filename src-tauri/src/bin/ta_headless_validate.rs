@@ -5,13 +5,11 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 
-use ta_app_core::composite_validate::{
-    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional,
-};
 use ta_app_core::{
     read_candles_from_csv_compat, Backend, CrossTickerConfig, CrossTickerDataset, CscvPboConfig,
     DoubleMaRequest, DoubleMaValidationParams, DoubleMaValidationRequest, PerturbConfig,
-    TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
+    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional, TradeBootstrapConfig,
+    ValidationArtifactContext, WalkForwardConfigOptional,
 };
 use ta_desktop_demo_app::commands::{
     apply_cross_ticker_validation_double_ma_headless, build_report_xlsx_bytes_headless,

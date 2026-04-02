@@ -28,7 +28,7 @@ use vector_ta::utilities::data_loader::{source_type, Candles};
 use crate::alloc_policy::{
     alloc_uninit_copy, alloc_uninit_f32, resize_uninit_f32, resize_uninit_i32,
 };
-use crate::composite_validate::SpaBenchmarkKind;
+use crate::validation_shared::SpaBenchmarkKind;
 use crate::double_ma::{
     derived_active_downside_deviation, derived_active_mean, derived_active_sortino,
     derived_directional_bias, derived_downside_share, derived_drawdown_chronicity,
@@ -2136,6 +2136,8 @@ pub(crate) struct UploadedGpuStrategyProgram {
     pub(crate) d_signals: DeviceBuffer<GpuSignalBindingsAbi>,
     pub(crate) abi_version: u32,
     pub(crate) plan_fingerprint_hex: String,
+    pub(crate) compiled_plan_fingerprint_hex: String,
+    pub(crate) executable_fingerprint_hex: String,
     pub(crate) device_id: u32,
 }
 
@@ -2190,6 +2192,8 @@ pub(crate) fn upload_gpu_strategy_program_abi(
             d_signals,
             abi_version: abi.abi_version,
             plan_fingerprint_hex: abi.plan_fingerprint_hex.clone(),
+            compiled_plan_fingerprint_hex: abi.compiled_plan_fingerprint_hex.clone(),
+            executable_fingerprint_hex: abi.executable_fingerprint_hex.clone(),
             device_id,
         })
     })
@@ -2263,6 +2267,7 @@ pub struct UploadedDoubleMaDynamicProgramBatch {
     first_valid: usize,
     fast_tm_stride: usize,
     slow_tm_stride: usize,
+    executable_fingerprint_hex: String,
     device_id: u32,
 }
 
@@ -2347,6 +2352,14 @@ fn validate_double_ma_dynamic_strategy_handle(handle: &StrategyHandle) -> Result
     Ok(())
 }
 
+fn dynamic_program_executable_fingerprint_hex(handle: &StrategyHandle) -> Result<String, String> {
+    handle
+        .gpu_program_abi
+        .as_ref()
+        .map(|abi| abi.executable_fingerprint_hex.clone())
+        .ok_or_else(|| "strategy handle missing GPU program ABI".to_string())
+}
+
 pub fn upload_double_ma_dynamic_program_batch(
     lr: &[f32],
     fast_row_major: &[f32],
@@ -2357,8 +2370,11 @@ pub fn upload_double_ma_dynamic_program_batch(
     combos: &[DoubleMaParams],
     first_valid: usize,
     _strategy: &StrategyConfig,
+    handle: &StrategyHandle,
     device_id: u32,
 ) -> Result<UploadedDoubleMaDynamicProgramBatch, String> {
+    validate_double_ma_dynamic_strategy_handle(handle)?;
+    let executable_fingerprint_hex = dynamic_program_executable_fingerprint_hex(handle)?;
     if lr.len() < 2 {
         return Err("dynamic gpu batch upload requires at least 2 lr values".to_string());
     }
@@ -2453,6 +2469,7 @@ pub fn upload_double_ma_dynamic_program_batch(
                 first_valid,
                 fast_tm_stride: fast_rows,
                 slow_tm_stride: slow_rows,
+                executable_fingerprint_hex,
                 device_id,
             })
         },
@@ -2466,9 +2483,16 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
     metrics_count: usize,
 ) -> Result<Vec<Metrics>, String> {
     validate_double_ma_dynamic_strategy_handle(handle)?;
+    let executable_fingerprint_hex = dynamic_program_executable_fingerprint_hex(handle)?;
+    if uploaded_batch.executable_fingerprint_hex != executable_fingerprint_hex {
+        return Err(
+            "uploaded dynamic gpu batch executable fingerprint does not match strategy handle"
+                .to_string(),
+        );
+    }
     let _ = get_or_build_gpu_strategy_executable(handle, uploaded_batch.device_id)?;
     let key = GpuStrategyExecutableCacheKey::new(
-        handle.plan.ir_fingerprint_hex.clone(),
+        executable_fingerprint_hex,
         uploaded_batch.device_id,
     );
     let strategy_params = kernel_strategy_params(strategy);
@@ -2652,6 +2676,7 @@ pub fn eval_double_ma_dynamic_program_precomputed_gpu_kernel(
         combos,
         first_valid,
         strategy,
+        handle,
         device_id,
     )?;
     eval_uploaded_double_ma_dynamic_program_gpu_kernel(&uploaded, strategy, handle, metrics_count)
@@ -15087,7 +15112,7 @@ mod tests {
         ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
         STRAT_SIGNED_EXPOSURE, TRADE_METRICS_COUNT,
     };
-    use crate::composite_validate::SpaBenchmarkKind;
+    use crate::validation_shared::SpaBenchmarkKind;
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
         DoubleMaMetricContract, DoubleMaScoreMode, DoubleMaShortlistConfidenceMode,
@@ -17691,6 +17716,7 @@ mod tests {
             &combos,
             0,
             &strategy,
+            &handle,
             0,
         )
         .expect("upload dynamic batch");
@@ -17715,5 +17741,110 @@ mod tests {
             assert!(approx_eq(a.pnl, b.pnl, 1e-7));
             assert!(approx_eq(a.sharpe, b.sharpe, 1e-7));
         }
+    }
+
+    #[test]
+    fn uploaded_dynamic_double_ma_batch_rejects_mismatched_handle_executable_shape() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        reset_gpu_strategy_executable_cache();
+
+        let candles = make_trending_candles(2048);
+        let strategy = StrategyConfig::default();
+        let base_plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &strategy,
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile base dynamic double-ma plan");
+        let base_handle =
+            StrategyHandle::from_plan(base_plan, StrategyCapabilityReport::gpu_dynamic_ready())
+                .expect("build base dynamic gpu strategy handle");
+        let mismatched_plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "alma",
+            None,
+            None,
+            &strategy,
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile mismatched dynamic double-ma plan");
+        let mismatched_handle = StrategyHandle::from_plan(
+            mismatched_plan,
+            StrategyCapabilityReport::gpu_dynamic_ready(),
+        )
+        .expect("build mismatched dynamic gpu strategy handle");
+
+        let fast_periods = vec![8u16, 12u16];
+        let slow_periods = vec![21u16, 34u16];
+        let combos = vec![
+            DoubleMaParams {
+                fast_len: 8,
+                slow_len: 21,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            DoubleMaParams {
+                fast_len: 12,
+                slow_len: 34,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+        ];
+        let close = source_type(&candles, "close");
+        let lr = crate::double_ma::compute_log_returns_f64(close);
+        let (fast_mat, cols) = crate::double_ma::ma_matrix_cpu_f64(
+            &candles,
+            "sma",
+            "close",
+            &fast_periods,
+            None,
+            0.85,
+            6.0,
+        )
+        .expect("fast matrix");
+        let (slow_mat, _) = crate::double_ma::ma_matrix_cpu_f64(
+            &candles,
+            "sma",
+            "close",
+            &slow_periods,
+            None,
+            0.85,
+            6.0,
+        )
+        .expect("slow matrix");
+
+        let uploaded = upload_double_ma_dynamic_program_batch(
+            &lr.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+            &fast_mat.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+            &slow_mat.iter().map(|&v| v as f32).collect::<Vec<_>>(),
+            cols,
+            &fast_periods,
+            &slow_periods,
+            &combos,
+            0,
+            &strategy,
+            &base_handle,
+            0,
+        )
+        .expect("upload dynamic batch");
+
+        let err = super::eval_uploaded_double_ma_dynamic_program_gpu_kernel(
+            &uploaded,
+            &strategy,
+            &mismatched_handle,
+            PRODUCT_REDUCED_METRICS_COUNT,
+        )
+        .expect_err("mismatched executable shape should be rejected");
+        assert!(err.contains("executable fingerprint"));
     }
 }

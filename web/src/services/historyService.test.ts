@@ -343,21 +343,23 @@ describe("historyService", () => {
 
   it("loads saved run artifact directly and hydrates workflow artifacts store", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      ts: "2026-02-25T00:00:00Z",
-      report_xlsx_path: "C:/runs/run1.xlsx",
-      tags: ["holdout", " 1m "],
-      dataset_meta: {
+      currentRun: {
+        ts: "2026-02-25T00:00:00Z",
+        artifact_path: "C:/runs/run1.json",
+        report_xlsx_path: "C:/runs/run1.xlsx",
         csv_path: "C:/data/aapl.csv",
-        timeframe: "15m",
-        symbol: "AAPL",
-        label: "AAPL",
-      },
-      data: { csv_path: "C:/data/aapl.csv" },
-      run: {
+        tags: ["holdout", " 1m "],
+        dataset_meta: {
+          csv_path: "C:/data/aapl.csv",
+          timeframe: "15m",
+          symbol: "AAPL",
+          label: "AAPL",
+        },
         req: { strategy_kind: "DoubleMa", data_id: "data-1" },
         res: { top: [[{ fast_len: 5, slow_len: 20 }, { sharpe: 1.2 }]] },
       },
-      validation: {
+      currentValidation: {
+        ts: "2026-02-25T00:00:00Z",
         req: { strategy_kind: "DoubleMa" },
         res: { candidates: [{ score: 1.0 }] },
       },
@@ -366,7 +368,7 @@ describe("historyService", () => {
     await loadSavedRun(" C:/runs/run1.json ");
 
     const artifacts = useWorkflowArtifactsStore(pinia);
-    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
+    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_hydration", {
       path: "C:/runs/run1.json",
     });
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/run1.json");
@@ -385,15 +387,16 @@ describe("historyService", () => {
 
   it("loads MlSignal saved run artifact without routing into optimizer analysis refresh", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      ts: "2026-03-20T00:00:00Z",
-      data: { csv_path: "C:/data/spy.csv" },
-      ml_signal: {
-        stage: "validation",
-        score_cache_path: "C:/runs/ml_score_cache.json",
-        score_scope: "CalibrationSlice",
-        coverage_ratio: 0.75,
-      },
-      run: {
+      currentRun: {
+        ts: "2026-03-20T00:00:00Z",
+        artifact_path: "C:/runs/ml_signal.json",
+        csv_path: "C:/data/spy.csv",
+        ml_signal: {
+          stage: "validation",
+          score_cache_path: "C:/runs/ml_score_cache.json",
+          score_scope: "CalibrationSlice",
+          coverage_ratio: 0.75,
+        },
         req: {
           strategy_kind: "MlSignal",
           data_id: "data-ml",
@@ -403,7 +406,8 @@ describe("historyService", () => {
         },
         res: { matched_rows: 123, output_path: "C:/runs/ml_score_cache.json" },
       },
-      validation: {
+      currentValidation: {
+        ts: "2026-03-20T00:00:00Z",
         req: {
           candidates: [
             { t_long: 0.6, t_short: 0.55, delta: 0.1, max_hold_bars: 10 },
@@ -430,20 +434,19 @@ describe("historyService", () => {
 
   it("applies saved run request into Vue optimize/advanced/data stores", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      data: { csv_path: "C:/data/msft.csv" },
-      dataset_meta: { timeframe: "5m" },
-      run: {
-        req: {
-          strategy_kind: "DoubleMa",
-          objective: "Sharpe",
-          mode: "Grid",
-          backend: { backend: "GpuKernel", device_id: 0 },
-          ma_source: "close",
-          fast_range: { start: 5, end: 20, step: 1 },
-          slow_range: { start: 21, end: 80, step: 1 },
-          fast_ma_types: ["sma"],
-          slow_ma_types: ["alma"],
-        },
+      strategyKind: "DoubleMa",
+      timeframe: "5m",
+      csvPath: "C:/data/msft.csv",
+      runReq: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        mode: "Grid",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+        fast_range: { start: 5, end: 20, step: 1 },
+        slow_range: { start: 21, end: 80, step: 1 },
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["alma"],
       },
     });
 
@@ -452,7 +455,7 @@ describe("historyService", () => {
     const optimize = useOptimizeStore(pinia);
     const advanced = useAdvancedStore(pinia);
     const data = useDataStore(pinia);
-    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
+    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
     expect(optimize.strategyKind).toBe("DoubleMa");
@@ -466,39 +469,36 @@ describe("historyService", () => {
 
   it("applies MlSignal saved run request into Vue optimize/data stores", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      data: { csv_path: "C:/data/spy.csv" },
-      dataset_meta: { timeframe: "1d" },
-      validation: {
-        req: {
-          candidates: [
-            {
-              t_long: 0.63,
-              t_short: 0.58,
-              delta: 0.07,
-              max_hold_bars: 11,
-              exit_on_flat: true,
-              exit_on_opposite: false,
-              strategy: {
-                long_only: true,
-                allow_flip: false,
-                trade_on_next_bar: false,
-                cooldown_bars: 2,
-                signal_persistence_bars: 3,
-              },
-            },
-          ],
-          min_psr: 0.55,
-          min_dsr: 0.4,
-        },
+      strategyKind: "MlSignal",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "data-ml",
+        input_path: "C:/scores/ml_scores.csv",
+        output_path: "C:/runs/ml_score_cache.json",
+        model_bundle_id: "bundle-a",
       },
-      run: {
-        req: {
-          strategy_kind: "MlSignal",
-          data_id: "data-ml",
-          input_path: "C:/scores/ml_scores.csv",
-          output_path: "C:/runs/ml_score_cache.json",
-          model_bundle_id: "bundle-a",
-        },
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.63,
+            t_short: 0.58,
+            delta: 0.07,
+            max_hold_bars: 11,
+            exit_on_flat: true,
+            exit_on_opposite: false,
+            strategy: {
+              long_only: true,
+              allow_flip: false,
+              trade_on_next_bar: false,
+              cooldown_bars: 2,
+              signal_persistence_bars: 3,
+            },
+          },
+        ],
+        min_psr: 0.55,
+        min_dsr: 0.4,
       },
     });
 
@@ -522,22 +522,20 @@ describe("historyService", () => {
 
   it("reruns saved run by loading data, optional resample, then executing optimization", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      data: { csv_path: "C:/data/aapl.csv" },
-      dataset_meta: { timeframe: "5m" },
-      run: {
-        req: {
-          strategy_kind: "DoubleMa",
-          data_id: "stale-id",
-          backend: { backend: "CpuOnly" },
-          fast_range: { start: 5, end: 10, step: 1 },
-          slow_range: { start: 20, end: 50, step: 1 },
-        },
+      timeframe: "5m",
+      csvPath: "C:/data/aapl.csv",
+      runReq: {
+        strategy_kind: "DoubleMa",
+        data_id: "stale-id",
+        backend: { backend: "CpuOnly" },
+        fast_range: { start: 5, end: 10, step: 1 },
+        slow_range: { start: 20, end: 50, step: 1 },
       },
     });
 
     await rerunSavedRun(" C:/runs/run1.json ");
 
-    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
+    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
     expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/aapl.csv");
@@ -554,28 +552,24 @@ describe("historyService", () => {
 
   it("reruns MlSignal saved validation artifact through score-cache build then validation", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      data: { csv_path: "C:/data/spy.csv" },
-      dataset_meta: { timeframe: "1d" },
-      validation: {
-        req: {
-          candidates: [
-            {
-              t_long: 0.6,
-              t_short: 0.55,
-              delta: 0.1,
-              max_hold_bars: 10,
-            },
-          ],
-        },
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "stale-id",
+        input_path: "C:/scores/ml_scores.csv",
+        output_path: "C:/runs/ml_score_cache.json",
+        model_bundle_id: "bundle-a",
       },
-      run: {
-        req: {
-          strategy_kind: "MlSignal",
-          data_id: "stale-id",
-          input_path: "C:/scores/ml_scores.csv",
-          output_path: "C:/runs/ml_score_cache.json",
-          model_bundle_id: "bundle-a",
-        },
+      validationReq: {
+        candidates: [
+          {
+            t_long: 0.6,
+            t_short: 0.55,
+            delta: 0.1,
+            max_hold_bars: 10,
+          },
+        ],
       },
     });
 
@@ -594,19 +588,15 @@ describe("historyService", () => {
 
   it("reruns MlSignal dataset-export artifact through dataset export only", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      data: { csv_path: "C:/data/spy.csv" },
-      dataset_meta: { timeframe: "1d" },
-      ml_signal: {
-        stage: "dataset_export",
-      },
-      run: {
-        req: {
-          strategy_kind: "MlSignal",
-          data_id: "stale-id",
-          output_path: "C:/runs/ml_dataset.csv",
-          ma_source: "close",
-          horizon_bars: 10,
-        },
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      mlSignalStage: "dataset_export",
+      runReq: {
+        strategy_kind: "MlSignal",
+        data_id: "stale-id",
+        output_path: "C:/runs/ml_dataset.csv",
+        ma_source: "close",
+        horizon_bars: 10,
       },
     });
 
@@ -682,30 +672,28 @@ describe("historyService", () => {
 
   it("loads saved-run detail via artifact command", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      strategy_kind: "CompositeMo",
-      report_xlsx_path: "C:/runs/report.xlsx",
+      strategyKind: "CompositeMo",
+      timeframe: "5m",
+      csvPath: "C:/data/msft.csv",
+      reportPath: "C:/runs/report.xlsx",
+      hasValidation: true,
       tags: ["tag1", " tag2 "],
-      dataset_meta: { timeframe: "5m" },
-      data: { csv_path: "C:/data/msft.csv" },
-      run: {
-        req: {
-          strategy_kind: "CompositeMo",
-          backend: { backend: "CpuOnly" },
-          objective: "Sharpe",
-          ma_source: "close",
-          fast_range: { start: 5, end: 20, step: 1 },
-          slow_range: { start: 21, end: 100, step: 1 },
-          fast_ma_types: ["sma"],
-          slow_ma_types: ["ema"],
-          starting_equity: 10000,
-        },
-      },
-      validation: { res: { candidates: [] } },
+      paramsText: [
+        "strategy: CompositeMo",
+        "backend: CpuOnly",
+        "objective: Sharpe",
+        "ma source: close",
+        "fast range: 5-20 x1",
+        "slow range: 21-100 x1",
+        "fast ma: sma",
+        "slow ma: ema",
+        "starting equity: 10000",
+      ].join("\n"),
     });
 
     const detail = await loadSavedRunDetail(" C:/runs/run1.json ");
 
-    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
+    expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
     expect(detail).toEqual({
@@ -740,66 +728,32 @@ describe("historyService", () => {
 
   it("loads MlSignal saved-run detail with policy summary", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      strategy_kind: "MlSignal",
+      strategyKind: "MlSignal",
+      timeframe: "1d",
+      csvPath: "C:/data/spy.csv",
+      reportPath: "",
+      hasValidation: true,
       tags: ["ml", " research "],
-      dataset_meta: { timeframe: "1d" },
-      data: { csv_path: "C:/data/spy.csv" },
-      ml_signal: {
-        bundle_id: "bundle-a",
-        score_cache_path: "C:/runs/ml_score_cache.json",
-        score_manifest_path: "C:/runs/ml_score_cache.manifest.json",
-        feature_schema_path: "C:/runs/ml_dataset.feature_schema.json",
-        feature_schema_version: 1,
-        policy: {
-          t_long: 0.6,
-          t_short: 0.55,
-          delta: 0.1,
-          max_hold_bars: 10,
-        },
-        policy_sweep: {
-          sweep_size: 27,
-          top_k: 4,
-          best_label: "best_sweep",
-          best_robust_score: 1.44,
-        },
-      },
-      run: {
-        req: {
-          strategy_kind: "MlSignal",
-          data_id: "data-ml",
-          input_path: "C:/scores/ml_scores.csv",
-          output_path: "C:/runs/ml_score_cache.json",
-          model_bundle_id: "bundle-a",
-        },
-      },
-      validation: {
-        req: {
-          candidates: [
-            {
-              label: "best_sweep",
-              t_long: 0.6,
-              t_short: 0.55,
-              delta: 0.1,
-              max_hold_bars: 10,
-            },
-          ],
-        },
-        res: {
-          run_verdict: {
-            approved_candidate_count: 1,
-            candidates_survived_hard_gates: 1,
-            candidates_considered: 27,
-          },
-          candidates: [
-            {
-              robust_score: 1.0,
-              psr: 0.7,
-              dsr: 0.6,
-              params: { label: "best_sweep" },
-            },
-          ],
-        },
-      },
+      mlBundleId: "bundle-a",
+      mlScoreCachePath: "C:/runs/ml_score_cache.json",
+      mlScoreManifestPath: "C:/runs/ml_score_cache.manifest.json",
+      mlFeatureSchemaPath: "C:/runs/ml_dataset.feature_schema.json",
+      mlFeatureSchemaVersion: "1",
+      mlPolicySummary: "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10",
+      mlPolicySweepSummary: "size=27 | top_k=4 | best=best_sweep | score=1.44",
+      mlRunVerdictSummary: "approved=1 | survived=1 | considered=27",
+      mlTopCandidatesSummary: "best_sweep | robust=1 | psr=0.7 | dsr=0.6",
+      paramsText: [
+        "strategy: MlSignal",
+        "data id: data-ml",
+        "score input: C:/scores/ml_scores.csv",
+        "dataset/score output: C:/runs/ml_score_cache.json",
+        "model bundle: bundle-a",
+        "policy t_long: 0.6",
+        "policy t_short: 0.55",
+        "policy delta: 0.1",
+        "policy max_hold_bars: 10",
+      ].join("\n"),
     });
 
     const detail = await loadSavedRunDetail(" C:/runs/ml_signal.json ");
@@ -836,14 +790,14 @@ describe("historyService", () => {
 
   it("opens saved report from artifact detail", async () => {
     invokeCommandMock.mockResolvedValueOnce({
-      report_xlsx_path: "C:/runs/report.xlsx",
-      run: { req: {} },
+      reportPath: "C:/runs/report.xlsx",
+      paramsText: "",
     });
     invokeCommandMock.mockResolvedValueOnce(undefined);
 
     await openSavedRunReport(" C:/runs/run1.json ");
 
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "load_run_artifact", {
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {

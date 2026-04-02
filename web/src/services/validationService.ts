@@ -164,6 +164,7 @@ interface WorkflowRunArtifactSnapshot {
   reportXlsxPath: string
   csvPath: string
   datasetMeta: Record<string, unknown> | null
+  mlSignal: Record<string, unknown> | null
   tags: string[]
   req: unknown
   res: unknown
@@ -196,6 +197,7 @@ interface PersistValidationArtifactResult {
   csvPath: string
   reportXlsxPath: string
   datasetMeta: Record<string, unknown> | null
+  mlSignal: Record<string, unknown> | null
   tags: string[]
 }
 
@@ -445,6 +447,11 @@ function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null 
       ? row.datasetMeta as Record<string, unknown>
       : (row.dataset_meta && typeof row.dataset_meta === 'object'
         ? row.dataset_meta as Record<string, unknown>
+        : null),
+    mlSignal: row.mlSignal && typeof row.mlSignal === 'object'
+      ? row.mlSignal as Record<string, unknown>
+      : (row.ml_signal && typeof row.ml_signal === 'object'
+        ? row.ml_signal as Record<string, unknown>
         : null),
     tags: normalizeStringList(row.tags),
     req: row.req ?? null,
@@ -1215,7 +1222,7 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   const crossSummary = crossDatasets > 0
     ? isDoubleLike
       ? `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'}${crossMode ? ` • ${crossMode}` : ''}${preservedFinalistsMode ? ' • finalists only (cap=4)' : ''}`
-      : `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'}${crossMode ? ` • requested=${crossMode}` : ''} • effective lightweight reruns`
+      : `${crossDatasets} dataset${crossDatasets === 1 ? '' : 's'}${crossMode ? ` • requested=${crossMode}` : ''} • ${preservedFinalistsMode ? 'finalists only (cap=4)' : 'lightweight reruns'}`
     : 'not run'
 
   const skipped: string[] = []
@@ -1225,7 +1232,11 @@ function buildValidationExecutionSummary(result: unknown, validationReq?: unknow
   if (isDoubleLike && preservedFinalistsMode) {
     skipped.push('Cross reruns: omit walk_forward + reopt WF + SPA + perturb + trade bootstrap')
   } else if (!isDoubleLike && requestedCross) {
-    skipped.push('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
+    skipped.push(
+      preservedFinalistsMode
+        ? 'Cross reruns: preserved_finalists omit walk_forward + reopt WF + SPA + perturb + trade bootstrap'
+        : 'Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates'
+    )
   }
   if (req?.reopt_walk_forward && typeof req.reopt_walk_forward === 'object' && !asRecord(row?.reopt_walk_forward)) {
     skipped.push('Reopt WF: unavailable')
@@ -1645,6 +1656,7 @@ async function persistValidationArtifact(
     options.datasetMeta
       ?? currentRun?.datasetMeta
       ?? buildDatasetMetaForArtifact(csvPath, buildRunDatasetContextState())
+  const mlSignal = currentRun?.mlSignal ?? null
   const configFingerprint = computeConfigFingerprint(runReq, validationReq)
   const artifact: Record<string, unknown> = {
     version: 1,
@@ -1656,6 +1668,7 @@ async function persistValidationArtifact(
     report_xlsx_path: reportXlsxPath,
     data: { csv_path: csvPath },
     dataset_meta: datasetMeta,
+    ml_signal: mlSignal,
     tags
   }
   let path = normalizeText(currentRun?.artifactPath)
@@ -1669,7 +1682,7 @@ async function persistValidationArtifact(
     // keep validation non-throwing if artifact persistence fails
   }
 
-  return { path, ts, csvPath, reportXlsxPath, datasetMeta, tags }
+  return { path, ts, csvPath, reportXlsxPath, datasetMeta, mlSignal, tags }
 }
 
 function applyVueValidationArtifacts(
@@ -1687,6 +1700,7 @@ function applyVueValidationArtifacts(
         report_xlsx_path: persisted.reportXlsxPath,
         csv_path: persisted.csvPath,
         dataset_meta: persisted.datasetMeta,
+        ml_signal: persisted.mlSignal,
         tags: persisted.tags,
         req: runReq,
         res: runRes
@@ -2073,6 +2087,8 @@ async function exportReportXlsxInternal(
   const ts = normalizeText(report.ts) || new Date().toISOString()
   const validationReq = asRecord(report.validation?.req ?? null)
   const validationRes = report.validation?.res ?? null
+  const currentRun = readWorkflowRunArtifactFromStore()
+  const currentValidation = readWorkflowValidationArtifactFromStore()
 
   if (!validationReq || validationRes == null) {
     const stage3Path = readLatestMetaReportPath()
@@ -2094,10 +2110,23 @@ async function exportReportXlsxInternal(
 
   let path = ''
   try {
-    const saved = (await invokeCommand('save_report_xlsx', {
-      report,
-      max_rows: prefs.maxRows
-    })) as SaveReportXlsxResponse
+    const artifactPath = normalizePath(currentRun?.artifactPath ?? '')
+    const canUseArtifactExport =
+      !!artifactPath
+      && currentValidation?.req === validationReq
+      && currentValidation?.res === validationRes
+    const saved = (await invokeCommand(
+      canUseArtifactExport ? 'save_report_xlsx_from_artifact' : 'save_report_xlsx',
+      canUseArtifactExport
+        ? {
+            path: artifactPath,
+            max_rows: prefs.maxRows
+          }
+        : {
+            report,
+            max_rows: prefs.maxRows
+          }
+    )) as SaveReportXlsxResponse
     path = normalizeText(saved?.path)
   } catch (saveError) {
     try {

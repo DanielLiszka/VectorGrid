@@ -955,6 +955,47 @@ describe('validationRequestBuilder', () => {
     expect(summary.warningSummary).toContain('Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward')
   })
 
+  it('surfaces composite preserved-finalists cross reruns as finalists-only with verdict-relevant retention', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'Asr',
+        data_id: 'data-composite-preserved',
+        backend: { backend: 'GpuKernel', device_id: 0 },
+        ma_source: 'close',
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 9,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            asr: {},
+          }
+        }
+      ],
+      wfEnable: true,
+      wfWindow: '12000',
+      wfStep: '3000',
+      cscvEnable: true,
+      cscvSlices: '16',
+      crossEnable: true,
+      crossMax: '2',
+      crossMode: 'preserved_finalists',
+      crossDatasets: [
+        { csv_path: 'C:/data/SPY.csv', label: 'SPY' }
+      ],
+      candidates: '8'
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.crossSummary).toContain('finalists only')
+    expect(summary.skippedSummary).toContain('Cross reruns: preserved_finalists omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap')
+    expect(summary.warningSummary).toContain('preserved-finalists composite cross reruns keep CSCV/PBO + hard gates')
+  })
+
   it('surfaces plain CompositeCpu GPU route restrictions explicitly in previews', () => {
     const req = buildValidationRequest({
       currentRunReq: {

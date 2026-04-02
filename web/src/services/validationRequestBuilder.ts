@@ -578,12 +578,13 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
       }
     }
     if (req.cross_ticker) {
-      warningNotes.push(
-        crossMode && crossMode !== 'lightweight'
-          ? `Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns remain lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates; requested ${crossMode} currently uses lightweight behavior.`
-          : 'Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.',
-      )
-      skippedNotes.push('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap + CSCV + hard gates')
+      if (crossMode === 'preserved_finalists') {
+        warningNotes.push('Composite fixed-candidate main-route validation does not support inline cross_ticker; preserved-finalists composite cross reruns keep CSCV/PBO + hard gates and omit walk_forward, reopt_walk_forward, spa, perturb, and trade_bootstrap.')
+        skippedNotes.push('Cross reruns: preserved_finalists omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap')
+      } else {
+        warningNotes.push('Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.')
+        skippedNotes.push('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt_walk_forward + SPA + perturb + trade bootstrap + CSCV + hard gates')
+      }
     }
   }
 
@@ -597,8 +598,8 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
     } else if (isDoubleLike && crossMode === 'lightweight') {
       crossSummary = `${base} | lightweight reruns`
     } else if (!isDoubleLike) {
-      crossSummary = crossMode && crossMode !== 'lightweight'
-        ? `${base} | effective lightweight reruns`
+      crossSummary = crossMode === 'preserved_finalists'
+        ? `${base} | finalists only`
         : `${base} | lightweight reruns`
     } else {
       crossSummary = base

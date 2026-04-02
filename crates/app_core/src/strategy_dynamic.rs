@@ -110,17 +110,59 @@ impl LazyPreparedDynamicCpuContext {
     }
 }
 
+struct LazyCompiledCpuFallbackPlan {
+    deferred_ir: Option<crate::strategy_ir::StrategyIr>,
+    plan: OnceLock<CompiledStrategyPlan>,
+}
+
+impl LazyCompiledCpuFallbackPlan {
+    fn eager(plan: CompiledStrategyPlan) -> Self {
+        let ready = OnceLock::new();
+        assert!(
+            ready.set(plan).is_ok(),
+            "fresh OnceLock should accept eager dynamic cpu fallback plan"
+        );
+        Self {
+            deferred_ir: None,
+            plan: ready,
+        }
+    }
+
+    fn deferred(ir: &crate::strategy_ir::StrategyIr) -> Self {
+        Self {
+            deferred_ir: Some(ir.clone()),
+            plan: OnceLock::new(),
+        }
+    }
+
+    fn get(&self) -> &CompiledStrategyPlan {
+        self.plan.get_or_init(|| {
+            let ir = self
+                .deferred_ir
+                .as_ref()
+                .expect("deferred dynamic cpu fallback plan build inputs missing");
+            compile_strategy_plan_for_dynamic(ir, StrategyPlanBackend::Cpu)
+                .expect("validated dynamic strategy IR should compile for CPU backend")
+        })
+    }
+}
+
 pub struct RunnableDynamicDoubleMaPlan {
     pub ir: crate::strategy_ir::StrategyIr,
     pub preview: DynamicDoubleMaStrategyIrPreview,
-    pub cpu_plan: CompiledStrategyPlan,
+    pub resolved_plan: CompiledStrategyPlan,
+    cpu_fallback_plan: LazyCompiledCpuFallbackPlan,
     cpu_context: LazyPreparedDynamicCpuContext,
     pub gpu_handle: Option<StrategyHandle>,
 }
 
 impl RunnableDynamicDoubleMaPlan {
+    pub fn cpu_plan(&self) -> &CompiledStrategyPlan {
+        self.cpu_fallback_plan.get()
+    }
+
     pub fn cpu_context(&self, candles: &Candles) -> Result<&PreparedDynamicCpuContext, String> {
-        self.cpu_context.get(&self.cpu_plan, candles)
+        self.cpu_context.get(self.cpu_plan(), candles)
     }
 }
 
@@ -344,8 +386,7 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
         compiled_backend = StrategyPlanBackend::Cpu;
     }
 
-    let initial_backend = compiled_backend;
-    let mut plan = match compile_strategy_plan(ir, initial_backend, None) {
+    let mut plan = match compile_strategy_plan_for_dynamic(ir, compiled_backend) {
         Ok(plan) => plan,
         Err(err)
             if requested_backend == StrategyPlanBackend::GpuUnified
@@ -355,14 +396,10 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
             capability.gpu_dynamic_supported = false;
             capability.reasons.push(err);
             compiled_backend = StrategyPlanBackend::Cpu;
-            compile_strategy_plan(ir, compiled_backend, None)?
+            compile_strategy_plan_for_dynamic(ir, compiled_backend)?
         }
         Err(err) => return Err(err),
     };
-
-    if compiled_backend != requested_backend {
-        plan = compile_strategy_plan(ir, compiled_backend, None)?;
-    }
 
     let mut gpu_handle = None;
     if compiled_backend == StrategyPlanBackend::GpuUnified && capability.gpu_dynamic_supported {
@@ -372,7 +409,7 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
             capability.gpu_dynamic_supported = false;
             capability.reasons.push(reason);
             compiled_backend = StrategyPlanBackend::Cpu;
-            plan = compile_strategy_plan(ir, compiled_backend, None)?;
+            plan = compile_strategy_plan_for_dynamic(ir, compiled_backend)?;
         } else {
             gpu_handle = Some(handle);
         }
@@ -428,14 +465,15 @@ pub fn prepare_runnable_dynamic_double_ma_plan(
     let preview = resolved.preview;
     let resolved_plan = resolved.resolved_plan;
     let resolved_gpu_handle = resolved.gpu_handle;
-    let cpu_plan = if preview.resolved_backend == StrategyPlanBackend::Cpu {
-        resolved_plan.clone()
+    let stored_resolved_plan = resolved_plan.clone();
+    let cpu_fallback_plan = if preview.resolved_backend == StrategyPlanBackend::Cpu {
+        LazyCompiledCpuFallbackPlan::eager(resolved_plan.clone())
     } else {
-        compile_strategy_plan(&ir, StrategyPlanBackend::Cpu, None)?
+        LazyCompiledCpuFallbackPlan::deferred(&ir)
     };
     let cpu_context = if preview.resolved_backend == StrategyPlanBackend::Cpu {
         LazyPreparedDynamicCpuContext::eager(prepare_dynamic_cpu_context(
-            &cpu_plan,
+            cpu_fallback_plan.get(),
             candles,
             ir.ma_source.as_str(),
         )?)
@@ -455,7 +493,8 @@ pub fn prepare_runnable_dynamic_double_ma_plan(
     Ok(RunnableDynamicDoubleMaPlan {
         ir,
         preview,
-        cpu_plan,
+        resolved_plan: stored_resolved_plan,
+        cpu_fallback_plan,
         cpu_context,
         gpu_handle,
     })
@@ -613,6 +652,15 @@ fn composite_profile_from_strategy_flags(
     }
 }
 
+fn compile_strategy_plan_for_dynamic(
+    ir: &crate::strategy_ir::StrategyIr,
+    backend: StrategyPlanBackend,
+) -> Result<CompiledStrategyPlan, String> {
+    #[cfg(test)]
+    COMPILE_DYNAMIC_STRATEGY_PLAN_CALLS.fetch_add(1, Ordering::Relaxed);
+    compile_strategy_plan(ir, backend, None)
+}
+
 pub fn compile_dynamic_plan_for_double_ma_config(
     ma_source: &str,
     fast_ma_type: &str,
@@ -636,7 +684,7 @@ pub fn compile_dynamic_plan_for_double_ma_config(
             halftrend_filter.cloned(),
         ),
     )?;
-    compile_strategy_plan(&ir, backend, None)
+    compile_strategy_plan_for_dynamic(&ir, backend)
 }
 
 pub fn compile_dynamic_plan_for_composite_cpu_config(
@@ -671,7 +719,7 @@ pub fn compile_dynamic_plan_for_composite_cpu_config(
             signal_mode: Some(signal_mode),
         },
     )?;
-    compile_strategy_plan(&ir, backend, None)
+    compile_strategy_plan_for_dynamic(&ir, backend)
 }
 
 pub(crate) fn build_dynamic_cpu_context_from_precomputed(
@@ -766,6 +814,10 @@ static PREPARE_DYNAMIC_CPU_CONTEXT_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
+static COMPILE_DYNAMIC_STRATEGY_PLAN_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
 fn reset_prepare_dynamic_cpu_context_call_count() {
     PREPARE_DYNAMIC_CPU_CONTEXT_CALLS.store(0, Ordering::Relaxed);
 }
@@ -773,6 +825,16 @@ fn reset_prepare_dynamic_cpu_context_call_count() {
 #[cfg(test)]
 fn prepare_dynamic_cpu_context_call_count() -> usize {
     PREPARE_DYNAMIC_CPU_CONTEXT_CALLS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn reset_compile_dynamic_strategy_plan_call_count() {
+    COMPILE_DYNAMIC_STRATEGY_PLAN_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn compile_dynamic_strategy_plan_call_count() -> usize {
+    COMPILE_DYNAMIC_STRATEGY_PLAN_CALLS.load(Ordering::Relaxed)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -3140,6 +3202,7 @@ mod tests {
         )
         .expect("static ir should build");
 
+        reset_compile_dynamic_strategy_plan_call_count();
         reset_prepare_dynamic_cpu_context_call_count();
         let runnable = prepare_runnable_dynamic_double_ma_plan(
             ir,
@@ -3151,26 +3214,22 @@ mod tests {
         )
         .expect("runnable plan should prepare");
 
-        match runnable.preview.resolved_backend {
-            StrategyPlanBackend::GpuUnified => {
-                assert_eq!(prepare_dynamic_cpu_context_call_count(), 0);
-                runnable
-                    .cpu_context(&candles)
-                    .expect("deferred cpu context should build on first access");
-                assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
-            }
-            StrategyPlanBackend::Cpu => {
-                assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
-                runnable
-                    .cpu_context(&candles)
-                    .expect("eager cpu context should remain accessible");
-                assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
-            }
-        }
+        assert_eq!(
+            runnable.preview.resolved_backend,
+            StrategyPlanBackend::GpuUnified
+        );
+        assert_eq!(compile_dynamic_strategy_plan_call_count(), 1);
+        assert_eq!(prepare_dynamic_cpu_context_call_count(), 0);
+        runnable
+            .cpu_context(&candles)
+            .expect("deferred cpu context should build on first access");
+        assert_eq!(compile_dynamic_strategy_plan_call_count(), 2);
+        assert_eq!(prepare_dynamic_cpu_context_call_count(), 1);
     }
 
     #[test]
     fn preview_dynamic_double_ma_strategy_ir_falls_back_to_cpu_for_halftrend_shape() {
+        let _guard = lock_test_env();
         let ir = build_static_strategy_ir(
             StrategyProfileKind::DoubleMa,
             StaticStrategyIrInput::from_double_ma(
@@ -3189,6 +3248,7 @@ mod tests {
         )
         .expect("static ir should build");
 
+        reset_compile_dynamic_strategy_plan_call_count();
         let preview = preview_dynamic_double_ma_strategy_ir(
             &ir,
             StrategyPlanBackend::GpuUnified,
@@ -3209,6 +3269,7 @@ mod tests {
 
     #[test]
     fn preview_dynamic_double_ma_strategy_ir_falls_back_to_cpu_for_non_cross_exit_mode() {
+        let _guard = lock_test_env();
         let mut strategy = StrategyConfig::default();
         strategy.exit_mode = ta_strategies::double_ma::ExitMode::KaufmanStop;
         let ir = build_static_strategy_ir(
@@ -3225,6 +3286,7 @@ mod tests {
         )
         .expect("static ir should build");
 
+        reset_compile_dynamic_strategy_plan_call_count();
         let preview = preview_dynamic_double_ma_strategy_ir(
             &ir,
             StrategyPlanBackend::GpuUnified,
@@ -3236,6 +3298,7 @@ mod tests {
 
         assert!(!preview.capability.gpu_dynamic_supported);
         assert_eq!(preview.resolved_backend, StrategyPlanBackend::Cpu);
+        assert_eq!(compile_dynamic_strategy_plan_call_count(), 1);
         assert!(preview
             .capability
             .reasons

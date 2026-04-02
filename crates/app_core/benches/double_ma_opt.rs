@@ -1968,6 +1968,7 @@ fn bench_double_ma_dynamic_program_execution(c: &mut Criterion) {
         &combos,
         0,
         &strategy,
+        &handle,
         0,
     )
     .expect("upload dynamic alma batch");
@@ -1997,6 +1998,7 @@ fn bench_double_ma_dynamic_program_execution(c: &mut Criterion) {
                 &combos,
                 0,
                 &strategy,
+                &handle,
                 0,
             )
             .expect("upload dynamic alma batch");

@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::composite_validate::{PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional};
+use crate::validation_shared::{PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional};
 use crate::iterative_sim::{IterativeSimConfig, ValidationEngine};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

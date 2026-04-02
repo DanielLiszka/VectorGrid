@@ -1,7 +1,9 @@
 use super::run_artifacts::{
-    self, MetaArtifactSummary, MlPolicyEvalArtifactSummary, RunArtifactSummary,
-    SaveBatchSummaryResponse, SaveRunArtifactResponse, Stage4ArtifactSummary,
-    Stage5ArtifactSummary,
+    self, ArtifactLibrarySnapshot, MetaArtifactReplayResponse, MetaArtifactSummary,
+    MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary, RunArtifactDetailResponse,
+    RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse,
+    Stage4ArtifactSummary, Stage5ArtifactReplayResponse, Stage5ArtifactSummary,
+    WorkflowArtifactsHydrationPayload,
 };
 use serde_json::Value;
 
@@ -32,6 +34,15 @@ pub async fn save_batch_summary(
 #[tauri::command]
 pub async fn list_run_artifacts(app: tauri::AppHandle) -> Result<Vec<RunArtifactSummary>, String> {
     tauri::async_runtime::spawn_blocking(move || run_artifacts::list_run_artifacts_blocking(app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_artifact_library(
+    app: tauri::AppHandle,
+) -> Result<ArtifactLibrarySnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || run_artifacts::list_artifact_library_blocking(app))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -91,6 +102,66 @@ pub async fn list_ml_policy_eval_artifacts(
 pub async fn load_run_artifact(path: String, app: tauri::AppHandle) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         run_artifacts::load_run_artifact_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_run_artifact_hydration(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<WorkflowArtifactsHydrationPayload, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_run_artifact_hydration_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_run_artifact_detail(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<RunArtifactDetailResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_run_artifact_detail_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_meta_artifact_replay(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<MetaArtifactReplayResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_meta_artifact_replay_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_stage5_artifact_replay(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<Stage5ArtifactReplayResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_stage5_artifact_replay_blocking(path, app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn load_ml_policy_eval_artifact_replay(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<MlPolicyEvalArtifactReplayResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_ml_policy_eval_artifact_replay_blocking(path, app)
     })
     .await
     .map_err(|e| e.to_string())?

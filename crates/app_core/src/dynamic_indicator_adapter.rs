@@ -429,7 +429,7 @@ pub struct PreparedCudaDispatchStats {
 }
 
 #[cfg(feature = "cuda")]
-pub(crate) fn take_prepared_cuda_dispatch_stats() -> PreparedCudaDispatchStats {
+pub fn take_prepared_cuda_dispatch_stats() -> PreparedCudaDispatchStats {
     PREPARED_CUDA_DISPATCH_STATS.with(|cell| {
         let mut stats = cell.borrow_mut();
         let out = *stats;

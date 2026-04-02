@@ -842,7 +842,7 @@ fn workbook_surfaces_composite_auto_cpu_preference_note_in_expected_execution() 
     assert!(xml.contains("Expected Execution"));
     assert!(xml.contains("Expected Categories"));
     assert!(xml.contains("Expected Notes"));
-    assert!(xml.contains("Auto requested | expected CPU-preferred composite route (Carm)"));
+    assert!(xml.contains("Auto requested | expected CPU-preferred composite route (CARM)"));
     assert!(xml.contains("CPU-only: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
     assert!(xml
         .contains("Auto composite validation currently prefers CPU for CARM because current advanced-stack benches show CPU faster than GPU on the measured 50k/8 and 100k/32 workloads."));
@@ -864,7 +864,7 @@ fn workbook_surfaces_cdmc_gpu_route_detail_and_composite_robustness_blocks() {
     assert!(xml.contains(
         "CDMC GPU validation currently uses CPU-reference signal prep with exact CPU-series validation metrics on the current mixed route."
     ));
-    assert!(xml.contains("GPU-native: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
+    assert!(xml.contains("GPU main + CPU tail: base reruns + hard gates + walk_forward + reopt_walk_forward + cscv_pbo + spa + perturb + trade_bootstrap"));
     assert!(xml.contains("WF Efficiency"));
     assert!(xml.contains("Bootstrap Compare"));
     assert!(xml.contains("Regime Flag"));

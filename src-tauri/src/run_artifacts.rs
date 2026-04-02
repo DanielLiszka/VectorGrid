@@ -47,6 +47,7 @@ fn is_meta_artifact_file_name(name: &str) -> bool {
     trimmed.starts_with("vectorbt_meta_") || trimmed.starts_with("vectorgrid_meta_")
 }
 
+#[cfg(test)]
 fn is_meta_stage_artifact_file_name(name: &str) -> bool {
     let trimmed = name.trim();
     trimmed.starts_with("vectorbt_stage4_")
@@ -155,6 +156,115 @@ pub struct MlPolicyEvalArtifactSummary {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ArtifactScanEntry {
+    path: PathBuf,
+    file_name: String,
+    bytes: u64,
+    value: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactLibrarySnapshot {
+    pub runs: Vec<RunArtifactSummary>,
+    pub meta: Vec<MetaArtifactSummary>,
+    pub stage5: Vec<Stage5ArtifactSummary>,
+    pub policy_evals: Vec<MlPolicyEvalArtifactSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkflowArtifactRunPayload {
+    pub ts: String,
+    pub artifact_path: String,
+    pub report_xlsx_path: String,
+    pub csv_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_meta: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_signal: Option<Value>,
+    pub tags: Vec<String>,
+    pub req: Value,
+    pub res: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkflowArtifactValidationPayload {
+    pub ts: String,
+    pub req: Value,
+    pub res: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowArtifactsHydrationPayload {
+    pub current_run: WorkflowArtifactRunPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_validation: Option<WorkflowArtifactValidationPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunArtifactDetailResponse {
+    pub ts: String,
+    pub artifact_path: String,
+    pub strategy_kind: String,
+    pub timeframe: String,
+    pub csv_path: String,
+    pub report_path: String,
+    pub has_validation: bool,
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_meta: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ml_signal: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_req: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_req: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_res: Option<Value>,
+    pub ml_signal_stage: String,
+    pub ml_bundle_id: String,
+    pub ml_score_cache_path: String,
+    pub ml_score_manifest_path: String,
+    pub ml_feature_schema_path: String,
+    pub ml_feature_schema_version: String,
+    pub ml_policy_summary: String,
+    pub ml_policy_sweep_summary: String,
+    pub ml_run_verdict_summary: String,
+    pub ml_top_candidates_summary: String,
+    pub params_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MetaArtifactReplayResponse {
+    pub ts: String,
+    pub report_xlsx_path: String,
+    pub report_xlsx_bytes: usize,
+    pub meta_json_path: String,
+    pub meta_json_bytes: usize,
+    pub result: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Stage5ArtifactReplayResponse {
+    pub ts: String,
+    pub stage4_json_path: String,
+    pub stage4_json_bytes: usize,
+    pub stage5_json_path: String,
+    pub stage5_json_bytes: usize,
+    pub result: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MlPolicyEvalArtifactReplayResponse {
+    pub ts: String,
+    pub eval_json_path: String,
+    pub eval_json_bytes: usize,
+    pub result: Value,
+}
+
 pub(super) fn runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let dir = base.join("runs");
@@ -167,6 +277,25 @@ pub(super) fn suggest_meta_artifact_path(
     app: &tauri::AppHandle,
 ) -> Result<PathBuf, String> {
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_meta", ts, "json")
+}
+
+pub(super) fn suggest_stage5_artifact_path(
+    ts: &str,
+    app: &tauri::AppHandle,
+) -> Result<PathBuf, String> {
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_stage5", ts, "json")
+}
+
+pub(super) fn suggest_ml_policy_eval_artifact_path(
+    ts: &str,
+    app: &tauri::AppHandle,
+) -> Result<PathBuf, String> {
+    suggest_ts_file_path(
+        runs_dir(app)?,
+        "vectorgrid_ml_confidence_eval",
+        ts,
+        "json",
+    )
 }
 
 pub(super) fn suggest_batch_summary_path(
@@ -232,7 +361,9 @@ fn resolve_run_artifact_strategy_kind(v: &Value) -> String {
 }
 
 fn resolve_run_artifact_csv_path(v: &Value) -> String {
-    non_empty_string(v.pointer("/data/csv_path"))
+    non_empty_string(v.get("csv_path"))
+        .or_else(|| non_empty_string(v.pointer("/data/csv_path")))
+        .or_else(|| non_empty_string(v.pointer("/dataset_meta/csv_path")))
         .or_else(|| non_empty_string(v.pointer("/validation/req/validation_context/csv_path")))
         .unwrap_or_default()
 }
@@ -527,6 +658,983 @@ pub(super) fn prune_old_stage4_artifacts_blocking(app: &tauri::AppHandle, keep_n
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_stage5_");
 }
 
+pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
+    app: &tauri::AppHandle,
+    keep_newest: usize,
+) {
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_ml_confidence_eval_");
+    prune_old_artifacts_by_prefix(
+        app,
+        keep_newest,
+        "vectorgrid_ml_confidence_policy_evaluation_",
+    );
+    prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_ml_confidence_eval_");
+    prune_old_artifacts_by_prefix(
+        app,
+        keep_newest,
+        "vectorbt_ml_confidence_policy_evaluation_",
+    );
+}
+
+fn read_json_value(path: &Path) -> Option<Value> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn scan_artifact_library(app: &tauri::AppHandle) -> Result<Vec<ArtifactScanEntry>, String> {
+    let dir = runs_dir(app)?;
+    let mut paths: Vec<(PathBuf, String)> = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(file_name) = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
+        paths.push((path, file_name));
+    }
+
+    paths.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+
+    let mut out = Vec::with_capacity(paths.len());
+    for (path, file_name) in paths {
+        let bytes = match std::fs::metadata(&path) {
+            Ok(meta) => meta.len(),
+            Err(_) => continue,
+        };
+        let Some(value) = read_json_value(&path) else {
+            continue;
+        };
+        out.push(ArtifactScanEntry {
+            path,
+            file_name,
+            bytes,
+            value,
+        });
+    }
+
+    Ok(out)
+}
+
+fn load_artifact_entry_checked(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<ArtifactScanEntry, String> {
+    let dir = runs_dir(&app)?;
+    let path = PathBuf::from(path.trim());
+    ensure_path_is_within_dir(&path, &dir)?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "artifact path is missing a filename".to_string())?;
+    let bytes = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+
+    Ok(ArtifactScanEntry {
+        path,
+        file_name,
+        bytes,
+        value,
+    })
+}
+
+fn normalized_tags(v: &Value) -> Vec<String> {
+    v.get("tags")
+        .and_then(|x| x.as_array())
+        .map(|xs| {
+            xs.iter()
+                .filter_map(|entry| entry.as_str().map(|s| s.trim().to_string()))
+                .filter(|tag| !tag.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn clone_value_or_null(value: Option<&Value>) -> Value {
+    value.cloned().unwrap_or(Value::Null)
+}
+
+fn normalize_text_value(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => {
+            if let Some(integer) = number.as_i64() {
+                integer.to_string()
+            } else if let Some(integer) = number.as_u64() {
+                integer.to_string()
+            } else if let Some(float) = number.as_f64() {
+                if float.fract() == 0.0 {
+                    (float as i64).to_string()
+                } else {
+                    float.to_string()
+                }
+            } else {
+                number.to_string()
+            }
+        }
+        Some(Value::Bool(boolean)) => boolean.to_string(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string().trim_matches('"').trim().to_string(),
+    }
+}
+
+fn normalize_string_list(value: Option<&Value>) -> Vec<String> {
+    value.and_then(Value::as_array)
+        .map(|items| {
+            items.iter()
+                .map(|item| normalize_text_value(Some(item)))
+                .filter(|item| !item.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn format_range_label(value: Option<&Value>) -> String {
+    let Some(range) = value.and_then(Value::as_object) else {
+        return "-".to_string();
+    };
+    let start = range.get("start").and_then(Value::as_f64);
+    let end = range.get("end").and_then(Value::as_f64);
+    let step = range.get("step").and_then(Value::as_f64);
+    let (Some(start), Some(end)) = (start, end) else {
+        return "-".to_string();
+    };
+    let start = start.floor() as i64;
+    let end = end.floor() as i64;
+    match step.filter(|step| step.is_finite() && *step > 0.0) {
+        Some(step) => format!("{start}-{end} x{}", step.floor() as i64),
+        None => format!("{start}-{end}"),
+    }
+}
+
+fn format_sweep_axis(value: Option<&Value>) -> String {
+    let Some(axis) = value.and_then(Value::as_object) else {
+        return String::new();
+    };
+    let start = normalize_text_value(axis.get("start"));
+    let end = normalize_text_value(axis.get("end"));
+    let step = normalize_text_value(axis.get("step"));
+    if start.is_empty() && end.is_empty() && step.is_empty() {
+        return String::new();
+    }
+    [start, end, step]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn format_ml_policy_summary(value: Option<&Value>) -> String {
+    let Some(policy) = value.and_then(Value::as_object) else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    for (key, label) in [
+        ("t_long", "t_long"),
+        ("t_short", "t_short"),
+        ("delta", "delta"),
+        ("max_hold_bars", "hold"),
+    ] {
+        let text = normalize_text_value(policy.get(key));
+        if !text.is_empty() {
+            parts.push(format!("{label}={text}"));
+        }
+    }
+    parts.join(" | ")
+}
+
+fn format_ml_policy_sweep_summary(value: Option<&Value>) -> String {
+    let Some(sweep) = value.and_then(Value::as_object) else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    for (key, label) in [("sweep_size", "size"), ("top_k", "top_k")] {
+        let text = normalize_text_value(sweep.get(key));
+        if !text.is_empty() {
+            parts.push(format!("{label}={text}"));
+        }
+    }
+    for key in ["best_label", "best_robust_score"] {
+        let text = normalize_text_value(sweep.get(key));
+        if !text.is_empty() {
+            let label = if key == "best_robust_score" {
+                "score"
+            } else {
+                "best"
+            };
+            parts.push(format!("{label}={text}"));
+        }
+    }
+    parts.join(" | ")
+}
+
+fn format_ml_run_verdict_summary(validation_res: Option<&Value>) -> String {
+    let verdict = validation_res
+        .and_then(|value| value.pointer("/run_verdict"))
+        .and_then(Value::as_object);
+    let Some(verdict) = verdict else {
+        return String::new();
+    };
+    let mut parts = Vec::new();
+    for (key, label) in [
+        ("approved_candidate_count", "approved"),
+        ("candidates_survived_hard_gates", "survived"),
+        ("candidates_considered", "considered"),
+    ] {
+        let text = normalize_text_value(verdict.get(key));
+        if !text.is_empty() {
+            parts.push(format!("{label}={text}"));
+        }
+    }
+    parts.join(" | ")
+}
+
+fn format_ml_top_candidates_summary(validation_res: Option<&Value>) -> String {
+    let candidate = validation_res
+        .and_then(|value| value.pointer("/candidates"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(Value::as_object);
+    let Some(candidate) = candidate else {
+        return String::new();
+    };
+
+    let label = candidate
+        .get("label")
+        .or_else(|| {
+            candidate
+                .get("params")
+                .and_then(Value::as_object)
+                .and_then(|params| params.get("label"))
+        })
+        .map(|value| normalize_text_value(Some(value)))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "candidate".to_string());
+
+    let mut parts = vec![label];
+    for key in ["robust_score", "psr", "dsr"] {
+        let text = normalize_text_value(candidate.get(key));
+        if !text.is_empty() {
+            let label = match key {
+                "robust_score" => "robust",
+                other => other,
+            };
+            parts.push(format!("{label}={text}"));
+        }
+    }
+    parts.join(" | ")
+}
+
+fn build_req_snapshot(run_req: Option<&Value>, validation_req: Option<&Value>) -> String {
+    let Some(run_req) = run_req.and_then(Value::as_object) else {
+        return "Request unavailable.".to_string();
+    };
+
+    let strategy_kind = normalize_text_value(run_req.get("strategy_kind"));
+    if strategy_kind == "MlSignal" {
+        let mut lines = vec!["strategy: MlSignal".to_string()];
+        for (key, label) in [
+            ("data_id", "data id"),
+            ("dataId", "data id"),
+            ("input_path", "score input"),
+            ("inputPath", "score input"),
+            ("output_path", "dataset/score output"),
+            ("outputPath", "dataset/score output"),
+            ("score_cache_path", "score cache"),
+            ("scoreCachePath", "score cache"),
+            ("model_bundle_id", "model bundle"),
+            ("modelBundleId", "model bundle"),
+        ] {
+            let text = normalize_text_value(run_req.get(key));
+            if !text.is_empty() && !lines.iter().any(|line| line == &format!("{label}: {text}")) {
+                lines.push(format!("{label}: {text}"));
+            }
+        }
+
+        if let Some(validation_req) = validation_req.and_then(Value::as_object) {
+            if let Some(candidate) = validation_req
+                .get("candidates")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(Value::as_object)
+            {
+                for (key, label) in [
+                    ("t_long", "policy t_long"),
+                    ("t_short", "policy t_short"),
+                    ("delta", "policy delta"),
+                    ("max_hold_bars", "policy max_hold_bars"),
+                ] {
+                    let text = normalize_text_value(candidate.get(key));
+                    if !text.is_empty() {
+                        lines.push(format!("{label}: {text}"));
+                    }
+                }
+            } else {
+                for (key, label) in [
+                    ("t_long", "sweep t_long"),
+                    ("t_short", "sweep t_short"),
+                    ("delta", "sweep delta"),
+                    ("max_hold_bars", "sweep hold"),
+                ] {
+                    let axis = format_sweep_axis(validation_req.get(key));
+                    if !axis.is_empty() {
+                        lines.push(format!("{label}: {axis}"));
+                    }
+                }
+                let top_k = normalize_text_value(validation_req.get("top_k"));
+                if !top_k.is_empty() {
+                    lines.push(format!("sweep top_k: {top_k}"));
+                }
+            }
+        }
+
+        return lines.join("\n");
+    }
+
+    let backend = run_req
+        .get("backend")
+        .and_then(Value::as_object)
+        .and_then(|backend| backend.get("backend"))
+        .map(|value| normalize_text_value(Some(value)))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "CpuOnly".to_string());
+    let objective = run_req
+        .get("objective")
+        .map(|value| normalize_text_value(Some(value)))
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            run_req
+                .get("objectives")
+                .and_then(Value::as_object)
+                .and_then(|objectives| objectives.get("maximize"))
+                .map(|value| normalize_text_value(Some(value)))
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "-".to_string());
+    let ma_source = normalize_text_value(run_req.get("ma_source"));
+    let ma_source = if ma_source.is_empty() {
+        "close".to_string()
+    } else {
+        ma_source
+    };
+    let fast_ma = normalize_string_list(run_req.get("fast_ma_types"));
+    let slow_ma = normalize_string_list(run_req.get("slow_ma_types"));
+    let starting_equity = run_req.get("starting_equity").and_then(Value::as_f64);
+
+    let mut lines = vec![
+        format!(
+            "strategy: {}",
+            if strategy_kind.is_empty() {
+                "-"
+            } else {
+                strategy_kind.as_str()
+            }
+        ),
+        format!("backend: {backend}"),
+        format!("objective: {objective}"),
+        format!("ma source: {ma_source}"),
+        format!("fast range: {}", format_range_label(run_req.get("fast_range"))),
+        format!("slow range: {}", format_range_label(run_req.get("slow_range"))),
+        format!(
+            "fast ma: {}",
+            if fast_ma.is_empty() {
+                "-".to_string()
+            } else {
+                fast_ma.join(", ")
+            }
+        ),
+        format!(
+            "slow ma: {}",
+            if slow_ma.is_empty() {
+                "-".to_string()
+            } else {
+                slow_ma.join(", ")
+            }
+        ),
+    ];
+
+    if let Some(starting_equity) = starting_equity.filter(|value| value.is_finite() && *value > 0.0)
+    {
+        let formatted = if starting_equity.fract() == 0.0 {
+            format!("{}", starting_equity as i64)
+        } else {
+            starting_equity.to_string()
+        };
+        lines.push(format!("starting equity: {formatted}"));
+    }
+
+    lines.join("\n")
+}
+
+fn build_workflow_artifacts_hydration_payload(
+    artifact_path: &str,
+    artifact: &Value,
+) -> Result<WorkflowArtifactsHydrationPayload, String> {
+    let run_req = artifact
+        .pointer("/run/req")
+        .cloned()
+        .ok_or_else(|| "Saved run artifact is missing run.req.".to_string())?;
+    let run_res = artifact
+        .pointer("/run/res")
+        .cloned()
+        .ok_or_else(|| "Saved run artifact is missing run.res.".to_string())?;
+    let ts = normalize_text_value(artifact.get("ts"));
+    let current_run = WorkflowArtifactRunPayload {
+        ts: if ts.is_empty() {
+            chrono::Utc::now().to_rfc3339()
+        } else {
+            ts.clone()
+        },
+        artifact_path: artifact_path.to_string(),
+        report_xlsx_path: normalize_text_value(artifact.get("report_xlsx_path")),
+        csv_path: resolve_run_artifact_csv_path(artifact),
+        dataset_meta: artifact.pointer("/dataset_meta").cloned(),
+        ml_signal: artifact.pointer("/ml_signal").cloned(),
+        tags: normalized_tags(artifact),
+        req: run_req,
+        res: run_res,
+    };
+    let current_validation = artifact.pointer("/validation/res").cloned().map(|res| {
+        WorkflowArtifactValidationPayload {
+            ts: current_run.ts.clone(),
+            req: clone_value_or_null(artifact.pointer("/validation/req")),
+            res,
+        }
+    });
+
+    Ok(WorkflowArtifactsHydrationPayload {
+        current_run,
+        current_validation,
+    })
+}
+
+fn build_run_artifact_detail_response(
+    artifact_path: &str,
+    artifact: &Value,
+) -> Result<RunArtifactDetailResponse, String> {
+    let ts = normalize_text_value(artifact.get("ts"));
+    let dataset_meta = artifact.pointer("/dataset_meta").cloned();
+    let ml_signal = artifact.pointer("/ml_signal").cloned();
+    let run_req = artifact.pointer("/run/req").cloned();
+    let validation_req = artifact.pointer("/validation/req").cloned();
+    let validation_res = artifact.pointer("/validation/res").cloned();
+
+    Ok(RunArtifactDetailResponse {
+        ts: if ts.is_empty() {
+            chrono::Utc::now().to_rfc3339()
+        } else {
+            ts
+        },
+        artifact_path: artifact_path.to_string(),
+        strategy_kind: resolve_run_artifact_strategy_kind(artifact),
+        timeframe: resolve_run_artifact_timeframe(artifact),
+        csv_path: resolve_run_artifact_csv_path(artifact),
+        report_path: normalize_text_value(artifact.get("report_xlsx_path")),
+        has_validation: validation_res.is_some(),
+        tags: normalized_tags(artifact),
+        dataset_meta,
+        ml_signal: ml_signal.clone(),
+        run_req: run_req.clone(),
+        validation_req: validation_req.clone(),
+        validation_res: validation_res.clone(),
+        ml_signal_stage: normalize_text_value(artifact.pointer("/ml_signal/stage")),
+        ml_bundle_id: normalize_text_value(artifact.pointer("/ml_signal/bundle_id")),
+        ml_score_cache_path: normalize_text_value(artifact.pointer("/ml_signal/score_cache_path")),
+        ml_score_manifest_path: normalize_text_value(
+            artifact.pointer("/ml_signal/score_manifest_path"),
+        ),
+        ml_feature_schema_path: normalize_text_value(
+            artifact.pointer("/ml_signal/feature_schema_path"),
+        ),
+        ml_feature_schema_version: normalize_text_value(
+            artifact.pointer("/ml_signal/feature_schema_version"),
+        ),
+        ml_policy_summary: format_ml_policy_summary(artifact.pointer("/ml_signal/policy")),
+        ml_policy_sweep_summary: format_ml_policy_sweep_summary(
+            artifact.pointer("/ml_signal/policy_sweep"),
+        ),
+        ml_run_verdict_summary: format_ml_run_verdict_summary(validation_res.as_ref()),
+        ml_top_candidates_summary: format_ml_top_candidates_summary(validation_res.as_ref()),
+        params_text: build_req_snapshot(run_req.as_ref(), validation_req.as_ref()),
+    })
+}
+
+fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunArtifactSummary> {
+    let kind = v
+        .get("kind")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !is_run_artifact_kind(&kind) {
+        return None;
+    }
+
+    let ts = v
+        .get("ts")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let strategy_kind = resolve_run_artifact_strategy_kind(v);
+    let config_fingerprint = v
+        .get("config_fingerprint")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| compute_config_fingerprint_from_artifact(v));
+    let config_fingerprint_version = v
+        .get("config_fingerprint_version")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
+        .or_else(|| {
+            if config_fingerprint.starts_with("cfg1-") {
+                Some(1)
+            } else {
+                None
+            }
+        });
+    let has_validation = v.pointer("/validation/res").is_some();
+    let report_xlsx_path = v
+        .get("report_xlsx_path")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let csv_path = resolve_run_artifact_csv_path(v);
+    let timeframe = resolve_run_artifact_timeframe(v);
+    let base_timeframe = v
+        .pointer("/dataset_meta/base_timeframe")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let derived_timeframe = v
+        .pointer("/dataset_meta/derived_timeframe")
+        .and_then(|x| x.as_str())
+        .or_else(|| {
+            v.pointer("/dataset_meta/timeframe")
+                .and_then(|x| x.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    let resample_applied = v
+        .pointer("/dataset_meta/resample_applied")
+        .and_then(|x| x.as_bool());
+    let resample_rule = v
+        .pointer("/dataset_meta/resample_rule")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let resample_anchor = v
+        .pointer("/dataset_meta/resample_anchor")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let source_size_bytes = v
+        .pointer("/dataset_meta/source_size_bytes")
+        .and_then(|x| x.as_u64());
+    let source_mtime_utc_ms = v
+        .pointer("/dataset_meta/source_mtime_utc_ms")
+        .and_then(|x| x.as_i64());
+    let source_content_fingerprint = v
+        .pointer("/dataset_meta/source_content_fingerprint")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Some(RunArtifactSummary {
+        ts,
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        kind,
+        strategy_kind,
+        config_fingerprint,
+        config_fingerprint_version,
+        has_validation,
+        report_xlsx_path,
+        csv_path,
+        timeframe,
+        base_timeframe,
+        derived_timeframe,
+        resample_applied,
+        resample_rule,
+        resample_anchor,
+        source_size_bytes,
+        source_mtime_utc_ms,
+        source_content_fingerprint,
+        tags: normalized_tags(v),
+    })
+}
+
+fn build_meta_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<MetaArtifactSummary> {
+    let kind = v
+        .get("kind")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !is_meta_selection_kind(&kind) {
+        return None;
+    }
+
+    Some(MetaArtifactSummary {
+        ts: v
+            .get("ts")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        strategy_kind: v
+            .pointer("/req/strategy_kind")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        timeframe: v
+            .pointer("/req/timeframe")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        required_tag: v
+            .pointer("/req/required_tag")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        groups: v
+            .pointer("/res/groups")
+            .and_then(|x| x.as_array())
+            .map(|xs| xs.len())
+            .unwrap_or(0),
+        artifacts_used: v
+            .pointer("/res/artifacts_used")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as usize,
+        holdout_datasets: v
+            .pointer("/res/holdout/datasets")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as usize,
+        report_xlsx_path: v
+            .get("report_xlsx_path")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        tags: normalized_tags(v),
+    })
+}
+
+fn build_stage5_artifact_summary(
+    path: &Path,
+    bytes: u64,
+    v: &Value,
+) -> Option<Stage5ArtifactSummary> {
+    let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+    if !is_meta_stage_result_kind(kind) {
+        return None;
+    }
+
+    Some(Stage4ArtifactSummary {
+        ts: v
+            .get("ts")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        strategy_kind: v
+            .pointer("/res/strategy_kind")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.pointer("/req/strategy_kind").and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        timeframe: v
+            .pointer("/res/timeframe")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.pointer("/req/timeframe").and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        source_meta_json_path: v
+            .pointer("/res/source_meta_json_path")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.pointer("/req/source_meta_path").and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        groups_selected: v
+            .pointer("/res/groups_selected")
+            .and_then(|x| x.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or_else(|| {
+                v.pointer("/res/selected_groups")
+                    .and_then(|x| x.as_array())
+                    .map(|xs| xs.len())
+                    .unwrap_or(0)
+            }),
+        groups_scored: v
+            .pointer("/res/groups_scored")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as usize,
+        groups_considered: v
+            .pointer("/res/groups_considered")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as usize,
+        min_ml_confidence: v
+            .pointer("/res/min_ml_confidence")
+            .and_then(|x| x.as_f64())
+            .or_else(|| v.pointer("/req/min_ml_confidence").and_then(|x| x.as_f64()))
+            .unwrap_or(0.0),
+        top_k: v
+            .pointer("/res/top_k")
+            .and_then(|x| x.as_u64())
+            .or_else(|| v.pointer("/req/top_k").and_then(|x| x.as_u64()))
+            .unwrap_or(0) as usize,
+        model_healthy: v
+            .pointer("/res/model_healthy")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false),
+        tags: normalized_tags(v),
+    })
+}
+
+fn build_ml_policy_eval_summary(
+    path: &Path,
+    bytes: u64,
+    v: &Value,
+) -> Option<MlPolicyEvalArtifactSummary> {
+    let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
+    if !is_ml_confidence_policy_eval_kind(kind) {
+        return None;
+    }
+
+    Some(MlPolicyEvalArtifactSummary {
+        ts: v
+            .get("ts")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        strategy_kind: v
+            .pointer("/res/strategy_kind")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.pointer("/req/strategy_kind").and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        timeframe: v
+            .pointer("/res/timeframe")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.pointer("/req/timeframe").and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string(),
+        artifacts_evaluated: v
+            .pointer("/res/artifacts_evaluated")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as usize,
+        artifacts_considered: v
+            .pointer("/res/artifacts_considered")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0) as usize,
+        best_policy: v
+            .pointer("/res/best_policy")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        stage5_precision_at_k: v
+            .pointer("/res/stage5_blended/precision_at_k")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0),
+        stage5_vs_meta_precision_delta: v
+            .pointer("/res/stage5_vs_meta_precision_delta")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0),
+        stage5_vs_ml_precision_delta: v
+            .pointer("/res/stage5_vs_ml_precision_delta")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0),
+        tags: normalized_tags(v),
+    })
+}
+
+pub(super) fn list_artifact_library_blocking(
+    app: tauri::AppHandle,
+) -> Result<ArtifactLibrarySnapshot, String> {
+    let entries = scan_artifact_library(&app)?;
+    let mut runs = Vec::new();
+    let mut meta = Vec::new();
+    let mut stage5 = Vec::new();
+    let mut policy_evals = Vec::new();
+
+    for entry in entries {
+        if let Some(summary) = build_run_artifact_summary(&entry.path, entry.bytes, &entry.value) {
+            runs.push(summary);
+        }
+        if let Some(summary) = build_meta_artifact_summary(&entry.path, entry.bytes, &entry.value) {
+            meta.push(summary);
+        }
+        if let Some(summary) = build_stage5_artifact_summary(&entry.path, entry.bytes, &entry.value)
+        {
+            stage5.push(summary);
+        }
+        if let Some(summary) = build_ml_policy_eval_summary(&entry.path, entry.bytes, &entry.value)
+        {
+            policy_evals.push(summary);
+        }
+    }
+
+    runs.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    meta.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    stage5.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    policy_evals.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+
+    Ok(ArtifactLibrarySnapshot {
+        runs,
+        meta,
+        stage5,
+        policy_evals,
+    })
+}
+
+pub(super) fn load_meta_artifacts_with_paths_blocking(
+    app: &tauri::AppHandle,
+) -> Result<Vec<(PathBuf, Value)>, String> {
+    let mut out = Vec::new();
+    for entry in scan_artifact_library(app)? {
+        if !is_meta_artifact_file_name(&entry.file_name) {
+            continue;
+        }
+        if !is_meta_selection_kind(
+            entry
+                .value
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        ) {
+            continue;
+        }
+        out.push((entry.path, entry.value));
+    }
+    out.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+    Ok(out)
+}
+
+pub(super) fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
+    Ok(load_meta_artifacts_with_paths_blocking(app)?
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect())
+}
+
+pub(super) fn load_artifact_value_checked_blocking(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<Value, String> {
+    Ok(load_artifact_entry_checked(path, app)?.value)
+}
+
+pub(super) fn load_run_artifact_hydration_blocking(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<WorkflowArtifactsHydrationPayload, String> {
+    let entry = load_artifact_entry_checked(path, app)?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_run_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    build_workflow_artifacts_hydration_payload(entry.path.to_string_lossy().as_ref(), &entry.value)
+}
+
+pub(super) fn load_run_artifact_detail_blocking(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<RunArtifactDetailResponse, String> {
+    let entry = load_artifact_entry_checked(path, app)?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_run_artifact_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    build_run_artifact_detail_response(entry.path.to_string_lossy().as_ref(), &entry.value)
+}
+
+pub(super) fn load_meta_artifact_replay_blocking(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<MetaArtifactReplayResponse, String> {
+    let entry = load_artifact_entry_checked(path, app)?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_meta_selection_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    Ok(MetaArtifactReplayResponse {
+        ts: normalize_text_value(entry.value.get("ts")),
+        report_xlsx_path: normalize_text_value(entry.value.get("report_xlsx_path")),
+        report_xlsx_bytes: 0,
+        meta_json_path: entry.path.to_string_lossy().to_string(),
+        meta_json_bytes: entry.bytes as usize,
+        result: clone_value_or_null(entry.value.pointer("/res")),
+    })
+}
+
+pub(super) fn load_stage5_artifact_replay_blocking(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<Stage5ArtifactReplayResponse, String> {
+    let entry = load_artifact_entry_checked(path, app)?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_meta_stage_result_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    let path = entry.path.to_string_lossy().to_string();
+    Ok(Stage5ArtifactReplayResponse {
+        ts: normalize_text_value(entry.value.get("ts")),
+        stage4_json_path: path.clone(),
+        stage4_json_bytes: entry.bytes as usize,
+        stage5_json_path: path,
+        stage5_json_bytes: entry.bytes as usize,
+        result: clone_value_or_null(entry.value.pointer("/res")),
+    })
+}
+
+pub(super) fn load_ml_policy_eval_artifact_replay_blocking(
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<MlPolicyEvalArtifactReplayResponse, String> {
+    let entry = load_artifact_entry_checked(path, app)?;
+    let kind = entry
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !is_ml_confidence_policy_eval_kind(kind) {
+        return Err(format!("unsupported artifact kind: {kind}"));
+    }
+    Ok(MlPolicyEvalArtifactReplayResponse {
+        ts: normalize_text_value(entry.value.get("ts")),
+        eval_json_path: entry.path.to_string_lossy().to_string(),
+        eval_json_bytes: entry.bytes as usize,
+        result: clone_value_or_null(entry.value.pointer("/res")),
+    })
+}
+
 pub(super) fn open_runs_dir_blocking(app: tauri::AppHandle) -> Result<String, String> {
     let dir = runs_dir(&app)?;
     reveal_path_blocking(dir.to_string_lossy().to_string())?;
@@ -639,513 +1747,38 @@ fn compute_config_fingerprint_from_artifact(artifact: &Value) -> String {
 pub(super) fn list_run_artifacts_blocking(
     app: tauri::AppHandle,
 ) -> Result<Vec<RunArtifactSummary>, String> {
-    let dir = runs_dir(&app)?;
-    let mut out: Vec<RunArtifactSummary> = Vec::new();
-
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if is_meta_artifact_file_name(name) {
-            continue;
-        }
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let bytes = meta.len();
-
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let ts = v
-            .get("ts")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let kind = v
-            .get("kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !is_run_artifact_kind(&kind) {
-            continue;
-        }
-        let strategy_kind = resolve_run_artifact_strategy_kind(&v);
-        let config_fingerprint = v
-            .get("config_fingerprint")
-            .and_then(|x| x.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| compute_config_fingerprint_from_artifact(&v));
-        let config_fingerprint_version = v
-            .get("config_fingerprint_version")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as u32)
-            .or_else(|| {
-                if config_fingerprint.starts_with("cfg1-") {
-                    Some(1)
-                } else {
-                    None
-                }
-            });
-        let has_validation = v.pointer("/validation/res").is_some();
-        let report_xlsx_path = v
-            .get("report_xlsx_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let csv_path = resolve_run_artifact_csv_path(&v);
-
-        let timeframe = resolve_run_artifact_timeframe(&v);
-        let base_timeframe = v
-            .pointer("/dataset_meta/base_timeframe")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let derived_timeframe = v
-            .pointer("/dataset_meta/derived_timeframe")
-            .and_then(|x| x.as_str())
-            .or_else(|| {
-                v.pointer("/dataset_meta/timeframe")
-                    .and_then(|x| x.as_str())
-            })
-            .unwrap_or("")
-            .to_string();
-        let resample_applied = v
-            .pointer("/dataset_meta/resample_applied")
-            .and_then(|x| x.as_bool());
-        let resample_rule = v
-            .pointer("/dataset_meta/resample_rule")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let resample_anchor = v
-            .pointer("/dataset_meta/resample_anchor")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let source_size_bytes = v
-            .pointer("/dataset_meta/source_size_bytes")
-            .and_then(|x| x.as_u64());
-        let source_mtime_utc_ms = v
-            .pointer("/dataset_meta/source_mtime_utc_ms")
-            .and_then(|x| x.as_i64());
-        let source_content_fingerprint = v
-            .pointer("/dataset_meta/source_content_fingerprint")
-            .and_then(|x| x.as_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let tags: Vec<String> = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        out.push(RunArtifactSummary {
-            ts,
-            path: path.to_string_lossy().to_string(),
-            bytes,
-            kind,
-            strategy_kind,
-            config_fingerprint,
-            config_fingerprint_version,
-            has_validation,
-            report_xlsx_path,
-            csv_path,
-            timeframe,
-            base_timeframe,
-            derived_timeframe,
-            resample_applied,
-            resample_rule,
-            resample_anchor,
-            source_size_bytes,
-            source_mtime_utc_ms,
-            source_content_fingerprint,
-            tags,
-        });
-    }
-
-    out.sort_by(|a, b| b.ts.cmp(&a.ts));
-    Ok(out)
+    Ok(list_artifact_library_blocking(app)?.runs)
 }
 
 pub(super) fn list_meta_artifacts_blocking(
     app: tauri::AppHandle,
 ) -> Result<Vec<MetaArtifactSummary>, String> {
-    let dir = runs_dir(&app)?;
-    let mut out: Vec<MetaArtifactSummary> = Vec::new();
-
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !is_meta_artifact_file_name(name) {
-            continue;
-        }
-
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let bytes = meta.len();
-
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let kind = v
-            .get("kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !is_meta_selection_kind(&kind) {
-            continue;
-        }
-
-        let ts = v
-            .get("ts")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let strategy_kind = v
-            .pointer("/req/strategy_kind")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let timeframe = v
-            .pointer("/req/timeframe")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let required_tag = v
-            .pointer("/req/required_tag")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let groups = v
-            .pointer("/res/groups")
-            .and_then(|x| x.as_array())
-            .map(|xs| xs.len())
-            .unwrap_or(0);
-        let artifacts_used = v
-            .pointer("/res/artifacts_used")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as usize;
-        let holdout_datasets = v
-            .pointer("/res/holdout/datasets")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as usize;
-        let report_xlsx_path = v
-            .get("report_xlsx_path")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let tags: Vec<String> = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        out.push(MetaArtifactSummary {
-            ts,
-            path: path.to_string_lossy().to_string(),
-            bytes,
-            strategy_kind,
-            timeframe,
-            required_tag,
-            groups,
-            artifacts_used,
-            holdout_datasets,
-            report_xlsx_path,
-            tags,
-        });
-    }
-
-    out.sort_by(|a, b| b.ts.cmp(&a.ts));
-    Ok(out)
+    Ok(list_artifact_library_blocking(app)?.meta)
 }
 
 pub(super) fn list_stage4_artifacts_blocking(
     app: tauri::AppHandle,
 ) -> Result<Vec<Stage4ArtifactSummary>, String> {
-    let dir = runs_dir(&app)?;
-    let mut out: Vec<Stage4ArtifactSummary> = Vec::new();
-
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !is_meta_stage_artifact_file_name(name) {
-            continue;
-        }
-
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let bytes = meta.len();
-
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if !is_meta_stage_result_kind(kind) {
-            continue;
-        }
-
-        let ts = v
-            .get("ts")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let strategy_kind = v
-            .pointer("/res/strategy_kind")
-            .and_then(|x| x.as_str())
-            .or_else(|| v.pointer("/req/strategy_kind").and_then(|x| x.as_str()))
-            .unwrap_or("")
-            .to_string();
-        let timeframe = v
-            .pointer("/res/timeframe")
-            .and_then(|x| x.as_str())
-            .or_else(|| v.pointer("/req/timeframe").and_then(|x| x.as_str()))
-            .unwrap_or("")
-            .to_string();
-        let source_meta_json_path = v
-            .pointer("/res/source_meta_json_path")
-            .and_then(|x| x.as_str())
-            .or_else(|| v.pointer("/req/source_meta_path").and_then(|x| x.as_str()))
-            .unwrap_or("")
-            .to_string();
-        let groups_selected = v
-            .pointer("/res/groups_selected")
-            .and_then(|x| x.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or_else(|| {
-                v.pointer("/res/selected_groups")
-                    .and_then(|x| x.as_array())
-                    .map(|xs| xs.len())
-                    .unwrap_or(0)
-            });
-        let groups_scored = v
-            .pointer("/res/groups_scored")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as usize;
-        let groups_considered = v
-            .pointer("/res/groups_considered")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(0) as usize;
-        let min_ml_confidence = v
-            .pointer("/res/min_ml_confidence")
-            .and_then(|x| x.as_f64())
-            .or_else(|| v.pointer("/req/min_ml_confidence").and_then(|x| x.as_f64()))
-            .unwrap_or(0.0);
-        let top_k = v
-            .pointer("/res/top_k")
-            .and_then(|x| x.as_u64())
-            .or_else(|| v.pointer("/req/top_k").and_then(|x| x.as_u64()))
-            .unwrap_or(0) as usize;
-        let model_healthy = v
-            .pointer("/res/model_healthy")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-
-        let tags: Vec<String> = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        out.push(Stage4ArtifactSummary {
-            ts,
-            path: path.to_string_lossy().to_string(),
-            bytes,
-            strategy_kind,
-            timeframe,
-            source_meta_json_path,
-            groups_selected,
-            groups_scored,
-            groups_considered,
-            min_ml_confidence,
-            top_k,
-            model_healthy,
-            tags,
-        });
-    }
-
-    out.sort_by(|a, b| b.ts.cmp(&a.ts));
-    Ok(out)
+    Ok(list_artifact_library_blocking(app)?.stage5)
 }
 
 pub(super) fn list_stage5_artifacts_blocking(
     app: tauri::AppHandle,
 ) -> Result<Vec<Stage5ArtifactSummary>, String> {
-    list_stage4_artifacts_blocking(app)
+    Ok(list_artifact_library_blocking(app)?.stage5)
 }
 
 pub(super) fn list_ml_policy_eval_artifacts_blocking(
     app: tauri::AppHandle,
 ) -> Result<Vec<MlPolicyEvalArtifactSummary>, String> {
-    let dir = runs_dir(&app)?;
-    let mut out: Vec<MlPolicyEvalArtifactSummary> = Vec::new();
-
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let bytes = meta.len();
-
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let v: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("");
-        if !is_ml_confidence_policy_eval_kind(kind) {
-            continue;
-        }
-
-        let tags: Vec<String> = v
-            .get("tags")
-            .and_then(|x| x.as_array())
-            .map(|xs| {
-                xs.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        out.push(MlPolicyEvalArtifactSummary {
-            ts: v
-                .get("ts")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-            path: path.to_string_lossy().to_string(),
-            bytes,
-            strategy_kind: v
-                .pointer("/res/strategy_kind")
-                .and_then(|x| x.as_str())
-                .or_else(|| v.pointer("/req/strategy_kind").and_then(|x| x.as_str()))
-                .unwrap_or("")
-                .to_string(),
-            timeframe: v
-                .pointer("/res/timeframe")
-                .and_then(|x| x.as_str())
-                .or_else(|| v.pointer("/req/timeframe").and_then(|x| x.as_str()))
-                .unwrap_or("")
-                .to_string(),
-            artifacts_evaluated: v
-                .pointer("/res/artifacts_evaluated")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0) as usize,
-            artifacts_considered: v
-                .pointer("/res/artifacts_considered")
-                .and_then(|x| x.as_u64())
-                .unwrap_or(0) as usize,
-            best_policy: v
-                .pointer("/res/best_policy")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-            stage5_precision_at_k: v
-                .pointer("/res/stage5_blended/precision_at_k")
-                .and_then(|x| x.as_f64())
-                .unwrap_or(0.0),
-            stage5_vs_meta_precision_delta: v
-                .pointer("/res/stage5_vs_meta_precision_delta")
-                .and_then(|x| x.as_f64())
-                .unwrap_or(0.0),
-            stage5_vs_ml_precision_delta: v
-                .pointer("/res/stage5_vs_ml_precision_delta")
-                .and_then(|x| x.as_f64())
-                .unwrap_or(0.0),
-            tags,
-        });
-    }
-
-    out.sort_by(|a, b| b.ts.cmp(&a.ts));
-    Ok(out)
+    Ok(list_artifact_library_blocking(app)?.policy_evals)
 }
 
 pub(super) fn load_run_artifact_blocking(
     path: String,
     app: tauri::AppHandle,
 ) -> Result<Value, String> {
-    let dir = runs_dir(&app)?;
-    let path = PathBuf::from(path);
-    ensure_path_is_within_dir(&path, &dir)?;
-
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
+    load_artifact_value_checked_blocking(path, app)
 }
 
 pub(super) fn delete_run_artifact_blocking(
@@ -1205,6 +1838,7 @@ pub(super) fn update_artifact_tags_blocking(
 #[cfg(test)]
 mod tests {
     use super::{
+        build_run_artifact_detail_response, build_workflow_artifacts_hydration_payload,
         canonical_json, compute_config_fingerprint_from_artifact, is_meta_artifact_file_name,
         is_meta_stage_artifact_file_name, is_run_artifact_kind, normalize_dataset_meta,
         resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
@@ -1403,5 +2037,149 @@ mod tests {
         assert!(!is_meta_stage_artifact_file_name(
             "vectorgrid_meta_2026-03-13.json"
         ));
+    }
+
+    #[test]
+    fn workflow_hydration_payload_matches_store_shape() {
+        let artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "1h"
+            },
+            "tags": ["alpha", "beta"],
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            },
+            "validation": {
+                "req": { "candidates": [] },
+                "res": { "candidates": [] }
+            }
+        });
+
+        let payload = build_workflow_artifacts_hydration_payload(
+            "C:/runs/vectorgrid_run_test.json",
+            &artifact,
+        )
+        .expect("hydration payload");
+        let encoded = serde_json::to_value(payload).expect("serialize");
+
+        assert_eq!(
+            encoded.pointer("/currentRun/artifact_path").and_then(|value| value.as_str()),
+            Some("C:/runs/vectorgrid_run_test.json")
+        );
+        assert_eq!(
+            encoded.pointer("/currentRun/csv_path").and_then(|value| value.as_str()),
+            Some("C:/data/AAPL.csv")
+        );
+        assert_eq!(
+            encoded.pointer("/currentValidation/req/candidates")
+                .and_then(|value| value.as_array())
+                .map(|items| items.len()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn run_artifact_detail_response_formats_ml_summaries() {
+        let artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d"
+            },
+            "ml_signal": {
+                "stage": "validation",
+                "bundle_id": "bundle-a",
+                "score_cache_path": "C:/runs/cache.json",
+                "score_manifest_path": "C:/runs/cache.manifest.json",
+                "feature_schema_path": "C:/runs/schema.json",
+                "feature_schema_version": 1,
+                "policy": {
+                    "t_long": 0.6,
+                    "t_short": 0.55,
+                    "delta": 0.1,
+                    "max_hold_bars": 10
+                },
+                "policy_sweep": {
+                    "sweep_size": 27,
+                    "top_k": 4,
+                    "best_label": "best_sweep",
+                    "best_robust_score": 1.44
+                }
+            },
+            "tags": ["ml", "research"],
+            "run": {
+                "req": {
+                    "strategy_kind": "MlSignal",
+                    "data_id": "data-ml",
+                    "input_path": "C:/scores/ml_scores.csv",
+                    "output_path": "C:/runs/cache.json",
+                    "model_bundle_id": "bundle-a"
+                },
+                "res": { "matched_rows": 123 }
+            },
+            "validation": {
+                "req": {
+                    "candidates": [
+                        {
+                            "t_long": 0.6,
+                            "t_short": 0.55,
+                            "delta": 0.1,
+                            "max_hold_bars": 10
+                        }
+                    ]
+                },
+                "res": {
+                    "run_verdict": {
+                        "approved_candidate_count": 1,
+                        "candidates_survived_hard_gates": 1,
+                        "candidates_considered": 27
+                    },
+                    "candidates": [
+                        {
+                            "label": "best_sweep",
+                            "robust_score": 1.0,
+                            "psr": 0.7,
+                            "dsr": 0.6
+                        }
+                    ]
+                }
+            }
+        });
+
+        let detail = build_run_artifact_detail_response(
+            "C:/runs/vectorgrid_run_test.json",
+            &artifact,
+        )
+        .expect("detail payload");
+
+        assert_eq!(detail.strategy_kind, "MlSignal");
+        assert_eq!(detail.timeframe, "1d");
+        assert_eq!(detail.csv_path, "C:/data/SPY.csv");
+        assert_eq!(detail.report_path, "C:/runs/report.xlsx");
+        assert_eq!(detail.ml_signal_stage, "validation");
+        assert_eq!(detail.ml_bundle_id, "bundle-a");
+        assert_eq!(
+            detail.ml_policy_summary,
+            "t_long=0.6 | t_short=0.55 | delta=0.1 | hold=10"
+        );
+        assert_eq!(
+            detail.ml_policy_sweep_summary,
+            "size=27 | top_k=4 | best=best_sweep | score=1.44"
+        );
+        assert_eq!(
+            detail.ml_run_verdict_summary,
+            "approved=1 | survived=1 | considered=27"
+        );
+        assert_eq!(
+            detail.ml_top_candidates_summary,
+            "best_sweep | robust=1 | psr=0.7 | dsr=0.6"
+        );
+        assert!(detail.params_text.contains("strategy: MlSignal"));
+        assert!(detail.params_text.contains("policy t_long: 0.6"));
     }
 }

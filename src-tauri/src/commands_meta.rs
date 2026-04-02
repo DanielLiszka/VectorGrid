@@ -350,39 +350,11 @@ fn is_known_non_run_artifact_filename(name: &str) -> bool {
 fn load_meta_artifacts_with_paths_blocking(
     app: &tauri::AppHandle,
 ) -> Result<Vec<(PathBuf, Value)>, String> {
-    let dir = run_artifacts::runs_dir(app)?;
-    let entries = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
-
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !name.starts_with("vectorbt_meta_") && !name.starts_with("vectorgrid_meta_") {
-            continue;
-        }
-        paths.push(path);
-    }
-    paths.sort();
-
-    let mut out: Vec<(PathBuf, Value)> = Vec::with_capacity(paths.len());
-    for p in paths {
-        let Some(v) = read_json_value(&p) else {
-            continue;
-        };
-        out.push((p, v));
-    }
-    Ok(out)
+    run_artifacts::load_meta_artifacts_with_paths_blocking(app)
 }
 
 fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec<Value>, String> {
-    let metas = load_meta_artifacts_with_paths_blocking(app)?;
-    Ok(metas.into_iter().map(|(_p, v)| v).collect())
+    run_artifacts::load_meta_artifacts_blocking(app)
 }
 
 fn strategy_supports_holdout(strategy_kind: &str) -> bool {
@@ -613,44 +585,14 @@ fn ensure_path_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
 }
 
 fn suggest_stage4_artifact_path(ts: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = run_artifacts::runs_dir(app)?;
-    let safe_ts = sanitize_filename_component(ts);
-    let base_name = format!("vectorgrid_stage5_{safe_ts}");
-
-    let mut path = dir.join(format!("{base_name}.json"));
-    if !path.exists() {
-        return Ok(path);
-    }
-    for i in 2..=999u32 {
-        let p = dir.join(format!("{base_name}_{i}.json"));
-        if !p.exists() {
-            path = p;
-            break;
-        }
-    }
-    Ok(path)
+    run_artifacts::suggest_stage5_artifact_path(ts, app)
 }
 
 fn suggest_ml_policy_eval_artifact_path(
     ts: &str,
     app: &tauri::AppHandle,
 ) -> Result<PathBuf, String> {
-    let dir = run_artifacts::runs_dir(app)?;
-    let safe_ts = sanitize_filename_component(ts);
-    let base_name = format!("vectorgrid_ml_confidence_eval_{safe_ts}");
-
-    let mut path = dir.join(format!("{base_name}.json"));
-    if !path.exists() {
-        return Ok(path);
-    }
-    for i in 2..=999u32 {
-        let p = dir.join(format!("{base_name}_{i}.json"));
-        if !p.exists() {
-            path = p;
-            break;
-        }
-    }
-    Ok(path)
+    run_artifacts::suggest_ml_policy_eval_artifact_path(ts, app)
 }
 
 fn is_meta_selection_artifact(v: &Value) -> bool {
@@ -1552,6 +1494,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
     });
     let out_bytes = serde_json::to_vec_pretty(&payload).map_err(|e| e.to_string())?;
     std::fs::write(&out_path, &out_bytes).map_err(|e| e.to_string())?;
+    run_artifacts::prune_old_ml_policy_eval_artifacts_blocking(&app, 100);
 
     Ok(RunMlConfidencePolicyEvaluationResponse {
         ts,

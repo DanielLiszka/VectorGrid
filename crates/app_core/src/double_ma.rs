@@ -16,7 +16,7 @@ use ta_strategies::double_ma::{
 };
 
 use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, alloc_uninit_f32, alloc_uninit_f64};
-use crate::composite_validate::SpaBenchmarkKind;
+use crate::validation_shared::SpaBenchmarkKind;
 use crate::double_ma_backend::{
     backend_kind_label, build_indicator_route_plan_summary, gpu_kernel_blockers_for_request,
     hybrid_backend_enabled, should_cpu_stage_indicator,
@@ -10648,7 +10648,7 @@ fn optimize_double_ma_cpu_tiled(
     };
     let dynamic_plan_ctx = if let Some(runtime_plan) = dynamic_request_plan {
         Some((
-            &runtime_plan.cpu_plan,
+            runtime_plan.cpu_plan(),
             runtime_plan.cpu_context(candles)?,
             true,
         ))
@@ -12767,7 +12767,7 @@ fn dynamic_gpu_batch_cache_key(
 ) -> Result<String, String> {
     #[derive(Serialize)]
     struct DynamicGpuBatchSignature<'a> {
-        plan_fingerprint_hex: &'a str,
+        executable_fingerprint_hex: &'a str,
         device_id: u32,
         ma_source: &'a str,
         fast_ma_type: &'a str,
@@ -12792,7 +12792,11 @@ fn dynamic_gpu_batch_cache_key(
     }
 
     serde_json::to_string(&DynamicGpuBatchSignature {
-        plan_fingerprint_hex: &handle.plan.ir_fingerprint_hex,
+        executable_fingerprint_hex: handle
+            .gpu_program_abi
+            .as_ref()
+            .map(|abi| abi.executable_fingerprint_hex.as_str())
+            .unwrap_or(handle.plan.ir_fingerprint_hex.as_str()),
         device_id,
         ma_source,
         fast_ma_type,
@@ -12927,6 +12931,7 @@ fn get_or_build_dynamic_gpu_uploaded_batch(
             &combos,
             first_valid,
             strategy,
+            handle,
             device_id,
         )?,
     );

@@ -6,14 +6,11 @@ use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use ta_app_core::composite_validate::{
-    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional,
-};
 use ta_app_core::{
     read_candles_from_csv_compat, Backend, CrossTickerConfig, CrossTickerDataset, CscvPboConfig,
     DoubleMaRequest, DoubleMaValidationParams, DoubleMaValidationRequest, IterativeSimConfig,
-    PerturbConfig, TradeBootstrapConfig, ValidationArtifactContext, ValidationEngine,
-    WalkForwardConfigOptional,
+    PerturbConfig, ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional,
+    TradeBootstrapConfig, ValidationArtifactContext, ValidationEngine, WalkForwardConfigOptional,
 };
 use ta_desktop_demo_app::commands::apply_cross_ticker_validation_double_ma_headless;
 use ta_optimizer::{ObjectiveKind, OptimizationMode};

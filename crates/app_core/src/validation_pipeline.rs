@@ -1,4 +1,4 @@
-use crate::composite_validate::{
+use crate::validation_shared::{
     PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
     ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
     TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
@@ -1853,7 +1853,7 @@ mod tests {
             slices: 6,
             bootstrap_samples: 128,
             block_length: 2,
-            benchmark: crate::composite_validate::SpaBenchmarkKind::BuyAndHold,
+            benchmark: crate::validation_shared::SpaBenchmarkKind::BuyAndHold,
         };
         let cancel = AtomicBool::new(false);
 

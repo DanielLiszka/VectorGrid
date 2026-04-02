@@ -1,11 +1,16 @@
 ﻿{
-    "generated_at":  "2026-02-19T22:04:55.4154329-05:00",
-    "sample_interval_ms":  100,
-    "runtime_ms_wall":  453,
-    "peak_working_set_bytes":  41295872,
-    "peak_working_set_mb":  39.38,
-    "peak_private_bytes":  35176448,
-    "peak_private_mb":  33.55,
+    "schema_version":  1,
+    "timing_boundary":  "process-memory-sampling",
+    "timing_boundary_note":  "Peak process working-set/private-byte sampling over a synthetic ta_workflow_regression run. Supplemental telemetry only; not a perf gate and not optimization-only.",
+    "build_profile":  "dev",
+    "telemetry_only":  true,
+    "generated_at":  "2026-04-02T15:33:58.9134039-04:00",
+    "sample_interval_ms":  50,
+    "runtime_ms_wall":  1755,
+    "peak_working_set_bytes":  50601984,
+    "peak_working_set_mb":  48.26,
+    "peak_private_bytes":  45838336,
+    "peak_private_mb":  43.71,
     "workflow_summary_json":  "target/workflow_regression_summary.json",
     "command":  {
                     "args":  [

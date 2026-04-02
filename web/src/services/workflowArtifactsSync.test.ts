@@ -38,12 +38,19 @@ describe('workflowArtifactsSync', () => {
         }]
       }
 
-      if (command === 'load_run_artifact') {
+      if (command === 'load_run_artifact_hydration') {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          req: { strategy_kind: 'DoubleMa' },
-          res: { rows: 1 },
-          validation: {
+          currentRun: {
+            ts: '2026-02-25T12:00:00Z',
+            artifact_path: 'C:/runs/run.json',
+            report_xlsx_path: 'C:/runs/report.xlsx',
+            csv_path: 'C:/data/sample.csv',
+            tags: ['alpha'],
+            req: { strategy_kind: 'DoubleMa' },
+            res: { rows: 1 },
+          },
+          currentValidation: {
+            ts: '2026-02-25T12:00:00Z',
             req: { candidates: 32 },
             res: { rows: [] },
           },
@@ -62,7 +69,7 @@ describe('workflowArtifactsSync', () => {
     expect(store.source).toBe('legacy-runtime')
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'list_run_artifacts')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact', { path: 'C:/runs/run.json' })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
   })
 
   it('returns false when no artifacts exist', async () => {
@@ -129,12 +136,16 @@ describe('workflowArtifactsSync', () => {
           path: 'C:/runs/run.json',
         }]
       }
-      if (command === 'load_run_artifact') {
+      if (command === 'load_run_artifact_hydration') {
         return {
-          ts: '2026-02-25T12:00:00Z',
-          req: { strategy_kind: 'DoubleMa' },
-          res: { rows: 1 },
-          validation: {
+          currentRun: {
+            ts: '2026-02-25T12:00:00Z',
+            artifact_path: 'C:/runs/run.json',
+            req: { strategy_kind: 'DoubleMa' },
+            res: { rows: 1 },
+          },
+          currentValidation: {
+            ts: '2026-02-25T12:00:00Z',
             req: { candidates: 32 },
             res: { rows: [] },
           },
@@ -149,6 +160,6 @@ describe('workflowArtifactsSync', () => {
     expect(store.currentValidation?.req).toMatchObject({ candidates: 32 })
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'list_run_artifacts')
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact', { path: 'C:/runs/run.json' })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
   })
 })

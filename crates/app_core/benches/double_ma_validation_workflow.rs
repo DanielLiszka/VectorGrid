@@ -2,13 +2,11 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ta_app_core::composite_validate::{
-    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional,
-};
 use ta_app_core::{
     run_double_ma_validation_blocking_with_candles, Backend, CscvPboConfig,
     DoubleMaValidationParams, DoubleMaValidationRequest, IterativeSimConfig, PerturbConfig,
-    TradeBootstrapConfig, ValidationEngine, WalkForwardConfigOptional,
+    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional, TradeBootstrapConfig,
+    ValidationEngine, WalkForwardConfigOptional,
 };
 use ta_strategies::double_ma::StrategyConfig;
 use vector_ta::utilities::data_loader::Candles;

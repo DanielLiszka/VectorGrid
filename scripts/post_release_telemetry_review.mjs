@@ -238,6 +238,8 @@ function writeMarkdown(outFile, payload) {
   const lines = []
   lines.push('# Post-Release Telemetry Review')
   lines.push('')
+  lines.push('Supplemental review only; this is not a perf-authority gate.')
+  lines.push('')
   lines.push(`- Generated: ${payload.generated_at}`)
   lines.push(`- Status: **${payload.status.toUpperCase()}**`)
   lines.push(`- Checks passed: ${okChecks}/${total}`)
@@ -308,7 +310,7 @@ function main() {
   writeMarkdown(mdOut, payload)
 
   const icon = status === 'pass' ? 'PASS' : 'FAIL'
-  console.log(`[${icon}] Post-release telemetry review: ${payload.summary.passed_checks}/${payload.summary.total_checks} checks passed.`)
+  console.log(`[${icon}] Supplemental post-release telemetry review: ${payload.summary.passed_checks}/${payload.summary.total_checks} checks passed.`)
   console.log(`JSON: ${rel(jsonOut)}`)
   console.log(`MD: ${rel(mdOut)}`)
   if (failed.length > 0) {

@@ -1,5 +1,5 @@
 use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, resize_uninit_i32};
-use crate::composite_validate::ValidationArtifactContext;
+use crate::validation_shared::ValidationArtifactContext;
 use crate::double_ma::BackendUsed;
 use crate::dynamic_indicator_adapter::{compute_dynamic_indicator_cpu, DynamicIndicatorSeries};
 use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
@@ -359,7 +359,7 @@ impl ValidationPostCandidate for MlSignalValidationCandidateResult {
         self.iterative_in_sample.as_ref()
     }
 
-    fn walk_forward_stats(&self) -> Option<&crate::composite_validate::WalkForwardStats> {
+    fn walk_forward_stats(&self) -> Option<&crate::validation_shared::WalkForwardStats> {
         None
     }
 

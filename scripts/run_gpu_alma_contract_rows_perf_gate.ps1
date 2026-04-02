@@ -9,6 +9,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+Write-Host "Specialized ALMA contract-row GPU perf gate (not the default PR perf authority)." -ForegroundColor Cyan
+
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $root
 

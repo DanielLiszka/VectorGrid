@@ -67,6 +67,7 @@ pub(crate) mod test_support;
 pub mod timeframe;
 pub(crate) mod validation_core;
 pub mod validation_pipeline;
+pub mod validation_shared;
 pub mod validation_stats;
 pub mod vcc;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -124,17 +125,24 @@ pub use composite_mo::{
 };
 
 pub use composite_validate::{
-    run_composite_validation_blocking_with_candles, CompositeParams, CompositeValidationRequest,
-    CompositeValidationResult, CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta,
-    CrossTickerGateConfig, CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary,
-    PerturbConfig, TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
+    run_composite_validation_blocking_with_candles,
+    run_composite_validation_blocking_with_candles_with_aux_mask, CompositeParams,
+    CompositeValidationRequest, CompositeValidationResult,
 };
 
 pub use double_ma_validate::{
     run_double_ma_validation_blocking_with_candles,
     run_double_ma_validation_blocking_with_candles_with_aux_mask, DoubleMaValidationParams,
-    DoubleMaValidationRequest, DoubleMaValidationResult, ValidationAuxWorkMask,
-    ValidationExecutionProfile,
+    DoubleMaValidationRequest, DoubleMaValidationResult, ValidationExecutionProfile,
+};
+
+pub use validation_shared::{
+    CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta, CrossTickerGateConfig,
+    CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
+    ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
+    SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
+    TradeBootstrapStats, ValidationArtifactContext, ValidationAuxWorkMask, WalkForwardConfig,
+    WalkForwardConfigOptional, WalkForwardStats,
 };
 
 pub use iterative_sim::{
@@ -233,6 +241,9 @@ pub use strategy_dynamic::{
     prepare_dynamic_indicator_slot_series_with_controls, preview_dynamic_double_ma_strategy_ir,
     DynamicDoubleMaStrategyIrPreview, DynamicIndicatorStagingProgressFn, PreparedDynamicCpuContext,
 };
+
+#[cfg(feature = "cuda")]
+pub use dynamic_indicator_adapter::take_prepared_cuda_dispatch_stats;
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 pub use gpu_backtest_kernel::{

@@ -1,8 +1,9 @@
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
+use serde::Serialize;
 use serde_json::json;
-use ta_app_core::composite_validate::SpaBenchmarkKind;
+use ta_app_core::SpaBenchmarkKind;
 use ta_app_core::double_ma::{DoubleMaMetricContract, DoubleMaShortlistSliceMode};
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
@@ -10,7 +11,7 @@ use ta_app_core::strategy_presets::{
 };
 use ta_app_core::{
     run_double_ma_optimization_blocking_with_candles_and_eval_range, Backend, BackendUsed,
-    DoubleMaRequest,
+    DoubleMaRequest, StrategyExecutableCacheStats,
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::double_ma::StrategyConfig;
@@ -52,6 +53,19 @@ enum ToggleMode {
     Inherit,
     Off,
     On,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+struct ExecutableCacheStatsWindow {
+    before: StrategyExecutableCacheStats,
+    after: StrategyExecutableCacheStats,
+    delta: StrategyExecutableCacheStats,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+struct PreparedDeviceDispatchStats {
+    device_path_hits: u64,
+    device_path_fallbacks: u64,
 }
 
 fn parse_arg_value(flag: &str) -> Option<String> {
@@ -347,6 +361,54 @@ fn format_optional_ms(value: Option<u64>) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
+fn executable_cache_stats_delta(
+    before: StrategyExecutableCacheStats,
+    after: StrategyExecutableCacheStats,
+) -> StrategyExecutableCacheStats {
+    StrategyExecutableCacheStats {
+        compiled_bundle_hits: after
+            .compiled_bundle_hits
+            .saturating_sub(before.compiled_bundle_hits),
+        compiled_bundle_misses: after
+            .compiled_bundle_misses
+            .saturating_sub(before.compiled_bundle_misses),
+        compiled_bundle_entries: after
+            .compiled_bundle_entries
+            .saturating_sub(before.compiled_bundle_entries),
+        hits: after.hits.saturating_sub(before.hits),
+        misses: after.misses.saturating_sub(before.misses),
+        entries: after.entries.saturating_sub(before.entries),
+        uploaded_thread_entries: after
+            .uploaded_thread_entries
+            .saturating_sub(before.uploaded_thread_entries),
+    }
+}
+
+fn executable_cache_stats_window(
+    before: StrategyExecutableCacheStats,
+    after: StrategyExecutableCacheStats,
+) -> ExecutableCacheStatsWindow {
+    ExecutableCacheStatsWindow {
+        before,
+        after,
+        delta: executable_cache_stats_delta(before, after),
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn drain_prepared_device_dispatch_stats() -> PreparedDeviceDispatchStats {
+    let stats = ta_app_core::dynamic_indicator_adapter::take_prepared_cuda_dispatch_stats();
+    PreparedDeviceDispatchStats {
+        device_path_hits: stats.device_path_hits,
+        device_path_fallbacks: stats.device_path_fallbacks,
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+fn drain_prepared_device_dispatch_stats() -> PreparedDeviceDispatchStats {
+    PreparedDeviceDispatchStats::default()
+}
+
 fn make_trending_candles(len: usize) -> Candles {
     let mut ts = Vec::with_capacity(len);
     let mut open = Vec::with_capacity(len);
@@ -530,7 +592,11 @@ fn backend_for_strategy(kind: StrategyKind, adx_mode: AdxMode, device_id: u32) -
 
 #[cfg(test)]
 mod tests {
-    use super::{backend_for_strategy, AdxMode, Backend, StrategyKind};
+    use super::{
+        backend_for_strategy, executable_cache_stats_window, AdxMode, Backend,
+        PreparedDeviceDispatchStats, StrategyExecutableCacheStats, StrategyKind,
+    };
+    use serde_json::json;
 
     #[test]
     fn backend_for_strategy_keeps_regime_hybrid_on_exact_gpu_kernel_surface() {
@@ -550,6 +616,103 @@ mod tests {
             backend_for_strategy(StrategyKind::BreakoutMomentum, AdxMode::On, 5),
             Backend::GpuHybridKernel { device_id: 5 }
         ));
+    }
+
+    #[test]
+    fn executable_cache_stats_window_reports_saturating_delta() {
+        let before = StrategyExecutableCacheStats {
+            compiled_bundle_hits: 2,
+            compiled_bundle_misses: 1,
+            compiled_bundle_entries: 1,
+            hits: 4,
+            misses: 2,
+            entries: 3,
+            uploaded_thread_entries: 1,
+        };
+        let after = StrategyExecutableCacheStats {
+            compiled_bundle_hits: 6,
+            compiled_bundle_misses: 3,
+            compiled_bundle_entries: 2,
+            hits: 9,
+            misses: 3,
+            entries: 5,
+            uploaded_thread_entries: 2,
+        };
+        let window = executable_cache_stats_window(before, after);
+
+        assert_eq!(window.before, before);
+        assert_eq!(window.after, after);
+        assert_eq!(
+            window.delta,
+            StrategyExecutableCacheStats {
+                compiled_bundle_hits: 4,
+                compiled_bundle_misses: 2,
+                compiled_bundle_entries: 1,
+                hits: 5,
+                misses: 1,
+                entries: 2,
+                uploaded_thread_entries: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn stats_artifacts_serialize_with_expected_json_keys() {
+        let payload = json!({
+            "gpu_strategy_executable_cache_stats": executable_cache_stats_window(
+                StrategyExecutableCacheStats {
+                    compiled_bundle_hits: 10,
+                    compiled_bundle_misses: 4,
+                    compiled_bundle_entries: 2,
+                    hits: 1,
+                    misses: 2,
+                    entries: 3,
+                    uploaded_thread_entries: 1,
+                },
+                StrategyExecutableCacheStats {
+                    compiled_bundle_hits: 12,
+                    compiled_bundle_misses: 5,
+                    compiled_bundle_entries: 3,
+                    hits: 5,
+                    misses: 3,
+                    entries: 4,
+                    uploaded_thread_entries: 2,
+                },
+            ),
+            "prepared_device_dispatch_stats": PreparedDeviceDispatchStats {
+                device_path_hits: 7,
+                device_path_fallbacks: 1,
+            },
+        });
+
+        assert_eq!(
+            payload["gpu_strategy_executable_cache_stats"]["before"]["hits"],
+            1
+        );
+        assert_eq!(
+            payload["gpu_strategy_executable_cache_stats"]["before"]["compiled_bundle_hits"],
+            10
+        );
+        assert_eq!(
+            payload["gpu_strategy_executable_cache_stats"]["after"]["misses"],
+            3
+        );
+        assert_eq!(
+            payload["gpu_strategy_executable_cache_stats"]["delta"]["entries"],
+            1
+        );
+        assert_eq!(
+            payload["gpu_strategy_executable_cache_stats"]["delta"]["uploaded_thread_entries"],
+            1
+        );
+        assert_eq!(
+            payload["prepared_device_dispatch_stats"]["device_path_hits"],
+            7
+        );
+        assert_eq!(
+            payload["prepared_device_dispatch_stats"]["device_path_fallbacks"],
+            1
+        );
     }
 }
 
@@ -740,6 +903,14 @@ fn main() {
             i + 1 - warmup_iterations
         };
         apply_nvtx_phase(nvtx_mode, is_warmup);
+        let executable_cache_before = if emit_json {
+            Some(ta_app_core::gpu_strategy_executable_cache_stats())
+        } else {
+            None
+        };
+        if emit_json {
+            let _ = drain_prepared_device_dispatch_stats();
+        }
         let t0 = Instant::now();
         let res = run_double_ma_optimization_blocking_with_candles_and_eval_range(
             req.clone(),
@@ -761,6 +932,8 @@ fn main() {
         }
         let wall_ms = t0.elapsed().as_millis() as u64;
         if emit_json {
+            let executable_cache_after = ta_app_core::gpu_strategy_executable_cache_stats();
+            let prepared_device_dispatch_stats = drain_prepared_device_dispatch_stats();
             let payload = json!({
                 "phase": if is_warmup { "warmup" } else { "measure" },
                 "iter": iter_index,
@@ -802,6 +975,11 @@ fn main() {
                 "indicator_route_plan": &res.indicator_route_plan,
                 "backend_fallback_reason": res.backend_fallback_reason.as_deref(),
                 "route_diagnostics": &res.route_diagnostics,
+                "gpu_strategy_executable_cache_stats": executable_cache_stats_window(
+                    executable_cache_before.expect("json mode captures executable cache baseline"),
+                    executable_cache_after,
+                ),
+                "prepared_device_dispatch_stats": prepared_device_dispatch_stats,
             });
             println!(
                 "{}",

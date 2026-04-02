@@ -2,12 +2,10 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ta_app_core::composite_validate::{
-    ReoptWalkForwardConfigOptional, SpaBenchmarkKind, SpaConfigOptional,
-};
 use ta_app_core::{
     CarmStrategyParams, CdmcStrategyParams, CompositeParams, CompositeValidationRequest,
-    CscvPboConfig, PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional,
+    CscvPboConfig, PerturbConfig, ReoptWalkForwardConfigOptional, SpaBenchmarkKind,
+    SpaConfigOptional, TradeBootstrapConfig, WalkForwardConfigOptional,
 };
 use ta_app_core::{KqsrStrategyParams, KvdfStrategyParams};
 use ta_strategies::double_ma::StrategyConfig;

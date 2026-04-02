@@ -87,6 +87,11 @@ function installDefaultInvokeCommandMock(): void {
         path: 'runs/vectorgrid_report_validation_test.xlsx',
       }
     }
+    if (command === 'save_report_xlsx_from_artifact') {
+      return {
+        path: 'runs/vectorgrid_report_validation_test.xlsx',
+      }
+    }
     if (command === 'build_report_xlsx') {
       return 'AA=='
     }
@@ -647,8 +652,8 @@ describe('validationService', () => {
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
     expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel')
     expect(String(validationState.validationCrossSummary || '')).toContain('requested=preserved_finalists')
-    expect(String(validationState.validationCrossSummary || '')).toContain('effective lightweight reruns')
-    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: composite main route does not support inline cross_ticker; lightweight composite reruns omit walk_forward + reopt WF + SPA + perturb + trade bootstrap + CSCV + hard gates')
+    expect(String(validationState.validationCrossSummary || '')).toContain('finalists only (cap=4)')
+    expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: preserved_finalists omit walk_forward + reopt WF + SPA + perturb + trade bootstrap')
   })
 
   it('surfaces CompositeMo CPU-preferred validation fallback explicitly in post-run summaries', async () => {
@@ -1395,6 +1400,7 @@ describe('validationService', () => {
       max_rows: 7,
       report: expect.any(Object),
     }))
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx_from_artifact', expect.anything())
     expect(invokeCommandMock).not.toHaveBeenCalledWith('build_report_xlsx', expect.anything())
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
       path: 'runs/vectorgrid_report_validation_test.xlsx',
@@ -1447,6 +1453,10 @@ describe('validationService', () => {
           len: 4321,
           source: 'artifact-source',
         },
+        ml_signal: {
+          stage: 'stage5',
+          model_summary: 'cached model',
+        },
         req: {
           strategy_kind: 'DoubleMa',
           data_id: 'data-aapl-artifact',
@@ -1474,6 +1484,9 @@ describe('validationService', () => {
       len: 4321,
       source: 'artifact-source',
     })
+    expect(artifact?.ml_signal).toMatchObject({
+      stage: 'stage5',
+    })
 
     const workflowStore = useWorkflowArtifactsStore(pinia)
     expect(workflowStore.currentRun?.datasetMeta).toMatchObject({
@@ -1483,6 +1496,9 @@ describe('validationService', () => {
       symbol: 'AAPL',
       len: 4321,
       source: 'artifact-source',
+    })
+    expect(workflowStore.currentRun?.mlSignal).toMatchObject({
+      stage: 'stage5',
     })
   })
 
@@ -1840,6 +1856,7 @@ describe('validationService', () => {
       max_rows: 5,
       report: expect.any(Object),
     }))
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx_from_artifact', expect.anything())
     expect(invokeCommandMock).toHaveBeenCalledWith('build_report_xlsx', expect.objectContaining({
       max_rows: 5,
       report: expect.any(Object),
@@ -1990,11 +2007,14 @@ describe('validationService', () => {
     await openReportsDir()
 
     expect(invokeCommandMock).toHaveBeenCalledWith('build_validation_shortlist_csv', expect.any(Object))
-    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx', expect.any(Object))
+    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx_from_artifact', {
+      path: 'runs/vectorgrid_run_validation_test.json',
+      max_rows: null,
+    })
     expect(invokeCommandMock).toHaveBeenCalledWith('open_reports_dir')
   })
 
-  it('builds report exports from artifact-backed dataset metadata instead of current live dataset state', async () => {
+  it('prefers artifact-backed XLSX export for persisted validated runs', async () => {
     ;(pinia.state.value as Record<string, unknown>).validation = {
       autoRevealReport: false,
       autoExportTopN: '9',
@@ -2066,20 +2086,11 @@ describe('validationService', () => {
 
     await exportReportXlsx()
 
-    const saveCall = invokeCommandMock.mock.calls.find(([command]) => command === 'save_report_xlsx')
-    const saveArgs = (saveCall?.[1] ?? {}) as { max_rows?: number | null; report?: Record<string, unknown> }
-    const reportData = (saveArgs.report?.data ?? {}) as Record<string, unknown>
-    const meta = (reportData.meta ?? {}) as Record<string, unknown>
-    const ctx = (reportData.ctx ?? {}) as Record<string, unknown>
-
-    expect(saveArgs.max_rows).toBe(9)
-    expect(meta.timeframe).toBe('1h')
-    expect(meta.len).toBe(4321)
-    expect(meta.min_ts).toBe(111)
-    expect(meta.max_ts).toBe(222)
-    expect(ctx.label).toBe('AAPL artifact')
-    expect(ctx.symbol).toBe('AAPL')
-    expect(ctx.csv_path).toBe('C:/data/AAPL.csv')
+    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx_from_artifact', {
+      path: 'runs/vectorgrid_run_validation_test.json',
+      max_rows: 9,
+    })
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
   })
 
   it('preserves Stage 3 meta XLSX fallback when no validation artifact exists', async () => {
@@ -2093,6 +2104,7 @@ describe('validationService', () => {
     await exportReportXlsx()
 
     expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx_from_artifact', expect.anything())
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
       path: 'C:/reports/meta_latest.xlsx',
     })

@@ -1523,6 +1523,15 @@ fn describe_cross_omitted_modules(strategy_kind: &str, validation_req: &Value) -
         ];
     }
     if !is_double_like_strategy(strategy_kind) {
+        if mode == "preserved_finalists" {
+            return vec![
+                "walk_forward".to_string(),
+                "reopt_walk_forward".to_string(),
+                "spa".to_string(),
+                "perturb".to_string(),
+                "trade_bootstrap".to_string(),
+            ];
+        }
         return vec![
             "walk_forward".to_string(),
             "reopt_walk_forward".to_string(),
@@ -2058,17 +2067,15 @@ fn build_expected_execution_summary(
         } else if is_double_like && mode == "lightweight" {
             cross_summary = format!("{base} | lightweight reruns");
         } else if !is_double_like {
-            cross_summary = if mode == "lightweight" {
+            cross_summary = if mode == "preserved_finalists" {
+                format!("{base} | finalists only")
+            } else {
                 format!("{base} | lightweight reruns")
-            } else {
-                format!("{base} | effective lightweight reruns")
             };
-            let cross_warning = if mode == "lightweight" {
-                "Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.".to_string()
+            let cross_warning = if mode == "preserved_finalists" {
+                "Composite fixed-candidate main-route validation does not support inline cross_ticker; preserved-finalists composite cross reruns keep CSCV/PBO + hard gates and omit walk_forward, reopt_walk_forward, spa, perturb, and trade_bootstrap.".to_string()
             } else {
-                format!(
-                    "Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns remain lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates; requested {mode} currently uses lightweight behavior."
-                )
+                "Composite fixed-candidate main-route validation does not support inline cross_ticker; composite cross reruns are lightweight and omit walk_forward, reopt_walk_forward, spa, perturb, trade_bootstrap, cscv_pbo, and hard gates.".to_string()
             };
             warning_summary = if warning_summary == "none" {
                 cross_warning
@@ -2610,7 +2617,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_non_lightweight_cross_summary_reports_effective_lightweight_reruns() {
+    fn composite_preserved_finalists_cross_summary_reports_finalists_only() {
         let req = json!({
             "backend": { "backend": "Auto" },
             "cross_ticker": {
@@ -2624,10 +2631,15 @@ mod tests {
         let summary = build_expected_execution_summary("CompositeCpu", Some(&req));
         assert!(summary
             .cross_summary
-            .contains("1 dataset | preserved_finalists | effective lightweight reruns"));
+            .contains("1 dataset | preserved_finalists | finalists only"));
         assert!(summary
             .warning_summary
-            .contains("requested preserved_finalists currently uses lightweight behavior"));
+            .contains("preserved-finalists composite cross reruns keep CSCV/PBO + hard gates"));
+        assert!(summary
+            .cross_omitted_summary
+            .contains("walk_forward"));
+        assert!(!summary.cross_omitted_summary.contains("cscv_pbo"));
+        assert!(!summary.cross_omitted_summary.contains("hard gates"));
     }
 
     #[test]

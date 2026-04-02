@@ -11,7 +11,7 @@
     "gen:commands": "node ./scripts/generate-tauri-commands.mjs",
     "check:commands": "node ./scripts/generate-tauri-commands.mjs --check",
     "lint": "eslint . --max-warnings=0 && npm run check:commands && node ./scripts/check-known-tauri-commands.mjs",
-    "parity:outputs": "node ../scripts/check_output_parity.mjs --pairs ../scripts/output_parity_pairs.json",
+    "parity:outputs": "node ../scripts/run_output_parity_check.mjs --pack ../scripts/headless_output_parity_pack.json --pairs ../scripts/output_parity_pairs.json",
     "baseline:ui": "node ./scripts/capture-baseline-ui.mjs",
     "a11y:smoke": "node ./scripts/check-a11y-smoke.mjs",
     "dev": "vite",
