@@ -11,9 +11,17 @@ import {
   type PolygonLiveBarEventPayload,
   type PolygonLiveStatusEventPayload,
 } from '../stores/taskStore'
-import { hasTauriEventApi, listenEvent } from './events'
-
-type InvokeFn = (command: string, args?: Record<string, unknown>) => Promise<unknown>
+import { isTauriCommand, type TauriCommand } from './commands'
+import {
+  resetInvokeLifecycleHooksForTests,
+  setInvokeLifecycleHooks,
+  type InvokeArgs,
+} from './invoke'
+import {
+  hasTauriEventApi,
+  listenEvent,
+  resetSharedTauriEventListenersForTests,
+} from './events'
 
 export const INSTRUMENTED_EVENT_CHANNELS = [
   'double_ma_progress',
@@ -22,24 +30,42 @@ export const INSTRUMENTED_EVENT_CHANNELS = [
   'polygon_live_bar',
 ] as const
 
-function isInvokePropertyWritable(owner: Record<string, unknown>, key: 'invoke'): boolean {
-  const descriptor = Object.getOwnPropertyDescriptor(owner, key)
-  if (!descriptor) return true
-  if ('writable' in descriptor) return descriptor.writable === true
-  return typeof descriptor.set === 'function'
-}
+const TRACKED_TAURI_COMMANDS = new Set<TauriCommand>([
+  'run_double_ma_optimization',
+  'run_composite_cpu_optimization',
+  'run_composite_mo_optimization',
+  'run_double_ma_validation',
+  'run_composite_validation',
+  'run_meta_selection',
+  'run_meta_stage4_experimental',
+  'run_meta_stage5_ml_confidence',
+  'export_ml_signal_dataset',
+  'generate_ml_signal_score_cache',
+  'run_ml_signal_validation',
+  'run_ml_signal_policy_sweep',
+  'polygon_download_1m_and_load',
+  'train_ml_confidence_model',
+  'apply_ml_confidence_model',
+  'evaluate_ml_confidence_policy',
+  'compute_double_ma_drilldown',
+  'compute_composite_cpu_drilldown',
+  'compute_double_ma_local_stability',
+  'compute_composite_cpu_local_stability',
+  'execute_strategy_signal_once',
+  'start_live_execution_runner',
+  'stop_live_execution_runner',
+  'polygon_start_live_candle_stream',
+  'polygon_stop_live_candle_stream',
+])
 
-function globalInvokeTarget(): { owner: Record<string, unknown>; key: 'invoke'; fn: InvokeFn } | null {
-  const tauri = window.__TAURI__
-  if (!tauri) return null
+let invokeHooksInstalled = false
+let disposeRegistered = false
+let eventRetryTimer: ReturnType<typeof setInterval> | null = null
+let eventSubscribePromise: Promise<void> | null = null
+let eventUnsubscribers: Array<() => void> = []
 
-  if (tauri.core && typeof tauri.core.invoke === 'function') {
-    return { owner: tauri.core as unknown as Record<string, unknown>, key: 'invoke', fn: tauri.core.invoke }
-  }
-  if (typeof tauri.invoke === 'function') {
-    return { owner: tauri as unknown as Record<string, unknown>, key: 'invoke', fn: tauri.invoke }
-  }
-  return null
+function isTrackedLifecycleCommand(command: string): command is TauriCommand {
+  return isTauriCommand(command) && TRACKED_TAURI_COMMANDS.has(command)
 }
 
 function asRecord(payload: unknown): Record<string, unknown> | null {
@@ -102,139 +128,143 @@ function normalizePolygonBar(payload: unknown): PolygonLiveBarEventPayload | nul
   }
 }
 
-function isCancelledErrorMessage(err: unknown): boolean {
-  const msg = asString(err instanceof Error ? err.message : err)
-  const lower = msg.toLowerCase()
-  return lower.includes('cancel') || lower.includes('aborted')
-}
-
-function patchInvokeOnce(): boolean {
-  if (window.__VTA_INVOKE_PATCHED__) return true
-  if (window.__VTA_INVOKE_PATCH_BLOCKED__) return true
-  const target = globalInvokeTarget()
-  if (!target) return false
-
-  if (!isInvokePropertyWritable(target.owner, target.key)) {
-    window.__VTA_INVOKE_PATCH_BLOCKED__ = true
-    return true
-  }
-
-  const original = target.fn.bind(target.owner)
-  const wrapped: InvokeFn = async (command: string, args?: Record<string, unknown>) => {
-    const commandName = asString(command) || 'unknown_command'
-    const taskId = beginTrackedCommand(commandName, { queued: true })
-    try {
-      const result = await original(commandName, args)
-      completeTrackedCommand(taskId)
-      return result
-    } catch (err) {
-      failTrackedCommand(taskId, err)
-      if (isCancelledErrorMessage(err)) {
-        // Preserve original rejection while still classifying cancellation in the store.
-      }
-      throw err
-    }
-  }
-
-  try {
-    target.owner[target.key] = wrapped
-  } catch {
-    window.__VTA_INVOKE_PATCH_BLOCKED__ = true
-    return true
-  }
-  if (target.owner[target.key] !== wrapped) {
-    window.__VTA_INVOKE_PATCH_BLOCKED__ = true
-    return true
-  }
-
-  window.__VTA_INVOKE_PATCHED__ = true
-  return true
+function clearEventRetryTimer(): void {
+  if (!eventRetryTimer) return
+  globalThis.clearInterval(eventRetryTimer)
+  eventRetryTimer = null
 }
 
 function clearEventSubscriptions(): void {
-  const subs = window.__VTA_EVENT_UNSUBSCRIBERS__
-  if (!subs || subs.length === 0) return
-  for (const off of subs) {
+  clearEventRetryTimer()
+  for (const off of eventUnsubscribers) {
     try {
       off()
     } catch {
       // no-op
     }
   }
-  window.__VTA_EVENT_UNSUBSCRIBERS__ = []
+  eventUnsubscribers = []
+  eventSubscribePromise = null
 }
 
-async function attachListener(event: string, handler: (payload: unknown) => void): Promise<void> {
+async function attachListener(
+  event: string,
+  handler: (payload: unknown) => void,
+): Promise<void> {
   try {
     const off = await listenEvent(event, (payload) => handler(payload))
     if (typeof off === 'function') {
-      if (!window.__VTA_EVENT_UNSUBSCRIBERS__) window.__VTA_EVENT_UNSUBSCRIBERS__ = []
-      window.__VTA_EVENT_UNSUBSCRIBERS__.push(off)
+      eventUnsubscribers.push(off)
     }
   } catch {
-    // no-op: events are optional depending on runtime context.
+    // event subscriptions are best-effort and may be unavailable in some runtime contexts
   }
 }
 
 async function subscribeProgressEvents(): Promise<void> {
-  clearEventSubscriptions()
+  if (eventUnsubscribers.length > 0 || eventSubscribePromise) {
+    await eventSubscribePromise
+    return
+  }
 
-  await attachListener('double_ma_progress', (payload) => {
-    const p = normalizeDoubleMa(payload)
-    if (p) applyDoubleMaProgress(p)
-  })
-  await attachListener('live_execution_runner_event', (payload) => {
-    const p = normalizeRunnerEvent(payload)
-    if (p) recordLiveExecutionRunnerEvent(p)
-  })
-  await attachListener('polygon_live_status', (payload) => {
-    const p = normalizePolygonStatus(payload)
-    if (p) recordPolygonLiveStatusEvent(p)
-  })
-  await attachListener('polygon_live_bar', (payload) => {
-    const p = normalizePolygonBar(payload)
-    if (p) recordPolygonLiveBarEvent(p)
-  })
+  eventSubscribePromise = (async () => {
+    const nextUnsubscribers: Array<() => void> = []
+    const priorUnsubscribers = eventUnsubscribers
+    eventUnsubscribers = nextUnsubscribers
+    try {
+      await attachListener('double_ma_progress', (payload) => {
+        const p = normalizeDoubleMa(payload)
+        if (p) applyDoubleMaProgress(p)
+      })
+      await attachListener('live_execution_runner_event', (payload) => {
+        const p = normalizeRunnerEvent(payload)
+        if (p) recordLiveExecutionRunnerEvent(p)
+      })
+      await attachListener('polygon_live_status', (payload) => {
+        const p = normalizePolygonStatus(payload)
+        if (p) recordPolygonLiveStatusEvent(p)
+      })
+      await attachListener('polygon_live_bar', (payload) => {
+        const p = normalizePolygonBar(payload)
+        if (p) recordPolygonLiveBarEvent(p)
+      })
+
+      for (const off of priorUnsubscribers) {
+        try {
+          off()
+        } catch {
+          // no-op
+        }
+      }
+    } finally {
+      eventSubscribePromise = null
+    }
+  })()
+
+  await eventSubscribePromise
 }
 
 function subscribeWithRetry(maxTries = 30, everyMs = 100): void {
+  if (eventUnsubscribers.length > 0 || eventSubscribePromise || eventRetryTimer) return
+
   let tries = 0
-  const run = async (): Promise<boolean> => {
+  const attempt = async (): Promise<boolean> => {
     if (!hasTauriEventApi()) return false
     await subscribeProgressEvents()
-    return true
+    return eventUnsubscribers.length > 0
   }
 
-  void run().then((ok) => {
+  void attempt().then((ok) => {
     if (ok) return
-    const timer = globalThis.setInterval(() => {
+    eventRetryTimer = globalThis.setInterval(() => {
       tries += 1
-      void run().then((done) => {
+      void attempt().then((done) => {
         if (done || tries >= maxTries) {
-          globalThis.clearInterval(timer)
+          clearEventRetryTimer()
         }
       })
     }, everyMs)
   })
 }
 
-function patchInvokeWithRetry(maxTries = 30, everyMs = 100): void {
-  if (patchInvokeOnce()) return
-  let tries = 0
-  const timer = globalThis.setInterval(() => {
-    tries += 1
-    if (patchInvokeOnce() || tries >= maxTries) {
-      globalThis.clearInterval(timer)
-    }
-  }, everyMs)
+function installInvokeHooks(): void {
+  if (invokeHooksInstalled) return
+  invokeHooksInstalled = true
+  setInvokeLifecycleHooks({
+    beforeInvoke(command: TauriCommand, _args?: InvokeArgs) {
+      if (!isTrackedLifecycleCommand(command)) return null
+      return beginTrackedCommand(command, { queued: true })
+    },
+    afterSuccess(token: unknown) {
+      if (typeof token !== 'string' || !token) return
+      completeTrackedCommand(token)
+    },
+    afterError(token: unknown, _command: TauriCommand, _args: InvokeArgs, error: unknown) {
+      if (typeof token !== 'string' || !token) return
+      failTrackedCommand(token, error)
+    },
+  })
 }
 
 export function installTauriInstrumentation(): void {
-  patchInvokeWithRetry()
+  installInvokeHooks()
   subscribeWithRetry()
-  if (import.meta.hot) {
+  if (import.meta.hot && !disposeRegistered) {
+    disposeRegistered = true
     import.meta.hot.dispose(() => {
       clearEventSubscriptions()
+      setInvokeLifecycleHooks(null)
+      invokeHooksInstalled = false
+      disposeRegistered = false
     })
   }
+}
+
+export function resetTauriInstrumentationForTests(): void {
+  clearEventSubscriptions()
+  setInvokeLifecycleHooks(null)
+  resetInvokeLifecycleHooksForTests()
+  resetSharedTauriEventListenersForTests()
+  invokeHooksInstalled = false
+  disposeRegistered = false
 }

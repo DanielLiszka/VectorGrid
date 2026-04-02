@@ -1,8 +1,14 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
-import { installTauriInstrumentation } from './instrumentation'
 import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useTaskStore } from '../stores/taskStore'
+import { installMockIpc, resetTauriApiMocks } from '../test/tauriMocks'
+import { invokeCommand } from './invoke'
+import {
+  installTauriInstrumentation,
+  resetTauriInstrumentationForTests,
+} from './instrumentation'
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
@@ -33,50 +39,9 @@ class MemoryStorage implements Storage {
   }
 }
 
-function setupRuntime(invokeImpl: (command: string) => Promise<unknown>): void {
-  ;(globalThis as Record<string, unknown>).window = {
-    localStorage: new MemoryStorage(),
-    __TAURI__: {
-      core: {
-        invoke: vi.fn(async (command: string) => invokeImpl(command)),
-      },
-      event: {
-        listen: vi.fn(async () => () => {}),
-      },
-    },
-    __VTA_INVOKE_PATCHED__: false,
-    __VTA_INVOKE_PATCH_BLOCKED__: false,
-    __VTA_EVENT_UNSUBSCRIBERS__: [],
-  }
-}
-
-function setupRuntimeReadonlyInvoke(invokeImpl: (command: string) => Promise<unknown>): void {
-  const core: { invoke?: (command: string) => Promise<unknown> } = {}
-  Object.defineProperty(core, 'invoke', {
-    configurable: false,
-    enumerable: true,
-    writable: false,
-    value: vi.fn(async (command: string) => invokeImpl(command)),
-  })
-  ;(globalThis as Record<string, unknown>).window = {
-    localStorage: new MemoryStorage(),
-    __TAURI__: {
-      core,
-      event: {
-        listen: vi.fn(async () => () => {}),
-      },
-    },
-    __VTA_INVOKE_PATCHED__: false,
-    __VTA_INVOKE_PATCH_BLOCKED__: false,
-    __VTA_EVENT_UNSUBSCRIBERS__: [],
-  }
-}
-
-async function runInstrumented(command: string): Promise<void> {
+async function runInstrumented(command: Parameters<typeof invokeCommand>[0]): Promise<void> {
   installTauriInstrumentation()
-  const invoke = window.__TAURI__?.core?.invoke
-  if (!invoke) throw new Error('Expected patched Tauri invoke function.')
-  await invoke(command, undefined)
+  await invokeCommand(command, undefined)
 }
 
 describe('error-path QA through instrumented invoke', () => {
@@ -85,6 +50,12 @@ describe('error-path QA through instrumented invoke', () => {
   let errorSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
+    resetTauriInstrumentationForTests()
+    resetTauriApiMocks()
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: new MemoryStorage(),
+    })
     pinia = createPinia()
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
@@ -97,12 +68,15 @@ describe('error-path QA through instrumented invoke', () => {
   afterEach(() => {
     warnSpy.mockRestore()
     errorSpy.mockRestore()
-    delete (globalThis as Record<string, unknown>).window
+    resetTauriInstrumentationForTests()
+    resetTauriApiMocks()
   })
 
   it('classifies invalid-input failures as failed with surfaced error', async () => {
-    setupRuntime(async () => {
-      throw new Error('HalfTrend amplitude must be in [1, 65535].')
+    installMockIpc({
+      run_composite_cpu_optimization: async () => {
+        throw new Error('HalfTrend amplitude must be in [1, 65535].')
+      },
     })
 
     await expect(runInstrumented('run_composite_cpu_optimization')).rejects.toThrow(
@@ -116,8 +90,10 @@ describe('error-path QA through instrumented invoke', () => {
   })
 
   it('surfaces missing-API-key failures as failed', async () => {
-    setupRuntime(async () => {
-      throw new Error('API key + secret are required unless dry-run is enabled.')
+    installMockIpc({
+      start_live_execution_runner: async () => {
+        throw new Error('API key + secret are required unless dry-run is enabled.')
+      },
     })
 
     await expect(runInstrumented('start_live_execution_runner')).rejects.toThrow(
@@ -131,11 +107,15 @@ describe('error-path QA through instrumented invoke', () => {
   })
 
   it('classifies cancelled runs distinctly from failures', async () => {
-    setupRuntime(async () => {
-      throw new Error('Validation cancelled by user.')
+    installMockIpc({
+      run_double_ma_validation: async () => {
+        throw new Error('Validation cancelled by user.')
+      },
     })
 
-    await expect(runInstrumented('run_double_ma_validation')).rejects.toThrow('Validation cancelled by user.')
+    await expect(runInstrumented('run_double_ma_validation')).rejects.toThrow(
+      'Validation cancelled by user.',
+    )
 
     const store = useTaskStore(pinia)
     expect(store.history[0]?.status).toBe('cancelled')
@@ -144,8 +124,10 @@ describe('error-path QA through instrumented invoke', () => {
   })
 
   it('surfaces backend failures as failed with error toast', async () => {
-    setupRuntime(async () => {
-      throw new Error('Backend failure: internal optimizer panic.')
+    installMockIpc({
+      run_meta_selection: async () => {
+        throw new Error('Backend failure: internal optimizer panic.')
+      },
     })
 
     await expect(runInstrumented('run_meta_selection')).rejects.toThrow(
@@ -158,13 +140,18 @@ describe('error-path QA through instrumented invoke', () => {
     expect(store.toasts[0]?.level).toBe('error')
   })
 
-  it('does not crash when tauri invoke is readonly', async () => {
-    setupRuntimeReadonlyInvoke(async () => 'ok')
-    expect(() => installTauriInstrumentation()).not.toThrow()
-    expect(window.__VTA_INVOKE_PATCHED__).toBe(false)
-    expect(window.__VTA_INVOKE_PATCH_BLOCKED__).toBe(true)
-    const invoke = window.__TAURI__?.core?.invoke
-    expect(invoke).toBeTypeOf('function')
-    await expect(invoke?.('run_meta_selection')).resolves.toBe('ok')
+  it('is idempotent when installed more than once', async () => {
+    installMockIpc({
+      run_meta_selection: async () => ({ ok: true }),
+    })
+
+    installTauriInstrumentation()
+    installTauriInstrumentation()
+
+    await expect(invokeCommand('run_meta_selection')).resolves.toEqual({ ok: true })
+
+    const store = useTaskStore(pinia)
+    expect(store.history).toHaveLength(1)
+    expect(store.history[0]?.command).toBe('run_meta_selection')
   })
 })

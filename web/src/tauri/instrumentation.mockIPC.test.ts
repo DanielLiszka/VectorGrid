@@ -4,8 +4,12 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { emit } from '@tauri-apps/api/event'
 import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useTaskStore } from '../stores/taskStore'
-import { installTauriInstrumentation } from './instrumentation'
-import { installLegacyTauriWindowBridge, installMockIpc, resetTauriApiMocks } from '../test/tauriMocks'
+import { invokeCommand } from './invoke'
+import {
+  installTauriInstrumentation,
+  resetTauriInstrumentationForTests,
+} from './instrumentation'
+import { installMockIpc, resetTauriApiMocks } from '../test/tauriMocks'
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>()
@@ -47,6 +51,7 @@ async function flushAsyncWork(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
   await Promise.resolve()
+  await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 describe('Tauri instrumentation with mockIPC', () => {
@@ -55,6 +60,7 @@ describe('Tauri instrumentation with mockIPC', () => {
   let errorSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
+    resetTauriInstrumentationForTests()
     resetTauriApiMocks()
     pinia = createPinia()
     setActivePinia(pinia)
@@ -69,6 +75,7 @@ describe('Tauri instrumentation with mockIPC', () => {
   afterEach(() => {
     warnSpy.mockRestore()
     errorSpy.mockRestore()
+    resetTauriInstrumentationForTests()
     resetTauriApiMocks()
   })
 
@@ -79,10 +86,9 @@ describe('Tauri instrumentation with mockIPC', () => {
       },
       { shouldMockEvents: true },
     )
-    installLegacyTauriWindowBridge()
     installTauriInstrumentation()
 
-    await expect(window.__TAURI__?.core?.invoke?.('run_meta_selection')).resolves.toEqual({ ok: true })
+    await expect(invokeCommand('run_meta_selection')).resolves.toEqual({ ok: true })
 
     const store = useTaskStore(pinia)
     expect(store.history[0]).toMatchObject({
@@ -101,10 +107,9 @@ describe('Tauri instrumentation with mockIPC', () => {
       },
       { shouldMockEvents: true },
     )
-    installLegacyTauriWindowBridge()
     installTauriInstrumentation()
 
-    await expect(window.__TAURI__?.core?.invoke?.('run_meta_selection')).rejects.toThrow('backend panic')
+    await expect(invokeCommand('run_meta_selection')).rejects.toThrow('backend panic')
 
     const store = useTaskStore(pinia)
     expect(store.history[0]).toMatchObject({
@@ -116,7 +121,6 @@ describe('Tauri instrumentation with mockIPC', () => {
 
   it('ignores malformed events and records valid runner events', async () => {
     installMockIpc({}, { allowUnknown: true, shouldMockEvents: true })
-    installLegacyTauriWindowBridge()
     installTauriInstrumentation()
     await flushAsyncWork()
 
@@ -133,5 +137,21 @@ describe('Tauri instrumentation with mockIPC', () => {
     const runnerEvents = store.events.filter((event) => event.source === 'live_execution_runner_event')
     expect(runnerEvents).toHaveLength(1)
     expect(runnerEvents[0]?.message).toContain('heartbeat')
+  })
+
+  it('does not track low-signal status probes as task lifecycle entries', async () => {
+    installMockIpc(
+      {
+        live_execution_runner_status: async () => ({ active: false }),
+      },
+      { shouldMockEvents: true },
+    )
+    installTauriInstrumentation()
+
+    await expect(invokeCommand('live_execution_runner_status')).resolves.toEqual({ active: false })
+
+    const store = useTaskStore(pinia)
+    expect(store.history).toHaveLength(0)
+    expect(store.timeline).toHaveLength(0)
   })
 })

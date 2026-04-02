@@ -8,6 +8,7 @@ import { applySettingsBootstrapFromStorage } from './services/settingsBootstrap'
 import { applyWorkflowBootstrapFromStorage } from './services/workflowBootstrap'
 import { bindRuntimePinia } from './stores/runtimePinia'
 import { useRuntimeStore } from './stores/runtimeStore'
+import { installTauriInstrumentation } from './tauri/instrumentation'
 import { runStorageMigrations } from './utils/storage'
 
 function waitForNextPaint(): Promise<void> {
@@ -23,6 +24,7 @@ function waitForNextPaint(): Promise<void> {
 export async function startVectorGridApp(root: HTMLElement): Promise<void> {
   const pinia = createPinia()
   bindRuntimePinia(pinia)
+  installTauriInstrumentation()
   const runtimeStore = useRuntimeStore(pinia)
   const app = createApp(App)
   app.use(pinia)

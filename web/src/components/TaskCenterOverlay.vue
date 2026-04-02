@@ -2,8 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStorage } from '@vueuse/core'
-import { invokeCommand } from '../tauri/invoke'
 import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
+import { requestCancellationForMappedCommand } from '../services/runControlService'
 import { formatUiCompactDurationMs, formatUiPercentFromFraction } from '../utils/uiFormat'
 import {
   describeTaskEvent,
@@ -24,8 +24,6 @@ import {
   cancelCommandFor,
   dismissToast,
   formatCommandLabel,
-  markTaskCancelling,
-  restoreTaskRunning,
   taskPostureSnapshot,
   useTaskStore,
   type TaskEventItem,
@@ -327,12 +325,10 @@ function canCancel(task: TrackedTask): boolean {
 async function cancelTask(task: TrackedTask): Promise<void> {
   const cmd = cancelCommandFor(task.command)
   if (!cmd) return
-  markTaskCancelling(task.id)
   setCancelBusy(task.id, true)
   try {
-    await invokeCommand<void>(cmd)
+    await requestCancellationForMappedCommand(cmd)
   } catch {
-    restoreTaskRunning(task.id)
     // Keep cancellation best-effort; error details are already surfaced by backend invoke failures.
   } finally {
     setCancelBusy(task.id, false)

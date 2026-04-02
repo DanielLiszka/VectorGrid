@@ -146,9 +146,25 @@ function normalizedOrderRows(values: unknown): ExecutionOrderRow[] {
   return markRaw(rows)
 }
 
-function prependOptimisticOrderRows(state: ExecutionState, rows: ExecutionOrderRow[]): void {
+function orderRowsEqual(left: ExecutionOrderRow[], right: ExecutionOrderRow[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    const leftRow = left[index]
+    const rightRow = right[index]
+    const leftCells = Array.isArray(leftRow?.cells) ? leftRow.cells : []
+    const rightCells = Array.isArray(rightRow?.cells) ? rightRow.cells : []
+    if (leftCells.length !== rightCells.length) return false
+    for (let cellIndex = 0; cellIndex < leftCells.length; cellIndex += 1) {
+      if (leftCells[cellIndex] !== rightCells[cellIndex]) return false
+    }
+  }
+  return true
+}
+
+function prependOptimisticOrderRows(state: ExecutionState, rows: ExecutionOrderRow[]): boolean {
   const optimistic = normalizedOrderRows(rows)
-  if (!optimistic.length) return
+  if (!optimistic.length) return false
   const seenOrderIds = new Set<string>()
   const merged: ExecutionOrderRow[] = []
   for (const row of [...optimistic, ...state.orderRows]) {
@@ -157,8 +173,14 @@ function prependOptimisticOrderRows(state: ExecutionState, rows: ExecutionOrderR
     if (orderId) seenOrderIds.add(orderId)
     merged.push(row)
   }
-  state.orderRows = markRaw(normalizedOrderRows(merged).slice(0, 50))
-  state.orderCount = state.orderRows.length
+  const nextRows = markRaw(normalizedOrderRows(merged).slice(0, 50))
+  const nextCount = nextRows.length
+  if (orderRowsEqual(state.orderRows, nextRows) && state.orderCount === nextCount) {
+    return false
+  }
+  state.orderRows = nextRows
+  state.orderCount = nextCount
+  return true
 }
 
 function markVue(state: ExecutionState): void {
@@ -463,33 +485,69 @@ export const useExecutionStore = defineStore('execution', {
     },
 
     applyPolygonLiveStatusEvent(event: ParsedLiveStatus): void {
-      this.liveActive = event.active
-      this.liveSymbol = event.active ? event.symbol : ''
-      this.liveDelayed = event.active ? event.delayed : false
-      this.liveStatusHint = event.hint
-      if (event.message) {
-        this.statusLine = event.message
-        this.statusHint = event.message
+      const nextLiveSymbol = event.active ? event.symbol : ''
+      const nextLiveDelayed = event.active ? event.delayed : false
+      let changed = false
+      if (this.liveActive !== event.active) {
+        this.liveActive = event.active
+        changed = true
       }
+      if (this.liveSymbol !== nextLiveSymbol) {
+        this.liveSymbol = nextLiveSymbol
+        changed = true
+      }
+      if (this.liveDelayed !== nextLiveDelayed) {
+        this.liveDelayed = nextLiveDelayed
+        changed = true
+      }
+      if (this.liveStatusHint !== event.hint) {
+        this.liveStatusHint = event.hint
+        changed = true
+      }
+      if (event.message) {
+        if (this.statusLine !== event.message) {
+          this.statusLine = event.message
+          changed = true
+        }
+        if (this.statusHint !== event.message) {
+          this.statusHint = event.message
+          changed = true
+        }
+      }
+      if (!changed) return
       setAvailability(this)
       markVue(this)
     },
 
     applyLiveExecutionRunnerEvent(event: ParsedRunnerEvent): void {
+      let changed = false
       if (typeof event.active === 'boolean') {
-        this.runnerActive = event.active
+        if (this.runnerActive !== event.active) {
+          this.runnerActive = event.active
+          changed = true
+        }
       }
-      this.runnerStatusHint = event.hint
+      if (this.runnerStatusHint !== event.hint) {
+        this.runnerStatusHint = event.hint
+        changed = true
+      }
       if (event.message) {
-        this.statusLine = event.message
-        this.statusHint = event.message
+        if (this.statusLine !== event.message) {
+          this.statusLine = event.message
+          changed = true
+        }
+        if (this.statusHint !== event.message) {
+          this.statusHint = event.message
+          changed = true
+        }
       }
       if (event.execution) {
         const optimisticRow = optimisticOrderRowFromExecution(event.execution)
         if (optimisticRow) {
-          prependOptimisticOrderRows(this, [optimisticRow])
+          changed = prependOptimisticOrderRows(this, [optimisticRow]) || changed
         }
       }
+      if (!changed) return
       setAvailability(this)
       markVue(this)
     },

@@ -280,6 +280,92 @@ describe('execution store actions', () => {
     expect(store.orderRows[0]?.cells?.[1]).toBe('buy')
   })
 
+  it('ignores repeated identical live status events', () => {
+    const store = useExecutionStore()
+    const nowSpy = vi.spyOn(Date, 'now')
+    nowSpy.mockReturnValueOnce(101).mockReturnValueOnce(202)
+
+    const liveEvent = {
+      active: true as const,
+      symbol: 'AAPL',
+      delayed: true,
+      hint: 'Live candles active for AAPL [delayed].',
+      status: 'started',
+      message: 'live started',
+    }
+
+    store.applyPolygonLiveStatusEvent(liveEvent)
+    const firstUpdatedAt = store.updatedAtUnixMs
+
+    store.applyPolygonLiveStatusEvent(liveEvent)
+
+    expect(firstUpdatedAt).toBe(101)
+    expect(store.updatedAtUnixMs).toBe(firstUpdatedAt)
+    nowSpy.mockRestore()
+  })
+
+  it('ignores repeated identical runner events after optimistic order insertion', () => {
+    const store = useExecutionStore()
+    const nowSpy = vi.spyOn(Date, 'now')
+    nowSpy.mockReturnValueOnce(303).mockReturnValueOnce(404)
+
+    const runnerEvent = {
+      status: 'order_submitted',
+      symbol: 'AAPL',
+      message: 'runner submitted buy order',
+      hint: 'Auto-runner: runner submitted buy order',
+      active: true,
+      execution: {
+        order_submitted: true,
+        action: 'buy',
+        order_id: 'ord_123',
+        delta_qty: 1,
+      },
+    }
+
+    store.applyLiveExecutionRunnerEvent(runnerEvent)
+    const firstUpdatedAt = store.updatedAtUnixMs
+    const firstOrderRows = store.orderRows
+
+    store.applyLiveExecutionRunnerEvent(runnerEvent)
+
+    expect(firstUpdatedAt).toBe(303)
+    expect(store.updatedAtUnixMs).toBe(firstUpdatedAt)
+    expect(store.orderRows).toBe(firstOrderRows)
+    expect(store.orderRows).toHaveLength(1)
+    nowSpy.mockRestore()
+  })
+
+  it('preserves meaningful runner transitions after no-op candidates', () => {
+    const store = useExecutionStore()
+    const nowSpy = vi.spyOn(Date, 'now')
+    nowSpy.mockReturnValueOnce(505).mockReturnValueOnce(606)
+
+    store.applyLiveExecutionRunnerEvent({
+      status: 'started',
+      symbol: 'AAPL',
+      message: 'runner started',
+      hint: 'Auto-runner: started',
+      active: true,
+      execution: null,
+    })
+
+    store.applyLiveExecutionRunnerEvent({
+      status: 'stopped',
+      symbol: 'AAPL',
+      message: 'runner stopped',
+      hint: 'Auto-runner: stopped',
+      active: false,
+      execution: null,
+    })
+
+    expect(store.updatedAtUnixMs).toBe(606)
+    expect(store.runnerActive).toBe(false)
+    expect(store.runnerStatusHint).toBe('Auto-runner: stopped')
+    expect(store.statusLine).toBe('runner stopped')
+    nowSpy.mockRestore()
+  })
+
   it('keeps runtime state intact when clearing credentials', async () => {
     const store = useExecutionStore()
     store.applyPolygonLiveStatusEvent({

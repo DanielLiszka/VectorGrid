@@ -194,6 +194,19 @@ const PROGRESS_ELIGIBLE_COMMANDS = new Set<TauriCommand>([
   "compute_composite_cpu_local_stability",
 ]);
 
+const EXTRA_TRACKED_COMMANDS = new Set<TauriCommand>([
+  "execute_strategy_signal_once",
+  "start_live_execution_runner",
+  "stop_live_execution_runner",
+  "polygon_start_live_candle_stream",
+  "polygon_stop_live_candle_stream",
+]);
+
+export const TRACKED_TAURI_COMMANDS = new Set<TauriCommand>([
+  ...PROGRESS_ELIGIBLE_COMMANDS,
+  ...EXTRA_TRACKED_COMMANDS,
+]);
+
 const CANCEL_COMMAND_BY_COMMAND: Partial<Record<TauriCommand, TauriCommand>> = {
   run_double_ma_optimization: "cancel_current_run",
   run_composite_cpu_optimization: "cancel_current_run",
@@ -605,6 +618,36 @@ export function taskPostureSnapshot(
 export function cancelCommandFor(command: string): TauriCommand | null {
   if (!isTauriCommand(command)) return null;
   return CANCEL_COMMAND_BY_COMMAND[command] ?? null;
+}
+
+export function shouldTrackCommandLifecycle(
+  command: string,
+): command is TauriCommand {
+  return isTauriCommand(command) && TRACKED_TAURI_COMMANDS.has(command);
+}
+
+export function markTasksCancellingForCommand(
+  cancelCommand: TauriCommand,
+): string[] {
+  const st = taskStoreSingleton();
+  const touchedTaskIds: string[] = [];
+  for (const id of st.activeOrder) {
+    const task = st.activeById[id];
+    if (!task) continue;
+    if (cancelCommandFor(task.command) !== cancelCommand) continue;
+    const priorStatus = task.status;
+    markTaskCancelling(id);
+    if (priorStatus !== "cancelling" && priorStatus !== "cancelled") {
+      touchedTaskIds.push(id);
+    }
+  }
+  return touchedTaskIds;
+}
+
+export function restoreTasksRunning(taskIds: Iterable<string>): void {
+  for (const id of taskIds) {
+    restoreTaskRunning(String(id || "").trim());
+  }
 }
 
 export function beginTrackedCommand(
