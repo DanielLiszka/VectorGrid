@@ -220,6 +220,10 @@ struct PipelineTimingProfile {
     final_shortlist_union: Duration,
     final_shortlist_confidence: Duration,
     final_shortlist_slice: Duration,
+    final_shortlist_slice_replay: Duration,
+    final_shortlist_slice_record_assembly: Duration,
+    final_shortlist_slice_sort: Duration,
+    final_shortlist_slice_diagnostics: Duration,
     final_export_flush: Duration,
     final_cleanup: Duration,
     tile_count: usize,
@@ -234,6 +238,14 @@ struct FinalistReplayTimingProfile {
     backtest: Duration,
     d2h_decode: Duration,
     tile_count: usize,
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct ShortlistSliceTimingProfile {
+    replay: Duration,
+    record_assembly: Duration,
+    sort: Duration,
+    diagnostics: Duration,
 }
 
 impl FinalistReplayTimingProfile {
@@ -395,6 +407,46 @@ impl PipelineTimingProfile {
             self.final_shortlist_slice.as_secs_f64() * 1000.0,
             Self::pct_str(self.final_shortlist_slice, self.final_finalize)
         );
+        let shortlist_slice_other = self
+            .final_shortlist_slice
+            .saturating_sub(self.final_shortlist_slice_replay)
+            .saturating_sub(self.final_shortlist_slice_record_assembly)
+            .saturating_sub(self.final_shortlist_slice_sort)
+            .saturating_sub(self.final_shortlist_slice_diagnostics);
+        eprintln!(
+            "      replay{:>15.3} ms  ({})",
+            self.final_shortlist_slice_replay.as_secs_f64() * 1000.0,
+            Self::pct_str(
+                self.final_shortlist_slice_replay,
+                self.final_shortlist_slice
+            )
+        );
+        eprintln!(
+            "      record_assembly{:>6.3} ms  ({})",
+            self.final_shortlist_slice_record_assembly.as_secs_f64() * 1000.0,
+            Self::pct_str(
+                self.final_shortlist_slice_record_assembly,
+                self.final_shortlist_slice
+            )
+        );
+        eprintln!(
+            "      sort{:>17.3} ms  ({})",
+            self.final_shortlist_slice_sort.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_shortlist_slice_sort, self.final_shortlist_slice)
+        );
+        eprintln!(
+            "      diagnostics{:>10.3} ms  ({})",
+            self.final_shortlist_slice_diagnostics.as_secs_f64() * 1000.0,
+            Self::pct_str(
+                self.final_shortlist_slice_diagnostics,
+                self.final_shortlist_slice
+            )
+        );
+        eprintln!(
+            "      slice_other{:>10.3} ms  ({})",
+            shortlist_slice_other.as_secs_f64() * 1000.0,
+            Self::pct_str(shortlist_slice_other, self.final_shortlist_slice)
+        );
         eprintln!(
             "    export_flush{:>12.3} ms  ({})",
             self.final_export_flush.as_secs_f64() * 1000.0,
@@ -423,12 +475,17 @@ pub(crate) struct KernelExecutorTimingMs {
     pub(crate) d2h_copy_ms: u64,
     pub(crate) host_decode_ms: u64,
     pub(crate) explicit_sync_ms: u64,
+    pub(crate) host_shortlist_materialize_ms: u64,
     pub(crate) host_finalize_ms: u64,
     pub(crate) host_finalize_agg_finalize_ms: u64,
     pub(crate) host_finalize_finalist_recompute_ms: u64,
     pub(crate) host_finalize_shortlist_union_ms: u64,
     pub(crate) host_finalize_shortlist_confidence_ms: u64,
     pub(crate) host_finalize_shortlist_slice_ms: u64,
+    pub(crate) host_finalize_shortlist_slice_replay_ms: u64,
+    pub(crate) host_finalize_shortlist_slice_record_assembly_ms: u64,
+    pub(crate) host_finalize_shortlist_slice_sort_ms: u64,
+    pub(crate) host_finalize_shortlist_slice_diagnostics_ms: u64,
     pub(crate) host_finalize_export_flush_ms: u64,
     pub(crate) host_finalize_cleanup_ms: u64,
     pub(crate) graph_capture_ms: u64,
@@ -1356,6 +1413,8 @@ struct KernelScratch {
     d_valid_pair_slow_period: Option<DeviceBuffer<i32>>,
     d_valid_pair_fast_local: Option<DeviceBuffer<i32>>,
     d_valid_pair_slow_local: Option<DeviceBuffer<i32>>,
+    d_valid_pair_eval_start: Option<DeviceBuffer<i32>>,
+    d_valid_pair_eval_end: Option<DeviceBuffer<i32>>,
     returns_key: Option<ReturnsCacheKey>,
 }
 
@@ -1486,15 +1545,91 @@ struct HostExactComboScratch {
     tile_slow_period_rows: Vec<i32>,
     tile_fast_local_rows: Vec<i32>,
     tile_slow_local_rows: Vec<i32>,
+    tile_range_indices: Vec<usize>,
+    tile_eval_start_rows: Vec<i32>,
+    tile_eval_end_rows: Vec<i32>,
     last_fast_period_upload: Option<PeriodUploadSignature>,
     last_slow_period_upload: Option<PeriodUploadSignature>,
     last_pair_index_upload: Option<PeriodUploadSignature>,
+    last_eval_start_upload: Option<PeriodUploadSignature>,
+    last_eval_end_upload: Option<PeriodUploadSignature>,
 }
 
 impl HostExactComboScratch {
     fn ensure_tile_host_buf_len(&mut self, len: usize) -> Result<(), String> {
         self.tile_host_buf.ensure_capacity(len)
     }
+}
+
+fn prepare_batched_windowed_exact_replay_rows(
+    host_exact_combo: &mut HostExactComboScratch,
+    ranges: &[(usize, usize)],
+    n: usize,
+) -> Result<(), String> {
+    host_exact_combo.tile_range_indices.clear();
+    host_exact_combo.tile_eval_start_rows.clear();
+    host_exact_combo.tile_eval_end_rows.clear();
+
+    if host_exact_combo.tile_combo_indices.is_empty() {
+        return Ok(());
+    }
+
+    let base_combo_indices = host_exact_combo.tile_combo_indices.clone();
+    let base_pair_index_map = host_exact_combo.tile_pair_index_map.clone();
+    let base_fast_period_rows = host_exact_combo.tile_fast_period_rows.clone();
+    let base_slow_period_rows = host_exact_combo.tile_slow_period_rows.clone();
+    let base_fast_local_rows = host_exact_combo.tile_fast_local_rows.clone();
+    let base_slow_local_rows = host_exact_combo.tile_slow_local_rows.clone();
+    let base_len = base_combo_indices.len();
+    let batched_len = base_len
+        .checked_mul(ranges.len())
+        .ok_or_else(|| "batched exact replay row count overflow".to_string())?;
+
+    host_exact_combo.tile_combo_indices.clear();
+    host_exact_combo.tile_pair_index_map.clear();
+    host_exact_combo.tile_fast_period_rows.clear();
+    host_exact_combo.tile_slow_period_rows.clear();
+    host_exact_combo.tile_fast_local_rows.clear();
+    host_exact_combo.tile_slow_local_rows.clear();
+    host_exact_combo.tile_range_indices.reserve(batched_len);
+    host_exact_combo.tile_eval_start_rows.reserve(batched_len);
+    host_exact_combo.tile_eval_end_rows.reserve(batched_len);
+
+    for (range_idx, &(eval_start_t, eval_end_t_raw)) in ranges.iter().enumerate() {
+        let eval_start_i = i32::try_from(eval_start_t)
+            .map_err(|_| "batched replay eval_start exceeds i32::MAX".to_string())?;
+        let eval_end_i = i32::try_from(eval_end_t_raw.min(n))
+            .map_err(|_| "batched replay eval_end exceeds i32::MAX".to_string())?;
+        host_exact_combo
+            .tile_combo_indices
+            .extend_from_slice(&base_combo_indices);
+        host_exact_combo
+            .tile_pair_index_map
+            .extend_from_slice(&base_pair_index_map);
+        host_exact_combo
+            .tile_fast_period_rows
+            .extend_from_slice(&base_fast_period_rows);
+        host_exact_combo
+            .tile_slow_period_rows
+            .extend_from_slice(&base_slow_period_rows);
+        host_exact_combo
+            .tile_fast_local_rows
+            .extend_from_slice(&base_fast_local_rows);
+        host_exact_combo
+            .tile_slow_local_rows
+            .extend_from_slice(&base_slow_local_rows);
+        host_exact_combo
+            .tile_range_indices
+            .extend(std::iter::repeat(range_idx).take(base_len));
+        host_exact_combo
+            .tile_eval_start_rows
+            .extend(std::iter::repeat(eval_start_i).take(base_len));
+        host_exact_combo
+            .tile_eval_end_rows
+            .extend(std::iter::repeat(eval_end_i).take(base_len));
+    }
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1620,6 +1755,8 @@ impl KernelScratch {
         Self::drop_opt_async(&mut self.d_valid_pair_slow_period, stream)?;
         Self::drop_opt_async(&mut self.d_valid_pair_fast_local, stream)?;
         Self::drop_opt_async(&mut self.d_valid_pair_slow_local, stream)?;
+        Self::drop_opt_async(&mut self.d_valid_pair_eval_start, stream)?;
+        Self::drop_opt_async(&mut self.d_valid_pair_eval_end, stream)?;
         self.returns_key = None;
         Ok(())
     }
@@ -2117,6 +2254,7 @@ pub(crate) fn rerank_shortlist_by_slice_robustness_for_host(
                 first_valid,
                 eval_start,
                 eval_end,
+                None,
             )
         },
     )
@@ -5243,11 +5381,13 @@ fn compute_shortlist_slice_mode_records(
     regime_first_valid: usize,
     eval_start: usize,
     eval_end: usize,
+    mut timing: Option<&mut ShortlistSliceTimingProfile>,
 ) -> Result<Vec<ShortlistSliceModeCandidateRecord>, String> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
 
+    let compute_t0 = Instant::now();
     let ranges = shortlist_slice_ranges(
         rows,
         mode,
@@ -5283,6 +5423,7 @@ fn compute_shortlist_slice_mode_records(
     slow_periods.sort_unstable();
     slow_periods.dedup();
 
+    let replay_t0 = Instant::now();
     let range_metrics = eval_double_ma_batch_gpu_kernel_impl(
         rt,
         candles,
@@ -5302,7 +5443,9 @@ fn compute_shortlist_slice_mode_records(
         true,
         ranges.as_slice(),
         None,
+        true,
     )?;
+    let replay_elapsed = replay_t0.elapsed();
     if range_metrics.len() != combo_count.saturating_mul(slice_count) {
         return Err(format!(
             "slice robustness expected {} metrics for {} combos across {} slices, got {}",
@@ -5371,6 +5514,15 @@ fn compute_shortlist_slice_mode_records(
                 slices,
             },
         });
+    }
+
+    let compute_elapsed = compute_t0.elapsed();
+    let record_assembly_elapsed = compute_elapsed.saturating_sub(replay_elapsed);
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.replay = timing.replay.saturating_add(replay_elapsed);
+        timing.record_assembly = timing
+            .record_assembly
+            .saturating_add(record_assembly_elapsed);
     }
 
     Ok(records)
@@ -8682,6 +8834,7 @@ pub(crate) fn eval_double_ma_batch_gpu_kernel_multi_range_with_precomputed_and_r
             false,
             ranges,
             None,
+            false,
         )
     })
 }
@@ -8705,6 +8858,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     prefer_low_pair_m7_dispatch: bool,
     ranges: &[(usize, usize)],
     metrics_count_override: Option<usize>,
+    allow_batched_windowed_ranges: bool,
 ) -> Result<Vec<Metrics>, String> {
     if combos.is_empty() {
         return Err("no parameter combinations".to_string());
@@ -9323,6 +9477,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     let use_windowed_eval = ranges
         .iter()
         .any(|&(eval_start_t, eval_end_t_raw)| eval_start_t != 0 || eval_end_t_raw.min(n) != n);
+    let use_batched_windowed_ranges =
+        allow_batched_windowed_ranges && use_windowed_eval && ranges.len() > 1;
     let metrics_count = metrics_count_override.unwrap_or_else(|| exact_eval_metrics_count(cfg));
     let (pf_tile, ps_tile) = choose_tiles(
         f_total,
@@ -9366,7 +9522,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         .checked_mul(ps_tile)
         .and_then(|v| v.checked_mul(tile_metrics_stride))
         .ok_or_else(|| "pf_tile*ps_tile*metrics overflow".to_string())?;
-    let tile_score_cap = pf_tile
+    let _tile_score_cap = pf_tile
         .checked_mul(ps_tile)
         .ok_or_else(|| "pf_tile*ps_tile score overflow".to_string())?;
 
@@ -9397,6 +9553,13 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     host_exact_combo.slow_precomputed_host_tile.clear();
     host_exact_combo.tile_combo_indices.clear();
     host_exact_combo.tile_pair_index_map.clear();
+    host_exact_combo.tile_fast_period_rows.clear();
+    host_exact_combo.tile_slow_period_rows.clear();
+    host_exact_combo.tile_fast_local_rows.clear();
+    host_exact_combo.tile_slow_local_rows.clear();
+    host_exact_combo.tile_range_indices.clear();
+    host_exact_combo.tile_eval_start_rows.clear();
+    host_exact_combo.tile_eval_end_rows.clear();
     host_exact_combo.ensure_tile_host_buf_len(tile_out_cap)?;
 
     let strategy_kernel = kernel_strategy_params(strategy);
@@ -9729,19 +9892,40 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                 host_exact_combo.tile_fast_local_rows.push(row.fast_local);
                 host_exact_combo.tile_slow_local_rows.push(row.slow_local);
             }
+            if use_batched_windowed_ranges {
+                prepare_batched_windowed_exact_replay_rows(host_exact_combo, ranges, n)?;
+            } else {
+                host_exact_combo.tile_range_indices.clear();
+                host_exact_combo.tile_eval_start_rows.clear();
+                host_exact_combo.tile_eval_end_rows.clear();
+                host_exact_combo.last_eval_start_upload = None;
+                host_exact_combo.last_eval_end_upload = None;
+            }
             let launch_pairs = host_exact_combo.tile_combo_indices.len();
             let out_len = launch_pairs
                 .checked_mul(tile_metrics_stride)
                 .ok_or_else(|| "launch_pairs*metrics overflow".to_string())?;
+            KernelScratch::ensure_len_f32(&mut scratch.d_tile, out_len.max(1), bt_stream)?;
+            host_exact_combo.ensure_tile_host_buf_len(out_len)?;
             let mut pair_index_map_ptr: u64 = 0;
             let mut pair_fast_rows_ptr: u64 = 0;
             let mut pair_slow_rows_ptr: u64 = 0;
             let mut pair_fast_local_rows_ptr: u64 = 0;
             let mut pair_slow_local_rows_ptr: u64 = 0;
+            let mut pair_eval_start_rows_ptr: u64 = 0;
+            let mut pair_eval_end_rows_ptr: u64 = 0;
             if launch_pairs > 0 {
                 let pair_index_upload_signature =
                     period_upload_signature(&host_exact_combo.tile_pair_index_map);
-                if host_exact_combo.last_pair_index_upload != Some(pair_index_upload_signature) {
+                let eval_start_upload_signature = use_batched_windowed_ranges
+                    .then(|| period_upload_signature(&host_exact_combo.tile_eval_start_rows));
+                let eval_end_upload_signature = use_batched_windowed_ranges
+                    .then(|| period_upload_signature(&host_exact_combo.tile_eval_end_rows));
+                let needs_pair_upload = host_exact_combo.last_pair_index_upload
+                    != Some(pair_index_upload_signature)
+                    || host_exact_combo.last_eval_start_upload != eval_start_upload_signature
+                    || host_exact_combo.last_eval_end_upload != eval_end_upload_signature;
+                if needs_pair_upload {
                     KernelScratch::ensure_len_i32(
                         &mut scratch.d_valid_pair_index,
                         launch_pairs,
@@ -9797,7 +9981,33 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         .ok_or_else(|| "missing exact slow local row buffer".to_string())?
                         .copy_from(&host_exact_combo.tile_slow_local_rows)
                         .map_err(|e| e.to_string())?;
+                    if use_batched_windowed_ranges {
+                        KernelScratch::ensure_len_i32(
+                            &mut scratch.d_valid_pair_eval_start,
+                            launch_pairs,
+                            bt_stream,
+                        )?;
+                        scratch
+                            .d_valid_pair_eval_start
+                            .as_mut()
+                            .ok_or_else(|| "missing exact eval start row buffer".to_string())?
+                            .copy_from(&host_exact_combo.tile_eval_start_rows)
+                            .map_err(|e| e.to_string())?;
+                        KernelScratch::ensure_len_i32(
+                            &mut scratch.d_valid_pair_eval_end,
+                            launch_pairs,
+                            bt_stream,
+                        )?;
+                        scratch
+                            .d_valid_pair_eval_end
+                            .as_mut()
+                            .ok_or_else(|| "missing exact eval end row buffer".to_string())?
+                            .copy_from(&host_exact_combo.tile_eval_end_rows)
+                            .map_err(|e| e.to_string())?;
+                    }
                     host_exact_combo.last_pair_index_upload = Some(pair_index_upload_signature);
+                    host_exact_combo.last_eval_start_upload = eval_start_upload_signature;
+                    host_exact_combo.last_eval_end_upload = eval_end_upload_signature;
                 }
                 pair_index_map_ptr = scratch
                     .d_valid_pair_index
@@ -9829,6 +10039,20 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     .ok_or_else(|| "missing exact slow local row buffer".to_string())?
                     .as_device_ptr()
                     .as_raw();
+                if use_batched_windowed_ranges {
+                    pair_eval_start_rows_ptr = scratch
+                        .d_valid_pair_eval_start
+                        .as_ref()
+                        .ok_or_else(|| "missing exact eval start row buffer".to_string())?
+                        .as_device_ptr()
+                        .as_raw();
+                    pair_eval_end_rows_ptr = scratch
+                        .d_valid_pair_eval_end
+                        .as_ref()
+                        .ok_or_else(|| "missing exact eval end row buffer".to_string())?
+                        .as_device_ptr()
+                        .as_raw();
+                }
             }
             if let (Some(t0), Some(p)) = (pairmap_t0, replay_profile.as_mut()) {
                 p.pairmap = p.pairmap.saturating_add(t0.elapsed());
@@ -9836,8 +10060,18 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                     p.tile_count = p.tile_count.saturating_add(1);
                 }
             }
-            for (range_idx, &(eval_start_t, eval_end_t_raw)) in ranges.iter().enumerate() {
-                let eval_end_t = eval_end_t_raw.min(n);
+            let replay_launches: Vec<(usize, usize, usize, bool)> = if use_batched_windowed_ranges {
+                vec![(0usize, 0usize, n, true)]
+            } else {
+                ranges
+                    .iter()
+                    .enumerate()
+                    .map(|(range_idx, &(eval_start_t, eval_end_t_raw))| {
+                        (range_idx, eval_start_t, eval_end_t_raw.min(n), false)
+                    })
+                    .collect()
+            };
+            for (range_idx, eval_start_t, eval_end_t, batched_launch) in replay_launches {
                 if launch_pairs > 0 {
                     let backtest_t0 = replay_profile.as_ref().map(|_| Instant::now());
                     unsafe {
@@ -9889,11 +10123,29 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         let mut pair_slow_rows = pair_slow_rows_ptr;
                         let mut pair_fast_local_rows = pair_fast_local_rows_ptr;
                         let mut pair_slow_local_rows = pair_slow_local_rows_ptr;
+                        let mut pair_eval_start_rows = if batched_launch {
+                            pair_eval_start_rows_ptr
+                        } else {
+                            0
+                        };
+                        let mut pair_eval_end_rows = if batched_launch {
+                            pair_eval_end_rows_ptr
+                        } else {
+                            0
+                        };
                         let mut pair_count_i = launch_pairs as i32;
                         let mut compact_output_i = 1i32;
                         let mut out_ptr = scratch.d_tile.as_ref().unwrap().as_device_ptr().as_raw();
-                        let mut eval_start_i = eval_start_t as i32;
-                        let mut eval_end_i = eval_end_t as i32;
+                        let mut eval_start_i = if batched_launch {
+                            0
+                        } else {
+                            eval_start_t as i32
+                        };
+                        let mut eval_end_i = if batched_launch {
+                            n as i32
+                        } else {
+                            eval_end_t as i32
+                        };
                         let no_risk_mode = (flags_u & (STRAT_STOP_LOSS | STRAT_TAKE_PROFIT)) == 0;
                         let zero_commission_mode = commission <= 0.0f32;
                         let eps_zero_mode = eps_rel <= 0.0f32;
@@ -10044,11 +10296,18 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                             "baseline"
                         };
                         if kernel_log_dispatch_enabled() {
+                            let range_log_idx = if batched_launch {
+                                -1i32
+                            } else {
+                                range_idx as i32
+                            };
                             eprintln!(
-                                "VECTORBT_KERNEL_EVAL_DISPATCH: pair={}/{} range_idx={} launch_pairs={} dispatch={} use_m7={} use_m17={} use_m22={} use_lockstep_time={} use_lockstep_m7={} use_lockstep_m17={} use_lockstep_m22={} use_fast_warp={} metrics_count={} tile_metrics_stride={} fixed_metrics_contract={:?}",
+                                "VECTORBT_KERNEL_EVAL_DISPATCH: pair={}/{} range_idx={} batched_windowed_ranges={} range_count={} launch_pairs={} dispatch={} use_m7={} use_m17={} use_m22={} use_lockstep_time={} use_lockstep_m7={} use_lockstep_m17={} use_lockstep_m22={} use_fast_warp={} metrics_count={} tile_metrics_stride={} fixed_metrics_contract={:?}",
                                 fast_ma,
                                 slow_ma,
-                                range_idx,
+                                range_log_idx,
+                                batched_launch,
+                                if batched_launch { ranges.len() } else { 1usize },
                                 launch_pairs,
                                 dispatch_label,
                                 use_m7,
@@ -10508,6 +10767,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                                 &mut regime_fv as *mut _ as *mut c_void,
                                 &mut eval_start_i as *mut _ as *mut c_void,
                                 &mut eval_end_i as *mut _ as *mut c_void,
+                                &mut pair_eval_start_rows as *mut _ as *mut c_void,
+                                &mut pair_eval_end_rows as *mut _ as *mut c_void,
                                 &mut commission as *mut _ as *mut c_void,
                                 &mut eps_rel as *mut _ as *mut c_void,
                                 &mut hurdle_tau_f as *mut _ as *mut c_void,
@@ -10590,17 +10851,39 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         out_len,
                         bt_stream,
                     )?;
-                    for (row_idx, &combo_idx) in
-                        host_exact_combo.tile_combo_indices.iter().enumerate()
-                    {
-                        let src_base = row_idx * tile_metrics_stride;
-                        out_metrics[range_idx * combo_count + combo_idx] =
-                            decode_tm_flex_metrics_row(
-                                host_metrics,
-                                src_base,
-                                metrics_count,
-                                cfg.hurdle_tau,
-                            );
+                    if batched_launch {
+                        for (row_idx, &combo_idx) in
+                            host_exact_combo.tile_combo_indices.iter().enumerate()
+                        {
+                            let src_base = row_idx * tile_metrics_stride;
+                            let range_row_idx = host_exact_combo
+                                .tile_range_indices
+                                .get(row_idx)
+                                .copied()
+                                .ok_or_else(|| {
+                                    "missing batched replay range index for decoded row".to_string()
+                                })?;
+                            out_metrics[range_row_idx * combo_count + combo_idx] =
+                                decode_tm_flex_metrics_row(
+                                    host_metrics,
+                                    src_base,
+                                    metrics_count,
+                                    cfg.hurdle_tau,
+                                );
+                        }
+                    } else {
+                        for (row_idx, &combo_idx) in
+                            host_exact_combo.tile_combo_indices.iter().enumerate()
+                        {
+                            let src_base = row_idx * tile_metrics_stride;
+                            out_metrics[range_idx * combo_count + combo_idx] =
+                                decode_tm_flex_metrics_row(
+                                    host_metrics,
+                                    src_base,
+                                    metrics_count,
+                                    cfg.hurdle_tau,
+                                );
+                        }
                     }
                 }
                 if let (Some(t0), Some(p)) = (d2h_t0, replay_profile.as_mut()) {
@@ -10620,6 +10903,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
         host_exact_combo.last_fast_period_upload = None;
         host_exact_combo.last_slow_period_upload = None;
         host_exact_combo.last_pair_index_upload = None;
+        host_exact_combo.last_eval_start_upload = None;
+        host_exact_combo.last_eval_end_upload = None;
     }
     if let Some(p) = replay_profile.as_ref() {
         p.emit(
@@ -11005,6 +11290,7 @@ fn rerank_shortlist_by_slice_robustness(
     regime_first_valid: usize,
     eval_start: usize,
     eval_end: usize,
+    mut timing: Option<&mut ShortlistSliceTimingProfile>,
 ) -> Result<(Vec<(DoubleMaParams, Metrics)>, ShortlistSliceDiagnostics), String> {
     if rows.is_empty() {
         return Ok((
@@ -11039,6 +11325,7 @@ fn rerank_shortlist_by_slice_robustness(
         regime_first_valid,
         eval_start,
         eval_end,
+        timing.as_deref_mut(),
     )?;
     let mut ranked_active: Vec<(DoubleMaParams, Metrics, ShortlistSliceModeDiagnostics)> =
         active_records
@@ -11046,6 +11333,7 @@ fn rerank_shortlist_by_slice_robustness(
             .map(|record| (record.params, record.full_metrics, record.diagnostics))
             .collect();
 
+    let sort_t0 = Instant::now();
     ranked_active.sort_by(|a, b| {
         b.2.worst_slice_score
             .total_cmp(&a.2.worst_slice_score)
@@ -11066,15 +11354,24 @@ fn rerank_shortlist_by_slice_robustness(
             })
             .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
     });
+    let sort_elapsed = sort_t0.elapsed();
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.sort = timing.sort.saturating_add(sort_elapsed);
+    }
 
     let diag_count = diagnostic_limit
         .min(ranked_active.len())
         .min(kernel_shortlist_slice_diagnostic_row_limit());
+    let diag_rows_t0 = Instant::now();
     let diagnostic_rows: Vec<(DoubleMaParams, Metrics)> = ranked_active
         .iter()
         .take(diag_count)
         .map(|(params, metrics, _)| (params.clone(), metrics.clone()))
         .collect();
+    let diagnostic_rows_elapsed = diag_rows_t0.elapsed();
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.diagnostics = timing.diagnostics.saturating_add(diagnostic_rows_elapsed);
+    }
 
     let halves_records = if mode == ShortlistSliceMode::Halves {
         ranked_active
@@ -11111,6 +11408,7 @@ fn rerank_shortlist_by_slice_robustness(
             regime_first_valid,
             eval_start,
             eval_end,
+            timing.as_deref_mut(),
         )?
     };
     let quartiles_records = if mode == ShortlistSliceMode::Quartiles {
@@ -11148,9 +11446,11 @@ fn rerank_shortlist_by_slice_robustness(
             regime_first_valid,
             eval_start,
             eval_end,
+            timing.as_deref_mut(),
         )?
     };
 
+    let diagnostics_build_t0 = Instant::now();
     let mut candidate_diags: Vec<ShortlistSliceCandidateDiagnostics> =
         Vec::with_capacity(diag_count);
     for ((halves_record, quartiles_record), (params, full_metrics, _)) in halves_records
@@ -11181,6 +11481,10 @@ fn rerank_shortlist_by_slice_robustness(
             quartiles: quartiles_record.diagnostics,
         };
         candidate_diags.push(candidate_diag);
+    }
+    let diagnostics_build_elapsed = diagnostics_build_t0.elapsed();
+    if let Some(timing) = timing.as_deref_mut() {
+        timing.diagnostics = timing.diagnostics.saturating_add(diagnostics_build_elapsed);
     }
 
     let reranked_rows = ranked_active
@@ -11262,6 +11566,7 @@ fn exact_eval_metrics_for_params(
         true,
         ranges.as_slice(),
         None,
+        false,
     )?;
     if recomputed.len() != unique_params.len() {
         return Err(format!(
@@ -13567,6 +13872,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                         let mut pair_slow_rows = pair_slow_rows_ptr;
                         let mut pair_fast_local_rows = pair_fast_local_rows_ptr;
                         let mut pair_slow_local_rows = pair_slow_local_rows_ptr;
+                        let mut pair_eval_start_rows = 0u64;
+                        let mut pair_eval_end_rows = 0u64;
                         let mut pair_count_i = launch_pairs as i32;
                         let mut compact_output_i = if compact_valid_pair_output {
                             1i32
@@ -14230,6 +14537,8 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 &mut regime_fv as *mut _ as *mut c_void,
                                 &mut eval_start_i as *mut _ as *mut c_void,
                                 &mut eval_end_i as *mut _ as *mut c_void,
+                                &mut pair_eval_start_rows as *mut _ as *mut c_void,
+                                &mut pair_eval_end_rows as *mut _ as *mut c_void,
                                 &mut commission as *mut _ as *mut c_void,
                                 &mut eps_rel as *mut _ as *mut c_void,
                                 &mut hurdle_tau_f as *mut _ as *mut c_void,
@@ -15150,6 +15459,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let materialize_shortlist_rows = shortlist_union_mode.is_some()
         || shortlist_confidence_mode.is_some()
         || (shortlist_slice_mode.is_some() && extra_shortlist_enabled);
+    let mut host_shortlist_materialize_elapsed = Duration::ZERO;
     let mut materialized_shortlist_rows: Vec<(DoubleMaParams, Metrics)> =
         if materialize_shortlist_rows {
             Vec::with_capacity(
@@ -15171,6 +15481,11 @@ fn optimize_double_ma_gpu_kernel_impl(
                                          rows_slow: &DeviceBuffer<i32>,
                                          rows_metrics: &DeviceBuffer<f32>|
          -> Result<(), String> {
+            let shortlist_materialize_t0 = if materialize_shortlist_rows {
+                Some(Instant::now())
+            } else {
+                None
+            };
             let _sync_and_decode_scope = crate::nvtx::scope("kernel", "sync_and_decode");
             let top_packed_host_slice = pack_metric_rows_for_host_copy(
                 bt_stream,
@@ -15216,6 +15531,10 @@ fn optimize_double_ma_gpu_kernel_impl(
                 agg.push(params, metrics);
             }
             host_decode_elapsed = host_decode_elapsed.saturating_add(decode_t0.elapsed());
+            if let Some(t0) = shortlist_materialize_t0 {
+                host_shortlist_materialize_elapsed =
+                    host_shortlist_materialize_elapsed.saturating_add(t0.elapsed());
+            }
             Ok(())
         };
 
@@ -15383,6 +15702,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             false,
             &ranges,
             None,
+            false,
         )?;
         let mut exact_rows: Vec<(DoubleMaParams, Metrics)> = finalists
             .into_iter()
@@ -15408,6 +15728,7 @@ fn optimize_double_ma_gpu_kernel_impl(
     let mut host_finalize_shortlist_union_elapsed = Duration::ZERO;
     let mut host_finalize_shortlist_confidence_elapsed = Duration::ZERO;
     let mut host_finalize_shortlist_slice_elapsed = Duration::ZERO;
+    let mut shortlist_slice_timing = ShortlistSliceTimingProfile::default();
     let mut host_finalize_export_flush_elapsed = Duration::ZERO;
     let mut host_finalize_cleanup_elapsed = Duration::ZERO;
 
@@ -15531,6 +15852,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             regime_first_valid,
             eval_start_t,
             eval_end_t,
+            Some(&mut shortlist_slice_timing),
         )?;
         host_finalize_shortlist_slice_elapsed =
             host_finalize_shortlist_slice_elapsed.saturating_add(shortlist_slice_t0.elapsed());
@@ -15565,6 +15887,8 @@ fn optimize_double_ma_gpu_kernel_impl(
         rt.host_exact_combo_scratch.last_fast_period_upload = None;
         rt.host_exact_combo_scratch.last_slow_period_upload = None;
         rt.host_exact_combo_scratch.last_pair_index_upload = None;
+        rt.host_exact_combo_scratch.last_eval_start_upload = None;
+        rt.host_exact_combo_scratch.last_eval_end_upload = None;
     }
     host_finalize_cleanup_elapsed =
         host_finalize_cleanup_elapsed.saturating_add(cleanup_t0.elapsed());
@@ -15588,6 +15912,18 @@ fn optimize_double_ma_gpu_kernel_impl(
         p.final_shortlist_slice = p
             .final_shortlist_slice
             .saturating_add(host_finalize_shortlist_slice_elapsed);
+        p.final_shortlist_slice_replay = p
+            .final_shortlist_slice_replay
+            .saturating_add(shortlist_slice_timing.replay);
+        p.final_shortlist_slice_record_assembly = p
+            .final_shortlist_slice_record_assembly
+            .saturating_add(shortlist_slice_timing.record_assembly);
+        p.final_shortlist_slice_sort = p
+            .final_shortlist_slice_sort
+            .saturating_add(shortlist_slice_timing.sort);
+        p.final_shortlist_slice_diagnostics = p
+            .final_shortlist_slice_diagnostics
+            .saturating_add(shortlist_slice_timing.diagnostics);
         p.final_export_flush = p
             .final_export_flush
             .saturating_add(host_finalize_export_flush_elapsed);
@@ -15614,6 +15950,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             d2h_copy_ms: d2h_copy_elapsed.as_millis() as u64,
             host_decode_ms: host_decode_elapsed.as_millis() as u64,
             explicit_sync_ms: explicit_sync_elapsed.as_millis() as u64,
+            host_shortlist_materialize_ms: host_shortlist_materialize_elapsed.as_millis() as u64,
             host_finalize_ms: host_finalize_elapsed.as_millis() as u64,
             host_finalize_agg_finalize_ms: host_finalize_agg_finalize_elapsed.as_millis() as u64,
             host_finalize_finalist_recompute_ms: host_finalize_finalist_recompute_elapsed
@@ -15624,6 +15961,15 @@ fn optimize_double_ma_gpu_kernel_impl(
                 .as_millis() as u64,
             host_finalize_shortlist_slice_ms: host_finalize_shortlist_slice_elapsed.as_millis()
                 as u64,
+            host_finalize_shortlist_slice_replay_ms: shortlist_slice_timing.replay.as_millis()
+                as u64,
+            host_finalize_shortlist_slice_record_assembly_ms: shortlist_slice_timing
+                .record_assembly
+                .as_millis() as u64,
+            host_finalize_shortlist_slice_sort_ms: shortlist_slice_timing.sort.as_millis() as u64,
+            host_finalize_shortlist_slice_diagnostics_ms: shortlist_slice_timing
+                .diagnostics
+                .as_millis() as u64,
             host_finalize_export_flush_ms: host_finalize_export_flush_elapsed.as_millis() as u64,
             host_finalize_cleanup_ms: host_finalize_cleanup_elapsed.as_millis() as u64,
             graph_capture_ms: graph_capture_elapsed.as_millis() as u64,
@@ -16584,6 +16930,30 @@ mod tests {
         )
         .expect("slice ranges");
         assert_eq!(ranges, vec![(40, 120), (120, 200)]);
+    }
+
+    #[test]
+    fn prepare_batched_windowed_exact_replay_rows_preserves_range_major_order() {
+        let mut scratch = super::HostExactComboScratch::default();
+        scratch.tile_combo_indices = vec![0, 2];
+        scratch.tile_pair_index_map = vec![1, 3];
+        scratch.tile_fast_period_rows = vec![5, 8];
+        scratch.tile_slow_period_rows = vec![10, 13];
+        scratch.tile_fast_local_rows = vec![0, 1];
+        scratch.tile_slow_local_rows = vec![1, 0];
+
+        super::prepare_batched_windowed_exact_replay_rows(&mut scratch, &[(3, 11), (11, 21)], 18)
+            .expect("batched replay rows");
+
+        assert_eq!(scratch.tile_combo_indices, vec![0, 2, 0, 2]);
+        assert_eq!(scratch.tile_pair_index_map, vec![1, 3, 1, 3]);
+        assert_eq!(scratch.tile_fast_period_rows, vec![5, 8, 5, 8]);
+        assert_eq!(scratch.tile_slow_period_rows, vec![10, 13, 10, 13]);
+        assert_eq!(scratch.tile_fast_local_rows, vec![0, 1, 0, 1]);
+        assert_eq!(scratch.tile_slow_local_rows, vec![1, 0, 1, 0]);
+        assert_eq!(scratch.tile_range_indices, vec![0, 0, 1, 1]);
+        assert_eq!(scratch.tile_eval_start_rows, vec![3, 3, 11, 11]);
+        assert_eq!(scratch.tile_eval_end_rows, vec![11, 11, 18, 18]);
     }
 
     #[test]

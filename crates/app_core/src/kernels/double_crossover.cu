@@ -3601,7 +3601,7 @@ static __device__ __forceinline__ void store_metrics_row_fixed_f32(
     if constexpr (N > 21) metrics_out[base + 21] = gross_loss;
 }
 
-template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false, bool SCORE_ONLY_SHARPE = false, bool DENSE_FIXED_STRIDE = false>
+template <bool FAST_WARP_DEDUP, bool LOCKSTEP_TIME, bool FULL_M7, int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0, bool WALK_SERIES_PTRS = false, bool SCORE_ONLY_SHARPE = false, bool DENSE_FIXED_STRIDE = false, bool USE_COMPACT_EVAL_RANGES = false>
 static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     const float* __restrict__ fast_ma_T,
     const float* __restrict__ slow_ma_T,
@@ -3626,6 +3626,8 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
 
     float commission,
     float eps_rel,
@@ -3755,11 +3757,17 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
             continue;
         }
 
+        const int pair_eval_start = USE_COMPACT_EVAL_RANGES
+            ? compact_eval_start_rows[pair_local]
+            : eval_start;
+        const int pair_eval_end = USE_COMPACT_EVAL_RANGES
+            ? compact_eval_end_rows[pair_local]
+            : eval_end;
         const int pair_first_valid = first_valid + max(period_f, period_s) - 1;
-        const int t_valid = max(max(pair_first_valid, regime_first_valid), eval_start);
+        const int t_valid = max(max(pair_first_valid, regime_first_valid), pair_eval_start);
         const int trade_offset = ((flags & STRAT_TRADE_ON_NEXT_BAR) ? 1 : 0);
-        const int start_t = max(t_valid + trade_offset, eval_start);
-        const int end_t = min(T, eval_end);
+        const int start_t = max(t_valid + trade_offset, pair_eval_start);
+        const int end_t = min(T, pair_eval_end);
 
         if (start_t >= end_t) {
             if constexpr (SCORE_ONLY_SHARPE) {
@@ -4464,17 +4472,88 @@ static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_body(
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, WALK_SERIES_PTRS, SCORE_ONLY_SHARPE, DENSE_FIXED_STRIDE>(
+    double_cross_backtest_tm_flex_f32_body<FAST_WARP_DEDUP, LOCKSTEP_TIME, FULL_M7, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, WALK_SERIES_PTRS, SCORE_ONLY_SHARPE, DENSE_FIXED_STRIDE, false>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         0, T,
+        nullptr, nullptr,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride,
         pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows,
         compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
+}
+
+template <int REGIME_MODE = -1, int RISK_MODE = -1, int EPS_MODE = -1, int COMMISSION_MODE = -1, int FIXED_M = 0>
+static __device__ __forceinline__ void double_cross_backtest_tm_flex_f32_windowed_dispatch(
+    const float* __restrict__ fast_ma_T,
+    const float* __restrict__ slow_ma_T,
+    const float* __restrict__ lr,
+    const float* __restrict__ ret1,
+    int T,
+    int Pf_tile, int Ps_tile,
+    int fast_tm_stride, int slow_tm_stride,
+    int Pf_total, int Ps_total,
+    int f_offset, int s_offset,
+    const int* __restrict__ fast_periods,
+    const int* __restrict__ slow_periods,
+    const float* __restrict__ regime_filter,
+    int use_regime,
+    int use_regime_hybrid,
+    float regime_range_entry_rel,
+    float regime_range_exit_rel,
+    int first_valid,
+    int regime_first_valid,
+    int eval_start,
+    int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
+    float commission,
+    float eps_rel,
+    float hurdle_tau,
+    float stop_log,
+    float take_log,
+    unsigned int flags,
+    int M,
+    int metrics_out_stride,
+    const int* __restrict__ pair_index_map,
+    const int* __restrict__ compact_fast_periods,
+    const int* __restrict__ compact_slow_periods,
+    const int* __restrict__ compact_fast_local_rows,
+    const int* __restrict__ compact_slow_local_rows,
+    int pair_count,
+    int compact_output,
+    float* __restrict__ metrics_out
+){
+    if (compact_eval_start_rows != nullptr && compact_eval_end_rows != nullptr) {
+        double_cross_backtest_tm_flex_f32_body<false, false, false, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, true, false, false, true>(
+            fast_ma_T, slow_ma_T, lr, ret1,
+            T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+            Pf_total, Ps_total, f_offset, s_offset,
+            fast_periods, slow_periods, regime_filter,
+            use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+            eval_start, eval_end,
+            compact_eval_start_rows, compact_eval_end_rows,
+            commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride,
+            pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows,
+            compact_slow_local_rows, pair_count, compact_output, metrics_out
+        );
+    } else {
+        double_cross_backtest_tm_flex_f32_body<false, false, false, REGIME_MODE, RISK_MODE, EPS_MODE, COMMISSION_MODE, FIXED_M, true, false, false, false>(
+            fast_ma_T, slow_ma_T, lr, ret1,
+            T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
+            Pf_total, Ps_total, f_offset, s_offset,
+            fast_periods, slow_periods, regime_filter,
+            use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
+            eval_start, eval_end,
+            nullptr, nullptr,
+            commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride,
+            pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows,
+            compact_slow_local_rows, pair_count, compact_output, metrics_out
+        );
+    }
 }
 
 // The retained exact lockstep truth surfaces run with fixed-width dense rows, so keep a
@@ -4658,6 +4737,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -4675,13 +4756,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed(
     int compact_output,
     float* __restrict__ metrics_out
 ){
-    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 0, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, M, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -4708,6 +4790,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17(
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -4726,13 +4810,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17(
     float* __restrict__ metrics_out
 ){
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 17, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<-1, -1, -1, -1, 17>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -4759,6 +4844,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -4778,13 +4865,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
 ){
     (void)commission;
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, 17, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<0, 0, 0, 0, 17>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -4811,6 +4899,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -4829,13 +4919,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     float* __restrict__ metrics_out
 ){
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, 17, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<1, 0, -1, -1, 17>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -4862,6 +4953,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -4881,13 +4974,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
 ){
     (void)commission;
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, 17, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<1, 0, 0, 0, 17>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -4914,6 +5008,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -4932,13 +5028,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     float* __restrict__ metrics_out
 ){
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, 17, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<2, 0, -1, -1, 17>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -4965,6 +5062,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -4984,13 +5083,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m17_regim
 ){
     (void)commission;
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, 17, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<2, 0, 0, 0, 17>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 17, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -5017,6 +5117,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22(
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -5035,13 +5137,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22(
     float* __restrict__ metrics_out
 ){
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, -1, -1, -1, -1, 22, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<-1, -1, -1, -1, 22>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -5068,6 +5171,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -5087,13 +5192,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
 ){
     (void)commission;
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 0, 0, 0, 0, 22, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<0, 0, 0, 0, 22>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -5120,6 +5226,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -5138,13 +5246,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     float* __restrict__ metrics_out
 ){
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, -1, -1, 22, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<1, 0, -1, -1, 22>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -5171,6 +5280,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -5190,13 +5301,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
 ){
     (void)commission;
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 1, 0, 0, 0, 22, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<1, 0, 0, 0, 22>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -5223,6 +5335,8 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -5241,13 +5355,14 @@ __launch_bounds__(128) void double_cross_backtest_tm_flex_f32_windowed_m22_regim
     float* __restrict__ metrics_out
 ){
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, -1, -1, 22, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<2, 0, -1, -1, 22>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         commission, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }
@@ -5274,6 +5389,8 @@ __launch_bounds__(128, 2) void double_cross_backtest_tm_flex_f32_windowed_m22_re
     int regime_first_valid,
     int eval_start,
     int eval_end,
+    const int* __restrict__ compact_eval_start_rows,
+    const int* __restrict__ compact_eval_end_rows,
     float commission,
     float eps_rel,
     float hurdle_tau,
@@ -5293,13 +5410,14 @@ __launch_bounds__(128, 2) void double_cross_backtest_tm_flex_f32_windowed_m22_re
 ){
     (void)commission;
     (void)M;
-    double_cross_backtest_tm_flex_f32_body<false, false, false, 2, 0, 0, 0, 22, true>(
+    double_cross_backtest_tm_flex_f32_windowed_dispatch<2, 0, 0, 0, 22>(
         fast_ma_T, slow_ma_T, lr, ret1,
         T, Pf_tile, Ps_tile, fast_tm_stride, slow_tm_stride,
         Pf_total, Ps_total, f_offset, s_offset,
         fast_periods, slow_periods, regime_filter,
         use_regime, use_regime_hybrid, regime_range_entry_rel, regime_range_exit_rel, first_valid, regime_first_valid,
         eval_start, eval_end,
+        compact_eval_start_rows, compact_eval_end_rows,
         0.0f, eps_rel, hurdle_tau, stop_log, take_log, flags, 22, metrics_out_stride, pair_index_map, compact_fast_periods, compact_slow_periods, compact_fast_local_rows, compact_slow_local_rows, pair_count, compact_output, metrics_out
     );
 }

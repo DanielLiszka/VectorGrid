@@ -688,6 +688,8 @@ pub struct GpuKernelTimingMs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explicit_sync_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_shortlist_materialize_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_agg_finalize_ms: Option<u64>,
@@ -699,6 +701,14 @@ pub struct GpuKernelTimingMs {
     pub host_finalize_shortlist_confidence_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_shortlist_slice_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_slice_replay_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_slice_record_assembly_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_slice_sort_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_slice_diagnostics_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_export_flush_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2143,6 +2153,10 @@ fn merge_gpu_kernel_timing(
         merge_optional_u64(&mut cur.d2h_copy_ms, inc.d2h_copy_ms);
         merge_optional_u64(&mut cur.host_decode_ms, inc.host_decode_ms);
         merge_optional_u64(&mut cur.explicit_sync_ms, inc.explicit_sync_ms);
+        merge_optional_u64(
+            &mut cur.host_shortlist_materialize_ms,
+            inc.host_shortlist_materialize_ms,
+        );
         merge_optional_u64(&mut cur.host_finalize_ms, inc.host_finalize_ms);
         merge_optional_u64(
             &mut cur.host_finalize_agg_finalize_ms,
@@ -2163,6 +2177,22 @@ fn merge_gpu_kernel_timing(
         merge_optional_u64(
             &mut cur.host_finalize_shortlist_slice_ms,
             inc.host_finalize_shortlist_slice_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_slice_replay_ms,
+            inc.host_finalize_shortlist_slice_replay_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_slice_record_assembly_ms,
+            inc.host_finalize_shortlist_slice_record_assembly_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_slice_sort_ms,
+            inc.host_finalize_shortlist_slice_sort_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_slice_diagnostics_ms,
+            inc.host_finalize_shortlist_slice_diagnostics_ms,
         );
         merge_optional_u64(
             &mut cur.host_finalize_export_flush_ms,
@@ -2192,6 +2222,7 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             d2h_copy_ms: Some(timing.d2h_copy_ms),
             host_decode_ms: Some(timing.host_decode_ms),
             explicit_sync_ms: Some(timing.explicit_sync_ms),
+            host_shortlist_materialize_ms: Some(timing.host_shortlist_materialize_ms),
             host_finalize_ms: Some(timing.host_finalize_ms),
             host_finalize_agg_finalize_ms: Some(timing.host_finalize_agg_finalize_ms),
             host_finalize_finalist_recompute_ms: Some(timing.host_finalize_finalist_recompute_ms),
@@ -2200,6 +2231,18 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
                 timing.host_finalize_shortlist_confidence_ms,
             ),
             host_finalize_shortlist_slice_ms: Some(timing.host_finalize_shortlist_slice_ms),
+            host_finalize_shortlist_slice_replay_ms: Some(
+                timing.host_finalize_shortlist_slice_replay_ms,
+            ),
+            host_finalize_shortlist_slice_record_assembly_ms: Some(
+                timing.host_finalize_shortlist_slice_record_assembly_ms,
+            ),
+            host_finalize_shortlist_slice_sort_ms: Some(
+                timing.host_finalize_shortlist_slice_sort_ms,
+            ),
+            host_finalize_shortlist_slice_diagnostics_ms: Some(
+                timing.host_finalize_shortlist_slice_diagnostics_ms,
+            ),
             host_finalize_export_flush_ms: Some(timing.host_finalize_export_flush_ms),
             host_finalize_cleanup_ms: Some(timing.host_finalize_cleanup_ms),
             graph_capture_ms: Some(timing.graph_capture_ms),
@@ -2216,12 +2259,17 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             d2h_copy_ms: None,
             host_decode_ms: None,
             explicit_sync_ms: None,
+            host_shortlist_materialize_ms: None,
             host_finalize_ms: None,
             host_finalize_agg_finalize_ms: None,
             host_finalize_finalist_recompute_ms: None,
             host_finalize_shortlist_union_ms: None,
             host_finalize_shortlist_confidence_ms: None,
             host_finalize_shortlist_slice_ms: None,
+            host_finalize_shortlist_slice_replay_ms: None,
+            host_finalize_shortlist_slice_record_assembly_ms: None,
+            host_finalize_shortlist_slice_sort_ms: None,
+            host_finalize_shortlist_slice_diagnostics_ms: None,
             host_finalize_export_flush_ms: None,
             host_finalize_cleanup_ms: None,
             graph_capture_ms: None,
@@ -2242,12 +2290,17 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
         d2h_copy_ms: None,
         host_decode_ms: None,
         explicit_sync_ms: None,
+        host_shortlist_materialize_ms: None,
         host_finalize_ms: None,
         host_finalize_agg_finalize_ms: None,
         host_finalize_finalist_recompute_ms: None,
         host_finalize_shortlist_union_ms: None,
         host_finalize_shortlist_confidence_ms: None,
         host_finalize_shortlist_slice_ms: None,
+        host_finalize_shortlist_slice_replay_ms: None,
+        host_finalize_shortlist_slice_record_assembly_ms: None,
+        host_finalize_shortlist_slice_sort_ms: None,
+        host_finalize_shortlist_slice_diagnostics_ms: None,
         host_finalize_export_flush_ms: None,
         host_finalize_cleanup_ms: None,
         graph_capture_ms: None,

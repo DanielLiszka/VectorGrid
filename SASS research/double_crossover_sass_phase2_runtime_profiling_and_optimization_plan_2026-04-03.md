@@ -128,6 +128,45 @@ Immediate post-Stage C follow-on:
   - Stage C already retained one more bounded lockstep-body win, so the next evidence-backed question is whether shortlist-slice finalization can be reduced before any larger architecture rewrite
 - first requirement: instrument `final_finalize` more finely before changing replay or rerank behavior
 
+Execution outcome:
+
+- completed instrumentation landed in:
+  - `crates/app_core/src/gpu_backtest_kernel.rs`
+  - `crates/app_core/src/double_ma.rs`
+  - `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs`
+- initial shortlist-heavy reruns showed the replay-dominant problem that justified the replay-side follow-on:
+  - `full17`: `297.40 ms` with `none`, `379.20 ms` with `halves`, `986.80 ms` with serialized `quartiles`
+  - `trade22`: `319.60 ms` with `none`, `396.20 ms` with `halves`, `599.00 ms` with serialized `quartiles`
+- the initial runner-visible shortlist sub-buckets showed replay dominating the surfaced shortlist cost:
+  - `full17` `halves`: shortlist slice `60.40 ms`, replay `60.40 ms`
+  - `trade22` `halves`: shortlist slice `58.40 ms`, replay `58.40 ms`
+- corrected pipeline-profile captures showed record assembly, sort, and diagnostics remained trace-level compared with replay
+- one focused post-instrumentation Nsight Systems rerun on `xlarge/full17/halves` confirms the replay link:
+  - `double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm`
+  - `51.595 ms` total across `6` instances
+  - `14.3%` of traced GPU kernel time in `target/nsight/double_crossover_phase2_shortlist_full17_halves_post_instrumentation_stats.txt`
+- targeted replay-kernel follow-on work is now complete:
+  - targeted Nsight Compute captures exist for `windowed_m17` and `windowed_m22` on the shortlist-heavy `halves` surface
+  - both kernels currently profile as tiny launches with block `(64, 1, 1)`, grid `(1, 1, 1)`, achieved occupancy about `2.78%`, and only `1` to `2` achieved active warps per SM
+  - live dispatch logs showed the original `halves` route executing `6` replay launches per request: `2x50` shortlist rows and `4x8` diagnostic rows
+  - the `4x8` diagnostic tail is explained by the current `halves` path still computing quartiles diagnostics for the diagnostic subset
+- retained bounded replay-batching prototype:
+  - `crates/app_core/src/gpu_backtest_kernel.rs` now batches shortlist replay rows across slice ranges before the `windowed` launch in `eval_double_ma_batch_gpu_kernel_impl(...)`
+  - `crates/app_core/src/kernels/double_crossover.cu` now accepts optional per-row replay ranges on the `windowed` wrappers through a launch-time dispatch helper that keeps non-windowed hot kernels on the old compile-time path
+- retained post-change reruns on shortlist-heavy `xlarge`, `alma/alma`, `synth` now show:
+  - `full17`: `296.00 ms` with `none`, `342.80 ms` with `halves`, `349.00 ms` with `quartiles`
+  - `trade22`: `308.20 ms` with `none`, `359.00 ms` with `halves`, `365.00 ms` with `quartiles`
+- the retained runner-visible shortlist sub-buckets collapsed to about `28 ms` replay on both contracts and both replay modes
+- live dispatch logs for the retained implementation confirm the new launch shape:
+  - `batched_windowed_ranges=true range_count=2 launch_pairs=100`
+  - `batched_windowed_ranges=true range_count=4 launch_pairs=32`
+- verification after retaining the replay-batching prototype passed:
+  - targeted replay-path tests for range-major ordering and `trade22` tail-metric preservation
+  - `scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+  - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
+- branch decision: keep the timing instrumentation and the retained replay-batching prototype
+- follow-on implication: if more work is justified here, it is now a larger replay-side architecture / dataflow question beyond the first batching step rather than a local host-side cleanup or another kernel-local `windowed` pass
+
 Stage C artifact additions:
 
 - `target/double_crossover_stagec_large_full17_rowbase_2026-04-03.jsonl`
@@ -570,11 +609,25 @@ Measurement-first sequence:
    - diagnostics-only work
 5. Only then choose one narrow intervention in `gpu_backtest_kernel.rs`.
 
+Execution result:
+
+1. The dominant surfaced slice cost is replay evaluation.
+2. Row materialization, record assembly, sort, and diagnostics are too small to justify a retained local optimization.
+3. A bounded replay-batching prototype around the replay `ranges.iter().enumerate()` loop was then implemented and retained while preserving exact `full17` / `trade22` row authority and current shortlist diagnostics semantics.
+4. Post-implementation shortlist-heavy reruns show the retained replay fan-out reduction is material:
+   - `full17`: `296.00 ms` with `none`, `342.80 ms` with `halves`, `349.00 ms` with `quartiles`
+   - `trade22`: `308.20 ms` with `none`, `359.00 ms` with `halves`, `365.00 ms` with `quartiles`
+5. The runner-visible shortlist bucket collapsed to about `28 ms` replay on both retained contracts and both replay modes, so `quartiles` remains diagnostic-only replay expansion but no longer creates the prior runtime blow-up.
+6. Verification after retaining the prototype passed:
+   - targeted replay-path tests for range-major ordering and `trade22` tail-metric preservation
+   - `scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+   - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
+
 Candidate interventions once attribution is clear:
 
 1. Avoid materializing more shortlist rows than the active rerank or diagnostic limits actually need.
 2. Separate diagnostics-only work from ranking-critical work so product ranking does not always pay for full diagnostics expansion.
-3. Reuse replay-side data or replay descriptors when the current path rebuilds equivalent shortlist inputs.
+3. Reuse replay-side data or replay descriptors when the current path rebuilds equivalent shortlist inputs, including multi-range batching on the shortlist replay path.
 4. Reduce clone, sort, or duplicate slice-record work inside `rerank_shortlist_by_slice_robustness` and `compute_shortlist_slice_mode_records`.
 
 Guardrails:
@@ -769,17 +822,32 @@ Decision rule:
 
 ### H. Immediate shortlist-slice replay follow-on
 
-- [ ] Add finer host-finalize timers around shortlist-row materialization, replay preparation, replay evaluation, slice-record computation, rerank/sort, and diagnostics assembly in `crates/app_core/src/gpu_backtest_kernel.rs`.
-- [ ] Surface the new sub-timings in runner JSON output and the built-in pipeline/logging surfaces next to `host_finalize_shortlist_slice_ms`.
-- [ ] Re-run shortlist-heavy `xlarge` `full17` with `shortlist_slice_mode=none` and `shortlist_slice_mode=halves`.
-- [ ] Re-run shortlist-heavy `xlarge` `trade22` with `shortlist_slice_mode=none` and `shortlist_slice_mode=halves`.
-- [ ] Add `quartiles` reruns only if the additional timing surface remains interpretable and does not create excessive diagnostic-only noise.
-- [ ] Capture one focused post-instrumentation Nsight Systems rerun on the shortlist-heavy `xlarge` truth surface so the new host-side breakdown can be correlated with `final_finalize`.
-- [ ] Write a shortlist-slice attribution note that states whether the dominant cost is row materialization, replay evaluation, rerank/sort, or diagnostics-only work.
-- [ ] Choose one narrow shortlist-slice intervention in `crates/app_core/src/gpu_backtest_kernel.rs` before reopening `compact_exact_search_stage`.
-- [ ] Re-run direct-runner truth surfaces and both GPU perf gates after any retained shortlist-slice change.
+- [x] Add finer host-finalize timers around shortlist-row materialization, replay preparation, replay evaluation, slice-record computation, rerank/sort, and diagnostics assembly in `crates/app_core/src/gpu_backtest_kernel.rs`.
+- [x] Surface the new sub-timings in runner JSON output and the built-in pipeline/logging surfaces next to `host_finalize_shortlist_slice_ms`.
+- [x] Re-run shortlist-heavy `xlarge` `full17` with `shortlist_slice_mode=none` and `shortlist_slice_mode=halves`.
+- [x] Re-run shortlist-heavy `xlarge` `trade22` with `shortlist_slice_mode=none` and `shortlist_slice_mode=halves`.
+- [x] Add `quartiles` reruns only if the additional timing surface remains interpretable and does not create excessive diagnostic-only noise.
+- [x] Capture one focused post-instrumentation Nsight Systems rerun on the shortlist-heavy `xlarge` truth surface so the new host-side breakdown can be correlated with `final_finalize`.
+- [x] Write a shortlist-slice attribution note that states whether the dominant cost is row materialization, replay evaluation, rerank/sort, or diagnostics-only work.
+- [x] Resolve whether one narrow shortlist-slice intervention in `crates/app_core/src/gpu_backtest_kernel.rs` is justified before reopening `compact_exact_search_stage`.
+- [x] Re-run direct-runner truth surfaces and both GPU perf gates after any retained shortlist-slice change.
 
-### I. Carry-forward exact-path verification
+### I. Targeted replay-kernel study
+
+- [x] Capture targeted Nsight Compute on `double_cross_backtest_tm_flex_f32_windowed_m17*` for shortlist-heavy `xlarge/full17/halves`.
+- [x] Capture targeted Nsight Compute on `double_cross_backtest_tm_flex_f32_windowed_m22*` for shortlist-heavy `xlarge/trade22/halves`.
+- [x] Export importable per-kernel details for both replay captures.
+- [x] Correlate the profiler captures with live dispatch logs from `VECTORBT_KERNEL_LOG_DISPATCH=1`.
+- [x] Determine whether the retained replay cost is still a kernel-local tuning problem or a replay-shape / batching problem.
+- [x] Record the outcome in `SASS research/double_crossover_phase2_windowed_replay_kernel_study_2026-04-03.md`.
+- [x] Design and retain exactly one bounded replay-batching prototype around the replay `ranges.iter().enumerate()` launch loop in `eval_double_ma_batch_gpu_kernel_impl(...)` that preserves shortlist diagnostics semantics and exact `full17` / `trade22` row authority.
+- [x] Re-run shortlist-heavy `xlarge` `none` / `halves` / `quartiles` truth surfaces on both contracts after retaining the replay-batching prototype.
+- [x] Confirm live dispatch logs collapse the replay fan-out to one launch per replay mode on the retained path.
+- [x] Re-run both authoritative GPU perf gates after retaining the replay-batching prototype.
+- [x] Record the retained implementation in `SASS research/double_crossover_phase2_replay_batching_log_2026-04-03.md`.
+- [x] Do not treat diagnostic replay elision as valid unless product requirements explicitly allow a diagnostics contract change.
+
+### J. Carry-forward exact-path verification
 
 - [ ] If a compact path is retained, extend it through shortlist-slice exact reruns.
 - [ ] Confirm `trade22` tail metrics still materialize correctly after replay.
@@ -788,7 +856,7 @@ Decision rule:
 - [ ] Decide whether include-all and export-all should adopt the retained new path.
 - [ ] Decide whether union and confidence rerank stages should adopt the retained new path.
 
-### J. Deferred but tracked architecture branches
+### K. Deferred but tracked architecture branches
 
 - [x] Decide whether one more bounded lockstep-body pass is justified by fresh profiling.
 - [x] Keep `windowed` body work deferred unless a retained benchmark surface makes it worthwhile.

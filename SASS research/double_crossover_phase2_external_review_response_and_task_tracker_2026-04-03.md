@@ -194,15 +194,51 @@ Decision:
 
 1. Keep the bounded lockstep row-base change.
 2. Treat Stage C as complete for this branch.
-3. If another product-facing pass is needed after this retained change, the next candidate should be shortlist-slice replay and diagnostics efficiency rather than a reducer-first or broad SASS reopening.
+3. The shortlist-slice replay / diagnostics attribution follow-on is now complete.
 
-Planned next branch:
+Completed shortlist-slice branch:
 
-1. The next repo-owned follow-on is now documented in `SASS research/double_crossover_sass_phase2_runtime_profiling_and_optimization_plan_2026-04-03.md`.
-2. That follow-on is:
-   - instrument shortlist-slice `final_finalize`
-   - separate replay, rerank, and diagnostics costs in `crates/app_core/src/gpu_backtest_kernel.rs`
-   - then choose one narrow shortlist-slice intervention before reopening `compact_exact_search_stage`
+1. The repo-owned follow-on documented in `SASS research/double_crossover_sass_phase2_runtime_profiling_and_optimization_plan_2026-04-03.md` was executed.
+2. Instrumentation landed in:
+   - `crates/app_core/src/gpu_backtest_kernel.rs`
+   - `crates/app_core/src/double_ma.rs`
+   - `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs`
+3. Shortlist-heavy `xlarge` reruns were completed on the intended `alma/alma`, `synth` surfaces for:
+   - `full17` with `shortlist_slice_mode=none`
+   - `full17` with `shortlist_slice_mode=halves`
+   - `full17` with serialized `shortlist_slice_mode=quartiles`
+   - `trade22` with `shortlist_slice_mode=none`
+   - `trade22` with `shortlist_slice_mode=halves`
+   - `trade22` with serialized `shortlist_slice_mode=quartiles`
+4. The resulting attribution says:
+   - shortlist-row materialization is not the live issue on this branch
+   - record assembly, sort, and diagnostics are too small to promote first
+   - the real shortlist-slice cost is replay
+5. One focused post-instrumentation Nsight Systems rerun on `xlarge/full17/halves` ties that host-side bucket back to `double_cross_backtest_tm_flex_f32_windowed_m17_regime_off_norisk_eps0_nocomm` at `51.595 ms` total (`14.3%` of traced GPU kernel time).
+6. A targeted replay-kernel follow-on is now also complete:
+   - targeted Nsight Compute captures exist for `windowed_m17` and `windowed_m22` on shortlist-heavy `xlarge/halves`
+   - both kernels profile as tiny launches with block `(64, 1, 1)`, grid `(1, 1, 1)`, achieved occupancy about `2.78%`, and only `1` to `2` achieved active warps per SM
+   - live dispatch logs show that the retained `halves` route executes `6` original replay launches per request: `2x50` shortlist rows plus `4x8` diagnostic rows
+7. Current source explains the `4x8` diagnostic tail because the `halves` path still computes quartiles diagnostics for the diagnostic subset.
+8. A bounded replay-batching prototype around the replay `ranges.iter().enumerate()` loop has now also been implemented and retained:
+   - `crates/app_core/src/gpu_backtest_kernel.rs` batches multi-range shortlist replay rows and uploads per-row eval-start / eval-end arrays only on the shortlist replay path
+   - `crates/app_core/src/kernels/double_crossover.cu` accepts optional per-row replay ranges on the `windowed` wrappers through a launch-time dispatch helper that keeps non-windowed hot kernels on the old compile-time path
+   - exact `full17` / `trade22` row authority and current shortlist diagnostics semantics were preserved
+9. Post-implementation shortlist-heavy reruns show the replay fan-out reduction is real:
+   - `full17`: `296.00 ms` with `none` vs `342.80 ms` with `halves` vs `349.00 ms` with `quartiles`
+   - `trade22`: `308.20 ms` with `none` vs `359.00 ms` with `halves` vs `365.00 ms` with `quartiles`
+10. The runner-visible shortlist bucket collapsed to about `28 ms` replay on both retained contracts and both replay modes, and the saved `xlarge/full17/halves` dispatch log confirms one launch per replay mode on the retained path:
+   - `batched_windowed_ranges=true range_count=2 launch_pairs=100`
+   - `batched_windowed_ranges=true range_count=4 launch_pairs=32`
+11. Verification after retaining the prototype passed:
+   - targeted replay-path tests for range-major ordering and `trade22` tail-metric preservation
+   - `scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+   - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
+12. Branch logs are:
+   - `SASS research/double_crossover_phase2_shortlist_slice_attribution_log_2026-04-03.md`
+   - `SASS research/double_crossover_phase2_windowed_replay_kernel_study_2026-04-03.md`
+   - `SASS research/double_crossover_phase2_replay_batching_log_2026-04-03.md`
+13. If another product-facing pass is still desired after this retained prototype, it is no longer a local finalize cleanup question or another kernel-local `windowed` question; it is a larger replay/dataflow architecture question centered on the replay range loop in `eval_double_ma_batch_gpu_kernel_impl(...)`.
 
 ### Stage D: Conditional Implementation Lane 2
 
@@ -234,6 +270,7 @@ Treat the next measurement loop as successful only if all of the following are t
 3. Both shortlist-heavy `xlarge` truth surfaces have surfaced reducer and row-select Nsight Compute summaries.
 4. The tracker records one explicit Stage B branch label.
 5. The repo has a written reason for why the next step is a bounded lockstep pass, compact exact search-stage work, or further measurement.
+6. If replay remains the next architecture candidate, the repo also records whether that cost comes from one large replay kernel or from repeated tiny `windowed` launches.
 
 ## Immediate Rejection Criteria
 
@@ -267,6 +304,7 @@ When the next loop is run, record all of the following in the repo:
 - branch or commit ID
 - route diagnostics for every truth surface
 - final Stage B decision label
+- if replay remains the next architecture candidate, the log should capture both the profiler view and the live dispatch shape
 
 ## Update Log
 
@@ -282,7 +320,14 @@ When the next loop is run, record all of the following in the repo:
 - Retained a bounded lockstep-body row-base addressing change in `crates/app_core/src/kernels/double_crossover.cu` after same-tree direct-runner A/B and authoritative GPU perf-gate validation.
 - Added the narrow post-change cuobjdump refresh for the touched `lockstep_time_m17` / `lockstep_time_m22` hot symbols.
 - Added `SASS research/double_crossover_phase2_stagec_bounded_lockstep_pass_log_2026-04-03.md` to record the exact Stage C commands and saved artifacts.
-- Moved the next planned work into the main Phase 2 plan as a shortlist-slice replay / diagnostics follow-on instead of reopening Stage D or Stage E here.
+- Completed the shortlist-slice replay / diagnostics attribution follow-on with new runner-visible timing fields and `none` vs `halves` reruns on shortlist-heavy `xlarge`.
+- Recorded that shortlist-slice replay itself is the active cost, while record assembly, sort, diagnostics, and shortlist-row materialization remain negligible on this branch.
+- Chose not to retain a behavior-changing shortlist-slice micro-optimization because the evidence did not support a safe local host-side win.
+- Added `SASS research/double_crossover_phase2_shortlist_slice_attribution_log_2026-04-03.md` to record the shortlist-slice commands, artifacts, verification, and branch outcome.
+- Completed the targeted replay-kernel follow-on and recorded that both retained `windowed` kernels are tiny `grid=(1,1,1)` replay launches rather than large hot kernels worth another local tuning pass.
+- Added `SASS research/double_crossover_phase2_windowed_replay_kernel_study_2026-04-03.md` to record the replay-kernel commands, artifacts, dispatch shape, and next-branch implication.
+- Retained a bounded replay-batching prototype around the shortlist replay range loop, keeping exact row authority and diagnostics semantics intact while collapsing the replay fan-out to one launch per replay mode.
+- Added `SASS research/double_crossover_phase2_replay_batching_log_2026-04-03.md` to record the implementation, reruns, dispatch confirmation, tests, and green GPU perf gates.
 
 ## Exit Condition For This Tracker
 
@@ -297,4 +342,4 @@ Current state:
 
 - This exit condition is now satisfied.
 - Further execution should continue in `SASS research/double_crossover_sass_phase2_runtime_profiling_and_optimization_plan_2026-04-03.md` under the `bounded_lockstep_pass` branch.
-- The immediate next planned branch there is the shortlist-slice replay / diagnostics measurement-and-intervention loop.
+- The shortlist-slice measurement-and-intervention loop is now complete; any further work from the main plan is a larger replay/dataflow architecture study, not another local finalize-cleanup loop and not the first replay-batching prototype.
