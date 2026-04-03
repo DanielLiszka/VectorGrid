@@ -221,6 +221,8 @@ struct PipelineTimingProfile {
     final_shortlist_confidence: Duration,
     final_shortlist_slice: Duration,
     final_shortlist_slice_replay: Duration,
+    final_shortlist_slice_replay_descriptor_prep: Duration,
+    final_shortlist_slice_replay_descriptor_upload: Duration,
     final_shortlist_slice_record_assembly: Duration,
     final_shortlist_slice_sort: Duration,
     final_shortlist_slice_diagnostics: Duration,
@@ -243,6 +245,8 @@ struct FinalistReplayTimingProfile {
 #[derive(Default, Debug, Clone, Copy)]
 struct ShortlistSliceTimingProfile {
     replay: Duration,
+    replay_descriptor_prep: Duration,
+    replay_descriptor_upload: Duration,
     record_assembly: Duration,
     sort: Duration,
     diagnostics: Duration,
@@ -421,6 +425,31 @@ impl PipelineTimingProfile {
                 self.final_shortlist_slice
             )
         );
+        let replay_other = self
+            .final_shortlist_slice_replay
+            .saturating_sub(self.final_shortlist_slice_replay_descriptor_prep)
+            .saturating_sub(self.final_shortlist_slice_replay_descriptor_upload);
+        eprintln!(
+            "        descriptor_prep{:>5.3} ms  ({})",
+            self.final_shortlist_slice_replay_descriptor_prep.as_secs_f64() * 1000.0,
+            Self::pct_str(
+                self.final_shortlist_slice_replay_descriptor_prep,
+                self.final_shortlist_slice_replay
+            )
+        );
+        eprintln!(
+            "        descriptor_upload{:>3.3} ms  ({})",
+            self.final_shortlist_slice_replay_descriptor_upload.as_secs_f64() * 1000.0,
+            Self::pct_str(
+                self.final_shortlist_slice_replay_descriptor_upload,
+                self.final_shortlist_slice_replay
+            )
+        );
+        eprintln!(
+            "        replay_other{:>8.3} ms  ({})",
+            replay_other.as_secs_f64() * 1000.0,
+            Self::pct_str(replay_other, self.final_shortlist_slice_replay)
+        );
         eprintln!(
             "      record_assembly{:>6.3} ms  ({})",
             self.final_shortlist_slice_record_assembly.as_secs_f64() * 1000.0,
@@ -483,6 +512,8 @@ pub(crate) struct KernelExecutorTimingMs {
     pub(crate) host_finalize_shortlist_confidence_ms: u64,
     pub(crate) host_finalize_shortlist_slice_ms: u64,
     pub(crate) host_finalize_shortlist_slice_replay_ms: u64,
+    pub(crate) host_finalize_shortlist_slice_replay_descriptor_prep_ms: u64,
+    pub(crate) host_finalize_shortlist_slice_replay_descriptor_upload_ms: u64,
     pub(crate) host_finalize_shortlist_slice_record_assembly_ms: u64,
     pub(crate) host_finalize_shortlist_slice_sort_ms: u64,
     pub(crate) host_finalize_shortlist_slice_diagnostics_ms: u64,
@@ -5423,6 +5454,7 @@ fn compute_shortlist_slice_mode_records(
     slow_periods.sort_unstable();
     slow_periods.dedup();
 
+    let replay_descriptor_prep_elapsed = compute_t0.elapsed();
     let replay_t0 = Instant::now();
     let range_metrics = eval_double_ma_batch_gpu_kernel_impl(
         rt,
@@ -5444,6 +5476,7 @@ fn compute_shortlist_slice_mode_records(
         ranges.as_slice(),
         None,
         true,
+        timing.as_deref_mut(),
     )?;
     let replay_elapsed = replay_t0.elapsed();
     if range_metrics.len() != combo_count.saturating_mul(slice_count) {
@@ -5517,9 +5550,14 @@ fn compute_shortlist_slice_mode_records(
     }
 
     let compute_elapsed = compute_t0.elapsed();
-    let record_assembly_elapsed = compute_elapsed.saturating_sub(replay_elapsed);
+    let record_assembly_elapsed = compute_elapsed
+        .saturating_sub(replay_elapsed)
+        .saturating_sub(replay_descriptor_prep_elapsed);
     if let Some(timing) = timing.as_deref_mut() {
         timing.replay = timing.replay.saturating_add(replay_elapsed);
+        timing.replay_descriptor_prep = timing
+            .replay_descriptor_prep
+            .saturating_add(replay_descriptor_prep_elapsed);
         timing.record_assembly = timing
             .record_assembly
             .saturating_add(record_assembly_elapsed);
@@ -8835,6 +8873,7 @@ pub(crate) fn eval_double_ma_batch_gpu_kernel_multi_range_with_precomputed_and_r
             ranges,
             None,
             false,
+            None,
         )
     })
 }
@@ -8859,6 +8898,7 @@ fn eval_double_ma_batch_gpu_kernel_impl(
     ranges: &[(usize, usize)],
     metrics_count_override: Option<usize>,
     allow_batched_windowed_ranges: bool,
+    mut shortlist_slice_timing: Option<&mut ShortlistSliceTimingProfile>,
 ) -> Result<Vec<Metrics>, String> {
     if combos.is_empty() {
         return Err("no parameter combinations".to_string());
@@ -9914,6 +9954,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             let mut pair_slow_local_rows_ptr: u64 = 0;
             let mut pair_eval_start_rows_ptr: u64 = 0;
             let mut pair_eval_end_rows_ptr: u64 = 0;
+            let replay_descriptor_upload_t0 =
+                shortlist_slice_timing.as_ref().map(|_| Instant::now());
             if launch_pairs > 0 {
                 let pair_index_upload_signature =
                     period_upload_signature(&host_exact_combo.tile_pair_index_map);
@@ -10052,6 +10094,13 @@ fn eval_double_ma_batch_gpu_kernel_impl(
                         .ok_or_else(|| "missing exact eval end row buffer".to_string())?
                         .as_device_ptr()
                         .as_raw();
+                }
+            }
+            if let Some(t0) = replay_descriptor_upload_t0 {
+                if let Some(timing) = shortlist_slice_timing.as_deref_mut() {
+                    timing.replay_descriptor_upload = timing
+                        .replay_descriptor_upload
+                        .saturating_add(t0.elapsed());
                 }
             }
             if let (Some(t0), Some(p)) = (pairmap_t0, replay_profile.as_mut()) {
@@ -11567,6 +11616,7 @@ fn exact_eval_metrics_for_params(
         ranges.as_slice(),
         None,
         false,
+        None,
     )?;
     if recomputed.len() != unique_params.len() {
         return Err(format!(
@@ -15703,6 +15753,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             &ranges,
             None,
             false,
+            None,
         )?;
         let mut exact_rows: Vec<(DoubleMaParams, Metrics)> = finalists
             .into_iter()
@@ -15915,6 +15966,12 @@ fn optimize_double_ma_gpu_kernel_impl(
         p.final_shortlist_slice_replay = p
             .final_shortlist_slice_replay
             .saturating_add(shortlist_slice_timing.replay);
+        p.final_shortlist_slice_replay_descriptor_prep = p
+            .final_shortlist_slice_replay_descriptor_prep
+            .saturating_add(shortlist_slice_timing.replay_descriptor_prep);
+        p.final_shortlist_slice_replay_descriptor_upload = p
+            .final_shortlist_slice_replay_descriptor_upload
+            .saturating_add(shortlist_slice_timing.replay_descriptor_upload);
         p.final_shortlist_slice_record_assembly = p
             .final_shortlist_slice_record_assembly
             .saturating_add(shortlist_slice_timing.record_assembly);
@@ -15963,6 +16020,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                 as u64,
             host_finalize_shortlist_slice_replay_ms: shortlist_slice_timing.replay.as_millis()
                 as u64,
+            host_finalize_shortlist_slice_replay_descriptor_prep_ms: shortlist_slice_timing
+                .replay_descriptor_prep
+                .as_millis() as u64,
+            host_finalize_shortlist_slice_replay_descriptor_upload_ms: shortlist_slice_timing
+                .replay_descriptor_upload
+                .as_millis() as u64,
             host_finalize_shortlist_slice_record_assembly_ms: shortlist_slice_timing
                 .record_assembly
                 .as_millis() as u64,

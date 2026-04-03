@@ -50,12 +50,21 @@ export default defineConfig(({ mode }) => ({
             return 'vendor-ui'
           }
           if (
+            normalized.includes('/node_modules/@tauri-apps/api/')
+            || normalized.includes('/node_modules/@tauri-apps/plugin-')
+          ) {
+            return 'vendor-tauri'
+          }
+          if (
             normalized.includes('/node_modules/@vueuse/')
             || normalized.includes('/node_modules/fuse.js/')
             || normalized.includes('/node_modules/lucide-vue-next/')
             || normalized.includes('/node_modules/zod/')
           ) {
             return 'vendor-utilities'
+          }
+          if (normalized.includes('/src/stores/')) {
+            return 'app-state'
           }
           return undefined
         },

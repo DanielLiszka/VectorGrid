@@ -343,3 +343,16 @@ Current state:
 - This exit condition is now satisfied.
 - Further execution should continue in `SASS research/double_crossover_sass_phase2_runtime_profiling_and_optimization_plan_2026-04-03.md` under the `bounded_lockstep_pass` branch.
 - The shortlist-slice measurement-and-intervention loop is now complete; any further work from the main plan is a larger replay/dataflow architecture study, not another local finalize-cleanup loop and not the first replay-batching prototype.
+- The first replay-dataflow measurement pass is now recorded in:
+  - `SASS research/double_crossover_phase2_replay_artifact_manifest_2026-04-03.md`
+  - `SASS research/double_crossover_phase2_replay_micro_attribution_2026-04-03.md`
+  - `SASS research/double_crossover_phase2_replay_branch_decision_2026-04-03.md`
+- Descriptor reuse did not clear the numeric promotion rules; any reopened replay implementation work must first split `replay_other` further rather than guessing.
+- The repo now treats further effort as research-artifact-first work rather than open-ended optimization:
+  - `SASS research/double_crossover_phase2_research_artifact_plan_2026-04-03.md`
+  - default next work is evidence consolidation and writing, not a new code prototype
+- The canonical research outputs now exist:
+  - `SASS research/double_crossover_phase2_research_findings_2026-04-03.md`
+  - `SASS research/double_crossover_phase2_experiment_table_2026-04-03.md`
+  - `SASS research/double_crossover_phase2_research_artifact_index_2026-04-03.md`
+  - `SASS research/double_crossover_phase2_paper_outline_2026-04-03.md`

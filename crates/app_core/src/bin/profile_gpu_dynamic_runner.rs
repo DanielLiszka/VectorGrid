@@ -1024,7 +1024,7 @@ fn main() {
         );
         if let Some(timing) = res.gpu_kernel_timing_ms.as_ref() {
             println!(
-                "gpu_kernel_timing_ms=route_wall:{} runtime_init:{} set_current:{} gpu_indicator_prep:{} h2d_upload:{} launch_submit_us:{} d2h_copy:{} host_decode:{} explicit_sync:{} host_shortlist_materialize:{} host_finalize:{} host_finalize_agg_finalize:{} host_finalize_finalist_recompute:{} host_finalize_shortlist_union:{} host_finalize_shortlist_confidence:{} host_finalize_shortlist_slice:{} host_finalize_shortlist_slice_replay:{} host_finalize_shortlist_slice_record_assembly:{} host_finalize_shortlist_slice_sort:{} host_finalize_shortlist_slice_diagnostics:{} host_finalize_export_flush:{} host_finalize_cleanup:{} graph_capture:{} graph_replay_count:{}",
+                "gpu_kernel_timing_ms=route_wall:{} runtime_init:{} set_current:{} gpu_indicator_prep:{} h2d_upload:{} launch_submit_us:{} d2h_copy:{} host_decode:{} explicit_sync:{} host_shortlist_materialize:{} host_finalize:{} host_finalize_agg_finalize:{} host_finalize_finalist_recompute:{} host_finalize_shortlist_union:{} host_finalize_shortlist_confidence:{} host_finalize_shortlist_slice:{} host_finalize_shortlist_slice_replay:{} host_finalize_shortlist_slice_replay_descriptor_prep:{} host_finalize_shortlist_slice_replay_descriptor_upload:{} host_finalize_shortlist_slice_record_assembly:{} host_finalize_shortlist_slice_sort:{} host_finalize_shortlist_slice_diagnostics:{} host_finalize_export_flush:{} host_finalize_cleanup:{} graph_capture:{} graph_replay_count:{}",
                 timing.route_wall_ms,
                 format_optional_ms(timing.runtime_init_ms),
                 format_optional_ms(timing.set_current_ms),
@@ -1044,6 +1044,8 @@ fn main() {
                 format_optional_ms(timing.host_finalize_shortlist_confidence_ms),
                 format_optional_ms(timing.host_finalize_shortlist_slice_ms),
                 format_optional_ms(timing.host_finalize_shortlist_slice_replay_ms),
+                format_optional_ms(timing.host_finalize_shortlist_slice_replay_descriptor_prep_ms),
+                format_optional_ms(timing.host_finalize_shortlist_slice_replay_descriptor_upload_ms),
                 format_optional_ms(timing.host_finalize_shortlist_slice_record_assembly_ms),
                 format_optional_ms(timing.host_finalize_shortlist_slice_sort_ms),
                 format_optional_ms(timing.host_finalize_shortlist_slice_diagnostics_ms),

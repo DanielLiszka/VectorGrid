@@ -443,6 +443,8 @@ Completed shortlist-slice attribution branch:
 1. `crates/app_core/src/gpu_backtest_kernel.rs`, `crates/app_core/src/double_ma.rs`, and `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs` now surface:
    - `host_shortlist_materialize_ms`
    - `host_finalize_shortlist_slice_replay_ms`
+   - `host_finalize_shortlist_slice_replay_descriptor_prep_ms`
+   - `host_finalize_shortlist_slice_replay_descriptor_upload_ms`
    - `host_finalize_shortlist_slice_record_assembly_ms`
    - `host_finalize_shortlist_slice_sort_ms`
    - `host_finalize_shortlist_slice_diagnostics_ms`
@@ -488,32 +490,44 @@ Completed shortlist-slice attribution branch:
 12. Live dispatch logs tie that profiler result back to the shortlist rerank path:
    - both `full17` and `trade22` currently execute `6` original `windowed` launches under `shortlist_slice_mode=halves`
    - launch shape is `2x50` shortlist rows plus `4x8` diagnostic rows
-13. Current source explains the `4x8` tail:
+13. A follow-on replay micro-attribution pass after the retained batching prototype is now also complete:
+   - `SASS research/double_crossover_phase2_replay_artifact_manifest_2026-04-03.md`
+   - `SASS research/double_crossover_phase2_replay_micro_attribution_2026-04-03.md`
+   - `SASS research/double_crossover_phase2_replay_branch_decision_2026-04-03.md`
+14. That pass shows:
+   - replay-enabled `halves` and `quartiles` surfaces still carry a real `~30-32 ms` replay bucket
+   - `none` control surfaces still carry no replay bucket
+   - descriptor prep and descriptor upload both round to `0 ms` on the retained truth surfaces
+   - record assembly, sort, and diagnostics also round to `0 ms` on those surfaces
+15. Immediate branch result:
+   - reject descriptor reuse as the next prototype
+   - keep replay/dataflow work in measurement mode until `replay_other` is split further into launch or kernel-side subcomponents
+16. Current source explains the `4x8` tail:
    - `rerank_shortlist_by_slice_robustness(...)` calls `compute_shortlist_slice_mode_records(..., Halves, ...)`
    - then still calls `compute_shortlist_slice_mode_records(..., Quartiles, ...)` for the diagnostic subset even when the active ranking mode is only `halves`
-14. A bounded replay-batching follow-on was then implemented and retained around the replay `ranges.iter().enumerate()` loop in `eval_double_ma_batch_gpu_kernel_impl(...)`:
+17. A bounded replay-batching follow-on was then implemented and retained around the replay `ranges.iter().enumerate()` loop in `eval_double_ma_batch_gpu_kernel_impl(...)`:
    - `crates/app_core/src/gpu_backtest_kernel.rs` now batches multi-range shortlist replay rows before the `windowed` launch and uploads per-row eval-start / eval-end arrays only on the shortlist replay path
    - `crates/app_core/src/kernels/double_crossover.cu` now accepts optional per-row replay ranges on the `windowed` wrappers through a launch-time dispatch helper that keeps non-windowed hot kernels on the old compile-time path
    - exact `full17` / `trade22` row authority and current shortlist diagnostics semantics were preserved
-15. Post-implementation shortlist-heavy `xlarge`, `alma/alma`, `synth` reruns show that the retained replay fan-out reduction materially lowered shortlist replay cost:
+18. Post-implementation shortlist-heavy `xlarge`, `alma/alma`, `synth` reruns show that the retained replay fan-out reduction materially lowered shortlist replay cost:
    - `full17`: `296.00 ms` with `none` vs `342.80 ms` with `halves` vs `349.00 ms` with `quartiles`
    - `trade22`: `308.20 ms` with `none` vs `359.00 ms` with `halves` vs `365.00 ms` with `quartiles`
-16. The runner-visible shortlist sub-buckets collapsed to the same replay-scale on both ranking and diagnostics modes:
+19. The runner-visible shortlist sub-buckets collapsed to the same replay-scale on both ranking and diagnostics modes:
    - `full17` `halves`: shortlist slice `27.80 ms`, replay `27.80 ms`
    - `full17` `quartiles`: shortlist slice `28.00 ms`, replay `27.80 ms`
    - `trade22` `halves`: shortlist slice `28.20 ms`, replay `28.20 ms`
    - `trade22` `quartiles`: shortlist slice `27.20 ms`, replay `27.20 ms`
-17. Live dispatch logs confirm that the retained implementation replaced the old `6`-launch replay fan-out with one launch per replay mode:
+20. Live dispatch logs confirm that the retained implementation replaced the old `6`-launch replay fan-out with one launch per replay mode:
    - `batched_windowed_ranges=true range_count=2 launch_pairs=100 dispatch=windowed_m17`
    - `batched_windowed_ranges=true range_count=4 launch_pairs=32 dispatch=windowed_m17`
-18. Verification after retaining the replay-batching prototype passed:
+21. Verification after retaining the replay-batching prototype passed:
    - targeted tests:
      - `prepare_batched_windowed_exact_replay_rows_preserves_range_major_order`
      - `gpu_kernel_shortlist_slice_trade22_metric_contract_preserves_trade_tail_metrics`
      - `gpu_kernel_regime_hybrid_trade22_multi_range_eval_preserves_trade_tail_metrics`
    - `scripts/run_gpu_perf_gate.ps1 -Mode candidate`
    - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
-19. The implementation log is `SASS research/double_crossover_phase2_replay_batching_log_2026-04-03.md`.
+22. The implementation log is `SASS research/double_crossover_phase2_replay_batching_log_2026-04-03.md`.
 
 Branch conclusion:
 

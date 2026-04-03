@@ -104,7 +104,7 @@ describe('command action store', () => {
     expect(runValidationMock).toHaveBeenCalled()
   })
 
-  it('dispatches shared data/export/report actions', () => {
+  it('dispatches shared data/export/report actions', async () => {
     const dataset = ensureDocumentDataset()
     const store = useCommandActionStore()
     const dataStore = useDataStore()
@@ -124,18 +124,21 @@ describe('command action store', () => {
     store.openLatestMetaReport()
     store.toggleControls()
 
-    expect(browseCsvMock).toHaveBeenCalled()
-    expect(loadCsvMock).toHaveBeenCalled()
-    expect(openPolygonMock).toHaveBeenCalled()
-    expect(exportTopCsvMock).toHaveBeenCalled()
-    expect(exportShortlistCsvMock).toHaveBeenCalled()
-    expect(exportTopJsonMock).toHaveBeenCalled()
-    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/latest.xlsx' })
-    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/meta_latest.xlsx' })
-    expect(settingsStore.controlsCollapsed).toBe(true)
-    expect(dataset.controlsCollapsed).toBe('1')
-    expect(store.canOpenLatestReport).toBe(true)
-    expect(store.canOpenLatestMetaReport).toBe(true)
+    await vi.dynamicImportSettled()
+    await vi.waitFor(() => {
+      expect(browseCsvMock).toHaveBeenCalled()
+      expect(loadCsvMock).toHaveBeenCalled()
+      expect(openPolygonMock).toHaveBeenCalled()
+      expect(exportTopCsvMock).toHaveBeenCalled()
+      expect(exportShortlistCsvMock).toHaveBeenCalled()
+      expect(exportTopJsonMock).toHaveBeenCalled()
+      expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/latest.xlsx' })
+      expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/meta_latest.xlsx' })
+      expect(settingsStore.controlsCollapsed).toBe(true)
+      expect(dataset.controlsCollapsed).toBe('1')
+      expect(store.canOpenLatestReport).toBe(true)
+      expect(store.canOpenLatestMetaReport).toBe(true)
+    })
   })
 
   it('falls back to workflow artifacts store for latest report path', () => {
@@ -156,14 +159,17 @@ describe('command action store', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/from_artifacts.xlsx' })
   })
 
-  it('dispatches drill-trade navigation and clear actions', () => {
+  it('dispatches drill-trade navigation and clear actions', async () => {
     const store = useCommandActionStore()
     store.clearDrillTradeSelection()
     store.drillPrevTrade()
     store.drillNextTrade()
 
-    expect(drillClearTradeSelectionMock).toHaveBeenCalled()
-    expect(drillPrevTradeMock).toHaveBeenCalled()
-    expect(drillNextTradeMock).toHaveBeenCalled()
+    await vi.dynamicImportSettled()
+    await vi.waitFor(() => {
+      expect(drillClearTradeSelectionMock).toHaveBeenCalled()
+      expect(drillPrevTradeMock).toHaveBeenCalled()
+      expect(drillNextTradeMock).toHaveBeenCalled()
+    })
   })
 })

@@ -167,6 +167,22 @@ Execution outcome:
 - branch decision: keep the timing instrumentation and the retained replay-batching prototype
 - follow-on implication: if more work is justified here, it is now a larger replay-side architecture / dataflow question beyond the first batching step rather than a local host-side cleanup or another kernel-local `windowed` pass
 - the concrete next-phase checklist for that follow-on is recorded in `SASS research/double_crossover_phase2_replay_dataflow_architecture_plan_2026-04-03.md`
+- the first replay-dataflow measurement pass is now recorded in:
+  - `SASS research/double_crossover_phase2_replay_artifact_manifest_2026-04-03.md`
+  - `SASS research/double_crossover_phase2_replay_micro_attribution_2026-04-03.md`
+  - `SASS research/double_crossover_phase2_replay_branch_decision_2026-04-03.md`
+- current replay-dataflow status:
+  - descriptor reuse did not clear the numeric promotion rules
+  - no new replay-side prototype should be started until `replay_other` is split further into launch or kernel-side subcomponents
+- research-workstream follow-on:
+  - further effort is now justified only if it materially improves the final research artifact
+  - the canonical research-artifact checklist is recorded in `SASS research/double_crossover_phase2_research_artifact_plan_2026-04-03.md`
+  - default next move: artifact consolidation and writing, not another optimization prototype
+  - canonical research outputs now include:
+    - `SASS research/double_crossover_phase2_research_findings_2026-04-03.md`
+    - `SASS research/double_crossover_phase2_experiment_table_2026-04-03.md`
+    - `SASS research/double_crossover_phase2_research_artifact_index_2026-04-03.md`
+    - `SASS research/double_crossover_phase2_paper_outline_2026-04-03.md`
 
 Stage C artifact additions:
 

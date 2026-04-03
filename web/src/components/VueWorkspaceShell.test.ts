@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 import VueWorkspaceShell from './VueWorkspaceShell.vue'
+import { useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -17,6 +18,7 @@ describe('VueWorkspaceShell', () => {
     localStorage.clear()
     document.body.innerHTML = ''
     window.innerWidth = 1440
+    useTaskCenterVisibility().value = false
   })
 
   it('shows only workspace and workflow-step navigation, with local tabs for the active step', async () => {
@@ -61,8 +63,9 @@ describe('VueWorkspaceShell', () => {
 
     await wrapper.get('.taskCenterLauncher').trigger('click')
     await flushUi()
+    await flushUi()
 
-    expect(localStorage.getItem('VTA_TASK_CENTER_OPEN_V1')).toBe('true')
+    expect(useTaskCenterVisibility().value).toBe(true)
 
     wrapper.unmount()
   })

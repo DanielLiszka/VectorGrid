@@ -704,6 +704,10 @@ pub struct GpuKernelTimingMs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_shortlist_slice_replay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_slice_replay_descriptor_prep_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_slice_replay_descriptor_upload_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_shortlist_slice_record_assembly_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_shortlist_slice_sort_ms: Option<u64>,
@@ -2183,6 +2187,14 @@ fn merge_gpu_kernel_timing(
             inc.host_finalize_shortlist_slice_replay_ms,
         );
         merge_optional_u64(
+            &mut cur.host_finalize_shortlist_slice_replay_descriptor_prep_ms,
+            inc.host_finalize_shortlist_slice_replay_descriptor_prep_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_slice_replay_descriptor_upload_ms,
+            inc.host_finalize_shortlist_slice_replay_descriptor_upload_ms,
+        );
+        merge_optional_u64(
             &mut cur.host_finalize_shortlist_slice_record_assembly_ms,
             inc.host_finalize_shortlist_slice_record_assembly_ms,
         );
@@ -2234,6 +2246,12 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             host_finalize_shortlist_slice_replay_ms: Some(
                 timing.host_finalize_shortlist_slice_replay_ms,
             ),
+            host_finalize_shortlist_slice_replay_descriptor_prep_ms: Some(
+                timing.host_finalize_shortlist_slice_replay_descriptor_prep_ms,
+            ),
+            host_finalize_shortlist_slice_replay_descriptor_upload_ms: Some(
+                timing.host_finalize_shortlist_slice_replay_descriptor_upload_ms,
+            ),
             host_finalize_shortlist_slice_record_assembly_ms: Some(
                 timing.host_finalize_shortlist_slice_record_assembly_ms,
             ),
@@ -2267,6 +2285,8 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             host_finalize_shortlist_confidence_ms: None,
             host_finalize_shortlist_slice_ms: None,
             host_finalize_shortlist_slice_replay_ms: None,
+            host_finalize_shortlist_slice_replay_descriptor_prep_ms: None,
+            host_finalize_shortlist_slice_replay_descriptor_upload_ms: None,
             host_finalize_shortlist_slice_record_assembly_ms: None,
             host_finalize_shortlist_slice_sort_ms: None,
             host_finalize_shortlist_slice_diagnostics_ms: None,
@@ -2298,6 +2318,8 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
         host_finalize_shortlist_confidence_ms: None,
         host_finalize_shortlist_slice_ms: None,
         host_finalize_shortlist_slice_replay_ms: None,
+        host_finalize_shortlist_slice_replay_descriptor_prep_ms: None,
+        host_finalize_shortlist_slice_replay_descriptor_upload_ms: None,
         host_finalize_shortlist_slice_record_assembly_ms: None,
         host_finalize_shortlist_slice_sort_ms: None,
         host_finalize_shortlist_slice_diagnostics_ms: None,

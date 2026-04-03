@@ -2,8 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
 import { bindRuntimePinia } from '../stores/runtimePinia'
-import { buildOptimizationRequestFromVueStores, runOptimization } from './optimizeService'
-import { runValidation } from './validationService'
+import { buildOptimizationRequestFromVueStores } from './optimizeService'
 import {
   batchRefresh,
   batchRevealSummary,
@@ -40,11 +39,6 @@ vi.mock('./optimizeService', () => ({
     ma_source: 'close',
     candidates: [],
   })),
-  runOptimization: vi.fn(async () => undefined),
-}))
-
-vi.mock('./validationService', () => ({
-  runValidation: vi.fn(async () => undefined),
 }))
 
 vi.mock('./dataService', () => ({
@@ -91,8 +85,6 @@ vi.mock('./dataService', () => ({
 }))
 
 const invokeCommandMock = vi.mocked(invokeCommand)
-const runOptimizationMock = vi.mocked(runOptimization)
-const runValidationMock = vi.mocked(runValidation)
 const buildOptimizationRequestMock = vi.mocked(buildOptimizationRequestFromVueStores)
 let pinia: ReturnType<typeof createPinia>
 
@@ -317,6 +309,32 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
 
   if (command === 'list_run_artifacts') return []
   if (command === 'save_batch_summary') return { path: 'C:/runs/vectorgrid_batch_1.json' }
+  if (command === 'run_research_campaign') {
+    return {
+      summary_json_path: 'C:/runs/vectorgrid_campaign_1.json',
+      summary: {
+        version: 1,
+        kind: 'vectorgrid_campaign_summary',
+        ts: '2026-04-03T12:00:00Z',
+        state: 'completed',
+        strategy_kind: 'CompositeMo',
+        counts: {
+          total: 1,
+          optimized: 1,
+          validated: 1,
+          skipped: 0,
+          failed: 0,
+          cancelled: false,
+        },
+        items: [],
+        warnings: [],
+        runtime_ms: 10,
+        tags: ['campaign'],
+        holdout_pct: 0,
+        holdout_tag: 'holdout',
+      },
+    }
+  }
   if (command === 'list_artifact_library') {
     return {
       meta: [],
@@ -891,13 +909,32 @@ describe('meta service', () => {
       },
     })
 
-    expect(runOptimizationMock).toHaveBeenCalledWith({ switchTab: false })
-    expect(runValidationMock).toHaveBeenCalledWith({ useFiltered: false, switchTab: false })
-    expect(invokeCommandMock).toHaveBeenCalledWith('save_batch_summary', { summary: expect.any(Object) })
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      'run_research_campaign',
+      expect.objectContaining({
+        req: expect.objectContaining({
+          strategy_kind: 'CompositeMo',
+          holdout_pct: 10,
+          holdout_tag: 'holdout',
+          auto_meta: false,
+          tags: ['batch-1'],
+          datasets: [
+            expect.objectContaining({
+              csv_path: 'C:/a.csv',
+              label: 'AAPL',
+              timeframe: '1m',
+            }),
+          ],
+        }),
+      }),
+    )
+    expect(
+      invokeCommandMock.mock.calls.some(([command]) => command === 'save_batch_summary'),
+    ).toBe(false)
 
     const analysisStore = useAnalysisStore(pinia)
     expect(analysisStore.canBatchRevealSummary).toBe(true)
-    expect(analysisStore.batchOutputPreview).toContain('vectorgrid_batch_summary')
+    expect(analysisStore.batchOutputPreview).toContain('vectorgrid_campaign_summary')
     expect(validationStore.autoRun).toBe(true)
     expect(validationStore.autoExportXlsx).toBe(true)
     expect(validationStore.autoRevealReport).toBe(true)
@@ -945,6 +982,8 @@ describe('meta service', () => {
     })
     await batchRevealSummary()
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', { path: 'C:/runs/vectorgrid_batch_1.json' })
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
+      path: 'C:/runs/vectorgrid_campaign_1.json',
+    })
   })
 })

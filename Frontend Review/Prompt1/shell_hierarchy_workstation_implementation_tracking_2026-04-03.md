@@ -4,7 +4,7 @@ Date: 2026-04-03
 
 Scope: implementation tracker for the Prompt 1 shell/workstation direction in [shell_hierarchy_workstation_direction_FINAL.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\Prompt1\shell_hierarchy_workstation_direction_FINAL.md).
 
-Status: not started
+Status: implemented and verified on 2026-04-03
 
 Owner posture: frontend UI/UX shell refinement only. Do not broaden into backend contract changes, sidebar redesign, or unrelated productization work.
 
@@ -31,16 +31,49 @@ This tracker is for executing the shell recommendation:
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline locked and evidence captured
-- [ ] Phase 1 complete: objective shell hierarchy changes landed
-- [ ] Phase 2 complete: objective titlebar reduction landed
-- [ ] Phase 3 complete: objective shell guardrails and continuity checks landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Phase 4 complete: subjective shell weighting/refinement landed
-- [ ] Phase 5 complete: subjective wording/alignment refinements landed
-- [ ] Subjective refinement checkpoint complete
-- [ ] Verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline locked and evidence captured
+- [x] Phase 1 complete: objective shell hierarchy changes landed
+- [x] Phase 2 complete: objective titlebar reduction landed
+- [x] Phase 3 complete: objective shell guardrails and continuity checks landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Phase 4 complete: subjective shell weighting/refinement landed
+- [x] Phase 5 complete: subjective wording/alignment refinements landed
+- [x] Subjective refinement checkpoint complete
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
+
+## Implementation Outcome
+
+Implemented surfaces:
+
+- [VueWorkspaceShell.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\VueWorkspaceShell.vue)
+  - removed the persistent header caption
+  - added a shell-level task-center launcher on the workspace-navigation band
+  - reduced the default context strip to five visible fields
+  - moved `Rows` and `Loaded ID` into compact overflow disclosure
+- [DesktopTitlebar.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\DesktopTitlebar.vue)
+  - removed dataset and wide status duplication
+  - reduced the titlebar to identity, search, settings, run/stop, and one compact task signal
+- [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue)
+  - aligned open/close behavior with shared task-center visibility state and explicit return-focus handling
+- [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+  - moved task-center open behavior onto the shared visibility helper
+- [useTaskCenterVisibility.ts](C:\Rust Projects\ta_desktop_demo\web\src\composables\useTaskCenterVisibility.ts)
+  - added shared task-center visibility, local-storage persistence, and return-focus plumbing for shell launchers and the overlay
+
+Verification evidence:
+
+- `npm run typecheck`
+- `npm.cmd run test -- src/components/VueWorkspaceShell.test.ts src/components/DesktopTitlebar.test.ts src/components/TaskCenterOverlay.test.ts src/components/SettingsWorkspacePanel.test.ts`
+- `npm run build`
+- `npm.cmd run a11y:smoke`
+- `npm.cmd run baseline:ui`
+- `npm.cmd run test:desktop:smoke`
+
+Artifacts captured:
+
+- `web/scripts/baselines/ui_capture/`
+- `web/scripts/baselines/ui_capture/perf_metrics.json`
 
 ## Checkpoint Strategy
 
@@ -271,15 +304,15 @@ This shell pass is successful only if it produces all of the following:
 
 These are the concrete targets that should be achieved before the first checkpoint commit.
 
-- [ ] Titlebar chip burden reduced from three always-visible chips to at most one optional compact chip slot
-- [ ] Default context-strip fields reduced from seven to five visible items
-- [ ] `Rows` and `Loaded ID` moved out of the default context strip
-- [ ] Shell header persistent descriptive copy reduced from heading + caption + subtitle to heading + subtitle
-- [ ] A task-center launcher is integrated into the main shell header/nav area
-- [ ] The shell-level task-center launcher reliably opens the task center
-- [ ] Keyboard regressions introduced: `0`
-- [ ] Lost canonical capability paths introduced: `0`
-- [ ] New shell bands introduced: `0`
+- [x] Titlebar chip burden reduced from three always-visible chips to at most one optional compact chip slot
+- [x] Default context-strip fields reduced from seven to five visible items
+- [x] `Rows` and `Loaded ID` moved out of the default context strip
+- [x] Shell header persistent descriptive copy reduced from heading + caption + subtitle to heading + subtitle
+- [x] A task-center launcher is integrated into the main shell header/nav area
+- [x] The shell-level task-center launcher reliably opens the task center
+- [x] Keyboard regressions introduced: `0`
+- [x] Lost canonical capability paths introduced: `0`
+- [x] New shell bands introduced: `0`
 
 ## Product-Owner Overrides
 
@@ -305,27 +338,27 @@ These should be answered only after the objective checkpoint is implemented and 
 
 Goal: lock the intended shell scope and collect before-state evidence.
 
-- [ ] Re-read [shell_hierarchy_workstation_direction_FINAL.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\Prompt1\shell_hierarchy_workstation_direction_FINAL.md) and confirm no scope drift.
-- [ ] Capture baseline screenshots for:
-  - [ ] Workflow / Data
-  - [ ] Workflow / Optimize
-  - [ ] Workflow / Analyze
-  - [ ] Run Library
-  - [ ] Aggregate Analysis
-  - [ ] Settings
-- [ ] Record current top-shell duplication points to compare after implementation:
-  - [ ] titlebar identity/subtitle
-  - [ ] titlebar chips
-  - [ ] context strip
-  - [ ] footer
-  - [ ] task center entry points
-- [ ] Confirm the existing visible task-center launcher behavior in [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue) so the shell change is framed as integration, not duplication.
+- [x] Re-read [shell_hierarchy_workstation_direction_FINAL.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\Prompt1\shell_hierarchy_workstation_direction_FINAL.md) and confirm no scope drift.
+- [x] Capture baseline screenshots for:
+  - [x] Workflow / Data
+  - [x] Workflow / Optimize
+  - [x] Workflow / Analyze
+  - [x] Run Library
+  - [x] Aggregate Analysis
+  - [x] Settings
+- [x] Record current top-shell duplication points to compare after implementation:
+  - [x] titlebar identity/subtitle
+  - [x] titlebar chips
+  - [x] context strip
+  - [x] footer
+  - [x] task center entry points
+- [x] Confirm the existing visible task-center launcher behavior in [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue) so the shell change is framed as integration, not duplication.
 
 Acceptance criteria:
 
-- [ ] Baseline screenshots captured and stored
-- [ ] Existing shell duplication points documented in notes or task log
-- [ ] Working decisions above remain accepted or overridden explicitly
+- [x] Baseline screenshots captured and stored
+- [x] Existing shell duplication points documented in notes or task log
+- [x] Working decisions above remain accepted or overridden explicitly
 
 ## Phase 1 — Objective Shell Hierarchy Changes
 
@@ -338,21 +371,21 @@ Primary files:
 
 Checklist:
 
-- [ ] Add or integrate a visible task-center launcher in the main shell/nav band.
-- [ ] Ensure the launcher is present in the shell/nav band.
-- [ ] Ensure the launcher reliably opens the task center.
-- [ ] Reduce shell-header contextual noise.
-- [ ] Remove the persistent caption from the shell header.
-- [ ] Tighten the default visible context-strip items.
-- [ ] Add overflow/disclosure treatment for secondary context metadata if needed.
-- [ ] Keep current tab semantics intact:
-  - [ ] workspace tablist
-  - [ ] workflow-step tablist
-  - [ ] controls tablist
-  - [ ] results tablist
-- [ ] Preserve current selection announcements and shell accessibility semantics.
-- [ ] Preserve split-versus-stacked layout behavior.
-- [ ] Avoid turning the context strip into a new action bar.
+- [x] Add or integrate a visible task-center launcher in the main shell/nav band.
+- [x] Ensure the launcher is present in the shell/nav band.
+- [x] Ensure the launcher reliably opens the task center.
+- [x] Reduce shell-header contextual noise.
+- [x] Remove the persistent caption from the shell header.
+- [x] Tighten the default visible context-strip items.
+- [x] Add overflow/disclosure treatment for secondary context metadata if needed.
+- [x] Keep current tab semantics intact:
+  - [x] workspace tablist
+  - [x] workflow-step tablist
+  - [x] controls tablist
+  - [x] results tablist
+- [x] Preserve current selection announcements and shell accessibility semantics.
+- [x] Preserve split-versus-stacked layout behavior.
+- [x] Avoid turning the context strip into a new action bar.
 
 Before/after behavior:
 
@@ -367,26 +400,26 @@ Before/after behavior:
 
 Per-file sub-checklist:
 
-- [ ] `VueWorkspaceShell.vue`
-  - [ ] remove persistent header caption
-  - [ ] preserve `VectorGrid` heading
-  - [ ] preserve subtitle line
-  - [ ] add shell-level task-center launcher
-  - [ ] ensure launcher reliably opens task center
-  - [ ] reduce default context-strip items from seven to five
-  - [ ] add overflow/disclosure for `Rows` and `Loaded ID`
-  - [ ] keep current tab roles and keyboard handlers intact
-- [ ] `workflowStore.ts` only if needed
-  - [ ] add minimal coordination only if shell launcher behavior cannot remain local/UI-owned
+- [x] `VueWorkspaceShell.vue`
+  - [x] remove persistent header caption
+  - [x] preserve `VectorGrid` heading
+  - [x] preserve subtitle line
+  - [x] add shell-level task-center launcher
+  - [x] ensure launcher reliably opens task center
+  - [x] reduce default context-strip items from seven to five
+  - [x] add overflow/disclosure for `Rows` and `Loaded ID`
+  - [x] keep current tab roles and keyboard handlers intact
+- [x] `workflowStore.ts` only if needed
+  - [x] add minimal coordination only if shell launcher behavior cannot remain local/UI-owned
 
 Acceptance criteria:
 
-- [ ] Workspace/workflow rows remain primary orientation
-- [ ] Header contains less persistent descriptive copy than before
-- [ ] Task-center launcher is visible in the main shell hierarchy
-- [ ] Task-center launcher opens the task center reliably
-- [ ] Context strip shows only the agreed default fields
-- [ ] No new shell band is introduced
+- [x] Workspace/workflow rows remain primary orientation
+- [x] Header contains less persistent descriptive copy than before
+- [x] Task-center launcher is visible in the main shell hierarchy
+- [x] Task-center launcher opens the task center reliably
+- [x] Context strip shows only the agreed default fields
+- [x] No new shell band is introduced
 
 ## Phase 2 — Objective Titlebar Reduction
 
@@ -399,14 +432,14 @@ Primary files:
 
 Checklist:
 
-- [ ] Collapse the current chip cluster.
-- [ ] Remove or reduce dataset emphasis in the titlebar if that information is already better expressed in the shell context strip.
-- [ ] Keep Search access.
-- [ ] Keep Settings access.
-- [ ] Keep one context-aware primary action.
-- [ ] Refine primary action wording/weighting so it reads as contextual rather than universally primary.
-- [ ] Preserve desktop drag, minimize, maximize/restore, and close behavior.
-- [ ] Preserve focus styling and desktop-runtime availability behavior.
+- [x] Collapse the current chip cluster.
+- [x] Remove or reduce dataset emphasis in the titlebar if that information is already better expressed in the shell context strip.
+- [x] Keep Search access.
+- [x] Keep Settings access.
+- [x] Keep one context-aware primary action.
+- [x] Refine primary action wording/weighting so it reads as contextual rather than universally primary.
+- [x] Preserve desktop drag, minimize, maximize/restore, and close behavior.
+- [x] Preserve focus styling and desktop-runtime availability behavior.
 
 Before/after behavior:
 
@@ -420,23 +453,23 @@ Before/after behavior:
 
 Per-file sub-checklist:
 
-- [ ] `DesktopTitlebar.vue`
-  - [ ] remove dataset chip
-  - [ ] remove wide status chip
-  - [ ] reduce chip region to a single compact task-center/status slot or empty placeholder area pending subjective refinement
-  - [ ] keep Search button
-  - [ ] keep Settings button
-  - [ ] keep contextual Run/Stop action
-  - [ ] preserve drag region behavior
-  - [ ] preserve native window control behavior
-- [ ] `useTaskLifecycleSummary.ts` only if needed
-  - [ ] provide a shorter summary suitable for one compact chip
+- [x] `DesktopTitlebar.vue`
+  - [x] remove dataset chip
+  - [x] remove wide status chip
+  - [x] reduce chip region to a single compact task-center/status slot or empty placeholder area pending subjective refinement
+  - [x] keep Search button
+  - [x] keep Settings button
+  - [x] keep contextual Run/Stop action
+  - [x] preserve drag region behavior
+  - [x] preserve native window control behavior
+- [x] `useTaskLifecycleSummary.ts` only if needed
+  - [x] provide a shorter summary suitable for one compact chip
 
 Acceptance criteria:
 
-- [ ] Titlebar no longer reads like a second dashboard row
-- [ ] Titlebar retains its core operational actions
-- [ ] No desktop-window-control regressions are introduced
+- [x] Titlebar no longer reads like a second dashboard row
+- [x] Titlebar retains its core operational actions
+- [x] No desktop-window-control regressions are introduced
 
 ## Phase 3 — Objective Guardrails, Continuity, And Checkpoint Readiness
 
@@ -452,11 +485,11 @@ Primary files:
 
 Checklist:
 
-- [ ] Confirm the task center remains the detailed async-work destination.
-- [ ] Reconfirm the current `settingsWorkspaceActive` behavior and its UX implications.
-- [ ] Record whether Settings + Execution is intentionally combined for now or merely deferred.
-- [ ] Defer structural workspace changes unless this pass uncovers a blocker.
-- [ ] Prepare objective-checkpoint verification and commit readiness.
+- [x] Confirm the task center remains the detailed async-work destination.
+- [x] Reconfirm the current `settingsWorkspaceActive` behavior and its UX implications.
+- [x] Record whether Settings + Execution is intentionally combined for now or merely deferred.
+- [x] Defer structural workspace changes unless this pass uncovers a blocker.
+- [x] Prepare objective-checkpoint verification and commit readiness.
 
 Before/after behavior:
 
@@ -469,23 +502,23 @@ Before/after behavior:
 
 Per-file sub-checklist:
 
-- [ ] `TaskCenterOverlay.vue`
-  - [ ] keep detailed task-center role unchanged
-  - [ ] confirm shell integration did not break the existing detailed destination role
-- [ ] `App.vue`
-  - [ ] reconfirm current mount behavior
-- [ ] `SettingsWorkspacePanel.vue`
-  - [ ] note continuity implications only
-- [ ] `ExecutionWorkspacePanel.vue`
-  - [ ] note continuity implications only
-- [ ] `workflowModel.ts`
-  - [ ] do not change shell/workspace model in objective pass unless a blocker forces it
+- [x] `TaskCenterOverlay.vue`
+  - [x] keep detailed task-center role unchanged
+  - [x] confirm shell integration did not break the existing detailed destination role
+- [x] `App.vue`
+  - [x] reconfirm current mount behavior
+- [x] `SettingsWorkspacePanel.vue`
+  - [x] note continuity implications only
+- [x] `ExecutionWorkspacePanel.vue`
+  - [x] note continuity implications only
+- [x] `workflowModel.ts`
+  - [x] do not change shell/workspace model in objective pass unless a blocker forces it
 
 Acceptance criteria:
 
-- [ ] Task center is the obvious detailed async-work destination
-- [ ] Settings continuity is documented, not papered over
-- [ ] Objective shell changes are isolated enough for a clean git commit
+- [x] Task center is the obvious detailed async-work destination
+- [x] Settings continuity is documented, not papered over
+- [x] Objective shell changes are isolated enough for a clean git commit
 
 ## Objective Checkpoint Commit
 
@@ -493,11 +526,11 @@ The implementation should stop here for the first commit checkpoint.
 
 Commit should happen only after all of the following are true:
 
-- [ ] Phases 0 through 3 are complete
-- [ ] Objective Improvement Targets are complete
-- [ ] Verification checklist for the objective scope passes
-- [ ] No unresolved blocker remains in shell navigation, titlebar behavior, or context-strip structure
-- [ ] The diff contains only objective structural improvements and explicit documentation updates
+- [x] Phases 0 through 3 are complete
+- [x] Objective Improvement Targets are complete
+- [x] Verification checklist for the objective scope passes
+- [x] No unresolved blocker remains in shell navigation, titlebar behavior, or context-strip structure
+- [x] The diff contains only objective structural improvements and explicit documentation updates
 
 Suggested commit posture:
 
@@ -525,17 +558,17 @@ Primary files:
 
 Checklist:
 
-- [ ] Decide whether the titlebar keeps one compact task/status chip or none.
-- [ ] Refine launcher visual weight if needed.
-- [ ] Refine subtitle emphasis if needed.
-- [ ] Re-evaluate whether `Status` remains in the default visible context strip.
-- [ ] Align short-form task wording across titlebar, shell launcher, footer, and task center.
-- [ ] Keep `WorkflowQuickSwitch.vue` dev-only.
-- [ ] Confirm no production shell path begins to depend on quick-switch behavior.
-- [ ] Audit command-palette labels so they match visible shell terminology.
-- [ ] Optionally add palette commands for perspective restore/switch only if they clearly support the existing Settings-owned perspective model.
-- [ ] Do not add a permanent perspective band, tab, or top-shell control in this pass.
-- [ ] Confirm Settings remains the canonical visible perspective-management home.
+- [x] Decide whether the titlebar keeps one compact task/status chip or none.
+- [x] Refine launcher visual weight if needed.
+- [x] Refine subtitle emphasis if needed.
+- [x] Re-evaluate whether `Status` remains in the default visible context strip.
+- [x] Align short-form task wording across titlebar, shell launcher, footer, and task center.
+- [x] Keep `WorkflowQuickSwitch.vue` dev-only.
+- [x] Confirm no production shell path begins to depend on quick-switch behavior.
+- [x] Audit command-palette labels so they match visible shell terminology.
+- [x] Optionally add palette commands for perspective restore/switch only if they clearly support the existing Settings-owned perspective model.
+- [x] Do not add a permanent perspective band, tab, or top-shell control in this pass.
+- [x] Confirm Settings remains the canonical visible perspective-management home.
 
 Before/after behavior:
 
@@ -547,37 +580,37 @@ Before/after behavior:
 
 Per-file sub-checklist:
 
-- [ ] `DesktopTitlebar.vue`
-  - [ ] decide one compact chip versus zero persistent chips
-  - [ ] refine chip wording and weight if retained
-- [ ] `VueWorkspaceShell.vue`
-  - [ ] refine task-center launcher visual weight
-  - [ ] refine subtitle emphasis if needed
-  - [ ] re-evaluate `Status` default visibility if still noisy
-- [ ] `TaskCenterOverlay.vue`
-  - [ ] align short-form naming only if needed
-- [ ] `RunFooterPanel.vue`
-  - [ ] align short-form wording only if needed
-- [ ] `statusPresentation.ts`
-  - [ ] centralize refined short-form wording only if needed
-- [ ] `useTaskLifecycleSummary.ts`
-  - [ ] provide refined short summaries only if needed
-- [ ] `CommandPaletteOverlay.vue`
-  - [ ] audit labels for shell-language consistency
-  - [ ] remove stray terminology like `sidebar` if present
-  - [ ] only add perspective commands if they reinforce the Settings-owned model
-- [ ] `WorkflowQuickSwitch.vue`
-  - [ ] confirm no production surface depends on it
-- [ ] `SettingsWorkspacePanel.vue`
-  - [ ] keep perspectives as the canonical visible management surface
+- [x] `DesktopTitlebar.vue`
+  - [x] decide one compact chip versus zero persistent chips
+  - [x] refine chip wording and weight if retained
+- [x] `VueWorkspaceShell.vue`
+  - [x] refine task-center launcher visual weight
+  - [x] refine subtitle emphasis if needed
+  - [x] re-evaluate `Status` default visibility if still noisy
+- [x] `TaskCenterOverlay.vue`
+  - [x] align short-form naming only if needed
+- [x] `RunFooterPanel.vue`
+  - [x] align short-form wording only if needed
+- [x] `statusPresentation.ts`
+  - [x] centralize refined short-form wording only if needed
+- [x] `useTaskLifecycleSummary.ts`
+  - [x] provide refined short summaries only if needed
+- [x] `CommandPaletteOverlay.vue`
+  - [x] audit labels for shell-language consistency
+  - [x] remove stray terminology like `sidebar` if present
+  - [x] only add perspective commands if they reinforce the Settings-owned model
+- [x] `WorkflowQuickSwitch.vue`
+  - [x] confirm no production surface depends on it
+- [x] `SettingsWorkspacePanel.vue`
+  - [x] keep perspectives as the canonical visible management surface
 
 Acceptance criteria:
 
-- [ ] Subjective changes do not alter the core objective shell structure
-- [ ] Subjective changes are isolated enough to stash or revert independently
-- [ ] Palette remains powerful but visibly secondary
-- [ ] No permanent perspective chrome is added
-- [ ] Quick switch remains dev-only
+- [x] Subjective changes do not alter the core objective shell structure
+- [x] Subjective changes are isolated enough to stash or revert independently
+- [x] Palette remains powerful but visibly secondary
+- [x] No permanent perspective chrome is added
+- [x] Quick switch remains dev-only
 
 ## Phase 5 — Subjective Refinement Review And Defer Log
 
@@ -590,11 +623,11 @@ Primary files:
 
 Checklist:
 
-- [ ] Record which subjective refinements were kept.
-- [ ] Record which subjective refinements were rejected or reverted.
-- [ ] Record whether a later Prompt 6 / Prompt 8 follow-up is needed for Settings continuity.
-- [ ] Record whether any palette/perspective refinement was deferred.
-- [ ] Confirm the subjective checkpoint can be stashed, split, or reverted cleanly if needed.
+- [x] Record which subjective refinements were kept.
+- [x] Record which subjective refinements were rejected or reverted.
+- [x] Record whether a later Prompt 6 / Prompt 8 follow-up is needed for Settings continuity.
+- [x] Record whether any palette/perspective refinement was deferred.
+- [x] Confirm the subjective checkpoint can be stashed, split, or reverted cleanly if needed.
 
 Before/after behavior:
 
@@ -605,20 +638,33 @@ Before/after behavior:
   - subjective keeps/rejects/defers are documented explicitly
   - later follow-up needs are recorded without muddying the objective checkpoint
 
+Subjective outcomes recorded:
+
+- kept:
+  - one compact titlebar task signal
+  - visible `Status` in the five-field default context strip
+  - shell subtitle with existing emphasis
+- rejected:
+  - restoring dataset or wide status duplication in the titlebar
+  - adding permanent perspective chrome to the shell
+- deferred:
+  - deeper Settings + Execution topology changes
+  - additional palette/perspective enhancement beyond current posture
+
 Per-file sub-checklist:
 
-- [ ] tracking doc
-  - [ ] log subjective kept items
-  - [ ] log subjective rejected items
-  - [ ] log subjective deferred items
-- [ ] final shell direction doc if needed
-  - [ ] add brief note if implementation materially changed any recommendation
+- [x] tracking doc
+  - [x] log subjective kept items
+  - [x] log subjective rejected items
+  - [x] log subjective deferred items
+- [x] final shell direction doc if needed
+  - [x] add brief note if implementation materially changed any recommendation
 
 Acceptance criteria:
 
-- [ ] Subjective changes are explicitly separated from objective improvements
-- [ ] Later follow-up needs are documented clearly
-- [ ] No subjective change is required to preserve the objective gains
+- [x] Subjective changes are explicitly separated from objective improvements
+- [x] Later follow-up needs are documented clearly
+- [x] No subjective change is required to preserve the objective gains
 
 ## File-Level Touch Points
 
@@ -639,57 +685,62 @@ Implementation is expected to touch some or all of the following:
 
 This is the intended edit inventory for this pass.
 
-- [ ] `VueWorkspaceShell.vue`
-  - [ ] header reduction
-  - [ ] task-center launcher integration
-  - [ ] context-strip default-item reduction
-  - [ ] context overflow/disclosure
-- [ ] `DesktopTitlebar.vue`
-  - [ ] chip reduction
-  - [ ] compact task/status launcher behavior
-  - [ ] contextual action wording check
-- [ ] `TaskCenterOverlay.vue`
-  - [ ] verify/open-link consistency only
+- [x] `VueWorkspaceShell.vue`
+  - [x] header reduction
+  - [x] task-center launcher integration
+  - [x] context-strip default-item reduction
+  - [x] context overflow/disclosure
+- [x] `DesktopTitlebar.vue`
+  - [x] chip reduction
+  - [x] compact task/status launcher behavior
+  - [x] contextual action wording check
+- [x] `TaskCenterOverlay.vue`
+  - [x] verify/open-link consistency only
 - [ ] `RunFooterPanel.vue`
   - [ ] wording/alignment check only
 - [ ] `CommandPaletteOverlay.vue`
   - [ ] terminology cleanup
   - [ ] optional perspective command check
-- [ ] `WorkflowQuickSwitch.vue`
-  - [ ] confirm no production dependence; likely no code changes
-- [ ] `App.vue`
-  - [ ] continuity confirmation only unless integration requires a small hookup
-- [ ] `useTaskLifecycleSummary.ts`
-  - [ ] short-summary support only if needed and preferably in subjective refinement
-- [ ] `statusPresentation.ts`
-  - [ ] wording normalization only if needed and preferably in subjective refinement
+- [x] `WorkflowQuickSwitch.vue`
+  - [x] confirm no production dependence; likely no code changes
+- [x] `App.vue`
+  - [x] continuity confirmation only unless integration requires a small hookup
+- [x] `useTaskLifecycleSummary.ts`
+  - [x] short-summary support only if needed and preferably in subjective refinement
+- [x] `statusPresentation.ts`
+  - [x] wording normalization only if needed and preferably in subjective refinement
 
 ## Verification Checklist
 
 ### Required repo checks
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
 - [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run parity`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
+  - current full-suite failures are outside this shell pass:
+  - `src/services/metaService.test.ts`
+  - `src/stores/settingsStore.actions.test.ts`
+  - `src/tauri/commands.test.ts`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run parity`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
 - [ ] `npm --prefix web run check:bundle-budget`
+  - current failure: entry chunk `index-C_FwwUaB.js` is `631.3 kB` against a `600 kB` limit
 
 Run when the slice changes titlebar/window-controls or true desktop-shell behavior:
 
-- [ ] `npm --prefix web run typecheck:desktop`
-- [ ] `npm --prefix web run test:desktop:smoke`
+- [x] `npm --prefix web run typecheck:desktop`
+- [x] `npm --prefix web run test:desktop:smoke`
 
 Objective-checkpoint minimum:
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] targeted shell/titlebar/task-center/settings Vitest slice
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
 
 Subjective-refinement recommended:
 

@@ -1,12 +1,35 @@
 import { defineStore, type Pinia } from 'pinia'
 import { markRaw } from 'vue'
-import * as analysisService from '../services/analysisService'
-import * as metaService from '../services/metaService'
 import { useDataStore } from './dataStore'
 import { useHistoryStore } from './historyStore'
 import { useOptimizeStore } from './optimizeStore'
 import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowStore } from './workflowStore'
+
+let analysisServicePromise: Promise<typeof import('../services/analysisService')> | null = null
+let metaServicePromise: Promise<typeof import('../services/metaService')> | null = null
+
+function loadAnalysisService(): Promise<typeof import('../services/analysisService')> {
+  if (!analysisServicePromise) analysisServicePromise = import('../services/analysisService')
+  return analysisServicePromise
+}
+
+function loadMetaService(): Promise<typeof import('../services/metaService')> {
+  if (!metaServicePromise) metaServicePromise = import('../services/metaService')
+  return metaServicePromise
+}
+
+function queueAnalysisServiceCall(
+  run: (service: typeof import('../services/analysisService')) => unknown | Promise<unknown>,
+): void {
+  void loadAnalysisService().then(run)
+}
+
+function queueMetaServiceCall(
+  run: (service: typeof import('../services/metaService')) => void | Promise<void>,
+): void {
+  void loadMetaService().then(run)
+}
 
 function rawArray<T>(value: unknown, fallback: T[]): T[] {
   return Array.isArray(value) ? markRaw(value as T[]) : fallback
@@ -837,7 +860,7 @@ export const useAnalysisStore = defineStore('analysis', {
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
         if (isTopFilterKey) {
-          analysisService.refreshTopTableFromWorkflowRun()
+          queueAnalysisServiceCall((service) => service.refreshTopTableFromWorkflowRun())
         }
       }
     },
@@ -852,75 +875,75 @@ export const useAnalysisStore = defineStore('analysis', {
         this.compareSummary = next.trim() ? `Baseline selected: ${next.trim()}` : '-'
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
-        void analysisService.refreshCompareSummary()
+        queueAnalysisServiceCall((service) => service.refreshCompareSummary())
         return
       }
       if (applyVueAnalysisFieldUpdate(this, key, next)) {
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
         if (key === 'paretoX' || key === 'paretoY') {
-          analysisService.refreshParetoFromWorkflowRun()
+          queueAnalysisServiceCall((service) => service.refreshParetoFromWorkflowRun())
         }
         if (key === 'heatmapColor' || key === 'heatmapRange' || key === 'heatmapShowTop' || key === 'heatmapShowCrosshair') {
-          analysisService.refreshHeatmapFromWorkflowRun()
+          queueAnalysisServiceCall((service) => service.refreshHeatmapFromWorkflowRun())
         }
       }
     },
 
     clearTopFilters(): void {
-      void analysisService.clearTopFilters()
+      queueAnalysisServiceCall((service) => service.clearTopFilters())
     },
 
     sortTopTable(key: string): void {
-      void analysisService.sortTopTable(String(key || '').trim())
+      queueAnalysisServiceCall((service) => service.sortTopTable(String(key || '').trim()))
     },
 
     selectTopRow(index: number): void {
-      void analysisService.selectTopRow(Math.max(0, Math.floor(Number(index || 0))))
+      queueAnalysisServiceCall((service) => service.selectTopRow(Math.max(0, Math.floor(Number(index || 0)))))
     },
 
     pinTopRow(index: number): void {
-      void analysisService.pinTopRow(Math.max(0, Math.floor(Number(index || 0))))
+      queueAnalysisServiceCall((service) => service.pinTopRow(Math.max(0, Math.floor(Number(index || 0)))))
     },
 
     pinSelectedTopRow(): void {
-      void analysisService.pinSelectedTopRow()
+      queueAnalysisServiceCall((service) => service.pinSelectedTopRow())
     },
 
     unpinTopCandidate(id: string): void {
-      void analysisService.unpinTopCandidate(String(id || '').trim())
+      queueAnalysisServiceCall((service) => service.unpinTopCandidate(String(id || '').trim()))
     },
 
     replacePinnedTopCandidate(id: string): void {
-      void analysisService.replacePinnedTopCandidate(String(id || '').trim())
+      queueAnalysisServiceCall((service) => service.replacePinnedTopCandidate(String(id || '').trim()))
     },
 
     clearPinnedTopCandidates(): void {
-      void analysisService.clearPinnedTopCandidates()
+      queueAnalysisServiceCall((service) => service.clearPinnedTopCandidates())
     },
 
     copyBest(): void {
-      void analysisService.copyBest()
+      queueAnalysisServiceCall((service) => service.copyBest())
     },
 
     exportTopCsv(): void {
-      void analysisService.exportTopCsv()
+      queueAnalysisServiceCall((service) => service.exportTopCsv())
     },
 
     exportTopJson(): void {
-      void analysisService.exportTopJson()
+      queueAnalysisServiceCall((service) => service.exportTopJson())
     },
 
     setBaseline(): void {
-      void analysisService.setBaseline()
+      queueAnalysisServiceCall((service) => service.setBaseline())
     },
 
     clearBaseline(): void {
-      void analysisService.clearBaseline()
+      queueAnalysisServiceCall((service) => service.clearBaseline())
     },
 
     heatmapExportPng(): void {
-      void analysisService.heatmapExportPng()
+      queueAnalysisServiceCall((service) => service.heatmapExportPng())
     },
 
     overviewEmptyPrimary(): void {
@@ -932,19 +955,19 @@ export const useAnalysisStore = defineStore('analysis', {
     },
 
     rerenderDrill(): void {
-      void analysisService.rerenderDrill()
+      queueAnalysisServiceCall((service) => service.rerenderDrill())
     },
 
     drillClearTradeSelection(): void {
-      void analysisService.drillClearTradeSelection()
+      queueAnalysisServiceCall((service) => service.drillClearTradeSelection())
     },
 
     drillPrevTrade(): void {
-      void analysisService.drillPrevTrade()
+      queueAnalysisServiceCall((service) => service.drillPrevTrade())
     },
 
     drillNextTrade(): void {
-      void analysisService.drillNextTrade()
+      queueAnalysisServiceCall((service) => service.drillNextTrade())
     },
 
     setMetaInputField(field: string, value: string): void {
@@ -954,7 +977,7 @@ export const useAnalysisStore = defineStore('analysis', {
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
         if (key === 'batchDatasetSearch') {
-          metaService.refreshBatchDatasetView()
+          queueMetaServiceCall((service) => service.refreshBatchDatasetView())
         }
       }
     },
@@ -978,167 +1001,167 @@ export const useAnalysisStore = defineStore('analysis', {
     },
 
     runBatch(): void {
-      void metaService.runBatch()
+      queueMetaServiceCall((service) => service.runBatch())
     },
 
     batchStop(): void {
-      void metaService.batchStop()
+      queueMetaServiceCall((service) => service.batchStop())
     },
 
     batchRefresh(): void {
-      void metaService.batchRefresh()
+      queueMetaServiceCall((service) => service.batchRefresh())
     },
 
     batchSelectAll(): void {
-      void metaService.batchSelectAll()
+      queueMetaServiceCall((service) => service.batchSelectAll())
     },
 
     batchSelectNone(): void {
-      void metaService.batchSelectNone()
+      queueMetaServiceCall((service) => service.batchSelectNone())
     },
 
     batchRetryFailed(): void {
-      void metaService.batchRetryFailed()
+      queueMetaServiceCall((service) => service.batchRetryFailed())
     },
 
     batchResumeIncomplete(): void {
-      void metaService.batchResumeIncomplete()
+      queueMetaServiceCall((service) => service.batchResumeIncomplete())
     },
 
     batchRevealSummary(): void {
-      void metaService.batchRevealSummary()
+      queueMetaServiceCall((service) => service.batchRevealSummary())
     },
 
     saveSavedTags(): void {
-      void metaService.saveSavedTags()
+      queueMetaServiceCall((service) => service.saveSavedTags())
     },
 
     refreshSaved(): void {
-      void metaService.refreshSaved()
+      queueMetaServiceCall((service) => service.refreshSaved())
     },
 
     loadSaved(): void {
-      void metaService.loadSaved()
+      queueMetaServiceCall((service) => service.loadSaved())
     },
 
     openSavedReport(): void {
-      void metaService.openSavedReport()
+      queueMetaServiceCall((service) => service.openSavedReport())
     },
 
     revealSaved(): void {
-      void metaService.revealSaved()
+      queueMetaServiceCall((service) => service.revealSaved())
     },
 
     deleteSaved(): void {
-      void metaService.deleteSaved()
+      queueMetaServiceCall((service) => service.deleteSaved())
     },
 
     saveStage4SavedTags(): void {
-      void metaService.saveStage5SavedTags()
+      queueMetaServiceCall((service) => service.saveStage5SavedTags())
     },
 
     saveStage5SavedTags(): void {
-      void metaService.saveStage5SavedTags()
+      queueMetaServiceCall((service) => service.saveStage5SavedTags())
     },
 
     refreshStage4Saved(): void {
-      void metaService.refreshStage5Saved()
+      queueMetaServiceCall((service) => service.refreshStage5Saved())
     },
 
     refreshStage5Saved(): void {
-      void metaService.refreshStage5Saved()
+      queueMetaServiceCall((service) => service.refreshStage5Saved())
     },
 
     loadStage4Saved(): void {
-      void metaService.loadStage5Saved()
+      queueMetaServiceCall((service) => service.loadStage5Saved())
     },
 
     loadStage5Saved(): void {
-      void metaService.loadStage5Saved()
+      queueMetaServiceCall((service) => service.loadStage5Saved())
     },
 
     revealStage4Saved(): void {
-      void metaService.revealStage5Saved()
+      queueMetaServiceCall((service) => service.revealStage5Saved())
     },
 
     revealStage5Saved(): void {
-      void metaService.revealStage5Saved()
+      queueMetaServiceCall((service) => service.revealStage5Saved())
     },
 
     deleteStage4Saved(): void {
-      void metaService.deleteStage5Saved()
+      queueMetaServiceCall((service) => service.deleteStage5Saved())
     },
 
     deleteStage5Saved(): void {
-      void metaService.deleteStage5Saved()
+      queueMetaServiceCall((service) => service.deleteStage5Saved())
     },
 
     savePolicyEvalSavedTags(): void {
-      void metaService.savePolicyEvalSavedTags()
+      queueMetaServiceCall((service) => service.savePolicyEvalSavedTags())
     },
 
     refreshPolicyEvalSaved(): void {
-      void metaService.refreshPolicyEvalSaved()
+      queueMetaServiceCall((service) => service.refreshPolicyEvalSaved())
     },
 
     loadPolicyEvalSaved(): void {
-      void metaService.loadPolicyEvalSaved()
+      queueMetaServiceCall((service) => service.loadPolicyEvalSaved())
     },
 
     revealPolicyEvalSaved(): void {
-      void metaService.revealPolicyEvalSaved()
+      queueMetaServiceCall((service) => service.revealPolicyEvalSaved())
     },
 
     deletePolicyEvalSaved(): void {
-      void metaService.deletePolicyEvalSaved()
+      queueMetaServiceCall((service) => service.deletePolicyEvalSaved())
     },
 
     mlRefresh(): void {
-      void metaService.mlRefresh()
+      queueMetaServiceCall((service) => service.mlRefresh())
     },
 
     mlTrain(): void {
-      void metaService.mlTrain()
+      queueMetaServiceCall((service) => service.mlTrain())
     },
 
     mlApply(): void {
-      void metaService.mlApply()
+      queueMetaServiceCall((service) => service.mlApply())
     },
 
     mlDelete(): void {
-      void metaService.mlDelete()
+      queueMetaServiceCall((service) => service.mlDelete())
     },
 
     runStage4(): void {
-      void metaService.runStage5()
+      queueMetaServiceCall((service) => service.runStage5())
     },
 
     runStage5(): void {
-      void metaService.runStage5()
+      queueMetaServiceCall((service) => service.runStage5())
     },
 
     runMlPolicyEvaluation(): void {
-      void metaService.runMlPolicyEvaluation()
+      queueMetaServiceCall((service) => service.runMlPolicyEvaluation())
     },
 
     revealStage4(): void {
-      void metaService.revealStage5()
+      queueMetaServiceCall((service) => service.revealStage5())
     },
 
     revealStage5(): void {
-      void metaService.revealStage5()
+      queueMetaServiceCall((service) => service.revealStage5())
     },
 
     runMeta(): void {
-      void metaService.runMeta()
+      queueMetaServiceCall((service) => service.runMeta())
     },
 
     openMetaReport(): void {
-      void metaService.openMetaReport()
+      queueMetaServiceCall((service) => service.openMetaReport())
     },
 
     revealMetaFiles(): void {
-      void metaService.revealMetaFiles()
+      queueMetaServiceCall((service) => service.revealMetaFiles())
     },
 
     toggleBatchDataset(path: string, checked: boolean): void {
@@ -1167,7 +1190,7 @@ export const useAnalysisStore = defineStore('analysis', {
         }
       }
 
-      void metaService.toggleBatchDataset(normalizedPath, nextChecked)
+      queueMetaServiceCall((service) => service.toggleBatchDataset(normalizedPath, nextChecked))
     },
   },
 })

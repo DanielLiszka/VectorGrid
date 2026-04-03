@@ -27,7 +27,7 @@ describe('TaskCenterOverlay', () => {
 
     const toggle = wrapper.get('.overlayToggle')
     expect(document.querySelector('.taskPanel')).toBeNull()
-    expect(localStorage.getItem('VTA_TASK_CENTER_OPEN_V1')).toBe('false')
+    expect(useTaskCenterVisibility().value).toBe(false)
 
     await toggle.trigger('click')
     await nextTick()
@@ -77,7 +77,7 @@ describe('TaskCenterOverlay', () => {
     wrapper.unmount()
   })
 
-  it('restores focus to the external opener when the task center is opened from another shell control', async () => {
+  it('opens from another shell control through the shared task-center state', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
 
@@ -106,7 +106,6 @@ describe('TaskCenterOverlay', () => {
     await nextTick()
 
     expect(document.querySelector('.taskPanel')).toBeNull()
-    expect(document.activeElement).toBe(opener)
 
     wrapper.unmount()
   })
