@@ -166,6 +166,7 @@ Execution outcome:
   - `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
 - branch decision: keep the timing instrumentation and the retained replay-batching prototype
 - follow-on implication: if more work is justified here, it is now a larger replay-side architecture / dataflow question beyond the first batching step rather than a local host-side cleanup or another kernel-local `windowed` pass
+- the concrete next-phase checklist for that follow-on is recorded in `SASS research/double_crossover_phase2_replay_dataflow_architecture_plan_2026-04-03.md`
 
 Stage C artifact additions:
 

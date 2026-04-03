@@ -3,11 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Maximize2, Minimize2, Play, Search, Settings2, Square, X } from 'lucide-vue-next'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
-import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { tauriRuntimeAvailable } from '../tauri/invoke'
@@ -20,14 +18,11 @@ import {
 
 const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
-const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
 const workflowStore = useWorkflowStore()
 
-const { datasetLabel } = storeToRefs(dataStore)
 const { canCancel, runDisabled } = storeToRefs(optimizeStore)
 const { workflowStep, workspace } = storeToRefs(workflowStore)
-const { activeTaskCount, centerStatusLabel, overallProgressLabel } = useTaskLifecycleSummary()
 
 const desktopRuntimeAvailable = tauriRuntimeAvailable()
 const desktopWindow = desktopRuntimeAvailable ? getCurrentWindow() : null
@@ -60,21 +55,6 @@ const subtitle = computed(() => {
   }
   const normalizedStep = normalizeWorkflowStep(workflowStep.value) || 'data'
   return WORKFLOW_STEP_SUBTITLES[normalizedStep]
-})
-
-const datasetChip = computed(() => {
-  const label = String(datasetLabel.value || '').trim()
-  return label && label !== '—' ? label : 'No dataset'
-})
-
-const activityChip = computed(() => {
-  if (activeTaskCount.value > 0) return `${activeTaskCount.value} active`
-  return centerStatusLabel.value
-})
-
-const activityDetail = computed(() => {
-  if (activeTaskCount.value > 0) return overallProgressLabel.value
-  return 'No active background work.'
 })
 
 const actionLabel = computed(() => (canCancel.value ? 'Stop run' : 'Run optimization'))
@@ -176,25 +156,6 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      class="titlebarChips"
-      @mousedown.left.prevent="startWindowDrag"
-      @dblclick="handleTitlebarDoubleClick"
-    >
-      <div class="titlebarChip">
-        <span class="titlebarChipLabel">Dataset</span>
-        <span class="titlebarChipValue mono">{{ datasetChip }}</span>
-      </div>
-      <div class="titlebarChip" :class="{ active: activeTaskCount > 0 }">
-        <span class="titlebarChipLabel">Tasks</span>
-        <span class="titlebarChipValue mono">{{ activityChip }}</span>
-      </div>
-      <div class="titlebarChip titlebarChipWide">
-        <span class="titlebarChipLabel">Status</span>
-        <span class="titlebarChipValue">{{ activityDetail }}</span>
-      </div>
-    </div>
-
-    <div
       class="titlebarDragFill"
       aria-hidden="true"
       @mousedown.left.prevent="startWindowDrag"
@@ -211,7 +172,7 @@ onBeforeUnmount(() => {
         @click="openPalette"
       >
         <Search :size="15" aria-hidden="true" />
-        <span>Search</span>
+        <span class="titlebarToolLabel">Search</span>
       </button>
       <button
         type="button"
@@ -221,7 +182,7 @@ onBeforeUnmount(() => {
         @click="openSettings"
       >
         <Settings2 :size="15" aria-hidden="true" />
-        <span>Settings</span>
+        <span class="titlebarToolLabel">Settings</span>
       </button>
       <button
         type="button"
@@ -234,7 +195,7 @@ onBeforeUnmount(() => {
       >
         <Square v-if="canCancel" :size="15" aria-hidden="true" />
         <Play v-else :size="15" aria-hidden="true" />
-        <span>{{ canCancel ? 'Stop' : 'Run' }}</span>
+        <span class="titlebarToolLabel">{{ canCancel ? 'Stop' : 'Run' }}</span>
       </button>
 
       <div class="windowControls" :class="{ unavailable: !desktopRuntimeAvailable }" aria-label="Window controls">
@@ -281,7 +242,7 @@ onBeforeUnmount(() => {
   z-index: 4300;
   height: var(--desktop-titlebar-h, 52px);
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: stretch;
   gap: 0.5rem;
   padding: 0.45rem 0.7rem 0.4rem;
@@ -300,7 +261,6 @@ onBeforeUnmount(() => {
 }
 
 .titlebarIdentity,
-.titlebarChips,
 .titlebarDragFill {
   min-width: 0;
   display: flex;
@@ -342,45 +302,6 @@ onBeforeUnmount(() => {
   max-width: 56ch;
   font-size: 0.7rem;
   color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.titlebarChips {
-  gap: 0.4rem;
-}
-
-.titlebarChip {
-  min-width: 0;
-  display: grid;
-  gap: 0.05rem;
-  padding: 0.24rem 0.5rem;
-  border-radius: 10px;
-  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
-  box-shadow: var(--shadow-inline);
-}
-
-.titlebarChip.active {
-  border-color: color-mix(in oklab, var(--panel-focus-edge) 76%, var(--accent));
-  background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-working));
-}
-
-.titlebarChipWide {
-  min-width: 220px;
-}
-
-.titlebarChipLabel {
-  font-size: 0.62rem;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--muted-soft);
-}
-
-.titlebarChipValue {
-  min-width: 0;
-  font-size: 0.73rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -454,18 +375,8 @@ onBeforeUnmount(() => {
   color: var(--danger-ink);
 }
 
-.mono {
-  font-family: var(--mono);
-}
-
-@media (max-width: 1440px) {
-  .desktopTitlebar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .titlebarChips {
-    display: none;
-  }
+.titlebarToolLabel {
+  display: inline;
 }
 
 @media (max-width: 980px) {
@@ -490,7 +401,7 @@ onBeforeUnmount(() => {
   }
 
   .titlebarSubtitle,
-  .titlebarTool span {
+  .titlebarToolLabel {
     display: none;
   }
 
@@ -502,5 +413,9 @@ onBeforeUnmount(() => {
     width: 34px;
     padding: 0;
   }
+}
+
+.mono {
+  font-family: var(--mono);
 }
 </style>

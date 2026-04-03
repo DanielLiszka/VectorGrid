@@ -3,6 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { storeToRefs } from 'pinia'
 import { useStorage } from '@vueuse/core'
 import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
+import {
+  TASK_CENTER_PANEL_ID,
+  closeTaskCenter,
+  consumeTaskCenterReturnFocus,
+  toggleTaskCenter,
+  useTaskCenterVisibility,
+} from '../composables/useTaskCenterVisibility'
 import { requestCancellationForMappedCommand } from '../services/runControlService'
 import { formatUiCompactDurationMs, formatUiPercentFromFraction } from '../utils/uiFormat'
 import {
@@ -37,13 +44,12 @@ const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 const { centerStatus, events, overallProgress, timeline, toasts } = storeToRefs(taskStore)
 
-const expanded = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
+const expanded = useTaskCenterVisibility()
 const launcherPos = useStorage<{ x: number; y: number }>('VTA_TASK_CENTER_POS_V1', { x: 12, y: 12 })
 const launcherPosInitialized = useStorage<boolean>('VTA_TASK_CENTER_POS_INIT_V1', false)
 const overlayRootRef = ref<HTMLElement | null>(null)
 const toggleRef = ref<HTMLButtonElement | null>(null)
 const busyCancelIds = shallowRef<Set<string>>(new Set())
-const taskCenterPanelId = 'vta-task-center-panel'
 const { referenceRef, floatingRef, floatingStyles } = useAnchoredOverlay(expanded, {
   placement: 'bottom-end',
   offsetPx: 10,
@@ -109,15 +115,14 @@ function toggleExpanded(): void {
     ignoreNextToggle.value = false
     return
   }
-  if (!expanded.value) {
-    lastFocusedElement.value = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  }
-  expanded.value = !expanded.value
+  const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  if (!expanded.value) lastFocusedElement.value = activeElement
+  toggleTaskCenter(expanded, toggleRef.value ?? activeElement)
 }
 
 function closePanel(): void {
   if (!expanded.value) return
-  expanded.value = false
+  closeTaskCenter(expanded)
 }
 
 function panelFocusTargets(root: HTMLElement): HTMLElement[] {
@@ -284,7 +289,7 @@ watch(
     if (!wasOpen) return
     document.removeEventListener('keydown', onDocumentKeydown)
     await nextTick()
-    ;(toggleRef.value ?? lastFocusedElement.value)?.focus()
+    ;(consumeTaskCenterReturnFocus() ?? toggleRef.value ?? lastFocusedElement.value)?.focus()
   },
   { flush: 'post' },
 )
@@ -439,7 +444,7 @@ function openRelatedView(task: TrackedTask): void {
         :class="{ dragging: toggleDragging, quiet: quietMode }"
         type="button"
         :aria-expanded="expanded ? 'true' : 'false'"
-        :aria-controls="taskCenterPanelId"
+        :aria-controls="TASK_CENTER_PANEL_ID"
         aria-haspopup="dialog"
         @click="toggleExpanded"
         @pointerdown="onTogglePointerDown"
@@ -476,7 +481,7 @@ function openRelatedView(task: TrackedTask): void {
 
     <section
       v-if="expanded"
-      :id="taskCenterPanelId"
+      :id="TASK_CENTER_PANEL_ID"
       ref="floatingRef"
       class="taskPanel"
       :style="floatingStyles"

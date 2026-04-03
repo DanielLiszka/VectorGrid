@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it } from 'vitest'
 import TaskCenterOverlay from './TaskCenterOverlay.vue'
+import { openTaskCenter, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
@@ -11,6 +12,7 @@ describe('TaskCenterOverlay', () => {
   beforeEach(() => {
     localStorage.clear()
     document.body.innerHTML = ''
+    useTaskCenterVisibility().value = false
   })
 
   it('is collapsed by default and persists open/closed toggle state', async () => {
@@ -71,6 +73,40 @@ describe('TaskCenterOverlay', () => {
 
     expect(document.querySelector('.taskPanel')).toBeNull()
     expect(document.activeElement).toBe(toggle)
+
+    wrapper.unmount()
+  })
+
+  it('restores focus to the external opener when the task center is opened from another shell control', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const opener = document.createElement('button')
+    opener.type = 'button'
+    opener.textContent = 'Open task center from shell'
+    document.body.appendChild(opener)
+
+    const wrapper = mount(TaskCenterOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    opener.focus()
+    openTaskCenter(useTaskCenterVisibility(), opener)
+    await nextTick()
+    await nextTick()
+
+    expect(document.querySelector('.taskPanel')).not.toBeNull()
+    expect(document.querySelector('.taskPanel')?.contains(document.activeElement)).toBe(true)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    await nextTick()
+
+    expect(document.querySelector('.taskPanel')).toBeNull()
+    expect(document.activeElement).toBe(opener)
 
     wrapper.unmount()
   })

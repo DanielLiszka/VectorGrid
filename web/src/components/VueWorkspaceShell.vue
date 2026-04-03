@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { ChevronDown, ListTodo } from 'lucide-vue-next'
+import { TASK_CENTER_PANEL_ID, openTaskCenter as requestTaskCenterOpen, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
+import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
@@ -10,6 +13,8 @@ const workflowStore = useWorkflowStore()
 const dataStore = useDataStore()
 const optimizeStore = useOptimizeStore()
 const settingsStore = useSettingsStore()
+const { activeTaskCount, centerStatusLabel } = useTaskLifecycleSummary()
+const taskCenterOpen = useTaskCenterVisibility()
 
 const workspaceGridRef = ref<HTMLElement | null>(null)
 const viewportWidth = ref(1440)
@@ -56,6 +61,12 @@ const resultsItems = {
 } as const
 
 type TabKeyItem = { key: string }
+type ContextItem = {
+  key: string
+  value: string
+  current: boolean
+  defaultVisible: boolean
+}
 
 const shellMainPanelId = 'shellMainPanel'
 const shellSelectionStatusId = 'shellSelectionStatus'
@@ -165,7 +176,7 @@ const splitValuePercent = computed(() => Math.round(clampSplitFraction(splitFrac
 const splitMinPercent = computed(() => Math.round(clampSplitFraction(0) * 100))
 const splitMaxPercent = computed(() => Math.round(clampSplitFraction(1) * 100))
 
-const contextItems = computed(() => {
+const allContextItems = computed<ContextItem[]>(() => {
   const dataset = String(datasetLabel.value || '').trim()
   const range = String(datasetRange.value || '').trim()
   const rows = String(dataLen.value || '').trim()
@@ -178,15 +189,29 @@ const contextItems = computed(() => {
       key: 'Dataset',
       value: dataset && dataset !== '—' ? dataset : 'No dataset',
       current: !dataset || dataset === '—',
+      defaultVisible: true,
     },
-    { key: 'Range', value: range && range !== '—' ? range : 'No range', current: false },
-    { key: 'Rows', value: rows && rows !== '—' ? rows : '—', current: false },
-    { key: 'Strategy', value: strategy || '—', current: currentWorkspace.value === 'workflow' && strategy.length > 0 },
-    { key: 'Backend', value: backendLabel || '—', current: false },
-    { key: 'Status', value: status || 'Ready.', current: true },
-    { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—', current: false },
+    { key: 'Range', value: range && range !== '—' ? range : 'No range', current: false, defaultVisible: true },
+    { key: 'Rows', value: rows && rows !== '—' ? rows : '—', current: false, defaultVisible: false },
+    {
+      key: 'Strategy',
+      value: strategy || '—',
+      current: currentWorkspace.value === 'workflow' && strategy.length > 0,
+      defaultVisible: true,
+    },
+    { key: 'Backend', value: backendLabel || '—', current: false, defaultVisible: true },
+    { key: 'Status', value: status || 'Ready.', current: true, defaultVisible: true },
+    { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—', current: false, defaultVisible: false },
   ]
 })
+const contextItems = computed(() => allContextItems.value.filter((item) => item.defaultVisible))
+const secondaryContextItems = computed(() => allContextItems.value.filter((item) => !item.defaultVisible))
+const secondaryContextSummary = computed(() => secondaryContextItems.value.map((item) => item.key).join(' · '))
+const taskCenterLauncherStatus = computed(() => {
+  if (activeTaskCount.value > 0) return `${activeTaskCount.value} active`
+  return centerStatusLabel.value
+})
+const taskCenterLauncherLabel = computed(() => `Open task center. ${taskCenterLauncherStatus.value}.`)
 
 watch(
   [currentWorkspace, currentWorkflowStep, visibleControlsItems, visibleResultsItems],
@@ -209,6 +234,10 @@ watch(
 function selectWorkspace(key: string): void {
   if (currentWorkspace.value === key) return
   workflowStore.selectWorkspace(key)
+}
+
+function openTaskCenter(): void {
+  requestTaskCenterOpen(taskCenterOpen)
 }
 
 function selectWorkflowStep(key: string): void {
@@ -416,36 +445,56 @@ onBeforeUnmount(() => {
       <div class="brandRow">
         <div class="brandBlock">
           <h1>VectorGrid</h1>
-          <div class="headerCaption">Guided default workflow with power tools on demand.</div>
         </div>
         <div class="subtitle mono">{{ shellSubtitle }}</div>
       </div>
 
-      <nav
-        id="workspaceBar"
-        class="tabsRow workspaceBar"
-        aria-label="Workspace sections"
-        role="tablist"
-        aria-orientation="horizontal"
-        @keydown="onWorkspaceKeydown"
-      >
-        <button
-          v-for="item in workspaceItems"
-          :key="`ws_${item.key}`"
-          :id="workspaceTabId(item.key)"
-          type="button"
-          class="tabBtn"
-          :data-workspace="item.key"
-          :class="{ active: currentWorkspace === item.key }"
-          role="tab"
-          :aria-selected="currentWorkspace === item.key"
-          :aria-controls="shellMainPanelId"
-          :tabindex="currentWorkspace === item.key ? 0 : -1"
-          @click="selectWorkspace(item.key)"
+      <div class="workspaceBarRow">
+        <nav
+          id="workspaceBar"
+          class="tabsRow workspaceBar"
+          aria-label="Workspace sections"
+          role="tablist"
+          aria-orientation="horizontal"
+          @keydown="onWorkspaceKeydown"
         >
-          {{ item.label }}
+          <button
+            v-for="item in workspaceItems"
+            :key="`ws_${item.key}`"
+            :id="workspaceTabId(item.key)"
+            type="button"
+            class="tabBtn"
+            :data-workspace="item.key"
+            :class="{ active: currentWorkspace === item.key }"
+            role="tab"
+            :aria-selected="currentWorkspace === item.key"
+            :aria-controls="shellMainPanelId"
+            :tabindex="currentWorkspace === item.key ? 0 : -1"
+            @click="selectWorkspace(item.key)"
+          >
+            {{ item.label }}
+          </button>
+        </nav>
+
+        <button
+          type="button"
+          class="taskCenterLauncher"
+          :class="{ active: activeTaskCount > 0, open: taskCenterOpen }"
+          :aria-controls="TASK_CENTER_PANEL_ID"
+          :aria-expanded="taskCenterOpen ? 'true' : 'false'"
+          aria-haspopup="dialog"
+          :aria-label="taskCenterLauncherLabel"
+          title="Open task center"
+          @click="openTaskCenter"
+        >
+          <ListTodo :size="16" aria-hidden="true" />
+          <span class="taskCenterLauncherBody">
+            <span class="taskCenterLauncherText">Task Center</span>
+            <span class="taskCenterLauncherValue mono">{{ taskCenterLauncherStatus }}</span>
+          </span>
+          <span v-if="activeTaskCount > 0" class="taskCenterLauncherBadge mono">{{ activeTaskCount }}</span>
         </button>
-      </nav>
+      </div>
 
       <nav
         id="workflowStepBar"
@@ -494,6 +543,26 @@ onBeforeUnmount(() => {
           <div class="contextKey">{{ item.key }}</div>
           <div class="contextValue mono">{{ item.value }}</div>
         </article>
+
+        <details v-if="secondaryContextItems.length > 0" class="contextOverflow">
+          <summary class="contextOverflowSummary">
+            <span class="contextOverflowBody">
+              <span class="contextKey">More</span>
+              <span class="contextValue mono">{{ secondaryContextSummary }}</span>
+            </span>
+            <ChevronDown class="contextOverflowIcon" :size="14" aria-hidden="true" />
+          </summary>
+          <div class="contextOverflowPanel" role="group" aria-label="Additional run context">
+            <article
+              v-for="item in secondaryContextItems"
+              :key="`ctx_more_${item.key}`"
+              class="contextCard"
+            >
+              <div class="contextKey">{{ item.key }}</div>
+              <div class="contextValue mono">{{ item.value }}</div>
+            </article>
+          </div>
+        </details>
       </section>
     </div>
 
@@ -809,9 +878,16 @@ onBeforeUnmount(() => {
   letter-spacing: 0.01em;
 }
 
-.headerCaption {
-  font-size: 0.74rem;
-  color: var(--muted);
+.workspaceBarRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.workspaceBar {
+  flex: 1 1 42rem;
+  min-width: 0;
 }
 
 .subtitle {
@@ -825,6 +901,64 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface) 96%, transparent);
+}
+
+.taskCenterLauncher {
+  margin-left: auto;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.45rem 0.72rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel));
+  box-shadow: var(--shadow-inline);
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
+}
+
+.taskCenterLauncher:hover {
+  transform: translateY(-1px);
+}
+
+.taskCenterLauncher.active,
+.taskCenterLauncher.open {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 70%, var(--accent));
+  background: color-mix(in oklab, var(--selection-fill) 82%, var(--surface-working));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 14%, transparent), var(--shadow-inline);
+}
+
+.taskCenterLauncherBody {
+  min-width: 0;
+  display: grid;
+  gap: 0.04rem;
+  text-align: left;
+}
+
+.taskCenterLauncherText {
+  font-size: 0.66rem;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-soft);
+}
+
+.taskCenterLauncherValue {
+  font-size: 0.77rem;
+  white-space: nowrap;
+}
+
+.taskCenterLauncherBadge {
+  min-width: 1.55rem;
+  padding: 0.16rem 0.38rem;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface) 92%, transparent);
+  font-size: 0.69rem;
+  text-align: center;
 }
 
 .tabsRow {
@@ -860,6 +994,7 @@ onBeforeUnmount(() => {
 }
 
 .contextStrip {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.32rem;
@@ -906,6 +1041,65 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.contextOverflow {
+  position: relative;
+}
+
+.contextOverflowSummary {
+  min-height: 100%;
+  list-style: none;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
+  padding: 0.34rem 0.48rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  cursor: pointer;
+  box-shadow: var(--shadow-inline);
+}
+
+.contextOverflowSummary::-webkit-details-marker {
+  display: none;
+}
+
+.contextOverflowBody {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.contextOverflowIcon {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform var(--motion-fast) var(--ease-standard);
+}
+
+.contextOverflow[open] .contextOverflowSummary {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 70%, var(--border));
+  background: color-mix(in oklab, var(--surface-focus) 88%, var(--panel));
+}
+
+.contextOverflow[open] .contextOverflowIcon {
+  transform: rotate(180deg);
+}
+
+.contextOverflowPanel {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 6;
+  min-width: min(22rem, calc(100vw - 2rem));
+  display: grid;
+  gap: 0.32rem;
+  padding: 0.35rem;
+  border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--panel) 97%, var(--surface));
+  box-shadow: var(--shadow-md);
 }
 
 .shellMain {
@@ -1112,6 +1306,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+  .workspaceBarRow {
+    align-items: stretch;
+  }
+
   .workspaceBar,
   .workflowStepBar,
   .tabsRow.compact {
@@ -1125,6 +1323,10 @@ onBeforeUnmount(() => {
   .workflowStepBar .tabBtn,
   .tabsRow.compact .tabBtn {
     flex: 0 0 auto;
+  }
+
+  .taskCenterLauncher {
+    margin-left: 0;
   }
 
   .contextStrip {
@@ -1145,8 +1347,19 @@ onBeforeUnmount(() => {
     max-width: 100%;
   }
 
+  .taskCenterLauncher {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .contextStrip {
     grid-template-columns: 1fr;
+  }
+
+  .contextOverflowPanel {
+    left: 0;
+    right: auto;
+    min-width: min(100%, 22rem);
   }
 
   .workspaceGrid {

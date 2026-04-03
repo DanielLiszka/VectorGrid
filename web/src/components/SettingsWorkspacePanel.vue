@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useStorage } from '@vueuse/core'
 import { useShellMount } from '../composables/useShellMount'
+import { openTaskCenter as requestTaskCenterOpen, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { requestDesktopNotificationPermission } from '../services/desktopProductization'
@@ -78,7 +78,7 @@ const {
 } = storeToRefs(runtimeStore)
 const { timeline, toasts } = storeToRefs(taskStore)
 const { workspace } = storeToRefs(workflowStore)
-const taskCenterOpen = useStorage<boolean>('VTA_TASK_CENTER_OPEN_V1', false)
+const taskCenterOpen = useTaskCenterVisibility()
 const {
   activeTaskCount,
   centerStatusLabel,
@@ -412,16 +412,16 @@ function setInputValue(id: string, nextValue: string): void {
   settingsStore.setInputField(id, nextValue)
 }
 
-function openTaskCenter(): void {
-  taskCenterOpen.value = true
-}
-
 function clearRecentAlerts(): void {
   for (const toast of recentAlerts.value) dismissToast(toast.id)
 }
 
 function clearDesktopLogs(): void {
   runtimeStore.clearDesktopLogs()
+}
+
+function openTaskCenter(): void {
+  requestTaskCenterOpen(taskCenterOpen)
 }
 
 async function copyDesktopDiagnostics(): Promise<void> {

@@ -44,6 +44,29 @@ describe('VueWorkspaceShell', () => {
     wrapper.unmount()
   })
 
+  it('keeps five default context cards and routes task review through the shell launcher', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    expect(wrapper.text()).not.toContain('Guided default workflow with power tools on demand.')
+    expect(document.querySelectorAll('.contextStrip > .contextCard')).toHaveLength(5)
+    expect(document.querySelector('.contextOverflowSummary')?.textContent).toContain('Rows')
+    expect(document.querySelector('.contextOverflowSummary')?.textContent).toContain('Loaded ID')
+
+    await wrapper.get('.taskCenterLauncher').trigger('click')
+    await flushUi()
+
+    expect(localStorage.getItem('VTA_TASK_CENTER_OPEN_V1')).toBe('true')
+
+    wrapper.unmount()
+  })
+
   it('hides the controls column when the persisted controls-collapsed setting is enabled', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

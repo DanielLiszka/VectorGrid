@@ -6,9 +6,7 @@ import DesktopTitlebar from './DesktopTitlebar.vue'
 import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
-import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
-import { useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const minimizeMock = vi.fn(async () => undefined)
@@ -42,6 +40,7 @@ describe('DesktopTitlebar', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
+    localStorage.clear()
 
     minimizeMock.mockClear()
     toggleMaximizeMock.mockClear()
@@ -53,38 +52,17 @@ describe('DesktopTitlebar', () => {
     onFocusChangedMock.mockClear()
   })
 
-  it('surfaces current workspace, dataset, and task posture', () => {
+  it('surfaces current workspace and keeps the titlebar free of dataset and task chips', () => {
     const workflowStore = useWorkflowStore()
-    const dataStore = useDataStore()
-    const taskStore = useTaskStore()
 
     workflowStore.selectWorkflowStep('optimize')
-    dataStore.$patch({ datasetLabel: 'SPY_5m' })
-    taskStore.$patch({
-      centerStatus: 'running',
-      activeOrder: ['task_1'],
-      activeById: {
-        task_1: {
-          id: 'task_1',
-          command: 'run_double_ma_optimization',
-          label: 'Double Ma Optimization',
-          status: 'running',
-          startedAt: Date.now(),
-        },
-      },
-      overallProgress: {
-        label: 'Optimizing shortlist',
-        pct: 0.42,
-      },
-    })
 
     const wrapper = mount(DesktopTitlebar)
 
     expect(wrapper.text()).toContain('VectorGrid')
     expect(wrapper.text()).toContain('Workflow · Strategy Setup')
-    expect(wrapper.text()).toContain('SPY_5m')
-    expect(wrapper.text()).toContain('1 active')
-    expect(wrapper.text()).toContain('42%')
+    expect(wrapper.text()).not.toContain('Dataset')
+    expect(wrapper.findAll('.titlebarTool')).toHaveLength(3)
   })
 
   it('routes shell actions through the existing stores', async () => {
@@ -98,10 +76,9 @@ describe('DesktopTitlebar', () => {
 
     const wrapper = mount(DesktopTitlebar)
 
-    const buttons = wrapper.findAll('button')
-    await buttons[0]?.trigger('click')
-    await buttons[1]?.trigger('click')
-    await buttons[2]?.trigger('click')
+    await wrapper.get('button[aria-label="Open command palette"]').trigger('click')
+    await wrapper.get('button[aria-label="Open settings workspace"]').trigger('click')
+    await wrapper.get('.titlebarPrimary').trigger('click')
 
     expect(openPaletteSpy).toHaveBeenCalledTimes(1)
     expect(settingsSpy).toHaveBeenCalledWith('settings')
