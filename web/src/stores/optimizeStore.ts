@@ -1,14 +1,15 @@
 import { defineStore } from "pinia";
-import {
-  applyPreset as applyPresetAction,
-  cancelOptimization as cancelOptimizationAction,
-  presetKernel as presetKernelAction,
-  previewDynamicStrategyIr as previewDynamicStrategyIrAction,
-  refreshGpuStatus as refreshGpuStatusAction,
-  runGpuParityCheck as runGpuParityCheckAction,
-  runOptimization as runOptimizationAction,
-  runValidation as runValidationAction,
-} from "../services/optimizeService";
+
+let optimizeServicePromise:
+  | Promise<typeof import("../services/optimizeService")>
+  | null = null;
+
+function loadOptimizeService(): Promise<typeof import("../services/optimizeService")> {
+  if (!optimizeServicePromise) {
+    optimizeServicePromise = import("../services/optimizeService");
+  }
+  return optimizeServicePromise;
+}
 
 export interface OptimizeOption {
   value: string;
@@ -987,15 +988,16 @@ export const useOptimizeStore = defineStore("optimize", {
     },
 
     applyPreset(): void {
-      void applyPresetAction();
+      void loadOptimizeService().then((service) => service.applyPreset());
     },
 
     presetKernel(): void {
-      void presetKernelAction();
+      void loadOptimizeService().then((service) => service.presetKernel());
     },
 
     refreshGpuStatus(quiet = false): void {
-      void refreshGpuStatusAction()
+      void loadOptimizeService()
+        .then((service) => service.refreshGpuStatus())
         .then((summary) => {
           this.gpuStatus =
             String(summary?.text || this.gpuStatus || "GPU: —").trim() ||
@@ -1023,11 +1025,13 @@ export const useOptimizeStore = defineStore("optimize", {
     },
 
     runGpuParityCheck(): void {
-      void runGpuParityCheckAction();
+      void loadOptimizeService().then((service) => service.runGpuParityCheck());
     },
 
     previewDynamicStrategyIr(): void {
-      void previewDynamicStrategyIrAction();
+      void loadOptimizeService().then((service) =>
+        service.previewDynamicStrategyIr(),
+      );
     },
 
     runOptimization(): void {
@@ -1037,18 +1041,20 @@ export const useOptimizeStore = defineStore("optimize", {
         );
         return;
       }
-      void runOptimizationAction();
+      void loadOptimizeService().then((service) => service.runOptimization());
     },
 
     cancelOptimization(): void {
       this.statusLine = "Cancel requested...";
       this.source = "vue";
       this.updatedAtUnixMs = Date.now();
-      void cancelOptimizationAction().catch((error: unknown) => {
-        this.statusLine = `Cancel failed: ${String(error || "")}`.trim();
-        this.source = "vue";
-        this.updatedAtUnixMs = Date.now();
-      });
+      void loadOptimizeService()
+        .then((service) => service.cancelOptimization())
+        .catch((error: unknown) => {
+          this.statusLine = `Cancel failed: ${String(error || "")}`.trim();
+          this.source = "vue";
+          this.updatedAtUnixMs = Date.now();
+        });
     },
 
     runValidation(): void {
@@ -1058,7 +1064,7 @@ export const useOptimizeStore = defineStore("optimize", {
         );
         return;
       }
-      void runValidationAction();
+      void loadOptimizeService().then((service) => service.runValidation());
     },
   },
 });

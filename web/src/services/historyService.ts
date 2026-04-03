@@ -14,12 +14,29 @@ import { useOptimizeStore } from "../stores/optimizeStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useValidationStore } from "../stores/validationStore";
-import {
-  applyTimeframe as applyDataTimeframe,
-  loadCsv as loadDataCsv,
-} from "./dataService";
-import { runOptimization } from "./optimizeService";
-import { refreshAnalysisFromWorkflowRun } from "./analysisService";
+
+let dataServicePromise: Promise<typeof import("./dataService")> | null = null;
+let optimizeServicePromise: Promise<typeof import("./optimizeService")> | null =
+  null;
+let analysisServicePromise: Promise<typeof import("./analysisService")> | null =
+  null;
+
+function loadDataService(): Promise<typeof import("./dataService")> {
+  if (!dataServicePromise) dataServicePromise = import("./dataService");
+  return dataServicePromise;
+}
+
+function loadOptimizeService(): Promise<typeof import("./optimizeService")> {
+  if (!optimizeServicePromise)
+    optimizeServicePromise = import("./optimizeService");
+  return optimizeServicePromise;
+}
+
+function loadAnalysisService(): Promise<typeof import("./analysisService")> {
+  if (!analysisServicePromise)
+    analysisServicePromise = import("./analysisService");
+  return analysisServicePromise;
+}
 
 function normalizePath(path: string): string {
   return String(path || "").trim();
@@ -727,6 +744,7 @@ export async function applySession(ts: string): Promise<void> {
     );
     return;
   }
+  const { refreshAnalysisFromWorkflowRun } = await loadAnalysisService();
   refreshAnalysisFromWorkflowRun();
 }
 
@@ -838,6 +856,7 @@ export async function loadSavedRun(path: string): Promise<void> {
     );
     return;
   }
+  const { refreshAnalysisFromWorkflowRun } = await loadAnalysisService();
   refreshAnalysisFromWorkflowRun();
 }
 
@@ -865,6 +884,8 @@ export async function rerunSavedRun(path: string): Promise<void> {
       "Saved run is missing data.csv_path. Load a dataset first, then rerun.",
     );
 
+  const { applyTimeframe: applyDataTimeframe, loadCsv: loadDataCsv } =
+    await loadDataService();
   const base = await loadDataCsv(csvPath);
   let currentDataId = normalizeText(base.dataId);
   const timeframe = normalizeText(detail.timeframe);
@@ -945,6 +966,7 @@ export async function rerunSavedRun(path: string): Promise<void> {
     }
     return;
   }
+  const { runOptimization } = await loadOptimizeService();
   await runOptimization({ request, switchTab: true });
 }
 

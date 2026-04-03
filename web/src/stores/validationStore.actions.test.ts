@@ -104,6 +104,12 @@ describe('validation store actions', () => {
     openReportsDirMock.mockResolvedValue(undefined)
   })
 
+  async function flushServiceImports(): Promise<void> {
+    await vi.dynamicImportSettled()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
   it('updates Vue validation state without requiring legacy DOM mirroring', () => {
     const store = useValidationStore()
     store.setInputField('valCandidates', '64')
@@ -136,7 +142,7 @@ describe('validation store actions', () => {
     expect(store.reoptWfEnable).toBe(false)
   })
 
-  it('dispatches validate and export actions', () => {
+  it('dispatches validate and export actions', async () => {
     const store = useValidationStore()
     store.runValidation()
     store.exportShortlistCsv()
@@ -144,6 +150,7 @@ describe('validation store actions', () => {
     store.exportReportJson()
     store.exportReportXlsx()
     store.openReportsDir()
+    await flushServiceImports()
 
     expect(runValidationMock).toHaveBeenCalled()
     expect(exportShortlistCsvMock).toHaveBeenCalled()
@@ -153,7 +160,7 @@ describe('validation store actions', () => {
     expect(openReportsDirMock).toHaveBeenCalled()
   })
 
-  it('dispatches cross-dataset actions', () => {
+  it('dispatches cross-dataset actions', async () => {
     const store = useValidationStore()
     store.crossSearch = 'stocks'
     store.crossDatasets = [
@@ -165,6 +172,7 @@ describe('validation store actions', () => {
     store.crossSelectNone()
     store.toggleCrossDataset(' C:/data/aapl.csv ', true)
     store.toggleCrossDataset('', false)
+    await flushServiceImports()
 
     expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(1, 'C:/data/aapl.csv', true)
     expect(toggleCrossDatasetMock).toHaveBeenNthCalledWith(2, 'C:/data/aapl.csv', false)
@@ -201,8 +209,7 @@ describe('validation store actions', () => {
     })
 
     store.crossRefresh()
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushServiceImports()
 
     expect(crossRefreshMock).toHaveBeenCalled()
     expect(store.crossDatasets).toEqual([
@@ -285,8 +292,7 @@ describe('validation store actions', () => {
     ]
 
     store.crossSelectMatch()
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushServiceImports()
 
     expect(store.crossDatasets.map((entry) => [entry.path, entry.checked])).toEqual([
       ['C:/data/aapl.csv', false],
@@ -319,7 +325,7 @@ describe('validation store actions', () => {
     ]
 
     store.crossSelectMatch()
-    await Promise.resolve()
+    await flushServiceImports()
 
     expect(store.statusLine).toBe('Cross-ticker: unable to match current dataset (load data + timeframe first).')
     expect(toggleCrossDatasetMock).not.toHaveBeenCalled()

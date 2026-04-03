@@ -1,14 +1,22 @@
 import { invokeCommand } from '../tauri/invoke'
 import { listenEvent } from '../tauri/events'
 import { readLatestWorkflowRunSnapshot } from '../stores/workflowArtifactsStore'
-import {
-  buildExecutionStrategyFromRunContext,
-  resolveExecutionTopRowSnapshot,
-} from './analysisService'
-import { buildOptimizationRequestFromVueStores } from './optimizeService'
 import { EXEC_KEYS_STORAGE_KEY } from '../utils/core/storageKeys'
 import { formatUtcDateTimeFromUnixMs } from '../utils/uiFormat'
 import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
+
+let analysisServicePromise: Promise<typeof import('./analysisService')> | null = null
+let optimizeServicePromise: Promise<typeof import('./optimizeService')> | null = null
+
+function loadAnalysisService(): Promise<typeof import('./analysisService')> {
+  if (!analysisServicePromise) analysisServicePromise = import('./analysisService')
+  return analysisServicePromise
+}
+
+function loadOptimizeService(): Promise<typeof import('./optimizeService')> {
+  if (!optimizeServicePromise) optimizeServicePromise = import('./optimizeService')
+  return optimizeServicePromise
+}
 
 interface ExecutionStoredKeysPayload {
   api_key?: unknown
@@ -543,6 +551,7 @@ async function resolveManualExecutionStrategy(
     ? (readLatestWorkflowRunSnapshot()?.req as Record<string, unknown>)
     : null
   if (!runReq) {
+    const { buildOptimizationRequestFromVueStores } = await loadOptimizeService()
     runReq = await buildOptimizationRequestFromVueStores()
   }
 
@@ -570,6 +579,7 @@ async function resolveManualExecutionStrategy(
     throw new Error('Manual parameters require fast length < slow length.')
   }
 
+  const { buildExecutionStrategyFromRunContext } = await loadAnalysisService()
   const strategySnapshot = buildExecutionStrategyFromRunContext(
     {
       fast_len: fastLen,
@@ -629,6 +639,8 @@ async function buildExecutionInvokePayload(
   if (!runReq) {
     throw new Error('No optimization run loaded. Use Manual parameter source or run an optimization.')
   }
+  const { buildExecutionStrategyFromRunContext, resolveExecutionTopRowSnapshot } =
+    await loadAnalysisService()
   const row = resolveExecutionTopRowSnapshot(paramSource)
   const strategy = buildExecutionStrategyFromRunContext(row.params, runReq)
   if (!strategy) {

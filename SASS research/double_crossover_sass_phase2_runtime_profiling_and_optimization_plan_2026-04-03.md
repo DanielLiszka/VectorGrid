@@ -183,6 +183,8 @@ Execution outcome:
     - `SASS research/double_crossover_phase2_experiment_table_2026-04-03.md`
     - `SASS research/double_crossover_phase2_research_artifact_index_2026-04-03.md`
     - `SASS research/double_crossover_phase2_paper_outline_2026-04-03.md`
+  - if the branch is reopened technically, the next exploratory lane is a post-compilation feasibility study rather than exhausting lower-value source/runtime ideas first
+  - that feasibility checklist is recorded in `SASS research/double_crossover_phase2_external_review_response_and_task_tracker_2026-04-03.md`
 
 Stage C artifact additions:
 

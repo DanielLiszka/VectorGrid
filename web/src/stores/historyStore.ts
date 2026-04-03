@@ -2,27 +2,23 @@ import Fuse from "fuse.js";
 import type { IFuseOptions } from "fuse.js";
 import { defineStore } from "pinia";
 import { markRaw } from "vue";
-import {
-  applySavedRun as applySavedRunAction,
-  applySession as applySessionAction,
-  clearSession as clearSessionAction,
-  deleteSavedRun as deleteSavedRunAction,
-  exportPreset as exportPresetAction,
-  importPreset as importPresetAction,
-  loadSavedRun as loadSavedRunAction,
-  loadSavedRunDetail as loadSavedRunDetailAction,
-  openRunsDir as openRunsDirAction,
-  openSavedRunReport as openSavedRunReportAction,
-  readSessionHistory as readSessionHistoryAction,
-  refreshSavedRuns as refreshSavedRunsAction,
-  rerunSavedRun as rerunSavedRunAction,
-  revealSavedRun as revealSavedRunAction,
-  saveSavedRunTags as saveSavedRunTagsAction,
-  type HistorySavedRunDetail,
-  type HistorySavedRunSummary,
-  type HistorySessionSummary,
+import type {
+  HistorySavedRunDetail,
+  HistorySavedRunSummary,
+  HistorySessionSummary,
 } from "../services/historyService";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
+
+let historyServicePromise:
+  | Promise<typeof import("../services/historyService")>
+  | null = null;
+
+function loadHistoryService(): Promise<typeof import("../services/historyService")> {
+  if (!historyServicePromise) {
+    historyServicePromise = import("../services/historyService");
+  }
+  return historyServicePromise;
+}
 
 export interface HistoryOption {
   value: string;
@@ -448,39 +444,41 @@ export const useHistoryStore = defineStore("history", {
 
   actions: {
     refreshSessionHistory(preferredTs?: string): void {
-      const runs = readSessionHistoryAction();
-      const selectedTs = normalizeText(
-        preferredTs ?? this.sessionSelectedValue,
-      );
-      const options: HistoryOption[] = [
-        {
-          value: "",
-          label: runs.length ? "Select a run..." : "No runs yet",
-          disabled: false,
-        },
-      ];
-      for (const entry of runs) {
-        options.push({
-          value: normalizeText(entry.ts),
-          label: sessionRunLabel(entry),
-          disabled: false,
-        });
-      }
-      const hasSelection =
-        selectedTs &&
-        runs.some((entry) => normalizeText(entry.ts) === selectedTs);
-      this.sessionRunCount = runs.length;
-      this.sessionRunsRaw = rawArray(runs);
-      this.sessionOptions = rawArray(options);
-      this.sessionSelectedValue = hasSelection ? selectedTs : "";
-      this.sessionSelectedLabel = hasSelection
-        ? options.find((entry) => entry.value === selectedTs)?.label ||
-          "No runs yet"
-        : "No runs yet";
-      this.canApplyHistory = !!hasSelection;
-      this.canClearHistory = runs.length > 0;
-      this.source = "vue";
-      this.updatedAtUnixMs = Date.now();
+      void loadHistoryService().then((service) => {
+        const runs = service.readSessionHistory();
+        const selectedTs = normalizeText(
+          preferredTs ?? this.sessionSelectedValue,
+        );
+        const options: HistoryOption[] = [
+          {
+            value: "",
+            label: runs.length ? "Select a run..." : "No runs yet",
+            disabled: false,
+          },
+        ];
+        for (const entry of runs) {
+          options.push({
+            value: normalizeText(entry.ts),
+            label: sessionRunLabel(entry),
+            disabled: false,
+          });
+        }
+        const hasSelection =
+          selectedTs &&
+          runs.some((entry) => normalizeText(entry.ts) === selectedTs);
+        this.sessionRunCount = runs.length;
+        this.sessionRunsRaw = rawArray(runs);
+        this.sessionOptions = rawArray(options);
+        this.sessionSelectedValue = hasSelection ? selectedTs : "";
+        this.sessionSelectedLabel = hasSelection
+          ? options.find((entry) => entry.value === selectedTs)?.label ||
+            "No runs yet"
+          : "No runs yet";
+        this.canApplyHistory = !!hasSelection;
+        this.canClearHistory = runs.length > 0;
+        this.source = "vue";
+        this.updatedAtUnixMs = Date.now();
+      });
     },
 
     applyLegacySnapshot(snapshot: Partial<HistoryState>): void {
@@ -864,7 +862,8 @@ export const useHistoryStore = defineStore("history", {
       this.savedRunDetailSeq = seq;
       this.savedRunDetailLoadingPath = nextPath;
 
-      void loadSavedRunDetailAction(nextPath)
+      void loadHistoryService()
+        .then((service) => service.loadSavedRunDetail(nextPath))
         .then((detail) => {
           this.savedRunDetailCache[nextPath] = {
             strategyKind: normalizeText(detail?.strategyKind),
@@ -939,7 +938,8 @@ export const useHistoryStore = defineStore("history", {
 
     applySession(): void {
       const selectedTs = normalizePath(this.sessionSelectedValue);
-      void applySessionAction(selectedTs)
+      void loadHistoryService()
+        .then((service) => service.applySession(selectedTs))
         .then(() => {
           this.statusLine = "Applied history run settings to the form.";
           this.source = "vue";
@@ -954,7 +954,8 @@ export const useHistoryStore = defineStore("history", {
     },
 
     exportPreset(): void {
-      void exportPresetAction()
+      void loadHistoryService()
+        .then((service) => service.exportPreset())
         .then(() => {
           this.statusLine = "Exported preset.";
           this.source = "vue";
@@ -969,7 +970,8 @@ export const useHistoryStore = defineStore("history", {
     },
 
     importPreset(): void {
-      void importPresetAction()
+      void loadHistoryService()
+        .then((service) => service.importPreset())
         .then(() => {
           this.statusLine = "Imported preset.";
           this.source = "vue";
@@ -984,7 +986,8 @@ export const useHistoryStore = defineStore("history", {
     },
 
     clearSession(): void {
-      void clearSessionAction()
+      void loadHistoryService()
+        .then((service) => service.clearSession())
         .then(() => {
           this.refreshSessionHistory("");
           this.compareSelectedValue = "";
@@ -1008,8 +1011,12 @@ export const useHistoryStore = defineStore("history", {
       this.source = "vue";
       this.updatedAtUnixMs = Date.now();
 
-      void saveSavedRunTagsAction(nextPath, nextTags)
-        .then(() => refreshSavedRunsAction())
+      void loadHistoryService()
+        .then((service) =>
+          service
+            .saveSavedRunTags(nextPath, nextTags)
+            .then(() => service.refreshSavedRuns()),
+        )
         .then((summary) => {
           this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs);
           this.savedRunDetailCache = pruneSavedRunDetailCache(
@@ -1033,7 +1040,8 @@ export const useHistoryStore = defineStore("history", {
       if (!this.canRefreshSavedRuns) return;
       const preferredPath = normalizePath(this.savedSelectedValue);
 
-      void refreshSavedRunsAction()
+      void loadHistoryService()
+        .then((service) => service.refreshSavedRuns())
         .then((summary) => {
           this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs);
           this.savedRunDetailCache = pruneSavedRunDetailCache(
@@ -1055,45 +1063,55 @@ export const useHistoryStore = defineStore("history", {
 
     openRunsDir(): void {
       if (!this.canOpenRunsDir) return;
-      void openRunsDirAction().catch(() => undefined);
+      void loadHistoryService()
+        .then((service) => service.openRunsDir())
+        .catch(() => undefined);
     },
 
     loadSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void loadSavedRunAction(nextPath);
+      void loadHistoryService().then((service) => service.loadSavedRun(nextPath));
     },
 
     applySavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void applySavedRunAction(nextPath);
+      void loadHistoryService().then((service) =>
+        service.applySavedRun(nextPath),
+      );
     },
 
     rerunSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void rerunSavedRunAction(nextPath);
+      void loadHistoryService().then((service) => service.rerunSavedRun(nextPath));
     },
 
     openSavedRunReport(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void openSavedRunReportAction(nextPath);
+      void loadHistoryService().then((service) =>
+        service.openSavedRunReport(nextPath),
+      );
     },
 
     revealSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
-      void revealSavedRunAction(nextPath);
+      void loadHistoryService().then((service) => service.revealSavedRun(nextPath));
     },
 
     deleteSavedRun(path: string): void {
       const nextPath = normalizePath(path || this.savedSelectedValue);
       if (!nextPath) return;
 
-      void deleteSavedRunAction(nextPath)
-        .then(() => refreshSavedRunsAction())
+      void loadHistoryService()
+        .then((service) =>
+          service
+            .deleteSavedRun(nextPath)
+            .then(() => service.refreshSavedRuns()),
+        )
         .then((summary) => {
           this.savedRunsRaw = sanitizeSavedRunsArray(summary?.runs);
           this.savedRunDetailCache = pruneSavedRunDetailCache(

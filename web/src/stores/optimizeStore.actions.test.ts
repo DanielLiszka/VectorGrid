@@ -100,6 +100,12 @@ describe("optimize store actions", () => {
     invokeCommandMock.mockResolvedValue({});
   });
 
+  async function flushServiceImports(): Promise<void> {
+    await vi.dynamicImportSettled();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
   it("updates Vue optimize state without legacy DOM mirroring", () => {
     const store = useOptimizeStore(pinia);
     store.setInputField("fastStart", "5");
@@ -112,11 +118,12 @@ describe("optimize store actions", () => {
     expect(harness.fields.backend?.value).toBe("Auto");
   });
 
-  it("dispatches optimize run/cancel/validation through optimize service", () => {
+  it("dispatches optimize run/cancel/validation through optimize service", async () => {
     const store = useOptimizeStore(pinia);
     store.runOptimization();
     store.cancelOptimization();
     store.runValidation();
+    await flushServiceImports()
 
     expect(runOptimizationMock).toHaveBeenCalled();
     expect(cancelOptimizationMock).toHaveBeenCalled();
@@ -185,13 +192,14 @@ describe("optimize store actions", () => {
     expect(runValidationMock).not.toHaveBeenCalled();
   });
 
-  it("dispatches optimize preset and gpu utility actions through optimize service", () => {
+  it("dispatches optimize preset and gpu utility actions through optimize service", async () => {
     const store = useOptimizeStore(pinia);
     store.applyPreset();
     store.presetKernel();
     store.previewDynamicStrategyIr();
     store.refreshGpuStatus();
     store.runGpuParityCheck();
+    await flushServiceImports()
 
     expect(applyPresetMock).toHaveBeenCalled();
     expect(presetKernelMock).toHaveBeenCalled();

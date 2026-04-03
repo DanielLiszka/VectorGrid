@@ -7,13 +7,21 @@ import { applyWorkflowArtifactsPayload } from "../stores/workflowArtifactsStore"
 import { useWorkflowStore } from "../stores/workflowStore";
 import { computeConfigFingerprint } from "../utils/core/artifactIdentity";
 import { buildDatasetMetaForArtifact } from "../utils/core/datasetMeta";
-import {
-  buildCompositeMoOptimizationRequest,
-  buildCompositeCpuOptimizationRequest,
-  buildDoubleMaOptimizationRequest,
-  type MaParamsAndSweeps,
-} from "./optimizeRequestBuilder";
+import type { MaParamsAndSweeps } from "./optimizeRequestBuilder";
 import { resolveRecommendedOptimizationDefaults } from "./recommendedOptimizationDefaults";
+
+let optimizeRequestBuilderPromise:
+  | Promise<typeof import("./optimizeRequestBuilder")>
+  | null = null;
+
+function loadOptimizeRequestBuilder(): Promise<
+  typeof import("./optimizeRequestBuilder")
+> {
+  if (!optimizeRequestBuilderPromise) {
+    optimizeRequestBuilderPromise = import("./optimizeRequestBuilder");
+  }
+  return optimizeRequestBuilderPromise;
+}
 
 interface GpuStatusResponse {
   built_with_cuda?: unknown;
@@ -1790,6 +1798,8 @@ async function buildAutoDoubleMaRequest(
   context: LegacyOptimizeBuildContext,
   overrides: DoubleMaRequestOverrides = {},
 ): Promise<Record<string, unknown> | null> {
+  const { buildDoubleMaOptimizationRequest } =
+    await loadOptimizeRequestBuilder();
   const maSupportMap = await getMovingAverageSupportMap();
   const storeMaParamState = readOptimizeStoreMaParamState();
   const emptyParamState: MaParamsAndSweeps = { params: null, sweeps: null };
@@ -1948,6 +1958,8 @@ async function buildAutoDoubleMaRequest(
 async function buildDynamicDoubleMaRuntimeRequest(
   context: LegacyOptimizeBuildContext,
 ): Promise<Record<string, unknown>> {
+  const { buildDoubleMaOptimizationRequest } =
+    await loadOptimizeRequestBuilder();
   const optimizeStore = readPiniaStoreState("optimize");
   const advancedStore = readPiniaStoreState("advanced");
   const irJson = normalizeText(optimizeStore?.dynamicStrategyIrJson);
@@ -2195,6 +2207,10 @@ async function tryBuildAutoOptimizationRequest(): Promise<Record<
   string,
   unknown
 > | null> {
+  const {
+    buildCompositeCpuOptimizationRequest,
+    buildCompositeMoOptimizationRequest,
+  } = await loadOptimizeRequestBuilder();
   const context = readOptimizeBuildContextFromVueStores();
   if (!context) return null;
   const hasStrategy = !!normalizeText(context.strategy_kind);

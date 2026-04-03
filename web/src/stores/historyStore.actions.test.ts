@@ -104,6 +104,12 @@ describe('history store actions', () => {
     readSessionHistoryMock.mockReturnValue([])
   })
 
+  async function flushServiceImports(): Promise<void> {
+    await vi.dynamicImportSettled()
+    await Promise.resolve()
+    await Promise.resolve()
+  }
+
   it('updates Vue history state without legacy DOM mirroring', () => {
     const store = useHistoryStore()
     store.setInputField('savedRunsSearch', 'aapl')
@@ -114,18 +120,21 @@ describe('history store actions', () => {
     expect(store.source).toBe('vue')
   })
 
-  it('dispatches history session/actions and runs-directory action through history service', () => {
+  it('dispatches history session/actions and runs-directory action through history service', async () => {
     const store = useHistoryStore()
     readSessionHistoryMock.mockReturnValue([
       { ts: '2026-02-25T00:00:00Z', backend: 'CpuOnly', pairs: 123 },
     ])
     store.refreshSessionHistory('2026-02-25T00:00:00Z')
+    await flushServiceImports()
     store.applySession()
     store.exportPreset()
     store.importPreset()
     store.clearSession()
     store.refreshSavedRuns()
     store.openRunsDir()
+    await flushServiceImports()
+    await flushServiceImports()
 
     expect(applySessionMock).toHaveBeenCalledWith('2026-02-25T00:00:00Z')
     expect(exportPresetMock).toHaveBeenCalled()
@@ -150,8 +159,7 @@ describe('history store actions', () => {
       },
     ]
     store.syncSavedRunsView('C:/runs/run1.json')
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushServiceImports()
     store.saveSavedRunTags(' C:/runs/run1.json ', 'holdout,1m')
     store.loadSavedRun(' C:/runs/run1.json ')
     store.applySavedRun(' C:/runs/run1.json ')
@@ -159,9 +167,8 @@ describe('history store actions', () => {
     store.openSavedRunReport(' C:/runs/run1.json ')
     store.revealSavedRun(' C:/runs/run1.json ')
     store.deleteSavedRun(' C:/runs/run1.json ')
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushServiceImports()
+    await flushServiceImports()
 
     expect(saveSavedRunTagsMock).toHaveBeenCalledWith('C:/runs/run1.json', 'holdout,1m')
     expect(loadSavedRunDetailMock).toHaveBeenCalledWith('C:/runs/run1.json')
@@ -203,9 +210,8 @@ describe('history store actions', () => {
 
     store.setSavedRunsSearch('aapl')
     store.refreshSavedRuns()
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
+    await flushServiceImports()
+    await flushServiceImports()
 
     expect(refreshSavedRunsMock).toHaveBeenCalledTimes(1)
     expect(store.savedRunCount).toBe(2)

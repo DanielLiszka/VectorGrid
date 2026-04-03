@@ -93,15 +93,18 @@ describe('command action store', () => {
     for (const key of Object.keys(dataset)) delete dataset[key]
   })
 
-  it('dispatches run/cancel/validate actions', () => {
+  it('dispatches run/cancel/validate actions', async () => {
     const store = useCommandActionStore()
     store.runOptimization()
     store.cancelOptimization()
     store.validateOptimization()
 
-    expect(runOptimizationMock).toHaveBeenCalled()
-    expect(cancelOptimizationMock).toHaveBeenCalled()
-    expect(runValidationMock).toHaveBeenCalled()
+    await vi.dynamicImportSettled()
+    await vi.waitFor(() => {
+      expect(runOptimizationMock).toHaveBeenCalled()
+      expect(cancelOptimizationMock).toHaveBeenCalled()
+      expect(runValidationMock).toHaveBeenCalled()
+    })
   })
 
   it('dispatches shared data/export/report actions', async () => {

@@ -356,3 +356,123 @@ Current state:
   - `SASS research/double_crossover_phase2_experiment_table_2026-04-03.md`
   - `SASS research/double_crossover_phase2_research_artifact_index_2026-04-03.md`
   - `SASS research/double_crossover_phase2_paper_outline_2026-04-03.md`
+
+## Explicit Deferrals
+
+These ideas are now explicitly deferred rather than left as implied future work:
+
+1. another low-level lockstep-body micro-pass without new causal evidence
+2. descriptor-reuse prototyping on the replay path
+3. reducer-first or gather-first work on the current exact route
+4. broader `compact_exact_search_stage` work
+5. broad SASS rewriting or hand-SASSing of the current kernel family
+6. score-first revisits that are not tied to a stronger research claim
+7. optional fixed-width output helper work that is not needed for the artifact
+
+Reason for deferral:
+
+1. the current branch already has retained wins and a measured negative result
+2. these remaining ideas are lower-value than a research-artifact-first next step
+3. they should not be reopened unless a research need or new measurement makes them the dominant next branch
+
+## Research-First Next Branch: Post-Compilation Feasibility
+
+The next exploratory branch does not require exhausting all deferred source/runtime ideas first.
+
+Entry rationale:
+
+1. the repo now has enough retained evidence to stop chasing weak incremental ideas
+2. the next differentiated question is whether any remaining meaningful headroom is only accessible post-compilation
+3. this branch is justified only as a research-feasibility study, not as default product work
+
+### Goal
+
+Determine whether `double_crossover` still exposes a residual performance problem that is:
+
+1. material after the retained source/runtime fixes
+2. localized to compiled-kernel behavior rather than route/dataflow behavior
+3. plausibly fixable only or primarily after compilation
+
+### Checklist
+
+#### A. Scope And Guardrails
+
+- [ ] Keep the current retained code state fixed while the feasibility study is running.
+- [ ] Treat the deferred ideas above as frozen unless the feasibility study reopens one explicitly.
+- [ ] Use the existing research artifact bundle as the baseline evidence set.
+- [ ] Frame the branch as a feasibility study first, not as a commitment to build a post-compilation optimizer.
+
+#### B. Novelty And Literature Check
+
+- [ ] Run a broader literature and tooling review focused on post-compilation GPU optimization, native SASS mutation, cubin rewriting, and binary-level attribution.
+- [ ] Position the repo against existing work such as native SASS scheduling, binary rewriting, and assembly-aware datasets.
+- [ ] Write a short novelty memo stating what would count as a genuinely differentiated contribution from this repo.
+
+#### C. Residual Target Identification
+
+- [ ] Identify one residual phenomenon in the current repo that still looks plausibly post-compilation-fixable.
+- [ ] Reject any candidate target that is still better explained by host/runtime orchestration, replay dataflow, or route-level policy.
+- [ ] Prefer one narrow target over a generic “improve the cubin” goal.
+
+#### D. Tooling Readiness
+
+- [ ] Confirm CUDA toolkit tools needed for disassembly and cubin inspection are available:
+  - `ptxas`
+  - `cuobjdump`
+  - `nvdisasm`
+- [ ] Confirm Nsight Compute is available for targeted kernel confirmation.
+- [ ] Install or surface Nsight Systems CLI if whole-process post-change correlation is still needed.
+- [ ] If native cubin editing is going to be explored, install and validate one supported SASS assembler or cubin editing path before proposing experiments.
+- [ ] Confirm CUPTI SASS-metrics capability is available if dynamic instruction-region attribution is part of the feasibility study.
+
+Current local readiness snapshot:
+
+1. present on this workstation:
+   - `nvcc`
+   - `ptxas`
+   - `cuobjdump`
+   - `nvdisasm`
+   - `ncu`
+   - `python`
+   - CUDA `13.0` CUPTI header `cupti_sass_metrics.h`
+2. installed but not currently on `PATH`:
+   - `nsys` under `C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\Target-Windows-x64\nsys.exe`
+3. not currently installed or surfaced:
+   - a cubin-editing / SASS-assembly tool
+   - Python package `sympy` for the current `CuAssembler` dependency chain
+4. important caveat:
+   - the available `CuAssembler` project documents support for `Pascal/Volta/Turing/Ampere` and is unofficial, so Ada `SM89` use should be treated as feasibility-risky until proven on this machine
+5. present Python dependency for that path:
+   - `pyelftools`
+
+#### E. Feasibility Experiment Design
+
+- [ ] Choose exactly one post-compilation target hypothesis.
+- [ ] Define the minimal experiment that would distinguish:
+  - source/runtime fix
+  - post-compilation-only fix
+  - no justified fix
+- [ ] Define success and rejection criteria before touching a cubin.
+- [ ] Keep correctness and exact-row semantics as hard constraints.
+
+#### F. Deliverables
+
+- [ ] Write one post-compilation feasibility memo.
+- [ ] Write one tooling-readiness note.
+- [ ] Write one go/no-go decision for any actual post-compilation implementation work.
+
+### Stop Rule
+
+Stop the post-compilation branch without a new implementation if any of the following becomes true:
+
+1. the residual cost is still better explained by runtime/dataflow structure than compiled-kernel behavior
+2. the candidate target is not clearly post-compilation-only
+3. the needed cubin-editing path is too fragile or unsupported on the current architecture
+4. the branch would only reproduce known NVIDIA best practices in a different form
+
+### Success Condition
+
+This branch is successful if it ends with either:
+
+1. a defensible go-ahead for one narrow post-compilation experiment, or
+2. a well-supported no-go memo that explains why post-compilation is not justified for this repo

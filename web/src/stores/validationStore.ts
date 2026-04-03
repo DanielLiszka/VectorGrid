@@ -1,17 +1,14 @@
 import { defineStore } from 'pinia'
 import { markRaw } from 'vue'
-import {
-  crossRefresh as crossRefreshAction,
-  exportReportJson as exportReportJsonAction,
-  exportReportXlsx as exportReportXlsxAction,
-  exportShortlistCsv as exportShortlistCsvAction,
-  exportValidationJson as exportValidationJsonAction,
-  openReportsDir as openReportsDirAction,
-  runValidation as runValidationAction,
-  toggleCrossDataset as toggleCrossDatasetAction,
-} from '../services/validationService'
 import { useDataStore } from './dataStore'
 import { resolveRuntimePinia } from './runtimePinia'
+
+let validationServicePromise: Promise<typeof import('../services/validationService')> | null = null
+
+function loadValidationService(): Promise<typeof import('../services/validationService')> {
+  if (!validationServicePromise) validationServicePromise = import('../services/validationService')
+  return validationServicePromise
+}
 
 function rawArray<T>(value: unknown, fallback: T[]): T[] {
   return Array.isArray(value) ? markRaw(value as T[]) : fallback
@@ -551,28 +548,30 @@ export const useValidationStore = defineStore('validation', {
     },
 
     runValidation(): void {
-      void runValidationAction()
+      void loadValidationService().then((service) => service.runValidation())
     },
 
     exportShortlistCsv(): void {
-      void exportShortlistCsvAction()
+      void loadValidationService().then((service) => service.exportShortlistCsv())
     },
 
     exportValidationJson(): void {
-      void exportValidationJsonAction()
+      void loadValidationService().then((service) => service.exportValidationJson())
     },
 
     exportReportJson(): void {
-      void exportReportJsonAction()
+      void loadValidationService().then((service) => service.exportReportJson())
     },
 
     exportReportXlsx(): void {
-      void exportReportXlsxAction()
+      void loadValidationService().then((service) => service.exportReportXlsx())
     },
 
     openReportsDir(): void {
       if (!this.canOpenReportsDir) return
-      void openReportsDirAction().catch(() => undefined)
+      void loadValidationService()
+        .then((service) => service.openReportsDir())
+        .catch(() => undefined)
     },
 
     crossRefresh(): void {
@@ -585,7 +584,8 @@ export const useValidationStore = defineStore('validation', {
         previousSelected.add(path)
       }
 
-      void crossRefreshAction()
+      void loadValidationService()
+        .then((service) => service.crossRefresh()
         .then((summary) => {
           const rows = Array.isArray(summary?.datasets) ? summary.datasets : []
           const activePaths = new Set<string>()
@@ -629,13 +629,13 @@ export const useValidationStore = defineStore('validation', {
 
           if (!staleSelections.length) return
           void Promise.all(
-            staleSelections.map((path) => toggleCrossDatasetAction(path, false)),
+            staleSelections.map((path) => service.toggleCrossDataset(path, false)),
           ).catch((error: unknown) => {
             this.statusLine = `Cross-ticker refresh sync failed: ${String(error || '')}`.trim()
             this.source = 'vue'
             this.updatedAtUnixMs = Date.now()
           })
-        })
+        }))
         .catch((error: unknown) => {
           this.statusLine = `Cross-ticker refresh failed: ${String(error || '')}`.trim()
           this.source = 'vue'
@@ -660,12 +660,14 @@ export const useValidationStore = defineStore('validation', {
       this.updatedAtUnixMs = Date.now()
 
       void Promise.all(
-        changes.map((entry) => toggleCrossDatasetAction(entry.path, true)),
+        changes.map((entry) =>
+          loadValidationService().then((service) => service.toggleCrossDataset(entry.path, true)),
+        ),
       ).catch((error: unknown) => {
-        this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
-        this.source = 'vue'
-        this.updatedAtUnixMs = Date.now()
-      })
+          this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     crossSelectNone(): void {
@@ -685,12 +687,14 @@ export const useValidationStore = defineStore('validation', {
       this.updatedAtUnixMs = Date.now()
 
       void Promise.all(
-        changes.map((entry) => toggleCrossDatasetAction(entry.path, false)),
+        changes.map((entry) =>
+          loadValidationService().then((service) => service.toggleCrossDataset(entry.path, false)),
+        ),
       ).catch((error: unknown) => {
-        this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
-        this.source = 'vue'
-        this.updatedAtUnixMs = Date.now()
-      })
+          this.statusLine = `Cross-ticker selection failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     crossSelectMatch(): void {
@@ -739,12 +743,14 @@ export const useValidationStore = defineStore('validation', {
       this.updatedAtUnixMs = Date.now()
 
       void Promise.all(
-        changes.map((entry) => toggleCrossDatasetAction(entry.path, entry.checked)),
+        changes.map((entry) =>
+          loadValidationService().then((service) => service.toggleCrossDataset(entry.path, entry.checked)),
+        ),
       ).catch((error: unknown) => {
-        this.statusLine = `Cross-ticker match selection failed: ${String(error || '')}`.trim()
-        this.source = 'vue'
-        this.updatedAtUnixMs = Date.now()
-      })
+          this.statusLine = `Cross-ticker match selection failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
 
     toggleCrossDataset(path: string, checked: boolean): void {
@@ -776,11 +782,11 @@ export const useValidationStore = defineStore('validation', {
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
 
-      void toggleCrossDatasetAction(nextPath, nextChecked).catch((error: unknown) => {
-        this.statusLine = `Cross-ticker update failed: ${String(error || '')}`.trim()
-        this.source = 'vue'
-        this.updatedAtUnixMs = Date.now()
-      })
+      void loadValidationService().then((service) => service.toggleCrossDataset(nextPath, nextChecked)).catch((error: unknown) => {
+          this.statusLine = `Cross-ticker update failed: ${String(error || '')}`.trim()
+          this.source = 'vue'
+          this.updatedAtUnixMs = Date.now()
+        })
     },
   },
 })

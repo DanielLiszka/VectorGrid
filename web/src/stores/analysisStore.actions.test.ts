@@ -339,7 +339,7 @@ describe('analysis store actions', () => {
     expect(store.batchTotalCount).toBe(1)
   })
 
-  it('routes overview empty actions through workflow/data/optimize stores', () => {
+  it('routes overview empty actions through workflow/data/optimize stores', async () => {
     const store = useAnalysisStore()
     const workflowStore = useWorkflowStore()
 
@@ -360,10 +360,16 @@ describe('analysis store actions', () => {
 
     store.overviewPrimaryAction = 'run_opt'
     store.overviewEmptyPrimary()
-    expect(runOptimizationMock).toHaveBeenCalled()
+    await vi.dynamicImportSettled()
+    await vi.waitFor(() => {
+      expect(runOptimizationMock).toHaveBeenCalled()
+    })
 
     store.overviewPrimaryAction = 'cancel_run'
     store.overviewEmptyPrimary()
-    expect(cancelOptimizationMock).toHaveBeenCalled()
+    await vi.dynamicImportSettled()
+    await vi.waitFor(() => {
+      expect(cancelOptimizationMock).toHaveBeenCalled()
+    })
   })
 })
