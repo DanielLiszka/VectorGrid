@@ -102,6 +102,18 @@ export interface DoubleMaProgressPayload {
   phase: string;
 }
 
+export interface ResearchCampaignProgressPayload {
+  stage: string;
+  datasetIndex: number;
+  datasetTotal: number;
+  label: string;
+  message: string;
+  optimized: number;
+  validated: number;
+  skipped: number;
+  failed: number;
+}
+
 export interface LiveExecutionRunnerEventPayload {
   status: string;
   message: string;
@@ -163,6 +175,8 @@ let nextTimelineSeq = 0;
 let nextToastSeq = 0;
 let lastDoubleMaPhase = "";
 let lastDoubleMaProgressAt = 0;
+let lastResearchCampaignSignature = "";
+let lastResearchCampaignProgressAt = 0;
 let lastPolygonLiveBarAt = 0;
 let lastRunnerEventAt = 0;
 let lastRunnerEventSignature = "";
@@ -180,6 +194,7 @@ const PROGRESS_ELIGIBLE_COMMANDS = new Set<TauriCommand>([
   "run_meta_selection",
   "run_meta_stage4_experimental",
   "run_meta_stage5_ml_confidence",
+  "run_research_campaign",
   "export_ml_signal_dataset",
   "generate_ml_signal_score_cache",
   "run_ml_signal_validation",
@@ -216,6 +231,7 @@ const CANCEL_COMMAND_BY_COMMAND: Partial<Record<TauriCommand, TauriCommand>> = {
   run_meta_selection: "cancel_current_run",
   run_meta_stage4_experimental: "cancel_current_run",
   run_meta_stage5_ml_confidence: "cancel_current_run",
+  run_research_campaign: "cancel_current_run",
   export_ml_signal_dataset: "cancel_current_run",
   generate_ml_signal_score_cache: "cancel_current_run",
   run_ml_signal_validation: "cancel_current_run",
@@ -788,6 +804,74 @@ export function applyDoubleMaProgress(payload: DoubleMaProgressPayload): void {
     pct,
     label: `${phase || "Progress"} ${processed}/${total}`,
     source: "double_ma_progress",
+    atUnixMs: now,
+  };
+}
+
+export function applyResearchCampaignProgress(
+  payload: ResearchCampaignProgressPayload,
+): void {
+  const st = taskStoreSingleton();
+  const datasetIndex = Math.max(0, Number(payload.datasetIndex || 0));
+  const datasetTotal = Math.max(0, Number(payload.datasetTotal || 0));
+  const stage = String(payload.stage || "").trim();
+  const label = String(payload.label || "").trim();
+  const message = String(payload.message || "").trim();
+  const optimized = Math.max(0, Number(payload.optimized || 0));
+  const validated = Math.max(0, Number(payload.validated || 0));
+  const skipped = Math.max(0, Number(payload.skipped || 0));
+  const failed = Math.max(0, Number(payload.failed || 0));
+  const pct =
+    datasetTotal > 0
+      ? Math.max(0, Math.min(100, (datasetIndex / datasetTotal) * 100))
+      : 0;
+  const now = Date.now();
+  const signature = `${stage}|${datasetIndex}/${datasetTotal}|${label}|${message}|${optimized}|${validated}|${skipped}|${failed}`;
+  const changed = signature !== lastResearchCampaignSignature;
+  if (changed) {
+    lastResearchCampaignSignature = signature;
+    const summary = [
+      message || stage || "Campaign progress",
+      datasetTotal > 0 ? `${datasetIndex}/${datasetTotal}` : "",
+      label,
+    ]
+      .filter((part) => part.length > 0)
+      .join(" · ");
+    pushEvent("research_campaign_progress", summary, "info");
+    pushTimeline(
+      "research_campaign_progress",
+      stage || "progress",
+      `${summary}${optimized || validated || skipped || failed ? ` · ok=${validated} opt=${optimized} skip=${skipped} fail=${failed}` : ""}`,
+      "info",
+    );
+  }
+
+  const forceRefresh = changed || pct <= 0 || pct >= 100;
+  if (
+    !forceRefresh &&
+    now - lastResearchCampaignProgressAt < PROGRESS_UPDATE_INTERVAL_MS
+  )
+    return;
+  lastResearchCampaignProgressAt = now;
+
+  const progressLabel = [
+    message || stage || "Campaign progress",
+    datasetTotal > 0 ? `${datasetIndex}/${datasetTotal}` : "",
+    label,
+  ]
+    .filter((part) => part.length > 0)
+    .join(" · ");
+
+  const target = newestProgressTask();
+  if (target) {
+    target.progressPct = pct;
+    if (stage) target.phase = stage;
+    target.message = progressLabel;
+  }
+  st.overallProgress = {
+    pct,
+    label: progressLabel,
+    source: "research_campaign_progress",
     atUnixMs: now,
   };
 }

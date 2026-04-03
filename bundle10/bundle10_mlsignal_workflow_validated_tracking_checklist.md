@@ -79,7 +79,7 @@ Use this file as the authoritative progress tracker for Bundle 10. It tracks onl
 - [x] Update research docs so `validation_scores.csv` vs `walkforward_test_scores.csv` scope differences are explicit.
 - [x] Add explicit walk-forward proxy / desktop-parity disclaimers to research outputs/docs that currently imply more parity than they provide.
 - [x] Update `research/ML_SIGNAL_STRATEGY_IMPLEMENTATION_PLAN_2026-03-18.md` only as needed for truthfulness.
-- [x] Leave `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md` untouched; no deferred entry-criteria update was required for this pass.
+- [x] Leave `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md` untouched; no deferred entry-criteria update was required for this pass.
 
 ### Tests / Verification
 

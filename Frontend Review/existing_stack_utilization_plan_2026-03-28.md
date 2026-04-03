@@ -82,9 +82,9 @@ Current implementation status:
 This plan is intentionally separate from:
 
 - `frontend_audit_2026-03-27.md`, which is the completed remediation ledger
-- `frontend_followup_evaluation_2026-03-28.md`, which records the completed frontend follow-up pass and prior package decisions
+- `Unfinished/frontend_followup_evaluation_2026-03-28.md`, which records the completed frontend follow-up pass and prior package decisions
 - `workstation_behavior_plan_2026-03-28.md`, which records the completed workstation UX phase
-- `desktop_productization_plan_2026-03-28.md`, which owns broader Tauri-native topology and productization work
+- `Unfinished/desktop_productization_plan_2026-03-28.md`, which owns broader Tauri-native topology and productization work
 - `svg_generation_prompts_2026-03-28.md`, which contains the paste-ready GPT-5.4 Pro prompts for generating the custom SVG set proposed here
 
 This document is for the narrower question:

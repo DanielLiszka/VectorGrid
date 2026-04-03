@@ -15,6 +15,33 @@ It is intentionally narrower than a general CUDA optimization roadmap. It focuse
 
 The optional section at the end covers lower-confidence or still-unproven ideas that may still be worth exploring after the confirmed work is closed.
 
+## 2026-04-02 verification artifacts
+
+Post-change artifacts captured for this implementation wave:
+
+- `SASS research/double_crossover_sm89_cuobjdump_2026-04-02.sass.txt`
+- `SASS research/double_crossover_sm89_cuobjdump_symbols_2026-04-02.txt`
+- `SASS research/double_crossover_targeted_store_counts_2026-04-02.txt`
+- `SASS research/double_crossover_runtime_verification_summary_2026-04-02.txt`
+- `target/xlarge_shortlist_full17_alma_2026-04-02.jsonl`
+- `target/xlarge_shortlist_trade22_alma_2026-04-02.jsonl`
+- `target/large_full17_row_first_alma_2026-04-02.jsonl`
+- `target/large_full17_score_first_alma_2026-04-02.jsonl`
+- `target/large_trade22_row_first_alma_2026-04-02.jsonl`
+- `target/large_trade22_score_first_alma_2026-04-02.jsonl`
+
+Measured highlights from those artifacts:
+
+1. Targeted SASS rechecks show the exact-wrapper normalization changed the expected store mix:
+   - `m17`, `lockstep_time_m17`, and `windowed_m17` now show `STG.E.64` and `STG.E.128` in the post-change dump instead of remaining scalar-only.
+   - `m22`, `lockstep_time_m22`, and `windowed_m22` now share the same packed-store profile in the post-change dump.
+2. The shortlist-heavy `xlarge` direct-runner surface remained on the canonical `row_first_global_topk` route and stayed parity-safe:
+   - `alma/alma`, `full17`, `shortlist_slice_mode=halves`: `350.67 ms` mean runtime
+   - `alma/alma`, `trade22`, `shortlist_slice_mode=halves`: `344.33 ms` mean runtime
+3. The narrow exact `large` score-first investigation stayed functional but lost badly to row-first on the current implementation:
+   - `alma/alma`, `full17`: row-first `69.67 ms` vs score-first `124.33 ms`
+   - `alma/alma`, `trade22`: row-first `75.00 ms` vs score-first `125.67 ms`
+
 ## Scope
 
 This plan covers:
@@ -130,6 +157,19 @@ Deliverable:
   - metrics contract
   - route diagnostics
   - benchmark surfaces
+
+2026-04-02 recorded truth set and env notes:
+
+- GPU perf gate candidate surface:
+  - `double_ma/gpu_kernel/sma_sma/200k/small/1590pairs`
+  - `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`
+- Narrow exact score-first comparison surface:
+  - `double_ma`, `alma/alma`, `large`, `heatmap_bins=0`, `metric_contract=full17|trade22`
+- Shortlist-heavy exact surface:
+  - direct runner `double_ma`, `alma/alma`, `xlarge`, `shortlist_slice_mode=halves`, `metric_contract=full17|trade22`
+- Explicit env toggles used in this wave:
+  - `VECTORBT_KERNEL_SCORE_FIRST_TOPK=1` for score-first comparison runs
+  - `VECTORBT_KERNEL_METRICS_PAD8=1` for the reduced-row stride recheck
 
 ## Phase 1: Normalize exact-wrapper specialization and stride contracts
 
@@ -248,6 +288,16 @@ Possible implementation path:
 3. Keep the row-first path as the fallback and baseline.
 4. Measure score-first only on request shapes it is actually designed to support.
 
+2026-04-02 investigation result:
+
+1. The active score-first blockers were re-audited in `gpu_backtest_kernel.rs`.
+2. The current supported narrow exact `large` surfaces (`alma/alma`, `heatmap_bins=0`, no shortlist extras, no constraints, no eval range) do execute on `score_first_global_topk` when `VECTORBT_KERNEL_SCORE_FIRST_TOPK=1`.
+3. On those admitted surfaces, the current score-first implementation remained slower than row-first:
+   - `full17`: `124.33 ms` mean vs `69.67 ms` row-first
+   - `trade22`: `125.67 ms` mean vs `75.00 ms` row-first
+4. No constrained score-generation row kernel was added in this wave.
+5. The dormant scalar-score tile path stays investigation-only for now; the current bottleneck remains the live route shape, not the absence of that extra path.
+
 Exit condition:
 
 - either:
@@ -301,134 +351,148 @@ Decision rule:
 
 ### A. Repo safety and setup
 
-- [ ] Read the current guide in `SASS research`.
-- [ ] Reconfirm the validated findings against current source before editing.
-- [ ] Ensure no other benchmark or profiling run is active.
-- [ ] Record the baseline env flags for any score-first or stride experiments.
-- [ ] Decide the benchmark surfaces that will be treated as the truth set.
+- [x] Read the current guide in `SASS research`.
+- [x] Reconfirm the validated findings against current source before editing.
+- [x] Ensure no other benchmark or profiling run is active.
+- [x] Record the baseline env flags for the score-first and shortlist-slice runner experiments.
+- [x] Decide the benchmark surfaces that will be treated as the truth set.
 
 ### B. Exact-wrapper audit
 
-- [ ] Audit generic `double_cross_backtest_tm_flex_f32_m17`.
-- [ ] Audit generic `double_cross_backtest_tm_flex_f32_m22`.
-- [ ] Audit non-windowed `m17_*` regime variants.
-- [ ] Audit non-windowed `m22_*` regime variants.
-- [ ] Audit generic `double_cross_backtest_tm_flex_f32_lockstep_time_m17`.
-- [ ] Audit generic `double_cross_backtest_tm_flex_f32_lockstep_time_m22`.
-- [ ] Audit lockstep `m17_*` regime variants.
-- [ ] Audit lockstep `m22_*` regime variants.
-- [ ] Audit generic `double_cross_backtest_tm_flex_f32_windowed_m17`.
-- [ ] Confirm `double_cross_backtest_tm_flex_f32_windowed_m22` as the reference pattern.
-- [ ] Document which wrappers still discard `metrics_out_stride`.
-- [ ] Document which wrappers still omit fixed-width specialization.
-- [ ] Decide whether to use a helper macro or helper template for wrapper normalization.
+- [x] Audit generic `double_cross_backtest_tm_flex_f32_m17`.
+- [x] Audit generic `double_cross_backtest_tm_flex_f32_m22`.
+- [x] Audit non-windowed `m17_*` regime variants.
+- [x] Audit non-windowed `m22_*` regime variants.
+- [x] Audit generic `double_cross_backtest_tm_flex_f32_lockstep_time_m17`.
+- [x] Audit generic `double_cross_backtest_tm_flex_f32_lockstep_time_m22`.
+- [x] Audit lockstep `m17_*` regime variants.
+- [x] Audit lockstep `m22_*` regime variants.
+- [x] Audit generic `double_cross_backtest_tm_flex_f32_windowed_m17`.
+- [x] Confirm `double_cross_backtest_tm_flex_f32_windowed_m22` as the reference pattern.
+- [x] Document which wrappers still discard `metrics_out_stride`.
+- [x] Document which wrappers still omit fixed-width specialization.
+- [x] Decide not to introduce a new helper macro/template in this wave; keep the wrapper normalization surgical.
 
 ### C. Exact-wrapper implementation
 
-- [ ] Update non-windowed `m17` wrappers to honor `metrics_out_stride`.
-- [ ] Update non-windowed `m22` wrappers to honor `metrics_out_stride`.
-- [ ] Update lockstep `m17` wrappers to honor `metrics_out_stride`.
-- [ ] Update lockstep `m22` wrappers to honor `metrics_out_stride`.
-- [ ] Update generic `windowed_m17` to use the intended specialization contract.
-- [ ] Keep `windowed_m22` behavior unchanged unless a correctness issue is found.
-- [ ] Rebuild the cubin after wrapper changes.
-- [ ] Re-check targeted SASS symbols for store-width changes.
+- [x] Update non-windowed `m17` wrappers to honor `metrics_out_stride`.
+- [x] Update non-windowed `m22` wrappers to honor `metrics_out_stride`.
+- [x] Update lockstep `m17` wrappers to honor `metrics_out_stride`.
+- [x] Update lockstep `m22` wrappers to honor `metrics_out_stride`.
+- [x] Update generic `windowed_m17` to use the intended specialization contract.
+- [x] Keep `windowed_m22` behavior unchanged unless a correctness issue is found.
+- [x] Rebuild the cubin after wrapper changes.
+- [x] Re-check targeted SASS symbols for store-width changes.
 
 ### D. Row-kernel stride audit
 
-- [ ] Audit `score_metric_rows_f32` for dense `M` indexing.
-- [ ] Audit `select_topk_metric_rows_f32` for dense `M` indexing.
-- [ ] Audit `select_topk_metric_rows_from_candidates_f32` for dense `M` indexing.
-- [ ] Audit `select_topk_metric_rows_f32_v2` for dense `M` indexing.
-- [ ] Audit `select_topk_metric_rows_from_candidates_f32_v2` for dense `M` indexing.
-- [ ] Audit `gather_topk_metric_rows_f32` for dense `M` indexing.
-- [ ] Audit `pack_metric_rows_f32` for dense `M` indexing.
-- [ ] Check whether any adjacent helper kernels read metric rows with the same dense-row assumption.
+- [x] Audit `score_metric_rows_f32` for dense `M` indexing.
+- [x] Audit `select_topk_metric_rows_f32` for dense `M` indexing.
+- [x] Audit `select_topk_metric_rows_from_candidates_f32` for dense `M` indexing.
+- [x] Audit `select_topk_metric_rows_f32_v2` for dense `M` indexing.
+- [x] Audit `select_topk_metric_rows_from_candidates_f32_v2` for dense `M` indexing.
+- [x] Audit `gather_topk_metric_rows_f32` for dense `M` indexing.
+- [x] Audit `pack_metric_rows_f32` for dense `M` indexing.
+- [x] Check whether any adjacent helper kernels read metric rows with the same dense-row assumption.
 
 ### E. Row-kernel stride implementation
 
-- [ ] Add `metrics_stride` to `score_metric_rows_f32`.
-- [ ] Add `metrics_stride` to `select_topk_metric_rows_f32`.
-- [ ] Add `metrics_stride` to `select_topk_metric_rows_from_candidates_f32`.
-- [ ] Add `metrics_stride` to `select_topk_metric_rows_f32_v2`.
-- [ ] Add `metrics_stride` to `select_topk_metric_rows_from_candidates_f32_v2`.
-- [ ] Add `metrics_stride` to `gather_topk_metric_rows_f32`.
-- [ ] Add `metrics_stride` to `pack_metric_rows_f32`.
-- [ ] Update Rust launch plumbing for every changed row kernel.
-- [ ] Verify dense-row callers still work.
-- [ ] Verify padded-row callers now work coherently.
+- [x] Add `metrics_stride` to `score_metric_rows_f32`.
+- [x] Add `metrics_stride` to `select_topk_metric_rows_f32`.
+- [x] Add `metrics_stride` to `select_topk_metric_rows_from_candidates_f32`.
+- [x] Add `metrics_stride` to `select_topk_metric_rows_f32_v2`.
+- [x] Add `metrics_stride` to `select_topk_metric_rows_from_candidates_f32_v2`.
+- [x] Add `metrics_stride` to `gather_topk_metric_rows_f32`.
+- [x] Add `metrics_stride` to `pack_metric_rows_f32`.
+- [x] Update Rust launch plumbing for every changed row kernel.
+- [x] Verify dense-row callers still work.
+- [x] Recheck whether a live padded-row caller still exists on the current `double_ma` path; current measured reduced-row surfaces are 10-field, while exact surfaces stay dense `17`/`22`.
 
 ### F. Runtime contract audit
 
-- [ ] Reconfirm `effective_metrics_stride(...)` behavior.
-- [ ] Reconfirm `kernel_metrics_pad8_enabled_for_pair(...)` behavior.
-- [ ] Reconfirm where `tile_metrics_stride` is computed and passed.
-- [ ] Reconfirm where row-first global top-k remains the default path.
-- [ ] Reconfirm where score-first global top-k is enabled and blocked.
-- [ ] Reconfirm which request shapes force row-first fallback.
+- [x] Reconfirm `effective_metrics_stride(...)` behavior.
+- [x] Reconfirm `kernel_metrics_pad8_enabled_for_pair(...)` behavior.
+- [x] Reconfirm where `tile_metrics_stride` is computed and passed.
+- [x] Reconfirm where row-first global top-k remains the default path.
+- [x] Reconfirm where score-first global top-k is enabled and blocked.
+- [x] Reconfirm which request shapes force row-first fallback versus other non-global-topk routes.
 
 ### G. Score-first row investigation
 
-- [ ] Re-evaluate `should_use_score_first_topk_mode(...)` blockers.
-- [ ] Decide which blockers are structural versus temporary.
-- [ ] Decide whether to add a constrained score-generation row kernel.
-- [ ] If added, keep it behind the experimental score-first branch first.
-- [ ] Benchmark score-first only on supported narrow exact surfaces.
-- [ ] Compare row-first vs score-first on the same exact benchmark surface.
+- [x] Re-evaluate `should_use_score_first_topk_mode(...)` blockers.
+- [x] Decide which blockers are structural versus temporary.
+- [x] Decide not to add a constrained score-generation row kernel in this wave.
+- [x] Keep the score-first work investigation-only in this wave; no new experimental kernel path was added.
+- [x] Benchmark score-first only on supported narrow exact surfaces.
+- [x] Compare row-first vs score-first on the same exact benchmark surface.
 
 ### H. Pair-path clarification
 
-- [ ] Audit `select_topk_scored_pairs_tm_f32`.
-- [ ] Audit `select_topk_scored_pairs_tm_f32_v2`.
-- [ ] Audit `select_topk_scored_candidates_tm_f32`.
-- [ ] Audit `gather_topk_scored_pairs_tm_f32`.
-- [ ] Audit `gather_topk_scored_scalar_pairs_tm_f32`.
-- [ ] Identify routes that only need `(fast, slow, score)`.
-- [ ] Identify routes that immediately need full metric rows.
-- [ ] Rename or document misleading fake-scored selector functions.
-- [ ] Prefer the true score-array path where metrics are not immediately needed.
+- [x] Audit `select_topk_scored_pairs_tm_f32`.
+- [x] Audit `select_topk_scored_pairs_tm_f32_v2`.
+- [x] Audit `select_topk_scored_candidates_tm_f32`.
+- [x] Audit `gather_topk_scored_pairs_tm_f32`.
+- [x] Audit `gather_topk_scored_scalar_pairs_tm_f32`.
+- [x] Identify routes that only need `(fast, slow, score)`.
+- [x] Identify routes that immediately need full metric rows.
+- [x] Rename or document misleading fake-scored selector functions.
+- [x] Decide not to promote the dormant scalar-score tile path in this wave; keep the current live path and document why.
 
 ### I. Optional output-helper work
 
-- [ ] Decide whether `N == 17` packed stores are still worth adding after wrapper normalization.
-- [ ] If yes, add a dedicated `N == 17` packed store path.
-- [ ] Decide whether fixed-width copy helpers are still worth adding after earlier phases.
-- [ ] If yes, add copy helpers for `m17` / `m22`.
-- [ ] Use those helpers only where aligned, fixed-width copies are actually plausible and measurable.
+- [x] Decide whether `N == 17` packed stores are still worth adding after wrapper normalization.
+- [x] If yes, add a dedicated `N == 17` packed store path.
+- [x] Decide not to add fixed-width copy helpers in this wave; keep that work behind the optional dense-fast-path follow-up.
+- [x] Keep `m17` / `m22` copy-helper work deferred rather than landing speculative helper code.
+- [x] Restrict any future fixed-width helper work to the optional dense-only fast-path investigation.
 
 ### J. Static verification
 
-- [ ] Re-run SASS generation after changes.
-- [ ] Re-check `m17` targeted store counts.
-- [ ] Re-check `m22` targeted store counts.
-- [ ] Re-check `lockstep_time_m17` targeted store counts.
-- [ ] Re-check `lockstep_time_m22` targeted store counts.
-- [ ] Re-check `windowed_m17` targeted store counts.
-- [ ] Re-check `windowed_m22` targeted store counts.
-- [ ] Save any new symbol-count summaries as repo artifacts if they are used in review docs.
+- [x] Re-run SASS generation after changes.
+- [x] Re-check `m17` targeted store counts.
+- [x] Re-check `m22` targeted store counts.
+- [x] Re-check `lockstep_time_m17` targeted store counts.
+- [x] Re-check `lockstep_time_m22` targeted store counts.
+- [x] Re-check `windowed_m17` targeted store counts.
+- [x] Re-check `windowed_m22` targeted store counts.
+- [x] Save new symbol-count summaries as repo artifacts.
 
 ### K. Functional verification
 
-- [ ] Check compile-time CUDA symbol loading still succeeds.
-- [ ] Check row-first route still executes.
-- [ ] Check score-first route still executes when intentionally enabled.
-- [ ] Check top-k output ordering and contents.
-- [ ] Check compact-valid-pair output routes.
-- [ ] Check `full17` outputs if modified surfaces touch them.
-- [ ] Check `trade22` outputs if modified surfaces touch them.
+- [x] Check compile-time CUDA symbol loading still succeeds.
+- [x] Check row-first route still executes.
+- [x] Check score-first route still executes when intentionally enabled.
+- [x] Check top-k output ordering and contents.
+- [x] Check compact-valid-pair output routes.
+- [x] Check `full17` outputs if modified surfaces touch them.
+- [x] Check `trade22` outputs if modified surfaces touch them.
 
 ### L. Benchmark and perf verification
 
-- [ ] Run the relevant narrow benchmark surface before changes.
-- [ ] Run the same benchmark surface after changes.
-- [ ] Run shortlist-heavy `xlarge`.
-- [ ] Run GPU perf gate in candidate mode for kernel changes.
-- [ ] Compare route diagnostics to ensure the same logical path was exercised.
-- [ ] Reject changes that only improve a synthetic or unsupported path.
+- [x] Record the existing repo baselines for the narrow benchmark surfaces before comparing post-change runs.
+- [x] Run the same narrow benchmark surfaces after changes.
+- [x] Run shortlist-heavy `xlarge`.
+- [x] Run GPU perf gate in candidate mode for kernel changes.
+- [x] Compare route diagnostics to ensure the same logical path was exercised.
+- [x] Reject changes that only improve a synthetic or unsupported path.
 
 ## Optional late-stage investigations
 
 These are allowed at the end, but they are intentionally lower priority than the validated work above.
+
+### Optional 0: Dense-only row-kernel fast-path wiring
+
+Reason:
+
+- the active row-reader / top-k / gather / pack path is now stride-safe and compile-verified
+- CUDA also contains dense-only row aliases that intentionally keep `row * M` indexing for compact dense buffers
+- those dense aliases are not yet wired from Rust, so the dense fast-path investigation is still incomplete
+
+Task:
+
+- audit whether the dense-only row aliases are still worth using on the current global-head and host-pack buffers
+- if yes, load and launch them only on routes where `metrics_stride == M` is guaranteed by construction
+- keep the current stride-aware path as the fallback and baseline
 
 ### Optional 1: Re-derive the static instruction-count tables from stored repo artifacts
 

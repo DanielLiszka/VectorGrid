@@ -305,6 +305,13 @@ pub(super) fn suggest_batch_summary_path(
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_batch", ts, "json")
 }
 
+pub(super) fn suggest_campaign_summary_path(
+    ts: &str,
+    app: &tauri::AppHandle,
+) -> Result<PathBuf, String> {
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_campaign_summary", ts, "json")
+}
+
 fn suggest_ts_file_path(
     dir: PathBuf,
     prefix: &str,
@@ -1694,7 +1701,7 @@ fn fnv1a64_hex_utf16(s: &str) -> String {
     format!("{h:016x}")
 }
 
-fn compute_config_fingerprint_from_artifact(artifact: &Value) -> String {
+pub(super) fn compute_config_fingerprint_from_artifact(artifact: &Value) -> String {
     let mut run_req = artifact.pointer("/run/req").cloned().unwrap_or(Value::Null);
     if let Value::Object(map) = &mut run_req {
         map.remove("data_id");

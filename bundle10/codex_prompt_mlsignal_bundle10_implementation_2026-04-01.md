@@ -38,7 +38,7 @@ Read these documents before editing code. For this prompt, the older plan/addend
 2. `bundle10/mlsignal_bundle10_plan_addendum_2026-04-01.md`
 3. `gpt54_feature_review_map.md` — especially **section `## 10. ML signal dataset export, score-cache validation, and replay flows`**
 4. `research/ML_SIGNAL_STRATEGY_IMPLEMENTATION_PLAN_2026-03-18.md`
-5. `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md`
+5. `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md`
 
 ### Precedence order when docs conflict
 Use this precedence order:
@@ -49,7 +49,7 @@ Use this precedence order:
 4. `bundle10/mlsignal_bundle10_plan_addendum_2026-04-01.md`
 5. `bundle10/mlsignal_bundle10_full_plan_2026-04-01.md`
 6. `research/ML_SIGNAL_STRATEGY_IMPLEMENTATION_PLAN_2026-03-18.md`
-7. `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md` (**deferred context only**)
+7. `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md` (**deferred context only**)
 
 ### Progress tracker
 Use `bundle10/bundle10_mlsignal_workflow_validated_tracking_checklist.md` as the authoritative progress tracker for this bundle.
@@ -156,7 +156,7 @@ These are the main files that should be considered part of the implementation sc
 ### Read-only compatibility surfaces unless the validated checklist requires a small change
 - `web/src/stores/optimizeStore.ts`
 - `web/src/components/OptimizeWorkspacePanel.vue`
-- `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md`
+- `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md`
 
 ### Benchmarking
 - `crates/app_core/benches/e2e_workflow_ml.rs` (background only; not direct MlSignal coverage)
@@ -171,7 +171,7 @@ These are the main files that should be considered part of the implementation sc
 
 ### Repo docs to update for truthfulness / future readers
 - `research/ML_SIGNAL_STRATEGY_IMPLEMENTATION_PLAN_2026-03-18.md`
-- `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md` (deferred/context notes only if touched)
+- `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md` (deferred/context notes only if touched)
 
 ---
 

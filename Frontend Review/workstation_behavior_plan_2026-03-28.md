@@ -4,13 +4,13 @@ Date: 2026-03-28
 
 Scope: later-phase UX/product plan for the most valid operator-workstation ideas that emerged after the main frontend remediation pass.
 
-Implementation status: complete for the frontend-only workstation scope described here. The remaining desktop-native work still lives in `desktop_productization_plan_2026-03-28.md`.
+Implementation status: complete for the frontend-only workstation scope described here. The remaining desktop-native work still lives in `Unfinished/desktop_productization_plan_2026-03-28.md`.
 
 This plan is intentionally separate from:
 
 - `frontend_audit_2026-03-27.md`, which is now primarily a completed remediation ledger
-- `frontend_followup_evaluation_2026-03-28.md`, which records the completed frontend follow-up work and package decisions
-- `desktop_productization_plan_2026-03-28.md`, which owns Tauri/runtime-native desktop work such as window state, notifications, tray/menu, updater, and CSP/capabilities
+- `Unfinished/frontend_followup_evaluation_2026-03-28.md`, which records the completed frontend follow-up work and package decisions
+- `Unfinished/desktop_productization_plan_2026-03-28.md`, which owns Tauri/runtime-native desktop work such as window state, notifications, tray/menu, updater, and CSP/capabilities
 
 This plan is for higher-level workstation behavior improvements inside the current frontend product surface.
 

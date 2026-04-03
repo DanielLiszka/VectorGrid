@@ -2,6 +2,8 @@
 mod commands_analysis;
 #[path = "commands_artifacts.rs"]
 mod commands_artifacts;
+#[path = "commands_campaign.rs"]
+mod commands_campaign;
 #[path = "commands_data.rs"]
 mod commands_data;
 #[path = "commands_dynamic.rs"]
@@ -39,6 +41,7 @@ pub use commands_artifacts::{
     load_stage5_artifact_replay, open_runs_dir, save_batch_summary, save_run_artifact,
     update_artifact_tags,
 };
+pub use commands_campaign::{run_research_campaign, RunResearchCampaignResponse};
 pub use commands_data::{
     clear_loaded_data, clear_market_data_dir, get_market_data_dir_info, list_dynamic_indicators,
     list_gpu_speedups, list_moving_averages, list_repo_data_csvs, list_sample_csvs,

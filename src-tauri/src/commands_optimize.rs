@@ -55,7 +55,9 @@ impl ta_app_core::progress::ProgressSink for OffsetProgressSink {
     }
 }
 
-fn normalize_product_double_ma_optimization_mode(req: &DoubleMaRequest) -> OptimizationMode {
+pub(crate) fn normalize_product_double_ma_optimization_mode(
+    req: &DoubleMaRequest,
+) -> OptimizationMode {
     let grid_outputs_requested = req.include_all.unwrap_or(false)
         || req.heatmap_bins.unwrap_or(0) > 0
         || req
@@ -71,7 +73,9 @@ fn normalize_product_double_ma_optimization_mode(req: &DoubleMaRequest) -> Optim
     }
 }
 
-fn normalize_product_composite_cpu_optimization_mode(_mode: OptimizationMode) -> OptimizationMode {
+pub(crate) fn normalize_product_composite_cpu_optimization_mode(
+    _mode: OptimizationMode,
+) -> OptimizationMode {
     OptimizationMode::Grid
 }
 

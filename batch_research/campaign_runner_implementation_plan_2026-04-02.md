@@ -33,6 +33,56 @@ The recommended architecture is:
 
 This gives us a single product surface, a single orchestration owner, reuse of current stage logic, and a narrow performance specialization where it is most likely to pay off.
 
+## Progress Tracking
+
+Status snapshot as of 2026-04-02 after the checkpoint / resume slice.
+
+### Phase 0 status: completed
+
+- [x] classify each discovered backend batch remnant as reuse directly, reference only, migration compatibility only, or removal candidate
+- [x] decide that `vectorgrid_batch_summary` needs temporary compatibility with `vectorgrid_campaign_summary`
+- [x] review meta scan ignore rules so old and new summary names are both handled intentionally during migration
+- [x] confirm that dev-only workflow harnesses remain verification-only and are not called by product code
+
+### Phase 1 status: completed
+
+- [x] add campaign request / progress / summary types
+- [x] add `run_research_campaign`
+- [x] keep the existing `Meta -> Batch` UI shell as the entry point
+- [x] move dataset iteration into the backend and keep execution sequential in v1
+- [x] wire one-click optimize -> validate -> optional meta -> optional Stage 5 through the backend command
+- [x] add backend campaign progress events and frontend task-center visibility
+
+### Phase 2 status: in progress
+
+- [x] remove the current frontend strategy restriction in the batch flow
+- [x] route the campaign runner through the resolved optimization template built by the frontend
+- [x] add backend validation request builders for DoubleMa-family and Composite-family validation
+- [ ] verify the full strategy matrix against all strategy routes that already work in single-run mode
+
+### Phase 3 status: in progress
+
+- [x] add optimization fingerprint use for skip logic
+- [x] add validation fingerprint use for skip logic
+- [x] add campaign-summary compatibility handling in the frontend
+- [x] add retry-failed behavior that preserves the original dataset selection semantics
+- [x] write checkpoint updates while a campaign is still running instead of only writing the final summary
+- [x] add resume-incomplete behavior from a saved campaign summary artifact
+- [ ] verify resume behavior across interruption scenarios beyond the same-session / last-summary path
+
+### Phase 4 status: in progress
+
+- [x] add a batch-local dataset preparation path in the backend
+- [x] host-preload the next dataset while the current dataset is running
+- [x] keep the interactive loaded-dataset state untouched during campaign execution
+- [ ] measure and document inter-dataset idle-time reduction with the relevant perf gates
+
+### Phase 5 status: not started
+
+- [ ] add a batch-only CUDA staging path for plain `DoubleMa`
+- [ ] add capability gating and automatic fallback for the staging path
+- [ ] validate a real throughput benefit on the kernel-backed route
+
 ## Goals
 
 - Support a one-click workflow over many datasets for the strategies already supported by the app.

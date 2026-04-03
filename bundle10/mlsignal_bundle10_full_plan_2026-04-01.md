@@ -80,7 +80,7 @@ It also includes the current shell bridge where `MlSignal` is mounted as a speci
 
 ### Context docs
 - `ML_SIGNAL_STRATEGY_IMPLEMENTATION_PLAN_2026-03-18.md`
-- `mlsignal_mode_separation_plan_2026-03-31.md`
+- `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md`
 - `gpt54_feature_review_map.md`
 
 ---
@@ -340,7 +340,7 @@ The most important technical observations are:
 
 - **Severity:** medium  
 - **Type:** maintainability / workflow model  
-- **Location:** `web/src/stores/optimizeStore.ts`; `web/src/components/OptimizeWorkspacePanel.vue`; `web/src/components/MlSignalWorkspacePanel.vue`; `mlsignal_mode_separation_plan_2026-03-31.md`  
+- **Location:** `web/src/stores/optimizeStore.ts`; `web/src/components/OptimizeWorkspacePanel.vue`; `web/src/components/MlSignalWorkspacePanel.vue`; `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md`  
 - **Timing boundary affected:** app-path / workflow state  
 - **Why it matters:**  
   `MlSignal` is already a staged alternative workflow in both copy and code path, but it still rides on `strategyKind === "MlSignal"` and shared optimize actions. That drift will continue to confuse users and contributors.
@@ -2294,7 +2294,7 @@ That matches both the current code reality and the deferred separation plan with
 - [ ] Note that raw-only caches are rejected.
 - [ ] Note that the current optimize-surface bridge is temporary.
 
-## Context docs: `mlsignal_mode_separation_plan_2026-03-31.md`
+## Context docs: `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md`
 - [ ] Add entry criteria for mode split:
   - [ ] dataset export artifact persistence is fixed,
   - [ ] ML validation/sweep replay is deterministic,

@@ -118,6 +118,7 @@ const {
   canBatchSelectAll,
   canBatchSelectNone,
   canBatchRetryFailed,
+  canBatchResumeIncomplete,
   canBatchRevealSummary,
   metaSavedSearch,
   metaSavedOptions,
@@ -847,6 +848,7 @@ onBeforeUnmount(() => {
           <button type="button" :disabled="!canBatchSelectAll" @click="runAction(() => analysisStore.batchSelectAll())">All</button>
           <button type="button" :disabled="!canBatchSelectNone" @click="runAction(() => analysisStore.batchSelectNone())">None</button>
           <button type="button" :disabled="!canBatchRetryFailed" @click="runAction(() => analysisStore.batchRetryFailed())">Retry failed</button>
+          <button type="button" :disabled="!canBatchResumeIncomplete" @click="runAction(() => analysisStore.batchResumeIncomplete())">Resume incomplete</button>
           <button type="button" :disabled="!canBatchRevealSummary" @click="runAction(() => analysisStore.batchRevealSummary())">Reveal summary</button>
         </div>
 

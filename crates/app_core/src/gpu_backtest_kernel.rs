@@ -5608,6 +5608,7 @@ fn pack_metric_rows_for_host_copy<'a>(
     metrics_rows_ptr: cuda_sys::CUdeviceptr,
     rows: usize,
     metrics_count: usize,
+    metrics_stride: usize,
     host_out: &'a mut HostTransferScratchF32,
     launch_submit_elapsed: &mut Duration,
     d2h_copy_elapsed: &mut Duration,
@@ -5623,6 +5624,7 @@ fn pack_metric_rows_for_host_copy<'a>(
             let mut metrics_ptr = metrics_rows_ptr;
             let mut rows_i = rows as i32;
             let mut m_i = metrics_count as i32;
+            let mut metrics_stride_i = metrics_stride as i32;
             let mut out_ptr = scratch
                 .d_top_packed
                 .as_ref()
@@ -5637,6 +5639,7 @@ fn pack_metric_rows_for_host_copy<'a>(
                 &mut metrics_ptr as *mut _ as *mut c_void,
                 &mut rows_i as *mut _ as *mut c_void,
                 &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
             launch_kernel_timed(
@@ -6481,6 +6484,7 @@ fn reduce_metric_rows_topk_on_device(
     rows_metrics: &DeviceBuffer<f32>,
     rows_len: usize,
     metrics_count: usize,
+    metrics_stride: usize,
     objective_i: i32,
     hurdle_tau: f32,
     topk_select: usize,
@@ -6506,6 +6510,7 @@ fn reduce_metric_rows_topk_on_device(
         let mut metrics_ptr = rows_metrics.as_device_ptr().as_raw();
         let mut rows_i = rows_len as i32;
         let mut m_i = metrics_count as i32;
+        let mut metrics_stride_i = metrics_stride as i32;
         let mut obj_i = objective_i;
         let mut hurdle_tau_i = hurdle_tau;
         let mut topk_i = topk_select as i32;
@@ -6542,6 +6547,7 @@ fn reduce_metric_rows_topk_on_device(
                 &mut metrics_ptr as *mut _ as *mut c_void,
                 &mut rows_i as *mut _ as *mut c_void,
                 &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
                 &mut obj_i as *mut _ as *mut c_void,
                 &mut hurdle_tau_i as *mut _ as *mut c_void,
                 &mut topk_i as *mut _ as *mut c_void,
@@ -6586,6 +6592,7 @@ fn reduce_metric_rows_topk_on_device(
                 &mut metrics_ptr as *mut _ as *mut c_void,
                 &mut rows_i as *mut _ as *mut c_void,
                 &mut m_i as *mut _ as *mut c_void,
+                &mut metrics_stride_i as *mut _ as *mut c_void,
                 &mut obj_i as *mut _ as *mut c_void,
                 &mut hurdle_tau_i as *mut _ as *mut c_void,
                 &mut topk_i as *mut _ as *mut c_void,
@@ -6613,6 +6620,7 @@ fn reduce_metric_rows_topk_on_device(
             let mut metrics_ptr = rows_metrics.as_device_ptr().as_raw();
             let mut rows_i = rows_len as i32;
             let mut m_i = metrics_count as i32;
+            let mut metrics_stride_i = metrics_stride as i32;
             let mut obj_i = objective_i;
             let mut hurdle_tau_i = hurdle_tau;
             let mut topk_i = topk_select as i32;
@@ -6659,6 +6667,7 @@ fn reduce_metric_rows_topk_on_device(
                     &mut metrics_ptr as *mut _ as *mut c_void,
                     &mut rows_i as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
+                    &mut metrics_stride_i as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
                     &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
@@ -6706,6 +6715,7 @@ fn reduce_metric_rows_topk_on_device(
                     &mut metrics_ptr as *mut _ as *mut c_void,
                     &mut rows_i as *mut _ as *mut c_void,
                     &mut m_i as *mut _ as *mut c_void,
+                    &mut metrics_stride_i as *mut _ as *mut c_void,
                     &mut obj_i as *mut _ as *mut c_void,
                     &mut hurdle_tau_i as *mut _ as *mut c_void,
                     &mut topk_i as *mut _ as *mut c_void,
@@ -6733,6 +6743,7 @@ fn reduce_metric_rows_topk_on_device(
         let mut metrics_ptr = rows_metrics.as_device_ptr().as_raw();
         let mut rows_i = rows_len as i32;
         let mut m_i = metrics_count as i32;
+        let mut metrics_stride_i = metrics_stride as i32;
         let mut fast_ptr = rows_fast.as_device_ptr().as_raw();
         let mut slow_ptr = rows_slow.as_device_ptr().as_raw();
         let mut top_ptr = if in_is_a {
@@ -6766,6 +6777,7 @@ fn reduce_metric_rows_topk_on_device(
             &mut metrics_ptr as *mut _ as *mut c_void,
             &mut rows_i as *mut _ as *mut c_void,
             &mut m_i as *mut _ as *mut c_void,
+            &mut metrics_stride_i as *mut _ as *mut c_void,
             &mut fast_ptr as *mut _ as *mut c_void,
             &mut slow_ptr as *mut _ as *mut c_void,
             &mut top_ptr as *mut _ as *mut c_void,
@@ -6794,6 +6806,7 @@ fn score_metric_rows_for_objective_on_device(
     scratch: &mut KernelScratch,
     rows: usize,
     metrics_count: usize,
+    metrics_stride: usize,
     objective_i: i32,
     hurdle_tau: f32,
     score_metric_rows: &cust::function::Function<'_>,
@@ -6814,6 +6827,7 @@ fn score_metric_rows_for_objective_on_device(
             .as_raw();
         let mut rows_i = rows as i32;
         let mut m_i = metrics_count as i32;
+        let mut metrics_stride_i = metrics_stride as i32;
         let mut obj_i = objective_i;
         let mut hurdle_tau_i = hurdle_tau;
         let mut out_ptr = scratch
@@ -6828,6 +6842,7 @@ fn score_metric_rows_for_objective_on_device(
             &mut metrics_ptr as *mut _ as *mut c_void,
             &mut rows_i as *mut _ as *mut c_void,
             &mut m_i as *mut _ as *mut c_void,
+            &mut metrics_stride_i as *mut _ as *mut c_void,
             &mut obj_i as *mut _ as *mut c_void,
             &mut hurdle_tau_i as *mut _ as *mut c_void,
             &mut out_ptr as *mut _ as *mut c_void,
@@ -7178,6 +7193,7 @@ fn merge_current_topk_rows_into_global_head(
     global_rows_len: &mut usize,
     global_rows_cap: usize,
     metrics_count: usize,
+    metrics_stride: usize,
     objective_i: i32,
     hurdle_tau: f32,
     topk_select: usize,
@@ -7297,6 +7313,7 @@ fn merge_current_topk_rows_into_global_head(
         global_metrics,
         *global_rows_len,
         metrics_count,
+        metrics_stride,
         objective_i,
         hurdle_tau,
         topk_select,
@@ -12085,12 +12102,14 @@ fn optimize_double_ma_gpu_kernel_impl(
         .get_function("select_topk_from_candidates_tm_f32_v2")
         .ok();
     let _score_metric_rows = bt_module.get_function("score_metric_rows_f32").ok();
+    // These selectors still derive scores from metric rows inside CUDA.
     let select_topk_scored_pairs = bt_module
         .get_function("select_topk_scored_pairs_tm_f32")
         .ok();
     let select_topk_scored_pairs_v2 = bt_module
         .get_function("select_topk_scored_pairs_tm_f32_v2")
         .ok();
+    // This is the actual pre-scored candidate selector.
     let select_topk_scored_candidates = bt_module
         .get_function("select_topk_scored_candidates_tm_f32")
         .ok();
@@ -12378,6 +12397,9 @@ fn optimize_double_ma_gpu_kernel_impl(
         && select_topk_rows_legacy.is_some()
         && select_topk_rows_candidates_legacy.is_some()
         && gather_topk_rows.is_some();
+    // "score-first" here still relies on the metric-scored pair selector to produce compact
+    // per-tile candidates. The true pre-scored reduction path starts at
+    // `select_topk_scored_candidates_tm_f32` once those scores already exist.
     let score_first_topk_supported = select_topk_scored_pairs.is_some()
         && select_topk_scored_candidates.is_some()
         && select_topk_scored_rows.is_some()
@@ -14356,6 +14378,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             &mut global_rows_len,
                             global_rows_cap,
                             metrics_count,
+                            metrics_count,
                             objective_i,
                             hurdle_tau,
                             topk_select,
@@ -14424,6 +14447,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                                 head_global_metrics,
                                 &mut head.global_rows_len,
                                 global_rows_cap,
+                                metrics_count,
                                 metrics_count,
                                 head.objective_i,
                                 hurdle_tau,
@@ -14604,6 +14628,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                             .as_raw(),
                         topk_select,
                         metrics_count,
+                        metrics_count,
                         &mut top_packed_host,
                         &mut launch_submit_elapsed,
                         &mut d2h_copy_elapsed,
@@ -14696,6 +14721,7 @@ fn optimize_double_ma_gpu_kernel_impl(
                 rows_slow.as_device_ptr().as_raw(),
                 rows_metrics.as_device_ptr().as_raw(),
                 topk_select,
+                metrics_count,
                 metrics_count,
                 &mut top_packed_host,
                 &mut launch_submit_elapsed,

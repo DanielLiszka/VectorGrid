@@ -345,6 +345,8 @@ fn is_known_non_run_artifact_filename(name: &str) -> bool {
         || trimmed.starts_with("vectorgrid_ml_confidence_eval_")
         || trimmed.starts_with("vectorbt_batch_summary_")
         || trimmed.starts_with("vectorgrid_batch_summary_")
+        || trimmed.starts_with("vectorbt_campaign_summary_")
+        || trimmed.starts_with("vectorgrid_campaign_summary_")
 }
 
 fn load_meta_artifacts_with_paths_blocking(
@@ -1504,7 +1506,7 @@ fn run_ml_confidence_policy_evaluation_blocking(
     })
 }
 
-fn run_meta_stage4_experimental_blocking(
+pub(super) fn run_meta_stage4_experimental_blocking(
     req: MetaStage4Request,
     app: tauri::AppHandle,
 ) -> Result<RunMetaStage4Response, String> {
@@ -1963,7 +1965,7 @@ fn suggest_meta_report_path(
     Ok(path)
 }
 
-fn run_meta_selection_blocking(
+pub(super) fn run_meta_selection_blocking(
     mut req: MetaSelectionRequest,
     app: tauri::AppHandle,
     cancel: Arc<AtomicBool>,

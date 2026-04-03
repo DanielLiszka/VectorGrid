@@ -71,7 +71,7 @@ These are still valid, but they were intentionally left out of the current pass:
 
 Adopted desktop UX decisions are tracked separately in:
 
-- [desktop_ux_decisions_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_ux_decisions_2026-03-28.md)
+- [desktop_ux_decisions_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\Unfinished\desktop_ux_decisions_2026-03-28.md)
 
 ## Notes
 

@@ -17,7 +17,7 @@ Implementation summary:
 
 This document is intentionally narrower than:
 
-- [desktop_productization_plan_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_productization_plan_2026-03-28.md)
+- [desktop_productization_plan_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\Unfinished\desktop_productization_plan_2026-03-28.md)
 - [existing_stack_utilization_plan_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\existing_stack_utilization_plan_2026-03-28.md)
 
 It exists because startup animation has a different failure mode than ordinary shell polish:

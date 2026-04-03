@@ -22,17 +22,17 @@ Do not treat this as the full implementation spec. Use it together with:
 - `RELEASE.md` for build/release/PTX packaging notes
 - `web/README.md` for frontend runtime notes
 - `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
-- `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
-- `Frontend Review/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan, completed phases, and open checklist
+- `Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
+- `Frontend Review/Unfinished/desktop_productization_plan_2026-03-28.md` for the current desktop-native productization plan, completed phases, and open checklist
 - `Frontend Review/desktop_e2e_testing_plan_2026-03-29.md` for the Windows-first `WebdriverIO + tauri-driver` desktop smoke implementation spec, implemented harness status, and current verification notes
 - `Frontend Review/testing_layer_expansion_plan_2026-03-30.md` for the implemented testing-layer expansion record covering frontend `mockIPC`, Rust mock-runtime coverage, and narrow desktop smoke hardening after the first-wave WDIO harness
 - `Frontend Review/desktop_capability_inventory_2026-03-28.md` for the current desktop capability/window-label inventory
 - `Frontend Review/desktop_plugin_inventory_2026-03-28.md` for the adopted/deferred desktop plugin record
-- `Frontend Review/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase
+- `Frontend Review/Unfinished/desktop_ux_decisions_2026-03-28.md` for the adopted vs deferred desktop-shell UX decisions in the current productization phase
 - `Frontend Review/workstation_behavior_plan_2026-03-28.md` for the completed workstation UX implementation record (perspectives, compare workflows, provenance, stale-state cues, density, bundle discipline)
 - `Frontend Review/existing_stack_utilization_plan_2026-03-28.md` for the current open plan to get more product value out of the stack already installed in `web/package.json` and the adopted desktop plugins
 - `Frontend Review/startup_animation_plan_2026-03-30.md` for the implemented first-wave in-window startup animation record, verification notes, and remaining optional follow-ups using the existing VectorAlpha brand assets
-- `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md` for the deferred plan to split `MlSignal` into a discrete user mode while keeping the conventional optimization workflow as the default shell mode
+- `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md` for the deferred plan to split `MlSignal` into a discrete user mode while keeping the conventional optimization workflow as the default shell mode
 - `Frontend Review/svg_generation_prompts_2026-03-28.md` for the paste-ready GPT-5.4 Pro prompts used to generate the proposed custom SVG asset set
 
 ## How To Use This Map

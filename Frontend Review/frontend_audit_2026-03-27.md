@@ -83,7 +83,7 @@ The findings below capture the original audit snapshot. The codebase has moved m
 - the app shell now async-loads non-blocking overlays such as the runtime banner, command palette, task center, and workflow quick switch, and the Vite build now splits framework/ui/utility vendor code out of the main entry chunk
 
 The completed remediation checklist in this file is now historical. The active open next-phase checklist lives in
-`Frontend Review/frontend_followup_evaluation_2026-03-28.md`.
+`Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md`.
 
 The remaining work is now optional follow-up rather than checklist debt: deeper table/form architecture upgrades, any later Figma mirroring once connector access is restored, and future visual refinement beyond the current implementation target.
 
@@ -627,7 +627,7 @@ These items are intentionally outside the completed remediation checklist above.
 - [x] Evaluate restrained motion helpers such as `@vueuse/motion` or `@formkit/auto-animate` only for targeted overlay, disclosure, and small-list transitions where they improve hierarchy without affecting dense tables or reduced-motion users.
 - [x] Add dev-only bundle-discipline tooling such as `rollup-plugin-visualizer` before any major package adoption so bundle-size regressions are measurable rather than anecdotal.
 
-See `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the repo-grounded adopt / defer / reject decisions behind these checks.
+See `Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md` for the repo-grounded adopt / defer / reject decisions behind these checks.
 
 ### Keyboard-First Regression Gates
 
@@ -672,7 +672,7 @@ These are valid product-quality opportunities, but they should remain a separate
 - [x] If logging/diagnostics is added, expose it through a clear in-app diagnostics surface rather than treating log plumbing as invisible infrastructure.
 - [x] Evaluate updater UX only after release/signing workflow is real, with the expectation that it should surface as an intentional in-app update flow rather than an opaque background mechanism.
 
-See `Frontend Review/frontend_followup_evaluation_2026-03-28.md` for the current defer / later-scope decisions in this track.
+See `Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md` for the current defer / later-scope decisions in this track.
 
 Not added intentionally from the external guide because they are not current UI/UX priorities for this repo:
 

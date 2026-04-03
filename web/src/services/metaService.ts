@@ -1,17 +1,14 @@
 import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { markRaw } from 'vue'
+import { listenEvent } from '../tauri/events'
 import { invokeCommand } from '../tauri/invoke'
-import { applyTimeframe as applyDataTimeframe, loadCsv as loadDataCsv } from './dataService'
-import { buildOptimizationRequestFromVueStores, runOptimization } from './optimizeService'
-import { runValidation } from './validationService'
+import { buildOptimizationRequestFromVueStores } from './optimizeService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
-import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
-import { applyWorkflowArtifactsPayload, useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { LAST_BATCH_SUMMARY_KEY } from '../utils/core/storageKeys'
-import { computeConfigFingerprint, defaultBatchTag, dedupTags, splitHoldoutPaths } from '../utils/core/artifactIdentity'
+import { defaultBatchTag, dedupTags, splitHoldoutPaths } from '../utils/core/artifactIdentity'
 import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
 import { formatUiCount, formatUtcDateFromUnixMs } from '../utils/uiFormat'
 import { buildMetaBatchRequest } from './metaBatchRequestBuilder'
@@ -167,7 +164,6 @@ let SAVED_META: Record<string, unknown>[] = []
 let SAVED_STAGE4: Record<string, unknown>[] = []
 let SAVED_POLICY_EVAL: Record<string, unknown>[] = []
 let BATCH_RUNNING = false
-let BATCH_STOP_REQUESTED = false
 let BATCH_DATASETS_CACHE: BatchDatasetEntry[] = []
 let BATCH_SELECTED_PATHS = new Set<string>()
 let BATCH_SELECTED_PATHS_READY = false
@@ -310,18 +306,6 @@ function getOptimizeStore() {
   const pinia = resolveRuntimePinia()
   if (!pinia) return null
   return useOptimizeStore(pinia)
-}
-
-function getValidationStore() {
-  const pinia = resolveRuntimePinia()
-  if (!pinia) return null
-  return useValidationStore(pinia)
-}
-
-function getWorkflowArtifactsState() {
-  const pinia = resolveRuntimePinia()
-  if (!pinia) return null
-  return useWorkflowArtifactsStore(pinia)
 }
 
 function patchAnalysisStore(patch: Record<string, unknown>): void {
@@ -1453,14 +1437,66 @@ function normalizeRowsHint(value: unknown): string {
   return formatUiCount(value)
 }
 
+function batchSummaryItems(summary: Record<string, unknown>): Record<string, unknown>[] {
+  const items = asRecordArray(summary.items)
+  if (items.length > 0) return items
+  const results = asRecord(summary.results)
+  return asRecordArray(results?.failed)
+}
+
+function batchSummaryFailedPaths(summary: Record<string, unknown>): string[] {
+  const items = batchSummaryItems(summary)
+  const failed = items
+    .filter((item) => normalizeText(item.status).toLowerCase() === 'failed' || normalizeText(item.error).length > 0)
+    .map((item) => normalizePath(item.csv_path ?? item.path))
+    .filter((path) => path.length > 0)
+  if (failed.length > 0) return failed
+
+  const results = asRecord(summary.results)
+  return asRecordArray(results?.failed)
+    .map((item) => normalizePath(item.csv_path ?? item.path))
+    .filter((path) => path.length > 0)
+}
+
+function batchSummarySelectedPaths(summary: Record<string, unknown>): string[] {
+  const request = asRecord(summary.request)
+  const datasets = Array.isArray(request?.datasets) ? (request?.datasets as unknown[]) : []
+  const fromRequest = datasets
+    .map((item) => normalizePath(asRecord(item)?.csv_path))
+    .filter((path) => path.length > 0)
+  if (fromRequest.length > 0) return fromRequest
+  return Array.isArray(summary.selected_paths) ? summary.selected_paths.map((item) => normalizePath(item)).filter((path) => path.length > 0) : []
+}
+
+function batchSummaryPrimaryTag(summary: Record<string, unknown>): string {
+  const tags = Array.isArray(summary.tags) ? dedupTags(summary.tags) : []
+  if (tags.length > 0) return normalizeText(tags[0])
+  return normalizeText(summary.batch_tag)
+}
+
+function batchSummaryRequest(summary: Record<string, unknown>): Record<string, unknown> | null {
+  return asRecord(summary.request)
+}
+
+function batchCanResumeIncomplete(summary: Record<string, unknown>): boolean {
+  if (!batchSummaryRequest(summary)) return false
+  const state = normalizeText(summary.state).toLowerCase()
+  if (state === 'running' || state === 'cancelled' || state === 'failed') return true
+  if (state === 'completed_with_failures' || state === 'completed_with_warnings') return true
+  if (!state) {
+    const counts = asRecord(summary.counts)
+    return normalizeBoolean(counts?.cancelled) || batchSummaryFailedPaths(summary).length > 0
+  }
+  return false
+}
+
 function batchFailedCount(): number {
   const summary = LAST_BATCH_SUMMARY?.summary
   if (!summary) return 0
   const counts = asRecord(summary.counts)
   const failed = Number(counts?.failed)
   if (Number.isFinite(failed) && failed > 0) return Math.max(0, Math.floor(failed))
-  const results = asRecord(summary.results)
-  return Array.isArray(results?.failed) ? results.failed.length : 0
+  return batchSummaryFailedPaths(summary).length
 }
 
 function syncBatchButtons(): void {
@@ -1472,6 +1508,7 @@ function syncBatchButtons(): void {
     canBatchSelectAll: !BATCH_RUNNING,
     canBatchSelectNone: !BATCH_RUNNING,
     canBatchRetryFailed: !BATCH_RUNNING && batchFailedCount() > 0,
+    canBatchResumeIncomplete: !BATCH_RUNNING && !!LAST_BATCH_SUMMARY?.summary && batchCanResumeIncomplete(LAST_BATCH_SUMMARY.summary),
     canBatchRevealSummary: !BATCH_RUNNING && hasSummaryPath
   })
 }
@@ -1638,7 +1675,7 @@ async function loadLastBatchSummaryFromDisk(): Promise<void> {
       path
     })) as unknown
     const row = asRecord(artifact)
-    if (!row || !['vectorbt_batch_summary', 'vectorgrid_batch_summary'].includes(normalizeText(row.kind))) return
+    if (!row || !['vectorbt_batch_summary', 'vectorgrid_batch_summary', 'vectorgrid_campaign_summary'].includes(normalizeText(row.kind))) return
     setBatchSummaryState(row, path)
   } catch {
     // Best-effort hydration only.
@@ -1725,47 +1762,41 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
   }
 }
 
-async function tryBuildBatchConfigFingerprint(): Promise<string> {
-  try {
-    const runReq = await buildOptimizationRequestFromVueStores()
-    return computeConfigFingerprint(runReq, buildValidationFingerprintReq(runReq))
-  } catch {
-    return ''
-  }
-}
-
-async function applyRunTags(tags: string[]): Promise<void> {
-  const workflowArtifacts = getWorkflowArtifactsState()
-  const run = workflowArtifacts?.currentRun
-  if (!workflowArtifacts || !run) return
-
-  applyWorkflowArtifactsPayload(
-    {
-      currentRun: {
-        ts: run.ts,
-        artifact_path: run.artifactPath,
-        report_xlsx_path: run.reportXlsxPath,
-        csv_path: run.csvPath,
-        dataset_meta: run.datasetMeta,
-        ml_signal: run.mlSignal,
-        tags,
-        req: run.req,
-        res: run.res
-      },
-      currentValidation: workflowArtifacts.currentValidation
-        ? {
-            ts: workflowArtifacts.currentValidation.ts,
-            req: workflowArtifacts.currentValidation.req,
-            res: workflowArtifacts.currentValidation.res
-          }
-        : null
-    },
-    'vue'
-  )
-
-  const artifactPath = normalizePath(run.artifactPath)
-  if (artifactPath) {
-    await invokeCommand('update_artifact_tags', { path: artifactPath, tags })
+function buildValidationCampaignConfig(runReq: Record<string, unknown>): Record<string, unknown> {
+  const validation = readPiniaStoreRecord('validation')
+  const base = buildValidationFingerprintReq(runReq)
+  const reoptWfEnable = normalizeBoolean(validation?.reoptWfEnable)
+  const reoptWfWindow = Math.max(64, Math.floor(Number(validation?.reoptWfWindow || 20000)))
+  const reoptWfStep = Math.max(1, Math.floor(Number(validation?.reoptWfStep || 20000)))
+  const reoptWfTopN = Math.max(1, Math.floor(Number(validation?.reoptWfTopN || 8)))
+  const spaEnable = normalizeBoolean(validation?.spaEnable)
+  const spaSlices = Math.max(4, Math.floor(Number(validation?.spaSlices || 16)))
+  const spaBootstrapSamples = Math.max(100, Math.floor(Number(validation?.spaBootstrapSamples || 500)))
+  const spaBlockLength = Math.max(1, Math.floor(Number(validation?.spaBlockLength || 4)))
+  const minCscvOosRankFrac = normalizeProbability(validation?.minCscvRank)
+  const minCscvOosMetricRaw = Number(validation?.minCscvMetric)
+  const minCscvOosMetric = Number.isFinite(minCscvOosMetricRaw) ? minCscvOosMetricRaw : null
+  const maxPbo = normalizeProbability(validation?.maxPbo)
+  return {
+    ...base,
+    reopt_walk_forward: reoptWfEnable
+      ? {
+          window_bars: reoptWfWindow,
+          step_bars: reoptWfStep,
+          top_n_candidates: reoptWfTopN
+        }
+      : null,
+    spa: spaEnable
+      ? {
+          slices: spaSlices,
+          bootstrap_samples: spaBootstrapSamples,
+          block_length: spaBlockLength,
+          benchmark: 'buy_hold'
+        }
+      : null,
+    min_cscv_oos_rank_frac: minCscvOosRankFrac,
+    min_cscv_oos_metric: minCscvOosMetric,
+    max_pbo: maxPbo
   }
 }
 
@@ -1780,44 +1811,12 @@ async function refreshSavedRunCount(): Promise<void> {
   }
 }
 
-async function loadBatchDataset(path: string): Promise<{ timeframe: string }> {
-  const dataStore = getDataStore()
-  const loaded = await loadDataCsv(path)
-  dataStore?.applyLoadResult(loaded, {
-    treatAsBase: true,
-    statusLine: loaded.cacheHit ? 'Loaded (binary cache).' : loaded.cachePath ? 'Loaded (CSV parsed + cached).' : 'Loaded.'
-  })
-  return {
-    timeframe: normalizeText(loaded.meta?.timeframe)
-  }
-}
-
-async function maybeApplyBatchTimeframe(timeframe: string): Promise<{ timeframe: string }> {
-  const target = normalizeText(timeframe)
-  if (!target) return { timeframe: '' }
-  const dataStore = getDataStore()
-  const baseId = normalizeText(dataStore?.baseDataId || dataStore?.dataId)
-  if (!baseId) return { timeframe: '' }
-  const loaded = await applyDataTimeframe(target, baseId)
-  dataStore?.applyLoadResult(loaded, {
-    treatAsBase: false,
-    statusLine: loaded.cacheHit ? `Using ${target} (cached).` : `Using ${target}.`
-  })
-  return {
-    timeframe: normalizeText(loaded.meta?.timeframe || target)
-  }
-}
-
 export function refreshBatchDatasetView(): void {
   renderBatchDatasetList('')
 }
 
 export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void> {
-  const validationStore = getValidationStore()
-  const prevAutoRun = !!validationStore?.autoRun
-  const prevAutoExportXlsx = !!validationStore?.autoExportXlsx
-  const prevAutoRevealReport = !!validationStore?.autoRevealReport
-
+  let offCampaignProgress: (() => void) | null = null
   try {
     if (BATCH_RUNNING) return
 
@@ -1831,15 +1830,17 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
     }
 
     const optimizeStore = getOptimizeStore()
-    const strategyKind = normalizeStrategyKind(optimizeStore?.strategyKind)
-    if (strategyKind !== 'CompositeCpu' && strategyKind !== 'CompositeMo' && strategyKind !== 'Vcet') {
-      setStatusLine('Batch runs currently support Composite strategies only (Composite [CPU], Composite [CPU + MO], or VCET).')
-      return
-    }
+    const strategyKind = normalizeStrategyKind(req?.strategy_kind ?? optimizeStore?.strategyKind)
 
     await ensureBatchDatasetsLoaded()
 
-    const selectedPaths = Array.isArray(req?.selected_paths) ? (req!.selected_paths as unknown[]) : readBatchSelectedPaths()
+    const selectedPaths = Array.isArray(req?.selected_paths)
+      ? (req!.selected_paths as unknown[])
+      : Array.isArray(req?.datasets)
+        ? (req!.datasets as unknown[])
+            .map((entry) => normalizePath(asRecord(entry)?.csv_path))
+            .filter((entry) => entry.length > 0)
+        : readBatchSelectedPaths()
     const normalizedSelected = selectedPaths.map((entry) => normalizePath(entry)).filter((entry) => entry.length > 0)
     setBatchSelectedPaths(normalizedSelected)
     renderBatchDatasetList('')
@@ -1853,7 +1854,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
     const holdoutPct = Number.isFinite(holdoutPctRaw) ? Math.max(0, Math.min(50, holdoutPctRaw)) : 0
     const holdoutTag = normalizeText(req?.holdout_tag ?? readStoreTextInputValue('batchHoldoutTag')) || 'holdout'
     const autoMeta = normalizeBoolean(req?.auto_meta ?? readStoreCheckboxValue('batchAutoMeta'))
-    const skipDone = normalizeBoolean(req?.skip_done ?? readStoreCheckboxValue('batchSkipDone'))
+    const skipDone = normalizeBoolean(req?.skip_done ?? req?.skip_existing ?? readStoreCheckboxValue('batchSkipDone'))
     let baseTags = dedupTags(Array.isArray(req?.tags) ? req?.tags : parseTagsInput(readStoreTextInputValue('batchTags')))
     if (baseTags.length === 0) baseTags = [defaultBatchTag()]
     const primaryTag = normalizeText(baseTags[0])
@@ -1875,7 +1876,7 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
     }
 
     const dataStore = getDataStore()
-    const tfOverride = normalizeText(dataStore?.dataTimeframe)
+    const tfOverride = normalizeText(req?.timeframe_override ?? dataStore?.dataTimeframe)
     const hasTfOverride = tfOverride.length > 0
     const selectedTimeframes = new Set<string>()
     for (const selectedPath of normalizedSelected) {
@@ -1891,255 +1892,140 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
     }
 
     let expectedTimeframe = hasTfOverride ? tfOverride : selectedTimeframes.size === 1 ? Array.from(selectedTimeframes)[0] : ''
+    const autoStage5 = normalizeBoolean(req?.auto_stage5 ?? false)
 
     BATCH_RUNNING = true
-    BATCH_STOP_REQUESTED = false
     syncBatchButtons()
     setBatchSummaryState(null, '')
-
-    if (validationStore) {
-      validationStore.autoRun = false
-      validationStore.autoExportXlsx = false
-      validationStore.autoRevealReport = false
-    }
-
-    const batchTs = new Date().toISOString()
-    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const n = normalizedSelected.length
     const split = splitHoldoutPaths(normalizedSelected, holdoutPct, primaryTag || '0')
     const holdoutSet = new Set(Array.isArray(split.holdout) ? split.holdout : [])
     const batchTimeframes = new Set<string>()
     if (expectedTimeframe) batchTimeframes.add(expectedTimeframe)
+    updateBatchMeta(`running campaign 0/${n}`)
+    setStatusLine(`Running campaign across ${n} dataset${n === 1 ? '' : 's'}…`)
+    try {
+      offCampaignProgress = await listenEvent('research_campaign_progress', (payload) => {
+        const row = asRecord(payload)
+        const summaryPath = normalizePath(row?.summaryJsonPath ?? row?.summary_json_path)
+        if (summaryPath) writeStorageString(LAST_BATCH_SUMMARY_KEY, summaryPath)
+      })
+    } catch {
+      offCampaignProgress = null
+    }
 
-    let expectedFingerprint = await tryBuildBatchConfigFingerprint()
-    if (!expectedFingerprint && skipDone) {
-      try {
-        const firstPath = normalizePath(normalizedSelected[0])
-        if (firstPath) {
-          await loadBatchDataset(firstPath)
-          if (hasTfOverride) await maybeApplyBatchTimeframe(tfOverride)
-          expectedFingerprint = await tryBuildBatchConfigFingerprint()
+    const datasets = normalizedSelected
+      .map((path) => {
+        const entry = byPath.get(path)
+        return {
+          csv_path: path,
+          label: normalizeText(entry?.label || fileBasename(path) || path) || null,
+          timeframe: normalizeText(entry?.timeframe) || null,
+          source_size_bytes: normalizeMaybeInteger(entry?.source_size_bytes),
+          source_mtime_utc_ms: normalizeMaybeInteger(entry?.source_mtime_utc_ms),
+          source_content_fingerprint: normalizeText(entry?.source_content_fingerprint) || null
         }
+      })
+      .filter((entry) => normalizePath(entry.csv_path).length > 0)
+
+    const optimizationTemplate = asRecord(req?.optimization_template) ?? (await buildOptimizationRequestFromVueStores())
+    const validationConfig = asRecord(req?.validation_config) ?? buildValidationCampaignConfig(optimizationTemplate)
+
+    if (analysisStore) {
+      analysisStore.metaStrategyKind = strategyKind
+      if (expectedTimeframe && !normalizeText(analysisStore.metaTimeframe)) {
+        analysisStore.metaTimeframe = expectedTimeframe
+      }
+      analysisStore.metaRequiredTag = primaryTag || analysisStore.metaRequiredTag
+      analysisStore.metaHoldoutTag = holdoutTag
+      analysisStore.metaEvalHoldout = holdoutSet.size > 0
+    }
+
+    let metaRequest: Record<string, unknown> | null = asRecord(req?.meta_request)
+    let stage5Request: Record<string, unknown> | null = asRecord(req?.stage5_request)
+    if (autoMeta && !metaRequest) {
+      try {
+        metaRequest = tryBuildAutoMetaRequest()
       } catch {
-        expectedFingerprint = ''
+        metaRequest = null
       }
     }
-
-    const doneLoose = new Set<string>()
-    const doneStrict = new Set<string>()
-    const doneKeyLoose = (csvPath: string, tf: string): string => `${csvPath}@@tf=${tf}`
-    const doneKeyStrictFp = (csvPath: string, tf: string, fp: string): string => `${csvPath}@@tf=${tf}@@fp=${fp}`
-    const doneKeyStrictMeta = (csvPath: string, tf: string, size: number, mtime: number): string => `${csvPath}@@tf=${tf}@@id=${size}@${mtime}`
-
-    if (skipDone && primaryTag && expectedFingerprint) {
+    if (autoMeta && autoStage5 && !stage5Request) {
       try {
-        const rows = (await invokeCommand('list_run_artifacts')) as unknown
-        const artifacts = Array.isArray(rows) ? rows : []
-        for (const item of artifacts) {
-          const row = asRecord(item)
-          if (!row) continue
-          if (normalizeStrategyKind(row.strategy_kind) !== strategyKind) continue
-          if (normalizeText(row.config_fingerprint) !== expectedFingerprint) continue
-          const rowTags = Array.isArray(row.tags) ? row.tags.map((tag) => normalizeText(tag).toLowerCase()).filter((tag) => tag.length > 0) : []
-          if (!rowTags.includes(primaryTag.toLowerCase())) continue
-          const csvPath = normalizePath(row.csv_path)
-          if (!csvPath) continue
-          const rowTf = normalizeText(row.timeframe)
-          if (expectedTimeframe && rowTf && rowTf !== expectedTimeframe) continue
-          if (!normalizeBoolean(row.has_validation)) continue
-
-          const tfKey = expectedTimeframe || rowTf || ''
-          doneLoose.add(doneKeyLoose(csvPath, tfKey))
-
-          const fp = normalizeText(row.source_content_fingerprint)
-          if (fp) {
-            doneStrict.add(doneKeyStrictFp(csvPath, tfKey, fp))
-            continue
-          }
-          const size = normalizeMaybeInteger(row.source_size_bytes)
-          const mtime = normalizeMaybeInteger(row.source_mtime_utc_ms)
-          if (size != null && size >= 0 && mtime != null && mtime > 0) {
-            doneStrict.add(doneKeyStrictMeta(csvPath, tfKey, size, mtime))
-          }
-        }
+        stage5Request = tryBuildAutoMetaStage4Request()
       } catch {
-        // skip-done is best-effort
-      }
-    } else if (skipDone && !expectedFingerprint) {
-      setStatusLine('Batch skip-done is enabled but config fingerprint could not be resolved; proceeding without skip cache.')
-    }
-
-    let ok = 0
-    let skipped = 0
-    let cancelled = false
-    const failures: Array<{ label: string; error: string }> = []
-    const okRows: Array<Record<string, unknown>> = []
-    const skippedRows: Array<Record<string, unknown>> = []
-    const failedRows: Array<Record<string, unknown>> = []
-
-    for (let i = 0; i < n; i += 1) {
-      if (BATCH_STOP_REQUESTED) break
-      const path = normalizePath(normalizedSelected[i])
-      if (!path) continue
-
-      const ds = byPath.get(path)
-      const isHoldout = holdoutSet.has(path)
-      const label = normalizeText(ds?.label || fileBasename(path) || path)
-      const holdoutHint = holdoutSet.size ? ` • holdout=${holdoutSet.size}/${n}` : ''
-      updateBatchMeta(`running ${i + 1}/${n}: ${label || 'dataset'}${isHoldout ? ' [holdout]' : ''}${holdoutHint}`)
-
-      const tfKey = expectedTimeframe || ''
-      const looseKey = doneKeyLoose(path, tfKey)
-      const curFp = normalizeText(ds?.source_content_fingerprint)
-      const curSize = normalizeMaybeInteger(ds?.source_size_bytes)
-      const curMtime = normalizeMaybeInteger(ds?.source_mtime_utc_ms)
-      const strictKey = curFp ? doneKeyStrictFp(path, tfKey, curFp) : curSize != null && curMtime != null && curSize >= 0 && curMtime > 0 ? doneKeyStrictMeta(path, tfKey, curSize, curMtime) : ''
-      const isDone = skipDone && expectedFingerprint ? (strictKey ? doneStrict.has(strictKey) : doneLoose.has(looseKey)) : false
-      if (isDone) {
-        skipped += 1
-        updateBatchMeta(`skipping ${label || 'dataset'} (already completed for ${primaryTag})`)
-        skippedRows.push({ csv_path: path, label, is_holdout: isHoldout })
-        continue
-      }
-
-      try {
-        const loaded = await loadBatchDataset(path)
-        let effectiveTf = normalizeText(loaded.timeframe)
-        if (hasTfOverride) {
-          const resampled = await maybeApplyBatchTimeframe(tfOverride)
-          effectiveTf = normalizeText(resampled.timeframe || effectiveTf || tfOverride)
-        }
-        if (!expectedTimeframe && effectiveTf) {
-          expectedTimeframe = effectiveTf
-          batchTimeframes.add(effectiveTf)
-        }
-        if (expectedTimeframe && effectiveTf && effectiveTf !== expectedTimeframe) {
-          throw new Error(`timeframe mismatch: got ${effectiveTf}, expected ${expectedTimeframe}`)
-        }
-        if (effectiveTf) batchTimeframes.add(effectiveTf)
-      } catch (error) {
-        const err = `load: ${normalizeText(error)}`
-        failures.push({ label, error: err })
-        failedRows.push({
-          csv_path: path,
-          label,
-          is_holdout: isHoldout,
-          error: err
-        })
-        setStatusLine(`Batch: failed to load ${label}: ${normalizeText(error)}`)
-        continue
-      }
-
-      const extraTags = isHoldout && holdoutPct > 0 ? [holdoutTag] : []
-      const perRunTags = dedupTags([...baseTags, label, ...extraTags].filter((tag) => normalizeText(tag).length > 0))
-
-      try {
-        await runOptimization({ switchTab: false })
-        await applyRunTags(perRunTags)
-        await runValidation({ useFiltered: false, switchTab: false })
-
-        ok += 1
-        const workflowArtifacts = getWorkflowArtifactsState()
-        const run = workflowArtifacts?.currentRun
-        okRows.push({
-          csv_path: path,
-          label,
-          is_holdout: isHoldout,
-          ts: normalizeText(run?.ts) || null,
-          artifact_path: normalizePath(run?.artifactPath) || null,
-          report_xlsx_path: normalizePath(run?.reportXlsxPath) || null
-        })
-
-        if (skipDone && expectedFingerprint) {
-          doneLoose.add(looseKey)
-          if (strictKey) doneStrict.add(strictKey)
-        }
-      } catch (error) {
-        if (isCancellationError(error)) {
-          cancelled = true
-          setStatusLine('Batch cancelled.')
-          break
-        }
-        const err = `run: ${normalizeText(error)}`
-        failures.push({ label, error: err })
-        failedRows.push({
-          csv_path: path,
-          label,
-          is_holdout: isHoldout,
-          error: err
-        })
-        setStatusLine(`Batch: failed on ${label}: ${normalizeText(error)}`)
+        stage5Request = null
       }
     }
 
-    await refreshSavedRunCount()
-    const failed = failures.length
-    const skipHint = skipped ? ` • skipped=${skipped}` : ''
-    const msg = `Batch done: ok=${ok}/${n}${skipHint}${failed ? ` • failed=${failed}` : ''}`
-    setStatusLine(msg)
-    updateBatchMeta(failed ? `${msg} • first=${failures[0]?.label || ''}` : msg)
-
-    const summary: Record<string, unknown> = {
-      version: 1,
-      kind: 'vectorgrid_batch_summary',
-      ts: batchTs,
+    const campaignReq = {
       strategy_kind: strategyKind,
-      timeframe: batchTimeframes.size === 1 ? Array.from(batchTimeframes)[0] : null,
-      batch_tag: primaryTag || null,
-      config_fingerprint: expectedFingerprint || null,
+      datasets,
+      timeframe_override: expectedTimeframe || null,
       tags: baseTags,
       holdout_pct: holdoutPct,
-      holdout_tag: holdoutTag,
-      selected_paths: normalizedSelected,
-      holdout_paths: Array.from(holdoutSet),
-      counts: { total: n, ok, skipped, failed },
-      results: {
-        ok: okRows,
-        skipped: skippedRows,
-        failed: failedRows,
-        cancelled
-      },
-      runtime_ms: Math.max(0, Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt))
+      holdout_tag: holdoutTag || null,
+      skip_existing: skipDone,
+      auto_meta: autoMeta,
+      auto_stage5: autoStage5,
+      optimization_template: optimizationTemplate,
+      validation_config: validationConfig,
+      meta_request: metaRequest,
+      stage5_request: stage5Request,
+      preload_policy: normalizeText(req?.preload_policy) || 'host_only'
     }
 
-    try {
-      const saved = (await invokeCommand('save_batch_summary', {
-        summary
-      })) as unknown
-      const path = normalizePath(asRecord(saved)?.path)
-      setBatchSummaryState(summary, path)
-    } catch (error) {
-      setBatchSummaryState(summary, '')
-      setStatusLine(`Saved batch runs, but failed to write summary JSON: ${normalizeText(error)}`)
+    const response = asRecord((await invokeCommand('run_research_campaign', {
+      req: campaignReq
+    })) as unknown)
+    const summary = asRecord(response?.summary)
+    const summaryPath = normalizePath(response?.summary_json_path)
+    if (!summary) {
+      setStatusLine('Campaign completed, but no summary payload was returned.')
+      return
     }
 
-    BATCH_RUNNING = false
-    BATCH_STOP_REQUESTED = false
-    syncBatchButtons()
+    const counts = asRecord(summary.counts)
+    const ok = Math.max(0, Math.floor(Number(counts?.validated || 0)))
+    const skipped = Math.max(0, Math.floor(Number(counts?.skipped || 0)))
+    const failed = Math.max(0, Math.floor(Number(counts?.failed || 0)))
+    const cancelled = normalizeBoolean(counts?.cancelled)
+    const msg = cancelled
+      ? `Campaign cancelled: validated=${ok}/${n}${skipped ? ` • skipped=${skipped}` : ''}${failed ? ` • failed=${failed}` : ''}`
+      : `Campaign done: validated=${ok}/${n}${skipped ? ` • skipped=${skipped}` : ''}${failed ? ` • failed=${failed}` : ''}`
 
-    if (autoMeta && !cancelled) {
-      if (analysisStore) {
-        analysisStore.metaStrategyKind = strategyKind
-        if (batchTimeframes.size === 1 && !normalizeText(analysisStore.metaTimeframe)) {
-          analysisStore.metaTimeframe = normalizeText(Array.from(batchTimeframes)[0])
-        }
-        analysisStore.metaRequiredTag = primaryTag || analysisStore.metaRequiredTag
-        analysisStore.metaHoldoutTag = holdoutTag
-        analysisStore.metaEvalHoldout = holdoutSet.size > 0
-      }
-      await runMeta()
+    setBatchSummaryState(summary, summaryPath)
+    await refreshSavedRunCount()
+    setStatusLine(msg)
+    updateBatchMeta(msg)
+
+    const metaResponse = asRecord(response?.meta)
+    if (metaResponse) {
+      renderMetaSelection(metaResponse)
+      SAVED_META = upsertSavedEntry(SAVED_META, buildMetaSavedEntryFromResponse(metaResponse))
+      updateMetaSavedState(normalizePath(metaResponse.meta_json_path))
+      scheduleDeferredTask(() => refreshSavedInternal(normalizePath(metaResponse.meta_json_path)))
+      selectMetaResultsTab()
+    }
+
+    const stage5Response = asRecord(response?.stage5)
+    if (stage5Response) {
+      renderMetaStage4(stage5Response)
+      SAVED_STAGE4 = upsertSavedEntry(SAVED_STAGE4, buildStage5SavedEntryFromResponse(stage5Response))
+      updateStage4SavedState(responseStage5Path(stage5Response))
+      scheduleDeferredTask(() => refreshStage4SavedInternal(responseStage5Path(stage5Response)))
+      selectMetaResultsTab()
     }
   } catch (error) {
-    setErrorStatus(error)
-  } finally {
-    if (validationStore) {
-      validationStore.autoRun = prevAutoRun
-      validationStore.autoExportXlsx = prevAutoExportXlsx
-      validationStore.autoRevealReport = prevAutoRevealReport
-      validationStore.updatedAtUnixMs = Date.now()
+    if (isCancellationError(error)) {
+      setStatusLine('Campaign cancelled.')
+      updateBatchMeta('campaign cancelled')
+    } else {
+      setErrorStatus(error)
     }
+  } finally {
+    if (offCampaignProgress) offCampaignProgress()
     BATCH_RUNNING = false
-    BATCH_STOP_REQUESTED = false
     syncBatchButtons()
     renderBatchDatasetList('')
   }
@@ -2148,9 +2034,9 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
 export async function batchStop(): Promise<void> {
   try {
     if (!BATCH_RUNNING) return
-    BATCH_STOP_REQUESTED = true
-    updateBatchMeta('stop after current')
-    setStatusLine('Batch will stop after the current dataset.')
+    await invokeCommand('cancel_current_run')
+    updateBatchMeta('cancelling campaign')
+    setStatusLine('Campaign cancellation requested.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2209,7 +2095,51 @@ export async function batchRetryFailed(): Promise<void> {
     }
 
     const tags = Array.isArray(summary.tags) ? dedupTags(summary.tags) : []
-    const selectedPaths = Array.isArray(summary.selected_paths) ? summary.selected_paths : []
+    const request = batchSummaryRequest(summary)
+    const selectedPaths = batchSummarySelectedPaths(summary)
+    const retryPaths = selectedPaths.length > 0 ? selectedPaths : batchSummaryFailedPaths(summary)
+    const analysisStore = getAnalysisStore()
+    if (analysisStore) {
+      analysisStore.batchTags = tags.join(', ')
+      analysisStore.batchHoldoutPct = String(Math.max(0, Math.floor(Number(summary.holdout_pct || 0))))
+      analysisStore.batchHoldoutTag = normalizeText(summary.holdout_tag) || 'holdout'
+      analysisStore.batchSkipDone = true
+      analysisStore.updatedAtUnixMs = Date.now()
+    }
+
+    setBatchSelectedPaths(retryPaths)
+    renderBatchDatasetList(`retrying failed (tag=${batchSummaryPrimaryTag(summary) || 'batch'})`)
+    await runBatch({
+      request: request
+        ? {
+            ...request,
+            selected_paths: retryPaths,
+            skip_existing: true
+          }
+        : undefined
+    })
+  } catch (error) {
+    setErrorStatus(error)
+  }
+}
+
+export async function batchResumeIncomplete(): Promise<void> {
+  try {
+    if (BATCH_RUNNING) return
+    await loadLastBatchSummaryFromDisk()
+    const summary = LAST_BATCH_SUMMARY?.summary
+    if (!summary) {
+      setStatusLine('No batch summary loaded.')
+      return
+    }
+    const request = batchSummaryRequest(summary)
+    if (!request) {
+      setStatusLine('Current summary does not contain a resumable campaign request.')
+      return
+    }
+
+    const tags = Array.isArray(summary.tags) ? dedupTags(summary.tags) : []
+    const selectedPaths = batchSummarySelectedPaths(summary)
     const analysisStore = getAnalysisStore()
     if (analysisStore) {
       analysisStore.batchTags = tags.join(', ')
@@ -2220,8 +2150,13 @@ export async function batchRetryFailed(): Promise<void> {
     }
 
     setBatchSelectedPaths(selectedPaths)
-    renderBatchDatasetList(`retrying failed (tag=${normalizeText(summary.batch_tag) || 'batch'})`)
-    await runBatch()
+    renderBatchDatasetList(`resuming incomplete (tag=${batchSummaryPrimaryTag(summary) || 'batch'})`)
+    await runBatch({
+      request: {
+        ...request,
+        skip_existing: true
+      }
+    })
   } catch (error) {
     setErrorStatus(error)
   }

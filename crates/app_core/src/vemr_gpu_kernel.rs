@@ -452,6 +452,7 @@ fn reduce_vemr_topk_on_device(
         let mut metrics_ptr = metrics_ptr_raw;
         let mut rows_i_mut = rows_i;
         let mut metrics_i_mut = metrics_i;
+        let mut metrics_stride_i_mut = metrics_i;
         let mut objective_i_mut = objective_i;
         let mut topk_i_mut = topk_i;
         let mut out_ptr = scratch
@@ -465,6 +466,7 @@ fn reduce_vemr_topk_on_device(
             &mut metrics_ptr as *mut _ as *mut c_void,
             &mut rows_i_mut as *mut _ as *mut c_void,
             &mut metrics_i_mut as *mut _ as *mut c_void,
+            &mut metrics_stride_i_mut as *mut _ as *mut c_void,
             &mut objective_i_mut as *mut _ as *mut c_void,
             &mut topk_i_mut as *mut _ as *mut c_void,
             &mut out_ptr as *mut _ as *mut c_void,
@@ -491,6 +493,7 @@ fn reduce_vemr_topk_on_device(
             let mut metrics_ptr = metrics_ptr_raw;
             let mut rows_i_mut = rows_i;
             let mut metrics_i_mut = metrics_i;
+            let mut metrics_stride_i_mut = metrics_i;
             let mut objective_i_mut = objective_i;
             let mut topk_i_mut = topk_i;
             let mut in_ptr = if in_is_a {
@@ -530,6 +533,7 @@ fn reduce_vemr_topk_on_device(
                 &mut metrics_ptr as *mut _ as *mut c_void,
                 &mut rows_i_mut as *mut _ as *mut c_void,
                 &mut metrics_i_mut as *mut _ as *mut c_void,
+                &mut metrics_stride_i_mut as *mut _ as *mut c_void,
                 &mut objective_i_mut as *mut _ as *mut c_void,
                 &mut topk_i_mut as *mut _ as *mut c_void,
                 &mut in_ptr as *mut _ as *mut c_void,
@@ -556,6 +560,7 @@ fn reduce_vemr_topk_on_device(
         let mut metrics_ptr_mut = metrics_ptr_raw;
         let mut rows_i_mut = rows_i;
         let mut metrics_i_mut = metrics_i;
+        let mut metrics_stride_i_mut = metrics_i;
         let mut combo_tags_ptr_mut = combo_tags_ptr;
         let mut combo_dummy_ptr_mut = combo_dummy_ptr;
         let mut top_ptr = if in_is_a {
@@ -598,6 +603,7 @@ fn reduce_vemr_topk_on_device(
             &mut metrics_ptr_mut as *mut _ as *mut c_void,
             &mut rows_i_mut as *mut _ as *mut c_void,
             &mut metrics_i_mut as *mut _ as *mut c_void,
+            &mut metrics_stride_i_mut as *mut _ as *mut c_void,
             &mut combo_tags_ptr_mut as *mut _ as *mut c_void,
             &mut combo_dummy_ptr_mut as *mut _ as *mut c_void,
             &mut top_ptr as *mut _ as *mut c_void,

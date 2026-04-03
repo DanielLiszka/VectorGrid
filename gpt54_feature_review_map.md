@@ -507,7 +507,7 @@ Use them after an initial pass when the primary bundle findings depend on deeper
 - `research/ml_signal/calibrate.py`
 - `research/ml_signal/evaluate_walkforward.py`
 - `research/ml_signal/gate_report.py`
-- `Frontend Review/mlsignal_mode_separation_plan_2026-03-31.md`
+- `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md`
 
 ### Current scope guard
 

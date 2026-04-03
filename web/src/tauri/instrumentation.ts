@@ -1,5 +1,6 @@
 import {
   applyDoubleMaProgress,
+  applyResearchCampaignProgress,
   beginTrackedCommand,
   completeTrackedCommand,
   failTrackedCommand,
@@ -10,6 +11,7 @@ import {
   type LiveExecutionRunnerEventPayload,
   type PolygonLiveBarEventPayload,
   type PolygonLiveStatusEventPayload,
+  type ResearchCampaignProgressPayload,
 } from '../stores/taskStore'
 import { isTauriCommand, type TauriCommand } from './commands'
 import {
@@ -25,6 +27,7 @@ import {
 
 export const INSTRUMENTED_EVENT_CHANNELS = [
   'double_ma_progress',
+  'research_campaign_progress',
   'live_execution_runner_event',
   'polygon_live_status',
   'polygon_live_bar',
@@ -39,6 +42,7 @@ const TRACKED_TAURI_COMMANDS = new Set<TauriCommand>([
   'run_meta_selection',
   'run_meta_stage4_experimental',
   'run_meta_stage5_ml_confidence',
+  'run_research_campaign',
   'export_ml_signal_dataset',
   'generate_ml_signal_score_cache',
   'run_ml_signal_validation',
@@ -89,6 +93,24 @@ function normalizeDoubleMa(payload: unknown): DoubleMaProgressPayload | null {
     processed_pairs: asNumber(rec.processed_pairs),
     total_pairs: asNumber(rec.total_pairs),
     phase: asString(rec.phase),
+  }
+}
+
+function normalizeResearchCampaign(
+  payload: unknown,
+): ResearchCampaignProgressPayload | null {
+  const rec = asRecord(payload)
+  if (!rec) return null
+  return {
+    stage: asString(rec.stage),
+    datasetIndex: asNumber(rec.datasetIndex ?? rec.dataset_index),
+    datasetTotal: asNumber(rec.datasetTotal ?? rec.dataset_total),
+    label: asString(rec.label),
+    message: asString(rec.message),
+    optimized: asNumber(rec.optimized),
+    validated: asNumber(rec.validated),
+    skipped: asNumber(rec.skipped),
+    failed: asNumber(rec.failed),
   }
 }
 
@@ -175,6 +197,10 @@ async function subscribeProgressEvents(): Promise<void> {
       await attachListener('double_ma_progress', (payload) => {
         const p = normalizeDoubleMa(payload)
         if (p) applyDoubleMaProgress(p)
+      })
+      await attachListener('research_campaign_progress', (payload) => {
+        const p = normalizeResearchCampaign(payload)
+        if (p) applyResearchCampaignProgress(p)
       })
       await attachListener('live_execution_runner_event', (payload) => {
         const p = normalizeRunnerEvent(payload)

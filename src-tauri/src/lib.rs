@@ -108,6 +108,7 @@ pub fn run_tauri() {
             evaluate_ml_confidence_policy,
             save_run_artifact,
             save_batch_summary,
+            run_research_campaign,
             list_run_artifacts,
             list_artifact_library,
             list_meta_artifacts,

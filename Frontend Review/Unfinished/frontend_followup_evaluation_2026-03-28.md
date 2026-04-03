@@ -13,7 +13,7 @@ Purpose:
 Status note:
 
 - the frontend-only follow-up phases in this file are complete
-- the next active implementation plan now lives in `Frontend Review/desktop_productization_plan_2026-03-28.md`
+- the next active implementation plan now lives in `Frontend Review/Unfinished/desktop_productization_plan_2026-03-28.md`
 - the workstation UX plan in `Frontend Review/workstation_behavior_plan_2026-03-28.md` is now complete for the frontend-only scope it defined
 - the current "better use the stack we already ship" plan now lives in `Frontend Review/existing_stack_utilization_plan_2026-03-28.md`
 - use that document as the source of truth for open Tauri/runtime desktop-productization work

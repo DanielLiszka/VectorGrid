@@ -165,6 +165,7 @@ interface AnalysisState {
   canBatchSelectAll: boolean
   canBatchSelectNone: boolean
   canBatchRetryFailed: boolean
+  canBatchResumeIncomplete: boolean
   canBatchRevealSummary: boolean
   metaSavedSearch: string
   metaSavedOptions: { value: string; label: string; disabled: boolean }[]
@@ -547,6 +548,7 @@ export const useAnalysisStore = defineStore('analysis', {
     canBatchSelectAll: true,
     canBatchSelectNone: true,
     canBatchRetryFailed: false,
+    canBatchResumeIncomplete: false,
     canBatchRevealSummary: false,
     metaSavedSearch: '',
     metaSavedOptions: [],
@@ -728,6 +730,7 @@ export const useAnalysisStore = defineStore('analysis', {
       this.canBatchSelectAll = Boolean(snapshot.canBatchSelectAll ?? this.canBatchSelectAll)
       this.canBatchSelectNone = Boolean(snapshot.canBatchSelectNone ?? this.canBatchSelectNone)
       this.canBatchRetryFailed = Boolean(snapshot.canBatchRetryFailed ?? this.canBatchRetryFailed)
+      this.canBatchResumeIncomplete = Boolean(snapshot.canBatchResumeIncomplete ?? this.canBatchResumeIncomplete)
       this.canBatchRevealSummary = Boolean(snapshot.canBatchRevealSummary ?? this.canBatchRevealSummary)
       this.metaSavedSearch = String(snapshot.metaSavedSearch ?? this.metaSavedSearch ?? '').trim()
       this.metaSavedOptions = rawArray(snapshot.metaSavedOptions, this.metaSavedOptions)
@@ -978,6 +981,10 @@ export const useAnalysisStore = defineStore('analysis', {
 
     batchRetryFailed(): void {
       void metaService.batchRetryFailed()
+    },
+
+    batchResumeIncomplete(): void {
+      void metaService.batchResumeIncomplete()
     },
 
     batchRevealSummary(): void {

@@ -172,7 +172,7 @@ Current state summary:
 - current inventory artifacts:
   - [desktop_capability_inventory_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_capability_inventory_2026-03-28.md)
   - [desktop_plugin_inventory_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_plugin_inventory_2026-03-28.md)
-  - [desktop_ux_decisions_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\desktop_ux_decisions_2026-03-28.md)
+  - [desktop_ux_decisions_2026-03-28.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\Unfinished\desktop_ux_decisions_2026-03-28.md)
 
 ## Product Principles
 

@@ -5,6 +5,7 @@ describe('tauri instrumentation event parity', () => {
   it('subscribes to all required backend event channels', () => {
     expect(INSTRUMENTED_EVENT_CHANNELS).toEqual([
       'double_ma_progress',
+      'research_campaign_progress',
       'live_execution_runner_event',
       'polygon_live_status',
       'polygon_live_bar',
