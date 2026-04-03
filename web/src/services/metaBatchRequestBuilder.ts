@@ -48,11 +48,26 @@ function dedupTags(tags: string[]): string[] {
   return out
 }
 
+function normalizePreloadPolicy(value: unknown): string {
+  const raw = normalizeText(value).toLowerCase()
+  if (raw === 'disabled' || raw === 'host_plus_doublema_vram') return raw
+  return 'host_only'
+}
+
+function normalizeExecutionMode(value: unknown): string {
+  const raw = normalizeText(value).toLowerCase()
+  if (raw === 'optimize_only' || raw === 'validate_only') return raw
+  return 'full'
+}
+
 export interface MetaBatchBuildInputs {
   selectedPaths?: unknown
   holdoutPct?: unknown
   holdoutTag?: unknown
+  executionMode?: unknown
+  preloadPolicy?: unknown
   autoMeta?: unknown
+  autoStage5?: unknown
   skipDone?: unknown
   tags?: unknown
 }
@@ -67,7 +82,10 @@ export function buildMetaBatchRequest(inputs: MetaBatchBuildInputs): Record<stri
     selected_paths: normalizePathList(inputs.selectedPaths),
     holdout_pct: holdoutPct,
     holdout_tag: holdoutTagRaw || 'holdout',
+    execution_mode: normalizeExecutionMode(inputs.executionMode),
+    preload_policy: normalizePreloadPolicy(inputs.preloadPolicy),
     auto_meta: normalizeBoolean(inputs.autoMeta),
+    auto_stage5: normalizeBoolean(inputs.autoStage5),
     skip_done: normalizeBoolean(inputs.skipDone),
     tags,
   }

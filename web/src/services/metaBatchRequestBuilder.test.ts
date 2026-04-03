@@ -16,10 +16,27 @@ describe('metaBatchRequestBuilder', () => {
       selected_paths: ['C:/a.csv', 'C:/b.csv'],
       holdout_pct: 50,
       holdout_tag: 'holdout',
+      execution_mode: 'full',
+      preload_policy: 'host_only',
       auto_meta: true,
+      auto_stage5: false,
       skip_done: true,
       tags: [],
     })
+  })
+
+  it('includes optional auto stage 5 toggle', () => {
+    const req = buildMetaBatchRequest({
+      autoMeta: true,
+      autoStage5: 'true',
+      executionMode: 'validate_only',
+      preloadPolicy: 'host_plus_doublema_vram',
+    })
+
+    expect(req.execution_mode).toBe('validate_only')
+    expect(req.auto_meta).toBe(true)
+    expect(req.auto_stage5).toBe(true)
+    expect(req.preload_policy).toBe('host_plus_doublema_vram')
   })
 
   it('parses and deduplicates tags from string input', () => {

@@ -2635,9 +2635,7 @@ mod tests {
         assert!(summary
             .warning_summary
             .contains("preserved-finalists composite cross reruns keep CSCV/PBO + hard gates"));
-        assert!(summary
-            .cross_omitted_summary
-            .contains("walk_forward"));
+        assert!(summary.cross_omitted_summary.contains("walk_forward"));
         assert!(!summary.cross_omitted_summary.contains("cscv_pbo"));
         assert!(!summary.cross_omitted_summary.contains("hard gates"));
     }

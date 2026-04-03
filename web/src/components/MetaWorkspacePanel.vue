@@ -105,7 +105,10 @@ const {
   batchTags,
   batchHoldoutPct,
   batchHoldoutTag,
+  batchExecutionMode,
+  batchPreloadPolicy,
   batchAutoMeta,
+  batchAutoStage5,
   batchSkipDone,
   batchDatasets,
   batchSelectedCount,
@@ -210,7 +213,10 @@ const batchSearchDraft = ref('')
 const batchTagsDraft = ref('')
 const batchHoldoutPctDraft = ref('15')
 const batchHoldoutTagDraft = ref('holdout')
+const batchExecutionModeDraft = ref('full')
+const batchPreloadPolicyDraft = ref('host_only')
 const batchAutoMetaDraft = ref(true)
+const batchAutoStage5Draft = ref(false)
 const batchSkipDoneDraft = ref(true)
 const metaSavedSearchDraft = ref('')
 const metaSavedSelectDraft = ref('')
@@ -350,6 +356,29 @@ const groupingModeOptions: OptionItem[] = [
   { value: 'exact', label: 'Exact (strict)', disabled: false },
 ]
 
+const batchPreloadPolicyOptions: OptionItem[] = [
+  { value: 'host_only', label: 'Host preload (recommended)', disabled: false },
+  { value: 'disabled', label: 'Disabled', disabled: false },
+  { value: 'host_plus_doublema_vram', label: 'Host + DoubleMa VRAM staging (experimental)', disabled: false },
+]
+
+const batchExecutionModeOptions: OptionItem[] = [
+  { value: 'full', label: 'Full campaign', disabled: false },
+  { value: 'optimize_only', label: 'Optimize only', disabled: false },
+  { value: 'validate_only', label: 'Validate only', disabled: false },
+]
+
+const batchRunButtonLabel = computed(() => {
+  switch (String(batchExecutionModeDraft.value || 'full').trim()) {
+    case 'optimize_only':
+      return 'Run optimize-only'
+    case 'validate_only':
+      return 'Run validate-only'
+    default:
+      return 'Run full campaign'
+  }
+})
+
 watch(
   () => [
     String(metaStrategyKind.value || 'CompositeMo'),
@@ -373,7 +402,10 @@ watch(
     String(batchTags.value || '').trim(),
     String(batchHoldoutPct.value || '15').trim() || '15',
     String(batchHoldoutTag.value || 'holdout').trim() || 'holdout',
+    String(batchExecutionMode.value || 'full').trim() || 'full',
+    String(batchPreloadPolicy.value || 'host_only').trim() || 'host_only',
     Boolean(batchAutoMeta.value),
+    Boolean(batchAutoStage5.value),
     Boolean(batchSkipDone.value),
     String(metaSavedSearch.value || '').trim(),
     String(metaSavedSelected.value || '').trim(),
@@ -420,7 +452,10 @@ watch(
     nextBatchTags,
     nextBatchHoldoutPct,
     nextBatchHoldoutTag,
+    nextBatchExecutionMode,
+    nextBatchPreloadPolicy,
     nextBatchAutoMeta,
+    nextBatchAutoStage5,
     nextBatchSkipDone,
     nextMetaSavedSearch,
     nextMetaSavedSelect,
@@ -466,7 +501,10 @@ watch(
     if (batchTagsDraft.value !== nextBatchTags) batchTagsDraft.value = nextBatchTags
     if (batchHoldoutPctDraft.value !== nextBatchHoldoutPct) batchHoldoutPctDraft.value = nextBatchHoldoutPct
     if (batchHoldoutTagDraft.value !== nextBatchHoldoutTag) batchHoldoutTagDraft.value = nextBatchHoldoutTag
+    if (batchExecutionModeDraft.value !== nextBatchExecutionMode) batchExecutionModeDraft.value = nextBatchExecutionMode
+    if (batchPreloadPolicyDraft.value !== nextBatchPreloadPolicy) batchPreloadPolicyDraft.value = nextBatchPreloadPolicy
     if (batchAutoMetaDraft.value !== nextBatchAutoMeta) batchAutoMetaDraft.value = nextBatchAutoMeta
+    if (batchAutoStage5Draft.value !== nextBatchAutoStage5) batchAutoStage5Draft.value = nextBatchAutoStage5
     if (batchSkipDoneDraft.value !== nextBatchSkipDone) batchSkipDoneDraft.value = nextBatchSkipDone
     if (metaSavedSearchDraft.value !== nextMetaSavedSearch) metaSavedSearchDraft.value = nextMetaSavedSearch
     if (metaSavedSelectDraft.value !== nextMetaSavedSelect) metaSavedSelectDraft.value = nextMetaSavedSelect
@@ -820,6 +858,40 @@ onBeforeUnmount(() => {
               @change="commitInputValue('batchHoldoutTag', batchHoldoutTagDraft)"
             />
           </div>
+          <div>
+            <label for="vueBatchExecutionMode">Execution mode</label>
+            <select
+              id="vueBatchExecutionMode"
+              :value="batchExecutionModeDraft"
+              @change="batchExecutionModeDraft = String(($event.target as HTMLSelectElement).value || 'full'); setSelectValue('batchExecutionMode', batchExecutionModeDraft); if (batchExecutionModeDraft === 'optimize_only') { batchAutoMetaDraft = false; batchAutoStage5Draft = false; setCheckedValue('batchAutoMeta', false); setCheckedValue('batchAutoStage5', false) }"
+            >
+              <option
+                v-for="option in batchExecutionModeOptions"
+                :key="`batch_mode_${option.value}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label for="vueBatchPreloadPolicy">Preload policy</label>
+            <select
+              id="vueBatchPreloadPolicy"
+              :value="batchPreloadPolicyDraft"
+              @change="batchPreloadPolicyDraft = String(($event.target as HTMLSelectElement).value || 'host_only'); setSelectValue('batchPreloadPolicy', batchPreloadPolicyDraft)"
+            >
+              <option
+                v-for="option in batchPreloadPolicyOptions"
+                :key="`batch_preload_${option.value}`"
+                :value="option.value"
+                :disabled="option.disabled"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
         </div>
 
         <div class="checks">
@@ -827,9 +899,19 @@ onBeforeUnmount(() => {
             <input
               type="checkbox"
               :checked="batchAutoMetaDraft"
-              @change="batchAutoMetaDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('batchAutoMeta', batchAutoMetaDraft)"
+              :disabled="batchExecutionModeDraft === 'optimize_only'"
+              @change="batchAutoMetaDraft = ($event.target as HTMLInputElement).checked; setCheckedValue('batchAutoMeta', batchAutoMetaDraft); if (!batchAutoMetaDraft) { batchAutoStage5Draft = false; setCheckedValue('batchAutoStage5', false) }"
             />
             Auto-run meta after batch
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              :checked="batchAutoStage5Draft"
+              :disabled="batchExecutionModeDraft === 'optimize_only' || !batchAutoMetaDraft"
+              @change="batchAutoStage5Draft = ($event.target as HTMLInputElement).checked; setCheckedValue('batchAutoStage5', batchAutoStage5Draft)"
+            />
+            Run Stage 5 after meta
           </label>
           <label>
             <input
@@ -840,9 +922,12 @@ onBeforeUnmount(() => {
             Skip completed (same batch tag)
           </label>
         </div>
+        <div class="panelMuted">
+          Host preload is the default campaign path. The VRAM staging mode is experimental and only applies to the plain DoubleMa exact GpuKernel route; other paths fall back to host preload. `Optimize only` skips meta and Stage 5, while `Validate only` reuses existing optimization artifacts instead of rerunning search.
+        </div>
 
         <div class="actions">
-          <button type="button" class="primary" :disabled="!canRunBatch" @click="runAction(() => analysisStore.runBatch())">Run batch</button>
+          <button type="button" class="primary" :disabled="!canRunBatch" @click="runAction(() => analysisStore.runBatch())">{{ batchRunButtonLabel }}</button>
           <button type="button" :disabled="!canBatchStop" @click="runAction(() => analysisStore.batchStop())">Stop after current</button>
           <button type="button" :disabled="!canBatchRefresh" @click="runAction(() => analysisStore.batchRefresh())">Refresh</button>
           <button type="button" :disabled="!canBatchSelectAll" @click="runAction(() => analysisStore.batchSelectAll())">All</button>

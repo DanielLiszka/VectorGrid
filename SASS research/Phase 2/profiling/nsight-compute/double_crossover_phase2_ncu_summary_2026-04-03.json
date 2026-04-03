@@ -1,0 +1,80 @@
+[
+  {
+    "label": "large_full17_backtest",
+    "kind": "backtest",
+    "kernel_names": [
+      "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm"
+    ],
+    "launches": 3,
+    "mean_gpu_time_ms": 68.886976,
+    "mean_sm_throughput_pct": 41.906936,
+    "mean_compute_memory_throughput_pct": 13.017546,
+    "mean_dram_throughput_pct": 1.410079,
+    "mean_l1tex_throughput_pct": 13.017546,
+    "registers_per_thread": 55.0,
+    "max_warps_pct": 75.0,
+    "active_warps_pct": 29.657274,
+    "avg_warp_latency_per_issue": 8.490788,
+    "avg_long_scoreboard_per_issue": 5.016033,
+    "avg_short_scoreboard_per_issue": 0.000235,
+    "avg_lg_throttle_per_issue": 0.001098,
+    "avg_math_pipe_throttle_per_issue": 0.226134,
+    "mean_branch_uniform_pct": 99.990844,
+    "mean_global_load_bytes_per_sector": 17.598811,
+    "mean_global_store_bytes_per_sector": 5.666667,
+    "mean_local_spilling_requests": 0.0,
+    "mean_shared_spilling_requests": 0.0
+  },
+  {
+    "label": "large_trade22_backtest",
+    "kind": "backtest",
+    "kernel_names": [
+      "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm"
+    ],
+    "launches": 3,
+    "mean_gpu_time_ms": 71.760171,
+    "mean_sm_throughput_pct": 41.282413,
+    "mean_compute_memory_throughput_pct": 12.823131,
+    "mean_dram_throughput_pct": 1.480255,
+    "mean_l1tex_throughput_pct": 12.823131,
+    "registers_per_thread": 64.0,
+    "max_warps_pct": 66.666667,
+    "active_warps_pct": 29.642864,
+    "avg_warp_latency_per_issue": 8.588306,
+    "avg_long_scoreboard_per_issue": 5.157138,
+    "avg_short_scoreboard_per_issue": 0.014973,
+    "avg_lg_throttle_per_issue": 0.000606,
+    "avg_math_pipe_throttle_per_issue": 0.174338,
+    "mean_branch_uniform_pct": 99.993531,
+    "mean_global_load_bytes_per_sector": 17.598811,
+    "mean_global_store_bytes_per_sector": 10.352941,
+    "mean_local_spilling_requests": 0.0,
+    "mean_shared_spilling_requests": 0.0
+  },
+  {
+    "label": "xlarge_full17_reducers",
+    "kind": "reducer",
+    "kernel_names": [
+      "gather_topk_pairs_tm_f32"
+    ],
+    "launches": 3,
+    "mean_gpu_time_ms": 3.029333,
+    "mean_sm_throughput_pct": 0.017721,
+    "mean_compute_memory_throughput_pct": 1.47692,
+    "mean_dram_throughput_pct": 1.3116,
+    "mean_l1tex_throughput_pct": 0.187509,
+    "registers_per_thread": 40.0,
+    "max_warps_pct": 100.0,
+    "active_warps_pct": 6.559291,
+    "avg_warp_latency_per_issue": 43.298535,
+    "avg_long_scoreboard_per_issue": 15.891026,
+    "avg_short_scoreboard_per_issue": 0.543956,
+    "avg_lg_throttle_per_issue": 0.239927,
+    "avg_math_pipe_throttle_per_issue": 0.0,
+    "mean_branch_uniform_pct": 100.0,
+    "mean_global_load_bytes_per_sector": 4.179728,
+    "mean_global_store_bytes_per_sector": 4.398148,
+    "mean_local_spilling_requests": 0.0,
+    "mean_shared_spilling_requests": 0.0
+  }
+]

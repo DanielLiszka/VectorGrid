@@ -347,6 +347,13 @@ pub enum BackendUsed {
     Gpu,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DoubleMaCampaignVramPrefetchOutcome {
+    Staged,
+    AlreadyResident,
+    Skipped(String),
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum GpuExecutionPolicy {
     #[default]
@@ -4521,6 +4528,45 @@ pub fn run_double_ma_optimization_blocking_with_candles(
     run_double_ma_optimization_blocking_with_candles_and_eval_range(
         req, candles, cancel, progress, None,
     )
+}
+
+pub fn stage_double_ma_campaign_vram_prefetch(
+    device_id: u32,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+) -> Result<DoubleMaCampaignVramPrefetchOutcome, String> {
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    {
+        return crate::gpu_backtest_kernel::campaign_stage_plain_double_ma_market(
+            device_id,
+            candles,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+        )
+        .map(|outcome| match outcome {
+            crate::gpu_backtest_kernel::CampaignVramPrefetchOutcome::Staged => {
+                DoubleMaCampaignVramPrefetchOutcome::Staged
+            }
+            crate::gpu_backtest_kernel::CampaignVramPrefetchOutcome::AlreadyResident => {
+                DoubleMaCampaignVramPrefetchOutcome::AlreadyResident
+            }
+            crate::gpu_backtest_kernel::CampaignVramPrefetchOutcome::Skipped(reason) => {
+                DoubleMaCampaignVramPrefetchOutcome::Skipped(reason)
+            }
+        });
+    }
+
+    #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
+    {
+        let _ = (device_id, candles, fast_ma_type, slow_ma_type, ma_source);
+        Ok(DoubleMaCampaignVramPrefetchOutcome::Skipped(
+            "double_ma VRAM staging requires building with `cuda,cuda-backtest-kernel`."
+                .to_string(),
+        ))
+    }
 }
 
 pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(

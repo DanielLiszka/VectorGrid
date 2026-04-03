@@ -152,7 +152,10 @@ interface AnalysisState {
   batchTags: string
   batchHoldoutPct: string
   batchHoldoutTag: string
+  batchExecutionMode: string
+  batchPreloadPolicy: string
   batchAutoMeta: boolean
+  batchAutoStage5: boolean
   batchSkipDone: boolean
   batchDatasets: { path: string; label: string; meta: string; checked: boolean; disabled: boolean }[]
   batchSelectedCount: number
@@ -346,6 +349,12 @@ function applyVueMetaTextFieldUpdate(state: AnalysisState, field: string, value:
     case 'batchHoldoutTag':
       state.batchHoldoutTag = next
       return true
+    case 'batchExecutionMode':
+      state.batchExecutionMode = next
+      return true
+    case 'batchPreloadPolicy':
+      state.batchPreloadPolicy = next
+      return true
     case 'batchTags':
       state.batchTags = next
       return true
@@ -419,6 +428,9 @@ function applyVueMetaCheckboxFieldUpdate(state: AnalysisState, field: string, ch
       return true
     case 'batchAutoMeta':
       state.batchAutoMeta = next
+      return true
+    case 'batchAutoStage5':
+      state.batchAutoStage5 = next
       return true
     case 'batchSkipDone':
       state.batchSkipDone = next
@@ -535,7 +547,10 @@ export const useAnalysisStore = defineStore('analysis', {
     batchTags: '',
     batchHoldoutPct: '15',
     batchHoldoutTag: 'holdout',
+    batchExecutionMode: 'full',
+    batchPreloadPolicy: 'host_only',
     batchAutoMeta: true,
+    batchAutoStage5: false,
     batchSkipDone: true,
     batchDatasets: [],
     batchSelectedCount: 0,
@@ -717,7 +732,10 @@ export const useAnalysisStore = defineStore('analysis', {
       this.batchTags = String(snapshot.batchTags ?? this.batchTags ?? '').trim()
       this.batchHoldoutPct = String(snapshot.batchHoldoutPct ?? this.batchHoldoutPct ?? '15').trim() || '15'
       this.batchHoldoutTag = String(snapshot.batchHoldoutTag ?? this.batchHoldoutTag ?? 'holdout').trim() || 'holdout'
+      this.batchExecutionMode = String(snapshot.batchExecutionMode ?? this.batchExecutionMode ?? 'full').trim() || 'full'
+      this.batchPreloadPolicy = String(snapshot.batchPreloadPolicy ?? this.batchPreloadPolicy ?? 'host_only').trim() || 'host_only'
       this.batchAutoMeta = Boolean(snapshot.batchAutoMeta ?? this.batchAutoMeta)
+      this.batchAutoStage5 = Boolean(snapshot.batchAutoStage5 ?? this.batchAutoStage5)
       this.batchSkipDone = Boolean(snapshot.batchSkipDone ?? this.batchSkipDone)
       this.batchDatasets = rawArray(snapshot.batchDatasets, this.batchDatasets)
       this.batchSelectedCount = Math.max(0, Math.floor(Number(snapshot.batchSelectedCount ?? this.batchSelectedCount ?? 0)))

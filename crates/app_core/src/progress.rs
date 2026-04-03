@@ -1,4 +1,5 @@
 use serde::Serialize;
+use vector_ta::utilities::data_loader::Candles;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DoubleMaProgressPayload {
@@ -7,8 +8,28 @@ pub struct DoubleMaProgressPayload {
     pub phase: &'static str,
 }
 
+#[derive(Clone, Debug)]
+pub enum DoubleMaCampaignVramPrefetchFeedback {
+    Staged,
+    AlreadyResident,
+    Warning(String),
+    Fatal(String),
+}
+
 pub trait ProgressSink: Send + Sync {
     fn emit_double_ma_progress(&self, payload: DoubleMaProgressPayload);
+
+    fn with_double_ma_campaign_vram_prefetch_request(
+        &self,
+        _f: &mut dyn FnMut(u32, &Candles, &str, &str, &str),
+    ) {
+    }
+
+    fn on_double_ma_campaign_vram_prefetch_feedback(
+        &self,
+        _feedback: DoubleMaCampaignVramPrefetchFeedback,
+    ) {
+    }
 }
 
 pub fn emit_double_ma_progress(

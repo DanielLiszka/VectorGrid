@@ -510,8 +510,7 @@ pub(crate) fn apply_cross_ticker_validation(
                 )
             }
         },
-    )
-    ?;
+    )?;
 
     let hard_gates = ta_app_core::validation_pipeline::sanitize_hard_gates(
         min_psr,
@@ -789,7 +788,9 @@ fn apply_cross_ticker_validation_double_ma(
     Ok(())
 }
 
-fn validation_candidate_is_approved<C: ta_app_core::validation_pipeline::ValidationPostCandidate>(
+fn validation_candidate_is_approved<
+    C: ta_app_core::validation_pipeline::ValidationPostCandidate,
+>(
     cand: &C,
 ) -> bool {
     cand.validation_verdict().passed
@@ -2418,13 +2419,11 @@ mod tests {
                 window_bars: 1000,
                 step_bars: 250,
             }),
-            Some(
-                ta_app_core::ReoptWalkForwardConfigOptional {
-                    window_bars: 800,
-                    step_bars: 200,
-                    top_n_candidates: 3,
-                },
-            ),
+            Some(ta_app_core::ReoptWalkForwardConfigOptional {
+                window_bars: 800,
+                step_bars: 200,
+                top_n_candidates: 3,
+            }),
             Some(ta_app_core::SpaConfigOptional {
                 slices: 6,
                 bootstrap_samples: 32,
@@ -2540,63 +2539,65 @@ mod tests {
     fn composite_cross_ticker_selects_bounded_finalists() {
         let candidates: Vec<ta_app_core::composite_validate::CompositeValidationCandidateResult> =
             (0..6)
-                .map(|idx| ta_app_core::composite_validate::CompositeValidationCandidateResult {
-                    params: ta_app_core::CompositeParams {
-                        fast_ma_type: "sma".to_string(),
-                        slow_ma_type: "sma".to_string(),
-                        fast_len: 10 + idx as u16,
-                        slow_len: 30 + idx as u16,
-                        halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
-                            amplitude: 2,
-                            channel_deviation: 2.0,
-                            atr_period: 100,
+                .map(
+                    |idx| ta_app_core::composite_validate::CompositeValidationCandidateResult {
+                        params: ta_app_core::CompositeParams {
+                            fast_ma_type: "sma".to_string(),
+                            slow_ma_type: "sma".to_string(),
+                            fast_len: 10 + idx as u16,
+                            slow_len: 30 + idx as u16,
+                            halftrend: ta_app_core::double_ma::HalfTrendRegimeFilter {
+                                amplitude: 2,
+                                channel_deviation: 2.0,
+                                atr_period: 100,
+                            },
+                            asr: Some(ta_app_core::AsrStrategyParams::default()),
+                            vcc: None,
+                            vemr: None,
+                            rocb: None,
+                            mkcs: None,
+                            kqsr: None,
+                            carm: None,
+                            kvdf: None,
+                            cdmc: None,
+                            vcet: None,
+                            macz: ta_app_core::composite_cpu::MaczGateParams::default(),
+                            ott: ta_app_core::composite_cpu::OttGateParams::default(),
+                            signal_mode: ta_app_core::CompositeSignalMode::HardGate,
+                            strategy: ta_strategies::double_ma::StrategyConfig::default(),
                         },
-                        asr: Some(ta_app_core::AsrStrategyParams::default()),
-                        vcc: None,
-                        vemr: None,
-                        rocb: None,
-                        mkcs: None,
-                        kqsr: None,
-                        carm: None,
-                        kvdf: None,
-                        cdmc: None,
-                        vcet: None,
-                        macz: ta_app_core::composite_cpu::MaczGateParams::default(),
-                        ott: ta_app_core::composite_cpu::OttGateParams::default(),
-                        signal_mode: ta_app_core::CompositeSignalMode::HardGate,
-                        strategy: ta_strategies::double_ma::StrategyConfig::default(),
-                    },
-                    in_sample: ta_strategies::double_ma::Metrics {
-                        pnl: 0.2 - idx as f64 * 0.01,
-                        sharpe: 1.0 - idx as f64 * 0.01,
-                        max_dd: 0.2,
-                        trades: 10,
-                        exposure: 0.5,
-                        ..Default::default()
-                    },
-                    iterative_in_sample: None,
-                    iterative_delta: None,
-                    psr: Some(0.8),
-                    dsr: Some(0.7),
-                    track_record_bars: 300,
-                    min_track_record_length_bars: Some(250),
-                    walk_forward: None,
-                    perturb: None,
-                    trade_bootstrap: None,
-                    regime_slice_robustness: None,
-                    friction_stress: None,
-                    cross_ticker: None,
-                    cross_ticker_pareto: None,
-                    cscv_pbo: None,
-                    validation_verdict:
-                        ta_app_core::validation_pipeline::ValidationCandidateVerdict {
-                            passed: true,
-                            warning_flags: Vec::new(),
-                            fail_reasons: Vec::new(),
+                        in_sample: ta_strategies::double_ma::Metrics {
+                            pnl: 0.2 - idx as f64 * 0.01,
+                            sharpe: 1.0 - idx as f64 * 0.01,
+                            max_dd: 0.2,
+                            trades: 10,
+                            exposure: 0.5,
+                            ..Default::default()
                         },
-                    robust_score: 10.0 - idx as f64,
-                    robust_pareto: idx < 4,
-                })
+                        iterative_in_sample: None,
+                        iterative_delta: None,
+                        psr: Some(0.8),
+                        dsr: Some(0.7),
+                        track_record_bars: 300,
+                        min_track_record_length_bars: Some(250),
+                        walk_forward: None,
+                        perturb: None,
+                        trade_bootstrap: None,
+                        regime_slice_robustness: None,
+                        friction_stress: None,
+                        cross_ticker: None,
+                        cross_ticker_pareto: None,
+                        cscv_pbo: None,
+                        validation_verdict:
+                            ta_app_core::validation_pipeline::ValidationCandidateVerdict {
+                                passed: true,
+                                warning_flags: Vec::new(),
+                                fail_reasons: Vec::new(),
+                            },
+                        robust_score: 10.0 - idx as f64,
+                        robust_pareto: idx < 4,
+                    },
+                )
                 .collect();
 
         let finalists = select_cross_ticker_preserved_finalists(&candidates);

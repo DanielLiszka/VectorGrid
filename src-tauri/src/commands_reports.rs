@@ -3336,7 +3336,9 @@ mod tests {
 
         let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
         assert_eq!(
-            report.pointer("/data/meta/timeframe").and_then(Value::as_str),
+            report
+                .pointer("/data/meta/timeframe")
+                .and_then(Value::as_str),
             Some("1h")
         );
         assert_eq!(

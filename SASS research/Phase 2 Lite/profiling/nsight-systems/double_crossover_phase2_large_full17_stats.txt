@@ -1,0 +1,176 @@
+I07:08:37.161|quadd_daemon|57656|main.cpp:288[`anonymous-namespace'::InitConfiguration]: NSys version[2026.2.1.210-262137639646v0] 
+
+I07:08:37.161|quadd_daemon|57656|main.cpp:289[`anonymous-namespace'::InitConfiguration]: Got config file path: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\target-windows-x64\config.ini
+
+I07:08:37.161|quadd_common_core|57656|Config.cpp:93[Impl::InternalReset]: Loaded config file: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\target-windows-x64\config.ini
+
+I07:08:37.161|quadd_daemon|57656|main.cpp:136[`anonymous-namespace'::InitPython]: Initing Embedded Python
+
+I07:08:37.161|quadd_common_core|57656|FileSystem.cpp:179[QuadDCommon::FindInstalledFile]: File 'python/lib' is found: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\python/lib.
+
+I07:08:37.180|quadd_daemon|57656|main.cpp:144[`anonymous-namespace'::InitPython]: Embedded Python Version: 3.12.12-final-0
+I07:08:37.180|quadd_common_core|57656|FileSystem.cpp:179[QuadDCommon::FindInstalledFile]: File 'reports' is found: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports.
+I07:08:37.180|quadd_stats_logger|57656|StatsReport.cpp:458[`anonymous-namespace'::ConfigureReports]: Locating script 'cuda_api_sum' path.
+I07:08:37.190|quadd_stats_logger|57656|StatsReport.cpp:481[`anonymous-namespace'::ConfigureReports]: Script 'cuda_api_sum' is found: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\cuda_api_sum.py.
+I07:08:37.190|quadd_stats_logger|57656|StatsReport.cpp:458[`anonymous-namespace'::ConfigureReports]: Locating script 'cuda_gpu_kern_sum' path.
+I07:08:37.190|quadd_stats_logger|57656|StatsReport.cpp:481[`anonymous-namespace'::ConfigureReports]: Script 'cuda_gpu_kern_sum' is found: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\cuda_gpu_kern_sum.py.
+I07:08:37.190|quadd_stats_logger|57656|StatsReport.cpp:458[`anonymous-namespace'::ConfigureReports]: Locating script 'cuda_gpu_mem_time_sum' path.
+I07:08:37.190|quadd_stats_logger|57656|StatsReport.cpp:481[`anonymous-namespace'::ConfigureReports]: Script 'cuda_gpu_mem_time_sum' is found: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\cuda_gpu_mem_time_sum.py.
+I07:08:37.190|quadd_stats_logger|57656|StatsReport.cpp:458[`anonymous-namespace'::ConfigureReports]: Locating script 'nvtx_sum' path.
+I07:08:37.191|quadd_stats_logger|57656|StatsReport.cpp:481[`anonymous-namespace'::ConfigureReports]: Script 'nvtx_sum' is found: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\nvtx_sum.py.
+I07:08:37.191|quadd_stats_logger|57656|StatsReport.cpp:458[`anonymous-namespace'::ConfigureReports]: Locating script 'nvtx_gpu_proj_sum' path.
+I07:08:37.191|quadd_stats_logger|57656|StatsReport.cpp:481[`anonymous-namespace'::ConfigureReports]: Script 'nvtx_gpu_proj_sum' is found: C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\nvtx_gpu_proj_sum.py.
+Generating SQLite file target/nsight/double_crossover_phase2_large_full17.sqlite from target/nsight/double_crossover_phase2_large_full17.nsys-rep
+I07:08:37.191|quadd_common_streamsections|57656|StreamWithSections.cpp:323[StreamSectionsManager::parseSectionTable]: Section table at offset 70374 bytes = section {
+  section_type: "Analysis Options Data"
+  offset: 57
+  length: 8842
+}
+section {
+  section_type: "Raw Sampling Data"
+  offset: 8899
+  length: 34478
+}
+section {
+  section_type: "Sampling Data Offsets"
+  offset: 43377
+  length: 9
+}
+section {
+  section_type: "Agent activity list"
+  offset: 43386
+  length: 25399
+}
+section {
+  section_type: "Time Conversion Data"
+  offset: 68785
+  length: 714
+}
+section {
+  section_type: "UI Data"
+  offset: 69499
+  length: 875
+}
+section {
+  section_type: "Telemetry"
+  offset: 70374
+  length: 0
+}
+
+I07:08:37.192|quadd_common_streamsections|57656|StreamWithSections.cpp:336[StreamSectionsManager::parseSectionTable]: Section = Analysis Options Data 	 Offset = 57 bytes 	Size = 8842 bytes
+I07:08:37.192|quadd_common_streamsections|57656|StreamWithSections.cpp:336[StreamSectionsManager::parseSectionTable]: Section = Raw Sampling Data 	 Offset = 8899 bytes 	Size = 34478 bytes
+I07:08:37.192|quadd_common_streamsections|57656|StreamWithSections.cpp:336[StreamSectionsManager::parseSectionTable]: Section = Sampling Data Offsets 	 Offset = 43377 bytes 	Size = 9 bytes
+I07:08:37.192|quadd_common_streamsections|57656|StreamWithSections.cpp:336[StreamSectionsManager::parseSectionTable]: Section = Agent activity list 	 Offset = 43386 bytes 	Size = 25399 bytes
+I07:08:37.192|quadd_common_streamsections|57656|StreamWithSections.cpp:336[StreamSectionsManager::parseSectionTable]: Section = Time Conversion Data 	 Offset = 68785 bytes 	Size = 714 bytes
+I07:08:37.192|quadd_common_streamsections|57656|StreamWithSections.cpp:336[StreamSectionsManager::parseSectionTable]: Section = UI Data 	 Offset = 69499 bytes 	Size = 875 bytes
+I07:08:37.192|quadd_common_streamsections|57656|StreamWithSections.cpp:336[StreamSectionsManager::parseSectionTable]: Section = Telemetry 	 Offset = 70374 bytes 	Size = 0 bytes
+I07:08:37.194|quadd_analysis_session_state|57656|TimeConvInfo.cpp:38[TimeConvInfo::Load]: Time conversion factors loaded
+I07:08:37.194|quadd_analysis_session_state|57656|TimeConvInfo.cpp:134[TimeConvInfo::LogTimeConvInfo]: TimeConvInfo:
+I07:08:37.194|quadd_analysis_session_state|57656|TimeConvInfo.cpp:135[TimeConvInfo::LogTimeConvInfo]: TimeDomain:
+WindowsQpcNsec -> SyncNs, # factors: 1
+	Slope: 1, Point: (0, 0)
+WindowsQpc -> WindowsQpcNsec, # factors: 1
+	Slope: 100, Point: (1234898735549, 123489873554900)
+Utc -> WindowsQpcNsec, # factors: 1
+	Slope: 1, Point: (1775214495430645200, 123489873506400)
+HwTsc -> WindowsQpcNsec, # factors: 1
+	Start Point: (531338962800872, 123489873564300)
+	Slope: 0.23255649156470196, Point: (531342737141008, 123490751311600)
+SyncNs -> SessionNs, # factors: 1
+	Slope: 1, Point: (123489923033100, 0)
+LocalTime -> Utc, # factors: 1
+	Slope: 1, Point: (1775200095430645200, 1775214495430645200)
+HwPtimer: 03cdaf3c-2e07-6e07-f040-63f8e8299221 -> HwTsc, # factors: 1
+	Start Point: (1775214492418457184, 531338995976361)
+	Slope: 4.300082211859214, Point: (1775214493288526304, 531342737345107)
+
+Processing [target/nsight/double_crossover_phase2_large_full17.sqlite] with [C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\cuda_api_sum.py]... 
+
+ ** CUDA API Summary (cuda_api_sum):
+
+ Time (%)  Total Time (ns)  Num Calls   Avg (ns)   Med (ns)   Min (ns)  Max (ns)  StdDev (ns)             Name           
+ --------  ---------------  ---------  ----------  ---------  --------  --------  -----------  --------------------------
+     96.3        223983748         17  13175514.6  1077213.0       670  72875043   26345771.0  cuStreamSynchronize       
+      1.5          3492004         30    116400.1      975.0       520   2525072     474569.5  cuMemAllocAsync           
+      1.0          2326363          3    775454.3   464577.0    224788   1636998     755690.3  cuModuleLoadDataEx        
+      0.4           863449          4    215862.3   215193.5    201094    231968      15070.7  cuMemFreeHost             
+      0.4           831415          4    207853.8   218923.5    162699    230869      30839.6  cuMemAllocHost_v2         
+      0.2           461247         38     12138.1     5700.0      3750     55340      13281.3  cuLaunchKernel            
+      0.1           180298          9     20033.1    19370.0      6730     33240       9278.4  cuMemcpyHtoD_v2           
+      0.1           147989          4     36997.3    37894.5      2680     69520      36339.0  cuMemAlloc_v2             
+      0.0            67979          9      7553.2     6050.0      4770     14950       3541.7  cuMemcpyDtoDAsync_v2      
+      0.0            35650          4      8912.5     5760.0       970     23160       9763.5  cuStreamCreateWithPriority
+      0.0            34699          6      5783.2     2165.0      1489     23730       8813.1  cuCtxSetCurrent           
+      0.0            26260          1     26260.0    26260.0     26260     26260          0.0  cuMemcpyHtoDAsync_v2      
+      0.0            25970         15      1731.3     1260.0       420      4470       1424.2  cuMemFree_v2              
+      0.0            23960          3      7986.7     7930.0      7760      8270        259.7  cuMemGetInfo_v2           
+      0.0            21370          1     21370.0    21370.0     21370     21370          0.0  cuCtxSynchronize          
+      0.0            21280          3      7093.3     7130.0      6130      8020        945.5  cuMemcpyDtoHAsync_v2      
+      0.0             9900          1      9900.0     9900.0      9900      9900          0.0  cuModuleUnload            
+      0.0             6340          5      1268.0     1150.0       800      2030        528.6  cuInit                    
+      0.0             2140          1      2140.0     2140.0      2140      2140          0.0  cuStreamDestroy_v2        
+
+Processing [target/nsight/double_crossover_phase2_large_full17.sqlite] with [C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\cuda_gpu_kern_sum.py]... 
+
+ ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)                                        Name                                       
+ --------  ---------------  ---------  ----------  ----------  --------  --------  -----------  ---------------------------------------------------------------------------------
+     95.5        203189677          3  67729892.3  65999675.0  65330482  71859520    3591980.4  double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm
+      4.4          9322960          6   1553826.7   1496242.0    952907   2511070     651271.8  sma_batch_from_prefix_f64_tm                                                     
+      0.1           246500          3     82166.7     78209.0     78209     90082       6854.9  sma_prefix_stage2_block_offsets_f64                                              
+      0.0            52097          9      5788.6      5696.0      5536      6208        262.1  select_topk_from_candidates_tm_f32                                               
+      0.0            18945          3      6315.0      6273.0      6272      6400         73.6  select_topk_from_pairs_tm_f32                                                    
+      0.0            14944          3      4981.3      4768.0      4768      5408        369.5  sma_prefix_stage1_scan_f64                                                       
+      0.0             5568          3      1856.0      1760.0      1728      2080        194.6  sma_prefix_stage3_add_offsets_f64                                                
+      0.0             5088          3      1696.0      1696.0      1696      1696          0.0  gather_topk_pairs_tm_f32                                                         
+      0.0             4000          3      1333.3      1344.0      1312      1344         18.5  pack_metric_rows_f32                                                             
+      0.0             2208          1      2208.0      2208.0      2208      2208          0.0  compute_log_and_simple_returns_f32                                               
+      0.0              864          1       864.0       864.0       864       864          0.0  probe                                                                            
+
+Processing [target/nsight/double_crossover_phase2_large_full17.sqlite] with [C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\cuda_gpu_mem_time_sum.py]... 
+
+ ** CUDA GPU MemOps Summary (by Time) (cuda_gpu_mem_time_sum):
+
+ Time (%)  Total Time (ns)  Count  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)            Operation           
+ --------  ---------------  -----  --------  --------  --------  --------  -----------  ------------------------------
+     90.1           123296     10   12329.6     896.0       576     62112      19480.7  [CUDA memcpy Host-to-Device]  
+      6.4             8768      9     974.2     960.0       960       992         16.9  [CUDA memcpy Device-to-Device]
+      3.5             4736      3    1578.7    1664.0      1408      1664        147.8  [CUDA memcpy Device-to-Host]  
+
+Processing [target/nsight/double_crossover_phase2_large_full17.sqlite] with [C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\nvtx_sum.py]... 
+
+ ** NVTX Range Summary (nvtx_sum):
+
+ Time (%)  Total Time (ns)  Instances   Avg (ns)    Med (ns)   Min (ns)  Max (ns)  StdDev (ns)   Style               Range             
+ --------  ---------------  ---------  ----------  ----------  --------  --------  -----------  -------  ------------------------------
+     27.3        132131433          2  66065716.5  66065716.5  66061362  66070071       6158.2  PushPop  :kernel::sync_and_decode      
+     14.4         69966744          1  69966744.0  69966744.0  69966744  69966744          0.0  PushPop  :double_ma_opt_total          
+     14.4         69913835          1  69913835.0  69913835.0  69913835  69913835          0.0  PushPop  :engine::gpu_kernel_dispatch  
+     14.4         69909365          1  69909365.0  69909365.0  69909365  69909365          0.0  PushPop  :kernel::kernel_executor_total
+     14.4         69902595          1  69902595.0  69902595.0  69902595  69902595          0.0  PushPop  :kernel::executor_impl        
+     14.3         69235889          1  69235889.0  69235889.0  69235889  69235889          0.0  PushPop  :kernel::backtest_core        
+      0.7          3217217          3   1072405.7   1113402.0    153509   1950306     899099.8  PushPop  :kernel::gpu_indicator_prep   
+      0.0            28290          2     14145.0     14145.0      7580     20710       9284.3  PushPop  :kernel::h2d_upload           
+      0.0            27399          1     27399.0     27399.0     27399     27399          0.0  PushPop  :engine::route_resolve        
+      0.0            12360          1     12360.0     12360.0     12360     12360          0.0  PushPop  :kernel::launch_submit        
+      0.0             8610          1      8610.0      8610.0      8610      8610          0.0  PushPop  :engine::result_finalize      
+      0.0             5460          1      5460.0      5460.0      5460      5460          0.0  PushPop  :kernel::host_finalize        
+      0.0             3470          1      3470.0      3470.0      3470      3470          0.0  PushPop  :kernel::set_current          
+
+Processing [target/nsight/double_crossover_phase2_large_full17.sqlite] with [C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\host-windows-x64\reports\nvtx_gpu_proj_sum.py]... 
+
+ ** NVTX GPU Projection Summary (nvtx_gpu_proj_sum):
+
+             Range                Style   Total Proj Time (ns)  Total Range Time (ns)  Range Instances  Proj Avg (ns)  Proj Med (ns)  Proj Min (ns)  Proj Max (ns)  Proj StdDev (ns)  Total GPU Ops  Avg GPU Ops  Avg Range Lvl  Avg Num Child
+ ------------------------------  -------  --------------------  ---------------------  ---------------  -------------  -------------  -------------  -------------  ----------------  -------------  -----------  -------------  -------------
+ :double_ma_opt_total            PushPop              69534724               69966744                1     69534724.0     69534724.0       69534724       69534724               0.0             18         18.0            0.0            1.0
+ :engine::gpu_kernel_dispatch    PushPop              69534724               69913835                1     69534724.0     69534724.0       69534724       69534724               0.0             18         18.0            1.0            1.0
+ :kernel::executor_impl          PushPop              69534724               69902595                1     69534724.0     69534724.0       69534724       69534724               0.0             18         18.0            3.0            2.0
+ :kernel::kernel_executor_total  PushPop              69534724               69909365                1     69534724.0     69534724.0       69534724       69534724               0.0             18         18.0            2.0            1.0
+ :kernel::backtest_core          PushPop              69039422               69235889                1     69039422.0     69039422.0       69039422       69039422               0.0             15         15.0            4.0            6.0
+ :kernel::launch_submit          PushPop              65999675                  12360                1     65999675.0     65999675.0       65999675       65999675               0.0              1          1.0            5.0            0.0
+ :kernel::gpu_indicator_prep     PushPop               2955012                3217217                3       985004.0       953260.0          88513        1913239          912777.1              5          1.7            4.7            0.0
+ :kernel::sync_and_decode        PushPop                 67840              132131433                2        33920.0        33920.0          33920          33920               0.0              4          2.0            5.5            0.5
+ :kernel::h2d_upload             PushPop                  1312                  28290                2          656.0          656.0            576            736             113.1              2          1.0            5.0            0.0
+

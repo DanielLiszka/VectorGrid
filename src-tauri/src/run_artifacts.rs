@@ -290,12 +290,7 @@ pub(super) fn suggest_ml_policy_eval_artifact_path(
     ts: &str,
     app: &tauri::AppHandle,
 ) -> Result<PathBuf, String> {
-    suggest_ts_file_path(
-        runs_dir(app)?,
-        "vectorgrid_ml_confidence_eval",
-        ts,
-        "json",
-    )
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_ml_confidence_eval", ts, "json")
 }
 
 pub(super) fn suggest_batch_summary_path(
@@ -796,9 +791,11 @@ fn normalize_text_value(value: Option<&Value>) -> String {
 }
 
 fn normalize_string_list(value: Option<&Value>) -> Vec<String> {
-    value.and_then(Value::as_array)
+    value
+        .and_then(Value::as_array)
         .map(|items| {
-            items.iter()
+            items
+                .iter()
                 .map(|item| normalize_text_value(Some(item)))
                 .filter(|item| !item.is_empty())
                 .collect()
@@ -1050,8 +1047,14 @@ fn build_req_snapshot(run_req: Option<&Value>, validation_req: Option<&Value>) -
         format!("backend: {backend}"),
         format!("objective: {objective}"),
         format!("ma source: {ma_source}"),
-        format!("fast range: {}", format_range_label(run_req.get("fast_range"))),
-        format!("slow range: {}", format_range_label(run_req.get("slow_range"))),
+        format!(
+            "fast range: {}",
+            format_range_label(run_req.get("fast_range"))
+        ),
+        format!(
+            "slow range: {}",
+            format_range_label(run_req.get("slow_range"))
+        ),
         format!(
             "fast ma: {}",
             if fast_ma.is_empty() {
@@ -1111,13 +1114,15 @@ fn build_workflow_artifacts_hydration_payload(
         req: run_req,
         res: run_res,
     };
-    let current_validation = artifact.pointer("/validation/res").cloned().map(|res| {
-        WorkflowArtifactValidationPayload {
-            ts: current_run.ts.clone(),
-            req: clone_value_or_null(artifact.pointer("/validation/req")),
-            res,
-        }
-    });
+    let current_validation =
+        artifact
+            .pointer("/validation/res")
+            .cloned()
+            .map(|res| WorkflowArtifactValidationPayload {
+                ts: current_run.ts.clone(),
+                req: clone_value_or_null(artifact.pointer("/validation/req")),
+                res,
+            });
 
     Ok(WorkflowArtifactsHydrationPayload {
         current_run,
@@ -2074,15 +2079,20 @@ mod tests {
         let encoded = serde_json::to_value(payload).expect("serialize");
 
         assert_eq!(
-            encoded.pointer("/currentRun/artifact_path").and_then(|value| value.as_str()),
+            encoded
+                .pointer("/currentRun/artifact_path")
+                .and_then(|value| value.as_str()),
             Some("C:/runs/vectorgrid_run_test.json")
         );
         assert_eq!(
-            encoded.pointer("/currentRun/csv_path").and_then(|value| value.as_str()),
+            encoded
+                .pointer("/currentRun/csv_path")
+                .and_then(|value| value.as_str()),
             Some("C:/data/AAPL.csv")
         );
         assert_eq!(
-            encoded.pointer("/currentValidation/req/candidates")
+            encoded
+                .pointer("/currentValidation/req/candidates")
                 .and_then(|value| value.as_array())
                 .map(|items| items.len()),
             Some(0)
@@ -2158,11 +2168,9 @@ mod tests {
             }
         });
 
-        let detail = build_run_artifact_detail_response(
-            "C:/runs/vectorgrid_run_test.json",
-            &artifact,
-        )
-        .expect("detail payload");
+        let detail =
+            build_run_artifact_detail_response("C:/runs/vectorgrid_run_test.json", &artifact)
+                .expect("detail payload");
 
         assert_eq!(detail.strategy_kind, "MlSignal");
         assert_eq!(detail.timeframe, "1d");

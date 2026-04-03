@@ -3,8 +3,8 @@ use super::commands_meta::{
     RunMetaStage5Response,
 };
 use super::commands_optimize::{
-    normalize_product_composite_cpu_optimization_mode, normalize_product_double_ma_optimization_mode,
-    TauriProgressSink,
+    normalize_product_composite_cpu_optimization_mode,
+    normalize_product_double_ma_optimization_mode, TauriProgressSink,
 };
 use super::run_artifacts;
 use super::{
@@ -17,19 +17,23 @@ use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::JoinHandle;
-use tauri::{Emitter, Manager};
+use std::sync::{mpsc, Arc, Mutex};
 use ta_app_core::{
-    CscvPboConfig, CrossTickerConfig, PerturbConfig, ReoptWalkForwardConfigOptional,
-    SpaConfigOptional, TradeBootstrapConfig, ValidationArtifactContext, WalkForwardConfigOptional,
+    progress::{DoubleMaCampaignVramPrefetchFeedback, DoubleMaProgressPayload, ProgressSink},
+    Backend, BackendUsed, CrossTickerConfig, CscvPboConfig, PerturbConfig,
+    ReoptWalkForwardConfigOptional, SpaConfigOptional, TradeBootstrapConfig,
+    ValidationArtifactContext, WalkForwardConfigOptional,
 };
+use tauri::{Emitter, Manager};
+use vector_ta::utilities::data_loader::Candles;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResearchCampaignPreloadPolicy {
+    Disabled,
     HostOnly,
     HostPlusDoublemaVram,
 }
@@ -37,6 +41,20 @@ pub enum ResearchCampaignPreloadPolicy {
 impl Default for ResearchCampaignPreloadPolicy {
     fn default() -> Self {
         Self::HostOnly
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchCampaignExecutionMode {
+    Full,
+    OptimizeOnly,
+    ValidateOnly,
+}
+
+impl Default for ResearchCampaignExecutionMode {
+    fn default() -> Self {
+        Self::Full
     }
 }
 
@@ -113,6 +131,8 @@ pub struct ResearchCampaignRequest {
     pub auto_meta: bool,
     #[serde(default)]
     pub auto_stage5: bool,
+    #[serde(default)]
+    pub execution_mode: ResearchCampaignExecutionMode,
     pub optimization_template: Value,
     #[serde(default)]
     pub validation_config: ResearchCampaignValidationConfig,
@@ -212,6 +232,7 @@ enum CampaignOptimizationFamily {
 enum CampaignOptimizationResult {
     Backend(BackendOptimizationResult),
     CompositeMo(CompositeMoResult),
+    CompositeMoArtifact(Value),
 }
 
 struct PreparedCampaignDataset {
@@ -222,8 +243,20 @@ struct PreparedCampaignDataset {
     label: String,
 }
 
+pub struct HeadlessPreparedResearchCampaignDatasetPack {
+    datasets: VecDeque<PreparedCampaignDataset>,
+}
+
+struct DatasetPreloadState {
+    receiver: mpsc::Receiver<Result<PreparedCampaignDataset, String>>,
+    cached: Option<Result<PreparedCampaignDataset, String>>,
+}
+
+type SharedDatasetPreloadState = Arc<Mutex<DatasetPreloadState>>;
+
 struct DatasetPreloadJob {
-    handle: Option<JoinHandle<Result<PreparedCampaignDataset, String>>>,
+    state: SharedDatasetPreloadState,
+    handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DatasetPreloadJob {
@@ -232,20 +265,163 @@ impl DatasetPreloadJob {
         timeframe_override: Option<String>,
         app_cache_dir: PathBuf,
     ) -> Self {
-        let handle = std::thread::spawn(move || {
+        Self::spawn_with_task(move || {
             prepare_campaign_dataset(input, timeframe_override.as_deref(), &app_cache_dir)
+        })
+    }
+
+    fn spawn_with_task<F>(task: F) -> Self
+    where
+        F: FnOnce() -> Result<PreparedCampaignDataset, String> + Send + 'static,
+    {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let handle = std::thread::spawn(move || {
+            let _ = tx.send(task());
         });
         Self {
+            state: Arc::new(Mutex::new(DatasetPreloadState {
+                receiver: rx,
+                cached: None,
+            })),
             handle: Some(handle),
         }
     }
 
-    fn join(self) -> Result<PreparedCampaignDataset, String> {
-        match self.handle {
-            Some(handle) => handle
-                .join()
-                .map_err(|_| "campaign dataset preload panicked".to_string())?,
-            None => Err("campaign dataset preload missing handle".to_string()),
+    fn shared_state(&self) -> SharedDatasetPreloadState {
+        Arc::clone(&self.state)
+    }
+
+    fn join(mut self) -> Result<PreparedCampaignDataset, String> {
+        self.join_worker()?;
+        self.take_result()
+    }
+
+    fn join_worker(&mut self) -> Result<(), String> {
+        let Some(handle) = self.handle.take() else {
+            return Ok(());
+        };
+        handle
+            .join()
+            .map_err(|_| "campaign dataset preload worker panicked".to_string())
+    }
+
+    fn take_result(&self) -> Result<PreparedCampaignDataset, String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(result) = state.cached.take() {
+            return result;
+        }
+        match state.receiver.recv() {
+            Ok(result) => result,
+            Err(_) => Err("campaign dataset preload disconnected".to_string()),
+        }
+    }
+}
+
+impl Drop for DatasetPreloadJob {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn try_fill_preload_state(state: &mut DatasetPreloadState) {
+    if state.cached.is_some() {
+        return;
+    }
+    match state.receiver.try_recv() {
+        Ok(result) => state.cached = Some(result),
+        Err(mpsc::TryRecvError::Empty) => {}
+        Err(mpsc::TryRecvError::Disconnected) => {
+            state.cached = Some(Err("campaign dataset preload disconnected".to_string()))
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CampaignDoubleMaVramPrefetchConfig {
+    device_id: u32,
+    fast_ma_type: String,
+    slow_ma_type: String,
+    ma_source: String,
+}
+
+struct CampaignDoubleMaVramPrefetch {
+    preload_state: SharedDatasetPreloadState,
+    config: CampaignDoubleMaVramPrefetchConfig,
+    completed: AtomicBool,
+    feedback: Mutex<Option<DoubleMaCampaignVramPrefetchFeedback>>,
+}
+
+impl CampaignDoubleMaVramPrefetch {
+    fn with_request_if_ready(&self, f: &mut dyn FnMut(u32, &Candles, &str, &str, &str)) {
+        if self.completed.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut preload = self.preload_state.lock().unwrap_or_else(|e| e.into_inner());
+        try_fill_preload_state(&mut preload);
+        let Some(result) = preload.cached.as_ref() else {
+            return;
+        };
+        let Ok(prepared) = result else {
+            self.completed.store(true, Ordering::Relaxed);
+            return;
+        };
+        f(
+            self.config.device_id,
+            &prepared.candles,
+            &self.config.fast_ma_type,
+            &self.config.slow_ma_type,
+            &self.config.ma_source,
+        );
+        self.completed.store(true, Ordering::Relaxed);
+    }
+
+    fn record_feedback(&self, feedback: DoubleMaCampaignVramPrefetchFeedback) {
+        *self.feedback.lock().unwrap_or_else(|e| e.into_inner()) = Some(feedback);
+    }
+
+    fn take_feedback(&self) -> Option<DoubleMaCampaignVramPrefetchFeedback> {
+        self.feedback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+}
+
+struct CampaignProgressSink {
+    app: tauri::AppHandle,
+    vram_prefetch: Option<CampaignDoubleMaVramPrefetch>,
+}
+
+impl CampaignProgressSink {
+    fn take_prefetch_feedback(&self) -> Option<DoubleMaCampaignVramPrefetchFeedback> {
+        self.vram_prefetch
+            .as_ref()
+            .and_then(CampaignDoubleMaVramPrefetch::take_feedback)
+    }
+}
+
+impl ProgressSink for CampaignProgressSink {
+    fn emit_double_ma_progress(&self, payload: DoubleMaProgressPayload) {
+        let _ = self.app.emit("double_ma_progress", payload);
+    }
+
+    fn with_double_ma_campaign_vram_prefetch_request(
+        &self,
+        f: &mut dyn FnMut(u32, &Candles, &str, &str, &str),
+    ) {
+        if let Some(prefetch) = self.vram_prefetch.as_ref() {
+            prefetch.with_request_if_ready(f);
+        }
+    }
+
+    fn on_double_ma_campaign_vram_prefetch_feedback(
+        &self,
+        feedback: DoubleMaCampaignVramPrefetchFeedback,
+    ) {
+        if let Some(prefetch) = self.vram_prefetch.as_ref() {
+            prefetch.record_feedback(feedback);
         }
     }
 }
@@ -256,6 +432,10 @@ fn normalize_text(value: &str) -> String {
 
 fn normalize_strategy_kind(raw: &str) -> String {
     match raw.trim() {
+        "" => "DoubleMa".to_string(),
+        "DoubleMa" => "DoubleMa".to_string(),
+        "DynamicDoubleMa" => "DynamicDoubleMa".to_string(),
+        "MlSignal" => "MlSignal".to_string(),
         "Pit" => "Pit".to_string(),
         "Set" => "Set".to_string(),
         "Mts" => "Mts".to_string(),
@@ -277,7 +457,46 @@ fn normalize_strategy_kind(raw: &str) -> String {
         "CompositeTrend" => "CompositeTrend".to_string(),
         "RegimeHybrid" => "RegimeHybrid".to_string(),
         "BreakoutMomentum" => "BreakoutMomentum".to_string(),
-        _ => "DoubleMa".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn resolve_campaign_strategy_kind(raw: &str) -> Result<String, String> {
+    let normalized = normalize_strategy_kind(raw);
+    match normalized.as_str() {
+        "DoubleMa"
+        | "Pit"
+        | "Set"
+        | "Mts"
+        | "Orc"
+        | "Marrt"
+        | "Vfct"
+        | "Rocb"
+        | "Vcet"
+        | "Mkcs"
+        | "Kqsr"
+        | "Carm"
+        | "Kvdf"
+        | "Cdmc"
+        | "Asr"
+        | "Vcc"
+        | "Vemr"
+        | "CompositeCpu"
+        | "CompositeMo"
+        | "CompositeTrend"
+        | "RegimeHybrid"
+        | "BreakoutMomentum" => Ok(normalized),
+        "DynamicDoubleMa" => Err(
+            "Research campaigns do not support DynamicDoubleMa yet because validation does not preserve its dynamic strategy IR."
+                .to_string(),
+        ),
+        "MlSignal" => Err(
+            "Research campaigns do not support MlSignal. Use the dedicated ML Signal workflow instead."
+                .to_string(),
+        ),
+        other => Err(format!(
+            "Unsupported research campaign strategy kind '{other}'."
+        )),
     }
 }
 
@@ -300,23 +519,73 @@ fn is_double_like_kind(kind: &str) -> bool {
 fn optimization_family_for_kind(kind: &str) -> CampaignOptimizationFamily {
     match normalize_strategy_kind(kind).as_str() {
         "CompositeMo" => CampaignOptimizationFamily::CompositeMo,
-        "CompositeCpu"
-        | "Asr"
-        | "Vcc"
-        | "Vemr"
-        | "Rocb"
-        | "Vcet"
-        | "Mkcs"
-        | "Kqsr"
-        | "Carm"
-        | "Kvdf"
-        | "Cdmc" => CampaignOptimizationFamily::CompositeCpu,
+        "CompositeCpu" | "Asr" | "Vcc" | "Vemr" | "Rocb" | "Vcet" | "Mkcs" | "Kqsr" | "Carm"
+        | "Kvdf" | "Cdmc" => CampaignOptimizationFamily::CompositeCpu,
         _ => CampaignOptimizationFamily::DoubleLike,
     }
 }
 
 fn normalize_path_key(raw: &str) -> String {
     raw.trim().replace('/', "\\").to_ascii_lowercase()
+}
+
+fn preload_enabled(policy: ResearchCampaignPreloadPolicy) -> bool {
+    !matches!(policy, ResearchCampaignPreloadPolicy::Disabled)
+}
+
+fn requested_gpu_device_id(backend: &Backend) -> Option<u32> {
+    match backend {
+        Backend::Auto { device_id }
+        | Backend::GpuOnly { device_id }
+        | Backend::GpuHybridKernel { device_id }
+        | Backend::GpuKernel { device_id } => Some(*device_id),
+        Backend::CpuOnly => None,
+    }
+}
+
+fn supports_exact_gpu_kernel_route(result: &BackendOptimizationResult) -> bool {
+    matches!(result.backend_used, BackendUsed::Gpu)
+        && result
+            .backend_route
+            .as_deref()
+            .map(|route| route.contains("GpuKernel"))
+            .unwrap_or(false)
+}
+
+fn build_doublema_vram_prefetch_config(
+    run_req: &DoubleMaRequest,
+    learned_device_id: Option<u32>,
+) -> Option<CampaignDoubleMaVramPrefetchConfig> {
+    if run_req.dynamic_strategy_ir.is_some() {
+        return None;
+    }
+    if run_req.fast_ma_types.len() != 1 || run_req.slow_ma_types.len() != 1 {
+        return None;
+    }
+    let device_id = match &run_req.backend {
+        Backend::GpuKernel { device_id } => Some(*device_id),
+        Backend::Auto { .. } => learned_device_id,
+        _ => None,
+    }?;
+    let fast_ma_type = normalize_text(&run_req.fast_ma_types[0]).to_ascii_lowercase();
+    let slow_ma_type = normalize_text(&run_req.slow_ma_types[0]).to_ascii_lowercase();
+    if fast_ma_type.is_empty() || slow_ma_type.is_empty() {
+        return None;
+    }
+    let ma_source = {
+        let source = normalize_text(&run_req.ma_source);
+        if source.is_empty() {
+            "close".to_string()
+        } else {
+            source
+        }
+    };
+    Some(CampaignDoubleMaVramPrefetchConfig {
+        device_id,
+        fast_ma_type,
+        slow_ma_type,
+        ma_source,
+    })
 }
 
 fn normalize_timeframe_label(raw: &str) -> String {
@@ -327,6 +596,15 @@ fn normalize_timeframe_label(raw: &str) -> String {
     ta_app_core::parse_timeframe_label(trimmed)
         .map(|tf| tf.label)
         .unwrap_or_else(|_| trimmed.to_ascii_lowercase())
+}
+
+fn push_unique_warning(warnings: &mut Vec<String>, warning: String) {
+    if warning.trim().is_empty() {
+        return;
+    }
+    if !warnings.iter().any(|existing| existing == &warning) {
+        warnings.push(warning);
+    }
 }
 
 fn file_label_from_path(path: &str) -> String {
@@ -356,7 +634,11 @@ fn dataset_timeframe_hint(
         .map(normalize_timeframe_label)
         .filter(|value| !value.is_empty())
         .or_else(|| {
-            input.timeframe.as_deref().map(normalize_timeframe_label).filter(|value| !value.is_empty())
+            input
+                .timeframe
+                .as_deref()
+                .map(normalize_timeframe_label)
+                .filter(|value| !value.is_empty())
         })
         .unwrap_or_default()
 }
@@ -587,7 +869,7 @@ fn run_optimization_blocking(
     req_value: &Value,
     candles: &vector_ta::utilities::data_loader::Candles,
     cancel: &AtomicBool,
-    sink: &TauriProgressSink,
+    sink: Option<&dyn ProgressSink>,
 ) -> Result<CampaignOptimizationResult, String> {
     match family {
         CampaignOptimizationFamily::DoubleLike => {
@@ -595,10 +877,7 @@ fn run_optimization_blocking(
                 serde_json::from_value(req_value.clone()).map_err(|e| e.to_string())?;
             req.mode = normalize_product_double_ma_optimization_mode(&req);
             let res = ta_app_core::run_double_ma_optimization_blocking_with_candles(
-                req,
-                candles,
-                cancel,
-                Some(sink),
+                req, candles, cancel, sink,
             )?;
             Ok(CampaignOptimizationResult::Backend(res))
         }
@@ -607,10 +886,7 @@ fn run_optimization_blocking(
                 serde_json::from_value(req_value.clone()).map_err(|e| e.to_string())?;
             req.mode = normalize_product_composite_cpu_optimization_mode(req.mode);
             let res = ta_app_core::run_composite_cpu_optimization_blocking_with_candles(
-                req,
-                candles,
-                cancel,
-                Some(sink),
+                req, candles, cancel, sink,
             )?;
             Ok(CampaignOptimizationResult::Backend(res))
         }
@@ -618,10 +894,7 @@ fn run_optimization_blocking(
             let req: CompositeMoRequest =
                 serde_json::from_value(req_value.clone()).map_err(|e| e.to_string())?;
             let res = ta_app_core::run_composite_mo_optimization_blocking_with_candles(
-                req,
-                candles,
-                cancel,
-                Some(sink),
+                req, candles, cancel, sink,
             )?;
             Ok(CampaignOptimizationResult::CompositeMo(res))
         }
@@ -638,7 +911,7 @@ fn normalize_backend_value(raw: Option<&Value>, strategy_kind: &str) -> Value {
         .and_then(Value::as_object)
         .and_then(|row| row.get("backend"))
         .and_then(Value::as_str)
-        .unwrap_or("CpuOnly")
+        .unwrap_or("")
         .trim();
 
     if !is_double_like_kind(strategy_kind) && backend_name != "CpuOnly" {
@@ -690,7 +963,10 @@ fn candidate_values_from_optimization(
                     .to_string();
                 let fast_len = p.get("fast_len").and_then(Value::as_u64).unwrap_or(0);
                 let slow_len = p.get("slow_len").and_then(Value::as_u64).unwrap_or(0);
-                if fast_ma_type.is_empty() || slow_ma_type.is_empty() || fast_len == 0 || slow_len == 0
+                if fast_ma_type.is_empty()
+                    || slow_ma_type.is_empty()
+                    || fast_len == 0
+                    || slow_len == 0
                 {
                     continue;
                 }
@@ -707,7 +983,15 @@ fn candidate_values_from_optimization(
                         "halftrend_filter": run_req.get("halftrend_filter").cloned().or_else(|| run_req.get("halftrendFilter").cloned()).unwrap_or(Value::Null),
                     })
                 } else {
-                    build_composite_candidate_value(strategy_kind, run_req, p, fast_ma_type, slow_ma_type, fast_len, slow_len)
+                    build_composite_candidate_value(
+                        strategy_kind,
+                        run_req,
+                        p,
+                        fast_ma_type,
+                        slow_ma_type,
+                        fast_len,
+                        slow_len,
+                    )
                 };
 
                 let key = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
@@ -731,11 +1015,38 @@ fn candidate_values_from_optimization(
                 }
             }
         }
+        (
+            CampaignOptimizationFamily::CompositeMo,
+            CampaignOptimizationResult::CompositeMoArtifact(run_res),
+        ) => {
+            let pareto = run_res
+                .get("pareto")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    "campaign validation could not read pareto candidates from the saved CompositeMo optimization artifact"
+                        .to_string()
+                })?;
+            for point in pareto {
+                let Some(params) = point.get("params").cloned() else {
+                    continue;
+                };
+                let key = serde_json::to_string(&params).map_err(|e| e.to_string())?;
+                if seen.insert(key) {
+                    out.push(params);
+                    if out.len() >= max_candidates {
+                        break;
+                    }
+                }
+            }
+        }
         _ => return Err("campaign optimization result family mismatch".to_string()),
     }
 
     if out.is_empty() {
-        return Err("campaign validation could not derive any candidates from optimization output".to_string());
+        return Err(
+            "campaign validation could not derive any candidates from optimization output"
+                .to_string(),
+        );
     }
     Ok(out)
 }
@@ -759,16 +1070,46 @@ fn build_composite_candidate_value(
         "strategy": run_req.get("strategy").cloned().or_else(|| run_req.get("base_strategy").cloned()).unwrap_or_else(|| json!({})),
     });
     match normalize_strategy_kind(strategy_kind).as_str() {
-        "Asr" => merge_json(base, json!({ "asr": run_req.get("asr").cloned().unwrap_or_else(|| json!({})) })),
-        "Vcc" => merge_json(base, json!({ "vcc": run_req.get("vcc").cloned().unwrap_or_else(|| json!({})) })),
-        "Vemr" => merge_json(base, json!({ "vemr": run_req.get("vemr").cloned().unwrap_or_else(|| json!({})) })),
-        "Rocb" => merge_json(base, json!({ "rocb": run_req.get("rocb").cloned().unwrap_or_else(|| json!({})) })),
-        "Vcet" => merge_json(base, json!({ "vcet": run_req.get("vcet").cloned().unwrap_or_else(|| json!({})) })),
-        "Mkcs" => merge_json(base, json!({ "mkcs": run_req.get("mkcs").cloned().unwrap_or_else(|| json!({})) })),
-        "Kqsr" => merge_json(base, json!({ "kqsr": run_req.get("kqsr").cloned().unwrap_or_else(|| json!({})) })),
-        "Carm" => merge_json(base, json!({ "carm": run_req.get("carm").cloned().unwrap_or_else(|| json!({})) })),
-        "Kvdf" => merge_json(base, json!({ "kvdf": run_req.get("kvdf").cloned().unwrap_or_else(|| json!({})) })),
-        "Cdmc" => merge_json(base, json!({ "cdmc": run_req.get("cdmc").cloned().unwrap_or_else(|| json!({})) })),
+        "Asr" => merge_json(
+            base,
+            json!({ "asr": run_req.get("asr").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Vcc" => merge_json(
+            base,
+            json!({ "vcc": run_req.get("vcc").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Vemr" => merge_json(
+            base,
+            json!({ "vemr": run_req.get("vemr").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Rocb" => merge_json(
+            base,
+            json!({ "rocb": run_req.get("rocb").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Vcet" => merge_json(
+            base,
+            json!({ "vcet": run_req.get("vcet").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Mkcs" => merge_json(
+            base,
+            json!({ "mkcs": run_req.get("mkcs").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Kqsr" => merge_json(
+            base,
+            json!({ "kqsr": run_req.get("kqsr").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Carm" => merge_json(
+            base,
+            json!({ "carm": run_req.get("carm").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Kvdf" => merge_json(
+            base,
+            json!({ "kvdf": run_req.get("kvdf").cloned().unwrap_or_else(|| json!({})) }),
+        ),
+        "Cdmc" => merge_json(
+            base,
+            json!({ "cdmc": run_req.get("cdmc").cloned().unwrap_or_else(|| json!({})) }),
+        ),
         _ => merge_json(
             base,
             json!({
@@ -841,8 +1182,6 @@ fn build_validation_request_value(
         "cscv_pbo": cscv_pbo_to_value(validation_cfg.cscv_pbo.as_ref()),
         "seed": validation_cfg.seed,
         "max_candidates": validation_cfg.max_candidates.max(1),
-        "validation_engine": Value::Null,
-        "iterative": Value::Null,
         "min_psr": validation_cfg.min_psr,
         "min_dsr": validation_cfg.min_dsr,
         "min_cscv_oos_rank_frac": validation_cfg.min_cscv_oos_rank_frac,
@@ -868,9 +1207,14 @@ fn cscv_pbo_to_value(value: Option<&CscvPboConfig>) -> Value {
     }
 }
 
-fn build_request_summary_value(req: &ResearchCampaignRequest, resolved_tags: &[String]) -> Value {
+fn build_request_summary_value(
+    req: &ResearchCampaignRequest,
+    resolved_tags: &[String],
+    execution_mode: ResearchCampaignExecutionMode,
+) -> Value {
     json!({
         "strategy_kind": normalize_strategy_kind(&req.strategy_kind),
+        "execution_mode": execution_mode,
         "datasets": req.datasets.iter().map(|dataset| {
             json!({
                 "csv_path": dataset.csv_path,
@@ -914,6 +1258,7 @@ fn build_campaign_summary(
     strategy_kind: &str,
     timeframe: Option<String>,
     req: &ResearchCampaignRequest,
+    execution_mode: ResearchCampaignExecutionMode,
     tags: &[String],
     holdout_tag: Option<String>,
     counts: &ResearchCampaignCounts,
@@ -933,7 +1278,7 @@ fn build_campaign_summary(
         tags: tags.to_vec(),
         holdout_tag,
         holdout_pct: req.holdout_pct.min(50),
-        request: build_request_summary_value(req, tags),
+        request: build_request_summary_value(req, tags, execution_mode),
         counts: counts.clone(),
         items: items.to_vec(),
         meta_json_path: meta_response.map(|value| value.meta_json_path.clone()),
@@ -951,7 +1296,10 @@ fn save_campaign_summary_blocking(
     let path = existing_path
         .map(PathBuf::from)
         .filter(|value| !value.as_os_str().is_empty())
-        .unwrap_or(run_artifacts::suggest_campaign_summary_path(&summary.ts, app)?);
+        .unwrap_or(run_artifacts::suggest_campaign_summary_path(
+            &summary.ts,
+            app,
+        )?);
     let bytes = serde_json::to_vec_pretty(summary).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     Ok((path.to_string_lossy().to_string(), bytes.len()))
@@ -971,6 +1319,18 @@ fn existing_validation_matches(
     primary_tag: &str,
     prepared: &PreparedCampaignDataset,
 ) -> bool {
+    existing_optimization_match(existing, strategy_kind, config_fingerprint, primary_tag, prepared)
+        .map(|row| row.has_validation)
+        .unwrap_or(false)
+}
+
+fn existing_optimization_match<'a>(
+    existing: &'a [run_artifacts::RunArtifactSummary],
+    strategy_kind: &str,
+    config_fingerprint: &str,
+    primary_tag: &str,
+    prepared: &PreparedCampaignDataset,
+) -> Option<&'a run_artifacts::RunArtifactSummary> {
     let dataset_tf = normalize_timeframe_label(&prepared.timeframe);
     let dataset_path = normalize_path_key(&prepared.input.csv_path);
     let strict_fp = prepared
@@ -984,9 +1344,6 @@ fn existing_validation_matches(
             continue;
         }
         if row.config_fingerprint.trim() != config_fingerprint.trim() {
-            continue;
-        }
-        if !row.has_validation {
             continue;
         }
         if !row
@@ -1004,7 +1361,7 @@ fn existing_validation_matches(
         }
         if let Some(expected_fp) = strict_fp.as_deref() {
             if row.source_content_fingerprint.as_deref() == Some(expected_fp) {
-                return true;
+                return Some(row);
             }
             continue;
         }
@@ -1012,13 +1369,62 @@ fn existing_validation_matches(
             if prepared.input.source_size_bytes == Some(size)
                 && prepared.input.source_mtime_utc_ms == Some(mtime)
             {
-                return true;
+                return Some(row);
             }
         } else {
-            return true;
+            return Some(row);
         }
     }
-    false
+    None
+}
+
+fn can_reuse_optimization_artifact_for_validation(family: CampaignOptimizationFamily) -> bool {
+    matches!(
+        family,
+        CampaignOptimizationFamily::DoubleLike
+            | CampaignOptimizationFamily::CompositeCpu
+            | CampaignOptimizationFamily::CompositeMo
+    )
+}
+
+fn optimization_result_from_artifact_value(
+    family: CampaignOptimizationFamily,
+    artifact: &Value,
+) -> Result<CampaignOptimizationResult, String> {
+    let run_res = artifact
+        .pointer("/run/res")
+        .cloned()
+        .ok_or_else(|| "existing optimization artifact was missing run.res".to_string())?;
+    match family {
+        CampaignOptimizationFamily::DoubleLike | CampaignOptimizationFamily::CompositeCpu => {
+            let res: BackendOptimizationResult =
+                serde_json::from_value(run_res).map_err(|e| e.to_string())?;
+            Ok(CampaignOptimizationResult::Backend(res))
+        }
+        CampaignOptimizationFamily::CompositeMo => {
+            let pareto = run_res
+                .get("pareto")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    "existing CompositeMo optimization artifact was missing pareto candidates"
+                        .to_string()
+                })?;
+            if pareto.is_empty() {
+                return Err(
+                    "existing CompositeMo optimization artifact had an empty pareto frontier"
+                        .to_string(),
+                );
+            }
+            Ok(CampaignOptimizationResult::CompositeMoArtifact(run_res))
+        }
+    }
+}
+
+fn optimization_request_from_artifact_value(artifact: &Value) -> Result<Value, String> {
+    artifact
+        .pointer("/run/req")
+        .cloned()
+        .ok_or_else(|| "existing optimization artifact was missing run.req".to_string())
 }
 
 fn build_run_artifact_value(
@@ -1046,15 +1452,17 @@ fn build_run_artifact_value(
     })
 }
 
-fn run_research_campaign_blocking(
+fn run_research_campaign_blocking_with_mode(
     req: ResearchCampaignRequest,
     app: tauri::AppHandle,
     cancel: Arc<AtomicBool>,
+    execution_mode: ResearchCampaignExecutionMode,
+    mut preloaded_pack: Option<HeadlessPreparedResearchCampaignDatasetPack>,
 ) -> Result<RunResearchCampaignResponse, String> {
     let started = std::time::Instant::now();
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let app_cache_dir = data_cache::app_data_cache_dir(&base);
-    let strategy_kind = normalize_strategy_kind(&req.strategy_kind);
+    let strategy_kind = resolve_campaign_strategy_kind(&req.strategy_kind)?;
     if req.datasets.is_empty() {
         return Err("campaign requires at least one dataset".to_string());
     }
@@ -1098,7 +1506,7 @@ fn run_research_campaign_blocking(
         && strategy_kind == "DoubleMa"
     {
         warnings.push(
-            "Requested host_plus_doublema_vram, but this implementation slice currently uses host preload only."
+            "host_plus_doublema_vram is experimental, limited to the plain DoubleMa exact GpuKernel route, and falls back to host preload when GPU staging is unavailable."
                 .to_string(),
         );
     }
@@ -1115,12 +1523,34 @@ fn run_research_campaign_blocking(
         .map(normalize_timeframe_label)
         .filter(|value| !value.is_empty());
     let dataset_total = req.datasets.len();
-    let mut preload = Some(DatasetPreloadJob::spawn(
-        req.datasets[0].clone(),
-        timeframe_override.clone(),
-        app_cache_dir.clone(),
-    ));
+    let using_preloaded_pack = preloaded_pack.is_some();
+    if let Some(pack) = preloaded_pack.as_ref() {
+        if pack.datasets.len() != req.datasets.len() {
+            return Err(format!(
+                "preloaded campaign dataset pack length {} did not match request dataset length {}",
+                pack.datasets.len(),
+                req.datasets.len()
+            ));
+        }
+    }
+    if using_preloaded_pack {
+        warnings.push(
+            "headless benchmark supplied a preloaded dataset pack; request.preload_policy remains unchanged because full_pack_host is benchmark-only."
+                .to_string(),
+        );
+    }
+    let mut preload = if !using_preloaded_pack && preload_enabled(req.preload_policy) {
+        Some(DatasetPreloadJob::spawn(
+            req.datasets[0].clone(),
+            timeframe_override.clone(),
+            app_cache_dir.clone(),
+        ))
+    } else {
+        None
+    };
     let sink = TauriProgressSink { app: app.clone() };
+    let mut learned_doublema_vram_device: Option<u32> = None;
+    let mut doublema_vram_prefetch_disabled = false;
     let mut items: Vec<ResearchCampaignItemSummary> = req
         .datasets
         .iter()
@@ -1144,6 +1574,7 @@ fn run_research_campaign_blocking(
         &strategy_kind,
         timeframe_override.clone(),
         &req,
+        execution_mode,
         &tags,
         holdout_tag.clone(),
         &counts,
@@ -1175,15 +1606,24 @@ fn run_research_campaign_blocking(
         let is_holdout = holdout_paths.contains(&dataset_csv_path);
         let fallback_label = dataset_label_from_input(&dataset);
         let fallback_timeframe = dataset_timeframe_hint(&dataset, timeframe_override.as_deref());
-        let prepared_result = match preload.take() {
-            Some(job) => job.join(),
-            None => prepare_campaign_dataset(
-                dataset.clone(),
-                timeframe_override.as_deref(),
-                &app_cache_dir,
-            ),
+        let prepared_result = match preloaded_pack.as_mut() {
+            Some(pack) => pack
+                .datasets
+                .pop_front()
+                .ok_or_else(|| "preloaded campaign dataset pack was missing an entry".to_string()),
+            None => match preload.take() {
+                Some(job) => job.join(),
+                None => prepare_campaign_dataset(
+                    dataset.clone(),
+                    timeframe_override.as_deref(),
+                    &app_cache_dir,
+                ),
+            },
         };
-        if index + 1 < req.datasets.len() {
+        if !using_preloaded_pack
+            && preload_enabled(req.preload_policy)
+            && index + 1 < req.datasets.len()
+        {
             preload = Some(DatasetPreloadJob::spawn(
                 req.datasets[index + 1].clone(),
                 timeframe_override.clone(),
@@ -1209,6 +1649,7 @@ fn run_research_campaign_blocking(
                     &strategy_kind,
                     timeframe_override.clone(),
                     &req,
+                    execution_mode,
                     &tags,
                     holdout_tag.clone(),
                     &counts,
@@ -1222,6 +1663,28 @@ fn run_research_campaign_blocking(
                 continue;
             }
         };
+        if using_preloaded_pack {
+            let expected_csv_path = normalize_text(&dataset.csv_path);
+            let prepared_csv_path = normalize_text(&prepared.input.csv_path);
+            if prepared_csv_path != expected_csv_path {
+                return Err(format!(
+                    "preloaded campaign dataset pack order mismatch at dataset {}: expected '{}' but got '{}'",
+                    index + 1,
+                    expected_csv_path,
+                    prepared_csv_path
+                ));
+            }
+            let expected_timeframe =
+                dataset_timeframe_hint(&dataset, timeframe_override.as_deref());
+            if prepared.timeframe != expected_timeframe {
+                return Err(format!(
+                    "preloaded campaign dataset pack timeframe mismatch for '{}': expected '{}' but got '{}'",
+                    expected_csv_path,
+                    expected_timeframe,
+                    prepared.timeframe
+                ));
+            }
+        }
 
         let label = prepared.label.clone();
         emit_campaign_progress(
@@ -1237,8 +1700,13 @@ fn run_research_campaign_blocking(
 
         let run_ts = chrono::Utc::now().to_rfc3339();
         let data_id = make_campaign_data_id(index, &prepared.input.csv_path, &prepared.timeframe);
-        let run_req_value =
+        let mut run_req_value =
             patch_optimization_template(&req.optimization_template, &strategy_kind, &data_id)?;
+        let parsed_doublema_req = if strategy_kind == "DoubleMa" {
+            serde_json::from_value::<DoubleMaRequest>(run_req_value.clone()).ok()
+        } else {
+            None
+        };
         let run_only_fingerprint = run_artifacts::compute_config_fingerprint_from_artifact(
             &artifact_stub(&run_req_value, None),
         );
@@ -1253,41 +1721,36 @@ fn run_research_campaign_blocking(
             dedup_tags(next)
         };
 
-        emit_campaign_progress(
-            &app,
-            "optimize",
-            index + 1,
-            dataset_total,
-            &label,
-            "running optimization",
-            Some(&summary_json_path),
-            &counts,
-        );
-        let optimize_result = match run_optimization_blocking(
-            family,
-            &run_req_value,
-            &prepared.candles,
-            cancel.as_ref(),
-            &sink,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                counts.failed = counts.failed.saturating_add(1);
-                items[index] = failed_item(
-                    prepared.input.csv_path.clone(),
+        let mut existing_optimize_path: Option<String> = None;
+        let optimize_result = if execution_mode == ResearchCampaignExecutionMode::ValidateOnly {
+            let Some(existing_run) = existing_optimization_match(
+                &existing,
+                &strategy_kind,
+                &run_only_fingerprint,
+                &primary_tag,
+                &prepared,
+            ) else {
+                counts.skipped = counts.skipped.saturating_add(1);
+                items[index] = ResearchCampaignItemSummary {
+                    csv_path: prepared.input.csv_path.clone(),
                     label,
-                    prepared.timeframe.clone(),
+                    timeframe: prepared.timeframe.clone(),
                     is_holdout,
-                    None,
-                    "optimization",
-                    error,
-                );
+                    status: "skipped".to_string(),
+                    artifact_path: None,
+                    report_xlsx_path: None,
+                    error: Some(
+                        "no matching optimization artifact was found for validate_only mode"
+                            .to_string(),
+                    ),
+                };
                 summary = build_campaign_summary(
                     &ts,
                     "running",
                     &strategy_kind,
                     timeframe_override.clone(),
                     &req,
+                    execution_mode,
                     &tags,
                     holdout_tag.clone(),
                     &counts,
@@ -1297,11 +1760,641 @@ fn run_research_campaign_blocking(
                     &warnings,
                     started.elapsed().as_millis() as u64,
                 );
-                let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                let _ =
+                    save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
                 continue;
+            };
+            existing_optimize_path = Some(existing_run.path.clone());
+            emit_campaign_progress(
+                &app,
+                "optimize",
+                index + 1,
+                dataset_total,
+                &label,
+                "loading existing optimization artifact for validation",
+                Some(&summary_json_path),
+                &counts,
+            );
+            let artifact = match run_artifacts::load_run_artifact_blocking(
+                existing_run.path.clone(),
+                app.clone(),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        label,
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        existing_optimize_path.clone(),
+                        "load optimization artifact",
+                        error,
+                    );
+                    summary = build_campaign_summary(
+                        &ts,
+                        "running",
+                        &strategy_kind,
+                        timeframe_override.clone(),
+                        &req,
+                        execution_mode,
+                        &tags,
+                        holdout_tag.clone(),
+                        &counts,
+                        &items,
+                        None,
+                        None,
+                        &warnings,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ = save_campaign_summary_blocking(
+                        &summary,
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
+                    continue;
+                }
+            };
+            run_req_value = match optimization_request_from_artifact_value(&artifact) {
+                Ok(value) => value,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        label,
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        existing_optimize_path.clone(),
+                        "decode optimization request",
+                        error,
+                    );
+                    summary = build_campaign_summary(
+                        &ts,
+                        "running",
+                        &strategy_kind,
+                        timeframe_override.clone(),
+                        &req,
+                        execution_mode,
+                        &tags,
+                        holdout_tag.clone(),
+                        &counts,
+                        &items,
+                        None,
+                        None,
+                        &warnings,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ = save_campaign_summary_blocking(
+                        &summary,
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
+                    continue;
+                }
+            };
+            match optimization_result_from_artifact_value(family, &artifact) {
+                Ok(value) => value,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        label,
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        existing_optimize_path.clone(),
+                        "decode optimization artifact",
+                        error,
+                    );
+                    summary = build_campaign_summary(
+                        &ts,
+                        "running",
+                        &strategy_kind,
+                        timeframe_override.clone(),
+                        &req,
+                        execution_mode,
+                        &tags,
+                        holdout_tag.clone(),
+                        &counts,
+                        &items,
+                        None,
+                        None,
+                        &warnings,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ = save_campaign_summary_blocking(
+                        &summary,
+                        &app,
+                        Some(&summary_json_path),
+                    )?;
+                    continue;
+                }
             }
+        } else if req.skip_existing {
+            if let Some(existing_run) = existing_optimization_match(
+                &existing,
+                &strategy_kind,
+                &run_only_fingerprint,
+                &primary_tag,
+                &prepared,
+            ) {
+                if execution_mode == ResearchCampaignExecutionMode::OptimizeOnly {
+                    existing_optimize_path = Some(existing_run.path.clone());
+                    counts.skipped = counts.skipped.saturating_add(1);
+                    items[index] = ResearchCampaignItemSummary {
+                        csv_path: prepared.input.csv_path.clone(),
+                        label,
+                        timeframe: prepared.timeframe.clone(),
+                        is_holdout,
+                        status: "skipped".to_string(),
+                        artifact_path: existing_optimize_path.clone(),
+                        report_xlsx_path: None,
+                        error: None,
+                    };
+                    summary = build_campaign_summary(
+                        &ts,
+                        "running",
+                        &strategy_kind,
+                        timeframe_override.clone(),
+                        &req,
+                        execution_mode,
+                        &tags,
+                        holdout_tag.clone(),
+                        &counts,
+                        &items,
+                        None,
+                        None,
+                        &warnings,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ =
+                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    continue;
+                }
+
+                if !can_reuse_optimization_artifact_for_validation(family) {
+                    push_unique_warning(
+                        &mut warnings,
+                        "skip_existing found a matching CompositeMo optimization artifact, but full campaign reuse still reruns optimization because saved CompositeMo results are not deserializable for downstream validation yet."
+                            .to_string(),
+                    );
+                    emit_campaign_progress(
+                        &app,
+                        "optimize",
+                        index + 1,
+                        dataset_total,
+                        &label,
+                        "existing optimization artifact found, rerunning optimization",
+                        Some(&summary_json_path),
+                        &counts,
+                    );
+                    let optimize_progress_sink = if req.preload_policy
+                        == ResearchCampaignPreloadPolicy::HostPlusDoublemaVram
+                        && strategy_kind == "DoubleMa"
+                        && !doublema_vram_prefetch_disabled
+                        && !using_preloaded_pack
+                    {
+                        match (
+                            parsed_doublema_req.as_ref().and_then(|run_req| {
+                                build_doublema_vram_prefetch_config(
+                                    run_req,
+                                    learned_doublema_vram_device,
+                                )
+                            }),
+                            preload.as_ref().map(DatasetPreloadJob::shared_state),
+                        ) {
+                            (Some(config), Some(preload_state)) => Some(CampaignProgressSink {
+                                app: app.clone(),
+                                vram_prefetch: Some(CampaignDoubleMaVramPrefetch {
+                                    preload_state,
+                                    config,
+                                    completed: AtomicBool::new(false),
+                                    feedback: Mutex::new(None),
+                                }),
+                            }),
+                            _ => Some(CampaignProgressSink {
+                                app: app.clone(),
+                                vram_prefetch: None,
+                            }),
+                        }
+                    } else {
+                        Some(CampaignProgressSink {
+                            app: app.clone(),
+                            vram_prefetch: None,
+                        })
+                    };
+                    let optimize_result = match run_optimization_blocking(
+                        family,
+                        &run_req_value,
+                        &prepared.candles,
+                        cancel.as_ref(),
+                        optimize_progress_sink
+                            .as_ref()
+                            .map(|value| value as &dyn ProgressSink),
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            counts.failed = counts.failed.saturating_add(1);
+                            items[index] = failed_item(
+                                prepared.input.csv_path.clone(),
+                                label,
+                                prepared.timeframe.clone(),
+                                is_holdout,
+                                None,
+                                "optimization",
+                                error,
+                            );
+                            summary = build_campaign_summary(
+                                &ts,
+                                "running",
+                                &strategy_kind,
+                                timeframe_override.clone(),
+                                &req,
+                                execution_mode,
+                                &tags,
+                                holdout_tag.clone(),
+                                &counts,
+                                &items,
+                                None,
+                                None,
+                                &warnings,
+                                started.elapsed().as_millis() as u64,
+                            );
+                            let _ = save_campaign_summary_blocking(
+                                &summary,
+                                &app,
+                                Some(&summary_json_path),
+                            )?;
+                            continue;
+                        }
+                    };
+                    if let Some(feedback) = optimize_progress_sink
+                        .as_ref()
+                        .and_then(CampaignProgressSink::take_prefetch_feedback)
+                    {
+                        match feedback {
+                            DoubleMaCampaignVramPrefetchFeedback::Staged
+                            | DoubleMaCampaignVramPrefetchFeedback::AlreadyResident => {}
+                            DoubleMaCampaignVramPrefetchFeedback::Warning(note) => {
+                                push_unique_warning(&mut warnings, note);
+                            }
+                            DoubleMaCampaignVramPrefetchFeedback::Fatal(note) => {
+                                push_unique_warning(&mut warnings, note);
+                                doublema_vram_prefetch_disabled = true;
+                            }
+                        }
+                    }
+                    counts.optimized = counts.optimized.saturating_add(1);
+                    optimize_result
+                } else {
+                    existing_optimize_path = Some(existing_run.path.clone());
+                    emit_campaign_progress(
+                        &app,
+                        "optimize",
+                        index + 1,
+                        dataset_total,
+                        &label,
+                        "reusing optimization artifact",
+                        Some(&summary_json_path),
+                        &counts,
+                    );
+                    let artifact = match run_artifacts::load_run_artifact_blocking(
+                        existing_run.path.clone(),
+                        app.clone(),
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            counts.failed = counts.failed.saturating_add(1);
+                            items[index] = failed_item(
+                                prepared.input.csv_path.clone(),
+                                label,
+                                prepared.timeframe.clone(),
+                                is_holdout,
+                                existing_optimize_path.clone(),
+                                "load optimization artifact",
+                                error,
+                            );
+                            summary = build_campaign_summary(
+                                &ts,
+                                "running",
+                                &strategy_kind,
+                                timeframe_override.clone(),
+                                &req,
+                                execution_mode,
+                                &tags,
+                                holdout_tag.clone(),
+                                &counts,
+                                &items,
+                                None,
+                                None,
+                                &warnings,
+                                started.elapsed().as_millis() as u64,
+                            );
+                            let _ = save_campaign_summary_blocking(
+                                &summary,
+                                &app,
+                                Some(&summary_json_path),
+                            )?;
+                            continue;
+                        }
+                    };
+                    run_req_value = match optimization_request_from_artifact_value(&artifact) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            counts.failed = counts.failed.saturating_add(1);
+                            items[index] = failed_item(
+                                prepared.input.csv_path.clone(),
+                                label,
+                                prepared.timeframe.clone(),
+                                is_holdout,
+                                existing_optimize_path.clone(),
+                                "decode optimization request",
+                                error,
+                            );
+                            summary = build_campaign_summary(
+                                &ts,
+                                "running",
+                                &strategy_kind,
+                                timeframe_override.clone(),
+                                &req,
+                                execution_mode,
+                                &tags,
+                                holdout_tag.clone(),
+                                &counts,
+                                &items,
+                                None,
+                                None,
+                                &warnings,
+                                started.elapsed().as_millis() as u64,
+                            );
+                            let _ = save_campaign_summary_blocking(
+                                &summary,
+                                &app,
+                                Some(&summary_json_path),
+                            )?;
+                            continue;
+                        }
+                    };
+                    match optimization_result_from_artifact_value(family, &artifact) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            counts.failed = counts.failed.saturating_add(1);
+                            items[index] = failed_item(
+                                prepared.input.csv_path.clone(),
+                                label,
+                                prepared.timeframe.clone(),
+                                is_holdout,
+                                existing_optimize_path.clone(),
+                                "decode optimization artifact",
+                                error,
+                            );
+                            summary = build_campaign_summary(
+                                &ts,
+                                "running",
+                                &strategy_kind,
+                                timeframe_override.clone(),
+                                &req,
+                                execution_mode,
+                                &tags,
+                                holdout_tag.clone(),
+                                &counts,
+                                &items,
+                                None,
+                                None,
+                                &warnings,
+                                started.elapsed().as_millis() as u64,
+                            );
+                            let _ = save_campaign_summary_blocking(
+                                &summary,
+                                &app,
+                                Some(&summary_json_path),
+                            )?;
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                emit_campaign_progress(
+                    &app,
+                    "optimize",
+                    index + 1,
+                    dataset_total,
+                    &label,
+                    "running optimization",
+                    Some(&summary_json_path),
+                    &counts,
+                );
+                let optimize_progress_sink = if req.preload_policy
+                    == ResearchCampaignPreloadPolicy::HostPlusDoublemaVram
+                    && strategy_kind == "DoubleMa"
+                    && !doublema_vram_prefetch_disabled
+                    && !using_preloaded_pack
+                {
+                    match (
+                        parsed_doublema_req.as_ref().and_then(|run_req| {
+                            build_doublema_vram_prefetch_config(
+                                run_req,
+                                learned_doublema_vram_device,
+                            )
+                        }),
+                        preload.as_ref().map(DatasetPreloadJob::shared_state),
+                    ) {
+                        (Some(config), Some(preload_state)) => Some(CampaignProgressSink {
+                            app: app.clone(),
+                            vram_prefetch: Some(CampaignDoubleMaVramPrefetch {
+                                preload_state,
+                                config,
+                                completed: AtomicBool::new(false),
+                                feedback: Mutex::new(None),
+                            }),
+                        }),
+                        _ => Some(CampaignProgressSink {
+                            app: app.clone(),
+                            vram_prefetch: None,
+                        }),
+                    }
+                } else {
+                    Some(CampaignProgressSink {
+                        app: app.clone(),
+                        vram_prefetch: None,
+                    })
+                };
+                let optimize_result = match run_optimization_blocking(
+                    family,
+                    &run_req_value,
+                    &prepared.candles,
+                    cancel.as_ref(),
+                    optimize_progress_sink
+                        .as_ref()
+                        .map(|value| value as &dyn ProgressSink),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        counts.failed = counts.failed.saturating_add(1);
+                        items[index] = failed_item(
+                            prepared.input.csv_path.clone(),
+                            label,
+                            prepared.timeframe.clone(),
+                            is_holdout,
+                            None,
+                            "optimization",
+                            error,
+                        );
+                        summary = build_campaign_summary(
+                            &ts,
+                            "running",
+                            &strategy_kind,
+                            timeframe_override.clone(),
+                            &req,
+                            execution_mode,
+                            &tags,
+                            holdout_tag.clone(),
+                            &counts,
+                            &items,
+                            None,
+                            None,
+                            &warnings,
+                            started.elapsed().as_millis() as u64,
+                        );
+                        let _ = save_campaign_summary_blocking(
+                            &summary,
+                            &app,
+                            Some(&summary_json_path),
+                        )?;
+                        continue;
+                    }
+                };
+                if let Some(feedback) = optimize_progress_sink
+                    .as_ref()
+                    .and_then(CampaignProgressSink::take_prefetch_feedback)
+                {
+                    match feedback {
+                        DoubleMaCampaignVramPrefetchFeedback::Staged
+                        | DoubleMaCampaignVramPrefetchFeedback::AlreadyResident => {}
+                        DoubleMaCampaignVramPrefetchFeedback::Warning(note) => {
+                            push_unique_warning(&mut warnings, note);
+                        }
+                        DoubleMaCampaignVramPrefetchFeedback::Fatal(note) => {
+                            push_unique_warning(&mut warnings, note);
+                            doublema_vram_prefetch_disabled = true;
+                        }
+                    }
+                }
+                counts.optimized = counts.optimized.saturating_add(1);
+                optimize_result
+            }
+        } else {
+            emit_campaign_progress(
+                &app,
+                "optimize",
+                index + 1,
+                dataset_total,
+                &label,
+                "running optimization",
+                Some(&summary_json_path),
+                &counts,
+            );
+            let optimize_progress_sink = if req.preload_policy
+                == ResearchCampaignPreloadPolicy::HostPlusDoublemaVram
+                && strategy_kind == "DoubleMa"
+                && !doublema_vram_prefetch_disabled
+                && !using_preloaded_pack
+            {
+                match (
+                    parsed_doublema_req.as_ref().and_then(|run_req| {
+                        build_doublema_vram_prefetch_config(run_req, learned_doublema_vram_device)
+                    }),
+                    preload.as_ref().map(DatasetPreloadJob::shared_state),
+                ) {
+                    (Some(config), Some(preload_state)) => Some(CampaignProgressSink {
+                        app: app.clone(),
+                        vram_prefetch: Some(CampaignDoubleMaVramPrefetch {
+                            preload_state,
+                            config,
+                            completed: AtomicBool::new(false),
+                            feedback: Mutex::new(None),
+                        }),
+                    }),
+                    _ => Some(CampaignProgressSink {
+                        app: app.clone(),
+                        vram_prefetch: None,
+                    }),
+                }
+            } else {
+                Some(CampaignProgressSink {
+                    app: app.clone(),
+                    vram_prefetch: None,
+                })
+            };
+            let optimize_result = match run_optimization_blocking(
+                family,
+                &run_req_value,
+                &prepared.candles,
+                cancel.as_ref(),
+                optimize_progress_sink
+                    .as_ref()
+                    .map(|value| value as &dyn ProgressSink),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        label,
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        None,
+                        "optimization",
+                        error,
+                    );
+                    summary = build_campaign_summary(
+                        &ts,
+                        "running",
+                        &strategy_kind,
+                        timeframe_override.clone(),
+                        &req,
+                        execution_mode,
+                        &tags,
+                        holdout_tag.clone(),
+                        &counts,
+                        &items,
+                        None,
+                        None,
+                        &warnings,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    continue;
+                }
+            };
+            if let Some(feedback) = optimize_progress_sink
+                .as_ref()
+                .and_then(CampaignProgressSink::take_prefetch_feedback)
+            {
+                match feedback {
+                    DoubleMaCampaignVramPrefetchFeedback::Staged
+                    | DoubleMaCampaignVramPrefetchFeedback::AlreadyResident => {}
+                    DoubleMaCampaignVramPrefetchFeedback::Warning(note) => {
+                        push_unique_warning(&mut warnings, note);
+                    }
+                    DoubleMaCampaignVramPrefetchFeedback::Fatal(note) => {
+                        push_unique_warning(&mut warnings, note);
+                        doublema_vram_prefetch_disabled = true;
+                    }
+                }
+            }
+            counts.optimized = counts.optimized.saturating_add(1);
+            optimize_result
         };
-        counts.optimized = counts.optimized.saturating_add(1);
+        if strategy_kind == "DoubleMa" {
+            learned_doublema_vram_device = match (&optimize_result, parsed_doublema_req.as_ref()) {
+                (CampaignOptimizationResult::Backend(res), Some(run_req))
+                    if supports_exact_gpu_kernel_route(res) =>
+                {
+                    requested_gpu_device_id(&run_req.backend)
+                }
+                _ => None,
+            };
+        }
         let run_res_value = match &optimize_result {
             CampaignOptimizationResult::Backend(res) => {
                 serde_json::to_value(res).map_err(|e| e.to_string())?
@@ -1309,51 +2402,89 @@ fn run_research_campaign_blocking(
             CampaignOptimizationResult::CompositeMo(res) => {
                 serde_json::to_value(res).map_err(|e| e.to_string())?
             }
+            CampaignOptimizationResult::CompositeMoArtifact(res) => res.clone(),
         };
 
-        let optimize_artifact = build_run_artifact_value(
-            &run_ts,
-            &run_only_fingerprint,
-            &prepared.input.csv_path,
-            &prepared.dataset_meta,
-            &per_run_tags,
-            &run_req_value,
-            &run_res_value,
-            None,
-            None,
-        );
-        let mut artifact_path = match run_artifacts::save_run_artifact_blocking(optimize_artifact, app.clone()) {
-            Ok(saved) => saved.path,
-            Err(error) => {
-                counts.failed = counts.failed.saturating_add(1);
-                items[index] = failed_item(
-                    prepared.input.csv_path.clone(),
-                    prepared.label.clone(),
-                    prepared.timeframe.clone(),
-                    is_holdout,
-                    None,
-                    "optimization artifact",
-                    error,
-                );
-                summary = build_campaign_summary(
-                    &ts,
-                    "running",
-                    &strategy_kind,
-                    timeframe_override.clone(),
-                    &req,
-                    &tags,
-                    holdout_tag.clone(),
-                    &counts,
-                    &items,
-                    None,
-                    None,
-                    &warnings,
-                    started.elapsed().as_millis() as u64,
-                );
-                let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
-                continue;
+        let mut artifact_path = if let Some(path) = existing_optimize_path {
+            path
+        } else {
+            let optimize_artifact = build_run_artifact_value(
+                &run_ts,
+                &run_only_fingerprint,
+                &prepared.input.csv_path,
+                &prepared.dataset_meta,
+                &per_run_tags,
+                &run_req_value,
+                &run_res_value,
+                None,
+                None,
+            );
+            match run_artifacts::save_run_artifact_blocking(optimize_artifact, app.clone()) {
+                Ok(saved) => saved.path,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        prepared.label.clone(),
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        None,
+                        "optimization artifact",
+                        error,
+                    );
+                    summary = build_campaign_summary(
+                        &ts,
+                        "running",
+                        &strategy_kind,
+                        timeframe_override.clone(),
+                        &req,
+                        execution_mode,
+                        &tags,
+                        holdout_tag.clone(),
+                        &counts,
+                        &items,
+                        None,
+                        None,
+                        &warnings,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ =
+                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    continue;
+                }
             }
         };
+
+        if execution_mode == ResearchCampaignExecutionMode::OptimizeOnly {
+            items[index] = ResearchCampaignItemSummary {
+                csv_path: prepared.input.csv_path.clone(),
+                label,
+                timeframe: prepared.timeframe.clone(),
+                is_holdout,
+                status: "optimized".to_string(),
+                artifact_path: Some(artifact_path),
+                report_xlsx_path: None,
+                error: None,
+            };
+            summary = build_campaign_summary(
+                &ts,
+                "running",
+                &strategy_kind,
+                timeframe_override.clone(),
+                &req,
+                execution_mode,
+                &tags,
+                holdout_tag.clone(),
+                &counts,
+                &items,
+                None,
+                None,
+                &warnings,
+                started.elapsed().as_millis() as u64,
+            );
+            let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+            continue;
+        }
 
         let validation_req_value = match build_validation_request_value(
             &strategy_kind,
@@ -1382,6 +2513,7 @@ fn run_research_campaign_blocking(
                     &strategy_kind,
                     timeframe_override.clone(),
                     &req,
+                    execution_mode,
                     &tags,
                     holdout_tag.clone(),
                     &counts,
@@ -1424,6 +2556,7 @@ fn run_research_campaign_blocking(
                 &strategy_kind,
                 timeframe_override.clone(),
                 &req,
+                execution_mode,
                 &tags,
                 holdout_tag.clone(),
                 &counts,
@@ -1450,7 +2583,9 @@ fn run_research_campaign_blocking(
         let validation_res_value = match family {
             CampaignOptimizationFamily::DoubleLike => {
                 let validation_req: DoubleMaValidationRequest =
-                    match serde_json::from_value(validation_req_value.clone()).map_err(|e| e.to_string()) {
+                    match serde_json::from_value(validation_req_value.clone())
+                        .map_err(|e| e.to_string())
+                    {
                         Ok(req) => req,
                         Err(error) => {
                             counts.failed = counts.failed.saturating_add(1);
@@ -1469,6 +2604,7 @@ fn run_research_campaign_blocking(
                                 &strategy_kind,
                                 timeframe_override.clone(),
                                 &req,
+                                execution_mode,
                                 &tags,
                                 holdout_tag.clone(),
                                 &counts,
@@ -1492,42 +2628,45 @@ fn run_research_campaign_blocking(
                     cancel.as_ref(),
                     Some(&sink),
                 ) {
-                    Ok(validation_res) => match serde_json::to_value(validation_res).map_err(|e| e.to_string()) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            counts.failed = counts.failed.saturating_add(1);
-                            items[index] = failed_item(
-                                prepared.input.csv_path.clone(),
-                                prepared.label.clone(),
-                                prepared.timeframe.clone(),
-                                is_holdout,
-                                Some(artifact_path.clone()),
-                                "validation encode",
-                                error,
-                            );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
-                            continue;
+                    Ok(validation_res) => {
+                        match serde_json::to_value(validation_res).map_err(|e| e.to_string()) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                counts.failed = counts.failed.saturating_add(1);
+                                items[index] = failed_item(
+                                    prepared.input.csv_path.clone(),
+                                    prepared.label.clone(),
+                                    prepared.timeframe.clone(),
+                                    is_holdout,
+                                    Some(artifact_path.clone()),
+                                    "validation encode",
+                                    error,
+                                );
+                                summary = build_campaign_summary(
+                                    &ts,
+                                    "running",
+                                    &strategy_kind,
+                                    timeframe_override.clone(),
+                                    &req,
+                                    execution_mode,
+                                    &tags,
+                                    holdout_tag.clone(),
+                                    &counts,
+                                    &items,
+                                    None,
+                                    None,
+                                    &warnings,
+                                    started.elapsed().as_millis() as u64,
+                                );
+                                let _ = save_campaign_summary_blocking(
+                                    &summary,
+                                    &app,
+                                    Some(&summary_json_path),
+                                )?;
+                                continue;
+                            }
                         }
-                    },
+                    }
                     Err(error) => {
                         counts.failed = counts.failed.saturating_add(1);
                         items[index] = failed_item(
@@ -1545,6 +2684,7 @@ fn run_research_campaign_blocking(
                             &strategy_kind,
                             timeframe_override.clone(),
                             &req,
+                            execution_mode,
                             &tags,
                             holdout_tag.clone(),
                             &counts,
@@ -1565,7 +2705,9 @@ fn run_research_campaign_blocking(
             }
             CampaignOptimizationFamily::CompositeCpu | CampaignOptimizationFamily::CompositeMo => {
                 let validation_req: CompositeValidationRequest =
-                    match serde_json::from_value(validation_req_value.clone()).map_err(|e| e.to_string()) {
+                    match serde_json::from_value(validation_req_value.clone())
+                        .map_err(|e| e.to_string())
+                    {
                         Ok(req) => req,
                         Err(error) => {
                             counts.failed = counts.failed.saturating_add(1);
@@ -1584,6 +2726,7 @@ fn run_research_campaign_blocking(
                                 &strategy_kind,
                                 timeframe_override.clone(),
                                 &req,
+                                execution_mode,
                                 &tags,
                                 holdout_tag.clone(),
                                 &counts,
@@ -1607,42 +2750,45 @@ fn run_research_campaign_blocking(
                     cancel.as_ref(),
                     Some(&sink),
                 ) {
-                    Ok(validation_res) => match serde_json::to_value(validation_res).map_err(|e| e.to_string()) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            counts.failed = counts.failed.saturating_add(1);
-                            items[index] = failed_item(
-                                prepared.input.csv_path.clone(),
-                                prepared.label.clone(),
-                                prepared.timeframe.clone(),
-                                is_holdout,
-                                Some(artifact_path.clone()),
-                                "validation encode",
-                                error,
-                            );
-                            summary = build_campaign_summary(
-                                &ts,
-                                "running",
-                                &strategy_kind,
-                                timeframe_override.clone(),
-                                &req,
-                                &tags,
-                                holdout_tag.clone(),
-                                &counts,
-                                &items,
-                                None,
-                                None,
-                                &warnings,
-                                started.elapsed().as_millis() as u64,
-                            );
-                            let _ = save_campaign_summary_blocking(
-                                &summary,
-                                &app,
-                                Some(&summary_json_path),
-                            )?;
-                            continue;
+                    Ok(validation_res) => {
+                        match serde_json::to_value(validation_res).map_err(|e| e.to_string()) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                counts.failed = counts.failed.saturating_add(1);
+                                items[index] = failed_item(
+                                    prepared.input.csv_path.clone(),
+                                    prepared.label.clone(),
+                                    prepared.timeframe.clone(),
+                                    is_holdout,
+                                    Some(artifact_path.clone()),
+                                    "validation encode",
+                                    error,
+                                );
+                                summary = build_campaign_summary(
+                                    &ts,
+                                    "running",
+                                    &strategy_kind,
+                                    timeframe_override.clone(),
+                                    &req,
+                                    execution_mode,
+                                    &tags,
+                                    holdout_tag.clone(),
+                                    &counts,
+                                    &items,
+                                    None,
+                                    None,
+                                    &warnings,
+                                    started.elapsed().as_millis() as u64,
+                                );
+                                let _ = save_campaign_summary_blocking(
+                                    &summary,
+                                    &app,
+                                    Some(&summary_json_path),
+                                )?;
+                                continue;
+                            }
                         }
-                    },
+                    }
                     Err(error) => {
                         counts.failed = counts.failed.saturating_add(1);
                         items[index] = failed_item(
@@ -1660,6 +2806,7 @@ fn run_research_campaign_blocking(
                             &strategy_kind,
                             timeframe_override.clone(),
                             &req,
+                            execution_mode,
                             &tags,
                             holdout_tag.clone(),
                             &counts,
@@ -1691,38 +2838,41 @@ fn run_research_campaign_blocking(
             Some(&validation_req_value),
             Some(&validation_res_value),
         );
-        artifact_path = match run_artifacts::save_run_artifact_blocking(validation_artifact, app.clone()) {
-            Ok(saved) => saved.path,
-            Err(error) => {
-                counts.failed = counts.failed.saturating_add(1);
-                items[index] = failed_item(
-                    prepared.input.csv_path.clone(),
-                    prepared.label.clone(),
-                    prepared.timeframe.clone(),
-                    is_holdout,
-                    Some(artifact_path.clone()),
-                    "validation artifact",
-                    error,
-                );
-                summary = build_campaign_summary(
-                    &ts,
-                    "running",
-                    &strategy_kind,
-                    timeframe_override.clone(),
-                    &req,
-                    &tags,
-                    holdout_tag.clone(),
-                    &counts,
-                    &items,
-                    None,
-                    None,
-                    &warnings,
-                    started.elapsed().as_millis() as u64,
-                );
-                let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
-                continue;
-            }
-        };
+        artifact_path =
+            match run_artifacts::save_run_artifact_blocking(validation_artifact, app.clone()) {
+                Ok(saved) => saved.path,
+                Err(error) => {
+                    counts.failed = counts.failed.saturating_add(1);
+                    items[index] = failed_item(
+                        prepared.input.csv_path.clone(),
+                        prepared.label.clone(),
+                        prepared.timeframe.clone(),
+                        is_holdout,
+                        Some(artifact_path.clone()),
+                        "validation artifact",
+                        error,
+                    );
+                    summary = build_campaign_summary(
+                        &ts,
+                        "running",
+                        &strategy_kind,
+                        timeframe_override.clone(),
+                        &req,
+                        execution_mode,
+                        &tags,
+                        holdout_tag.clone(),
+                        &counts,
+                        &items,
+                        None,
+                        None,
+                        &warnings,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    let _ =
+                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    continue;
+                }
+            };
         items[index] = ResearchCampaignItemSummary {
             csv_path: prepared.input.csv_path.clone(),
             label,
@@ -1739,6 +2889,7 @@ fn run_research_campaign_blocking(
             &strategy_kind,
             timeframe_override.clone(),
             &req,
+            execution_mode,
             &tags,
             holdout_tag.clone(),
             &counts,
@@ -1753,7 +2904,14 @@ fn run_research_campaign_blocking(
 
     let mut meta_response = None;
     let mut stage5_response = None;
-    if !counts.cancelled && req.auto_meta {
+    if execution_mode == ResearchCampaignExecutionMode::OptimizeOnly {
+        if req.auto_meta || req.auto_stage5 {
+            warnings.push(
+                "execution_mode=optimize_only ignores auto_meta and auto_stage5 follow-up stages."
+                    .to_string(),
+            );
+        }
+    } else if !counts.cancelled && req.auto_meta {
         if let Some(meta_req) = req.meta_request.clone() {
             emit_campaign_progress(
                 &app,
@@ -1805,7 +2963,10 @@ fn run_research_campaign_blocking(
 
     let final_state = if counts.cancelled {
         "cancelled"
-    } else if warnings.iter().any(|entry| entry.starts_with("meta:") || entry.starts_with("stage5:")) {
+    } else if warnings
+        .iter()
+        .any(|entry| entry.starts_with("meta:") || entry.starts_with("stage5:"))
+    {
         "completed_with_warnings"
     } else if counts.failed > 0 {
         "completed_with_failures"
@@ -1818,6 +2979,7 @@ fn run_research_campaign_blocking(
         &strategy_kind,
         timeframe_override,
         &req,
+        execution_mode,
         &tags,
         holdout_tag,
         &counts,
@@ -1827,7 +2989,8 @@ fn run_research_campaign_blocking(
         &warnings,
         started.elapsed().as_millis() as u64,
     );
-    let (_, summary_json_bytes) = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+    let (_, summary_json_bytes) =
+        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
     Ok(RunResearchCampaignResponse {
         ts,
         summary_json_path,
@@ -1838,6 +3001,83 @@ fn run_research_campaign_blocking(
     })
 }
 
+fn run_research_campaign_blocking(
+    req: ResearchCampaignRequest,
+    app: tauri::AppHandle,
+    cancel: Arc<AtomicBool>,
+) -> Result<RunResearchCampaignResponse, String> {
+    let execution_mode = req.execution_mode;
+    run_research_campaign_blocking_with_mode(
+        req,
+        app,
+        cancel,
+        execution_mode,
+        None,
+    )
+}
+
+pub fn run_research_campaign_blocking_headless(
+    req: ResearchCampaignRequest,
+    app: tauri::AppHandle,
+    cancel: Arc<AtomicBool>,
+) -> Result<RunResearchCampaignResponse, String> {
+    run_research_campaign_blocking(req, app, cancel)
+}
+
+pub fn run_research_campaign_optimize_only_blocking_headless(
+    req: ResearchCampaignRequest,
+    app: tauri::AppHandle,
+    cancel: Arc<AtomicBool>,
+) -> Result<RunResearchCampaignResponse, String> {
+    run_research_campaign_blocking_with_mode(
+        req,
+        app,
+        cancel,
+        ResearchCampaignExecutionMode::OptimizeOnly,
+        None,
+    )
+}
+
+pub fn preload_research_campaign_dataset_pack_headless(
+    req: &ResearchCampaignRequest,
+    app: &tauri::AppHandle,
+) -> Result<HeadlessPreparedResearchCampaignDatasetPack, String> {
+    if req.datasets.is_empty() {
+        return Err("campaign requires at least one dataset".to_string());
+    }
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let app_cache_dir = data_cache::app_data_cache_dir(&base);
+    let timeframe_override = req
+        .timeframe_override
+        .as_deref()
+        .map(normalize_timeframe_label)
+        .filter(|value| !value.is_empty());
+    let mut prepared = VecDeque::with_capacity(req.datasets.len());
+    for dataset in req.datasets.iter().cloned() {
+        prepared.push_back(prepare_campaign_dataset(
+            dataset,
+            timeframe_override.as_deref(),
+            &app_cache_dir,
+        )?);
+    }
+    Ok(HeadlessPreparedResearchCampaignDatasetPack { datasets: prepared })
+}
+
+pub fn run_research_campaign_optimize_only_preloaded_pack_blocking_headless(
+    req: ResearchCampaignRequest,
+    preloaded_pack: HeadlessPreparedResearchCampaignDatasetPack,
+    app: tauri::AppHandle,
+    cancel: Arc<AtomicBool>,
+) -> Result<RunResearchCampaignResponse, String> {
+    run_research_campaign_blocking_with_mode(
+        req,
+        app,
+        cancel,
+        ResearchCampaignExecutionMode::OptimizeOnly,
+        Some(preloaded_pack),
+    )
+}
+
 #[tauri::command]
 pub async fn run_research_campaign(
     req: ResearchCampaignRequest,
@@ -1846,9 +3086,519 @@ pub async fn run_research_campaign(
 ) -> Result<RunResearchCampaignResponse, String> {
     let _run_guard = state.try_begin_run()?;
     let cancel = state.cancel_token();
-    tauri::async_runtime::spawn_blocking(move || {
-        run_research_campaign_blocking(req, app, cancel)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || run_research_campaign_blocking(req, app, cancel))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_composite_candidate_value, build_doublema_vram_prefetch_config,
+        candidate_values_from_optimization,
+        can_reuse_optimization_artifact_for_validation, is_double_like_kind,
+        normalize_backend_value, optimization_family_for_kind,
+        optimization_result_from_artifact_value, push_unique_warning, requested_gpu_device_id,
+        resolve_campaign_strategy_kind, Backend, CampaignDoubleMaVramPrefetchConfig,
+        CampaignOptimizationFamily, CampaignOptimizationResult, DatasetPreloadJob, DoubleMaRequest,
+    };
+    use serde_json::{json, Value};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use ta_app_core::double_ma::GpuExecutionPolicy;
+    use ta_optimizer::{ObjectiveKind, OptimizationMode};
+    use ta_strategies::double_ma::StrategyConfig;
+
+    const SUPPORTED_CAMPAIGN_STRATEGIES: &[&str] = &[
+        "DoubleMa",
+        "Pit",
+        "Set",
+        "Mts",
+        "Orc",
+        "Marrt",
+        "Vfct",
+        "Rocb",
+        "Vcet",
+        "Mkcs",
+        "Kqsr",
+        "Carm",
+        "Kvdf",
+        "Cdmc",
+        "Asr",
+        "Vcc",
+        "Vemr",
+        "CompositeCpu",
+        "CompositeMo",
+        "CompositeTrend",
+        "RegimeHybrid",
+        "BreakoutMomentum",
+    ];
+
+    #[test]
+    fn dynamic_double_ma_is_rejected_for_campaigns() {
+        let err = resolve_campaign_strategy_kind("DynamicDoubleMa").unwrap_err();
+        assert!(
+            err.contains("do not support DynamicDoubleMa"),
+            "unexpected error: {err}"
+        );
+        assert!(!is_double_like_kind("DynamicDoubleMa"));
+    }
+
+    #[test]
+    fn ml_signal_is_rejected_for_campaigns() {
+        let err = resolve_campaign_strategy_kind("MlSignal").unwrap_err();
+        assert!(
+            err.contains("do not support MlSignal"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_strategy_is_rejected_for_campaigns() {
+        let err = resolve_campaign_strategy_kind("UnknownFutureStrategy").unwrap_err();
+        assert!(err.contains("Unsupported research campaign strategy kind"));
+    }
+
+    #[test]
+    fn supported_campaign_strategy_matrix_is_accepted() {
+        for kind in SUPPORTED_CAMPAIGN_STRATEGIES {
+            assert_eq!(
+                resolve_campaign_strategy_kind(kind).as_deref(),
+                Ok(*kind),
+                "expected {kind} to stay supported by campaign orchestration"
+            );
+        }
+    }
+
+    #[test]
+    fn campaign_strategy_matrix_maps_to_expected_optimization_families() {
+        for kind in [
+            "DoubleMa",
+            "Pit",
+            "Set",
+            "Mts",
+            "Orc",
+            "Marrt",
+            "Vfct",
+            "CompositeTrend",
+            "RegimeHybrid",
+            "BreakoutMomentum",
+        ] {
+            assert_eq!(
+                optimization_family_for_kind(kind),
+                CampaignOptimizationFamily::DoubleLike,
+                "expected {kind} to stay on the double-like campaign optimization path"
+            );
+        }
+
+        for kind in [
+            "CompositeCpu",
+            "Asr",
+            "Vcc",
+            "Vemr",
+            "Rocb",
+            "Vcet",
+            "Mkcs",
+            "Kqsr",
+            "Carm",
+            "Kvdf",
+            "Cdmc",
+        ] {
+            assert_eq!(
+                optimization_family_for_kind(kind),
+                CampaignOptimizationFamily::CompositeCpu,
+                "expected {kind} to stay on the composite CPU campaign optimization path"
+            );
+        }
+
+        assert_eq!(
+            optimization_family_for_kind("CompositeMo"),
+            CampaignOptimizationFamily::CompositeMo
+        );
+    }
+
+    #[test]
+    fn optimization_artifact_reuse_policy_supports_all_campaign_families() {
+        assert!(can_reuse_optimization_artifact_for_validation(
+            CampaignOptimizationFamily::DoubleLike
+        ));
+        assert!(can_reuse_optimization_artifact_for_validation(
+            CampaignOptimizationFamily::CompositeCpu
+        ));
+        assert!(can_reuse_optimization_artifact_for_validation(
+            CampaignOptimizationFamily::CompositeMo
+        ));
+    }
+
+    #[test]
+    fn composite_mo_artifact_reuse_reads_pareto_candidates_from_raw_json() {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeMo",
+                    "strategy": { "fee_bps": 1.5 }
+                },
+                "res": {
+                    "data_id": "campaign_1",
+                    "pareto": [
+                        {
+                            "params": {
+                                "fast_ma_type": "alma",
+                                "slow_ma_type": "alma",
+                                "fast_len": 12,
+                                "slow_len": 48,
+                                "strategy": { "fee_bps": 1.5 }
+                            }
+                        }
+                    ],
+                    "total_evaluations": 1,
+                    "runtime_ms": 10,
+                    "telemetry": {
+                        "prescan": null,
+                        "search": {
+                            "sampler": "ExactGrid",
+                            "requested_evaluations": 1,
+                            "actual_evaluations": 1,
+                            "unique_evaluations": 1,
+                            "duplicate_evaluations_avoided": 0,
+                            "feasible_points": 1,
+                            "rejected_decode_or_order": 0,
+                            "rejected_prescan_pair": 0,
+                            "rejected_other_constraints": 0,
+                            "exact_grid_used": true,
+                            "exact_grid_total_combinations": 1
+                        }
+                    }
+                }
+            }
+        });
+        let run_req = artifact.pointer("/run/req").cloned().expect("run.req");
+        let optimization = optimization_result_from_artifact_value(
+            CampaignOptimizationFamily::CompositeMo,
+            &artifact,
+        )
+        .expect("decode CompositeMo artifact");
+        assert!(matches!(
+            optimization,
+            CampaignOptimizationResult::CompositeMoArtifact(_)
+        ));
+
+        let candidates = candidate_values_from_optimization(
+            "CompositeMo",
+            CampaignOptimizationFamily::CompositeMo,
+            &run_req,
+            &optimization,
+            8,
+        )
+        .expect("candidates from raw artifact");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].get("fast_ma_type").and_then(Value::as_str),
+            Some("alma")
+        );
+        assert_eq!(
+            candidates[0].get("slow_len").and_then(Value::as_u64),
+            Some(48)
+        );
+    }
+
+    #[test]
+    fn composite_campaign_validation_defaults_missing_backend_to_auto() {
+        assert_eq!(
+            normalize_backend_value(None, "CompositeMo"),
+            json!({ "backend": "Auto", "device_id": 0 })
+        );
+    }
+
+    #[test]
+    fn double_like_campaign_validation_defaults_missing_backend_to_cpu_only() {
+        assert_eq!(
+            normalize_backend_value(None, "DoubleMa"),
+            json!({ "backend": "CpuOnly" })
+        );
+    }
+
+    #[test]
+    fn campaign_validation_backend_normalization_preserves_or_collapses_by_family() {
+        let gpu_kernel = json!({ "backend": "GpuKernel", "device_id": 7 });
+        let gpu_hybrid = json!({ "backend": "GpuHybridKernel", "device_id": 5 });
+        let cpu_only = json!({ "backend": "CpuOnly" });
+
+        for kind in [
+            "DoubleMa",
+            "Pit",
+            "Set",
+            "Mts",
+            "Orc",
+            "Marrt",
+            "Vfct",
+            "CompositeTrend",
+            "RegimeHybrid",
+            "BreakoutMomentum",
+        ] {
+            assert_eq!(
+                normalize_backend_value(Some(&gpu_kernel), kind),
+                gpu_kernel,
+                "expected {kind} to preserve kernel-capable validation backend requests"
+            );
+            assert_eq!(
+                normalize_backend_value(Some(&gpu_hybrid), kind),
+                gpu_hybrid,
+                "expected {kind} to preserve hybrid validation backend requests"
+            );
+        }
+
+        for kind in [
+            "CompositeCpu",
+            "Asr",
+            "Vcc",
+            "Vemr",
+            "Rocb",
+            "Vcet",
+            "Mkcs",
+            "Kqsr",
+            "Carm",
+            "Kvdf",
+            "Cdmc",
+            "CompositeMo",
+        ] {
+            assert_eq!(
+                normalize_backend_value(Some(&gpu_kernel), kind),
+                json!({ "backend": "Auto", "device_id": 7 }),
+                "expected {kind} to collapse GPU kernel requests to Auto for composite-family validation"
+            );
+            assert_eq!(
+                normalize_backend_value(Some(&gpu_hybrid), kind),
+                json!({ "backend": "Auto", "device_id": 5 }),
+                "expected {kind} to collapse GPU hybrid requests to Auto for composite-family validation"
+            );
+            assert_eq!(
+                normalize_backend_value(Some(&cpu_only), kind),
+                cpu_only,
+                "expected {kind} to preserve CpuOnly requests"
+            );
+        }
+    }
+
+    fn make_plain_doublema_request(backend: Backend) -> DoubleMaRequest {
+        DoubleMaRequest {
+            backend,
+            data_id: "campaign-test".to_string(),
+            fast_range: (5, 5, 1),
+            slow_range: (20, 20, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "hl2".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            hurdle_tau: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(8),
+            include_all: Some(false),
+            heatmap_bins: None,
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: false,
+            metric_contract: None,
+        }
+    }
+
+    #[test]
+    fn doublema_vram_prefetch_config_accepts_exact_kernel_and_learned_auto() {
+        let exact = make_plain_doublema_request(Backend::GpuKernel { device_id: 7 });
+        assert_eq!(
+            build_doublema_vram_prefetch_config(&exact, None).map(
+                |CampaignDoubleMaVramPrefetchConfig {
+                     device_id,
+                     fast_ma_type,
+                     slow_ma_type,
+                     ma_source,
+                 }| (device_id, fast_ma_type, slow_ma_type, ma_source)
+            ),
+            Some((7, "sma".to_string(), "ema".to_string(), "hl2".to_string()))
+        );
+
+        let auto = make_plain_doublema_request(Backend::Auto { device_id: 99 });
+        assert_eq!(build_doublema_vram_prefetch_config(&auto, None), None);
+        assert_eq!(
+            build_doublema_vram_prefetch_config(&auto, Some(3))
+                .map(|CampaignDoubleMaVramPrefetchConfig { device_id, .. }| device_id),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn doublema_vram_prefetch_config_rejects_non_plain_shapes() {
+        let mut multi_ma = make_plain_doublema_request(Backend::GpuKernel { device_id: 0 });
+        multi_ma.fast_ma_types.push("alma".to_string());
+        assert_eq!(build_doublema_vram_prefetch_config(&multi_ma, None), None);
+
+        let cpu = make_plain_doublema_request(Backend::CpuOnly);
+        assert_eq!(build_doublema_vram_prefetch_config(&cpu, Some(0)), None);
+    }
+
+    #[test]
+    fn requested_gpu_device_id_tracks_gpu_capable_backends_only() {
+        assert_eq!(requested_gpu_device_id(&Backend::CpuOnly), None);
+        assert_eq!(
+            requested_gpu_device_id(&Backend::Auto { device_id: 2 }),
+            Some(2)
+        );
+        assert_eq!(
+            requested_gpu_device_id(&Backend::GpuKernel { device_id: 4 }),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn push_unique_warning_deduplicates_identical_entries() {
+        let mut warnings = vec!["existing".to_string()];
+        push_unique_warning(&mut warnings, "existing".to_string());
+        push_unique_warning(&mut warnings, String::new());
+        push_unique_warning(&mut warnings, "new".to_string());
+        assert_eq!(warnings, vec!["existing".to_string(), "new".to_string()]);
+    }
+
+    #[test]
+    fn build_composite_candidate_value_preserves_strategy_specific_payloads() {
+        let params = serde_json::Map::from_iter([
+            ("fast_ma_params".to_string(), json!({ "alpha": 2.0 })),
+            ("slow_ma_params".to_string(), json!({ "offset": 0.85 })),
+        ]);
+        let base_strategy = json!({ "fee_bps": 1.5 });
+        let run_req = json!({
+            "strategy": base_strategy,
+            "halftrend": { "amplitude": 2 },
+            "macz": { "fast_length": 12 },
+            "ott": { "period": 9 },
+            "signal_mode": "soft_vote",
+            "asr": { "atr_period": 21 },
+            "vcc": { "trend_period": 6 },
+            "vemr": { "mfi_period": 14 },
+            "rocb": { "roc_period": 9 },
+            "vcet": { "vol_ema_period": 18 },
+            "mkcs": { "breakout_lookback": 30 },
+            "kqsr": { "prb_period": 24 },
+            "carm": { "otto_period": 16 },
+            "kvdf": { "fvg_lookback": 11 },
+            "cdmc": { "decycler_period": 34 }
+        });
+
+        for (kind, expected_key, expected_value) in [
+            ("Asr", "asr", json!({ "atr_period": 21 })),
+            ("Vcc", "vcc", json!({ "trend_period": 6 })),
+            ("Vemr", "vemr", json!({ "mfi_period": 14 })),
+            ("Rocb", "rocb", json!({ "roc_period": 9 })),
+            ("Vcet", "vcet", json!({ "vol_ema_period": 18 })),
+            ("Mkcs", "mkcs", json!({ "breakout_lookback": 30 })),
+            ("Kqsr", "kqsr", json!({ "prb_period": 24 })),
+            ("Carm", "carm", json!({ "otto_period": 16 })),
+            ("Kvdf", "kvdf", json!({ "fvg_lookback": 11 })),
+            ("Cdmc", "cdmc", json!({ "decycler_period": 34 })),
+        ] {
+            let candidate = build_composite_candidate_value(
+                kind,
+                &run_req,
+                &params,
+                "ema".to_string(),
+                "sma".to_string(),
+                12,
+                48,
+            );
+            assert_eq!(candidate.get(expected_key), Some(&expected_value));
+            assert_eq!(candidate.get("strategy"), Some(&base_strategy));
+            assert_eq!(
+                candidate.get("fast_ma_params"),
+                Some(&json!({ "alpha": 2.0 }))
+            );
+            assert_eq!(
+                candidate.get("slow_ma_params"),
+                Some(&json!({ "offset": 0.85 }))
+            );
+        }
+
+        let composite_cpu_candidate = build_composite_candidate_value(
+            "CompositeCpu",
+            &run_req,
+            &params,
+            "ema".to_string(),
+            "sma".to_string(),
+            12,
+            48,
+        );
+        assert_eq!(
+            composite_cpu_candidate.get("halftrend"),
+            Some(&json!({ "amplitude": 2 }))
+        );
+        assert_eq!(
+            composite_cpu_candidate.get("macz"),
+            Some(&json!({ "fast_length": 12 }))
+        );
+        assert_eq!(
+            composite_cpu_candidate.get("ott"),
+            Some(&json!({ "period": 9 }))
+        );
+        assert_eq!(
+            composite_cpu_candidate.get("signal_mode"),
+            Some(&Value::String("soft_vote".to_string()))
+        );
+    }
+
+    #[test]
+    fn dataset_preload_job_drop_waits_for_worker_completion() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (drop_done_tx, drop_done_rx) = mpsc::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_worker = Arc::clone(&finished);
+        let job = DatasetPreloadJob::spawn_with_task(move || {
+            let _ = ready_tx.send(());
+            let _ = release_rx.recv();
+            finished_worker.store(true, Ordering::Relaxed);
+            Err("cancelled for test".to_string())
+        });
+
+        ready_rx.recv().expect("worker should start");
+
+        let drop_thread = std::thread::spawn(move || {
+            drop(job);
+            let _ = drop_done_tx.send(());
+        });
+
+        assert!(
+            drop_done_rx.try_recv().is_err(),
+            "dropping the preload job should wait for the worker to finish"
+        );
+        assert!(
+            !finished.load(Ordering::Relaxed),
+            "worker should still be blocked before release"
+        );
+
+        release_tx.send(()).expect("should unblock worker");
+        drop_thread.join().expect("drop thread should join cleanly");
+        drop_done_rx
+            .recv()
+            .expect("drop completion signal should arrive");
+        assert!(
+            finished.load(Ordering::Relaxed),
+            "worker should complete before the preload job is dropped"
+        );
+    }
 }

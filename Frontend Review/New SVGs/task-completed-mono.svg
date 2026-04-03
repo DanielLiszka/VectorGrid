@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Task completed</title>
+  <desc>A task that completed successfully</desc>
+
+  <!-- Processed blocks — uniform opacity, both done -->
+  <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.3"/>
+  <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.3"/>
+
+  <!-- Completion check — compact terminal mark at the pipeline output position -->
+  <path d="M9 19 L11 21 L15.5 16.5" stroke-width="2" opacity="0.55"/>
+</svg>

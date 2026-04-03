@@ -35,7 +35,7 @@ This gives us a single product surface, a single orchestration owner, reuse of c
 
 ## Progress Tracking
 
-Status snapshot as of 2026-04-02 after the checkpoint / resume slice.
+Status snapshot as of 2026-04-03 after host preload, checkpoint/resume, and initial plain-`DoubleMa` VRAM-staging implementation.
 
 ### Phase 0 status: completed
 
@@ -52,15 +52,21 @@ Status snapshot as of 2026-04-02 after the checkpoint / resume slice.
 - [x] move dataset iteration into the backend and keep execution sequential in v1
 - [x] wire one-click optimize -> validate -> optional meta -> optional Stage 5 through the backend command
 - [x] add backend campaign progress events and frontend task-center visibility
+- [x] expose the optional Stage 5 leg in the batch UI instead of requiring request-level injection only
+- [x] expose first-class execution modes in the batch UI and request contract: `full`, `optimize_only`, and `validate_only`
 
-### Phase 2 status: in progress
+### Phase 2 status: completed
 
 - [x] remove the current frontend strategy restriction in the batch flow
 - [x] route the campaign runner through the resolved optimization template built by the frontend
 - [x] add backend validation request builders for DoubleMa-family and Composite-family validation
-- [ ] verify the full strategy matrix against all strategy routes that already work in single-run mode
+- [x] preserve the supported strategy kind matrix across frontend and backend campaign request normalization instead of silently collapsing unknowns to `DoubleMa`
+- [x] reject unsupported campaign kinds such as `MlSignal` early instead of sending misleading backend requests
+- [x] reject validation-incomplete kinds such as `DynamicDoubleMa` instead of routing them through a misleading static DoubleMa validation path
+- [x] align campaign validation backend defaults for non-double-like strategies with the single-run validation builder
+- [x] verify the full strategy matrix against all strategy routes that already work in single-run mode
 
-### Phase 3 status: in progress
+### Phase 3 status: completed
 
 - [x] add optimization fingerprint use for skip logic
 - [x] add validation fingerprint use for skip logic
@@ -68,20 +74,47 @@ Status snapshot as of 2026-04-02 after the checkpoint / resume slice.
 - [x] add retry-failed behavior that preserves the original dataset selection semantics
 - [x] write checkpoint updates while a campaign is still running instead of only writing the final summary
 - [x] add resume-incomplete behavior from a saved campaign summary artifact
-- [ ] verify resume behavior across interruption scenarios beyond the same-session / last-summary path
+- [x] verify resume behavior across interruption scenarios beyond the same-session / last-summary path
 
-### Phase 4 status: in progress
+### Phase 4 status: completed
 
 - [x] add a batch-local dataset preparation path in the backend
 - [x] host-preload the next dataset while the current dataset is running
 - [x] keep the interactive loaded-dataset state untouched during campaign execution
-- [ ] measure and document inter-dataset idle-time reduction with the relevant perf gates
+- [x] capture an initial host-preload proxy baseline with the existing app-path faceoff harness on benchmark data
+- [x] measure and document inter-dataset idle-time reduction with the relevant perf gates
+- [x] expose preload policy selection in the `Meta -> Batch` UI so product users can choose `host_only`, `disabled`, or the experimental plain-`DoubleMa` staging mode without hand-editing request payloads
 
-### Phase 5 status: not started
+### Phase 5 status: in progress
 
-- [ ] add a batch-only CUDA staging path for plain `DoubleMa`
-- [ ] add capability gating and automatic fallback for the staging path
+- [x] add a batch-only CUDA staging path for plain `DoubleMa`
+- [x] add capability gating and automatic fallback for the staging path
+- [x] add a dedicated headless profiler for `host_only` vs `host_plus_doublema_vram` on the exact `DoubleMa` kernel route
 - [ ] validate a real throughput benefit on the kernel-backed route
+
+Current note:
+
+- `target/doublema_campaign_prefetch_host_only_rerun_clean.json` and `target/doublema_campaign_prefetch_staged_rerun_clean.json` capture the clean rerun from 2026-04-03 after background GPU work was removed. The benchmark uses `profile_doublema_campaign_prefetch` on a synthetic `250000`-bar exact `DoubleMa` workload (`fast=5:80:5`, `slow=20:160:10`, `top_k=16`, `warmup=1`, `measure=5`).
+- That clean rerun confirms the staging path executes safely, stages successfully, and does show a modest kernel-route throughput win under unloaded conditions: `host_only` mean pair wall was `158.22872 ms` and `staged` mean pair wall was `151.69550 ms`, a `-4.129%` improvement.
+- The earlier direct comparison in `target/doublema_campaign_prefetch_host_only.json` and `target/doublema_campaign_prefetch_staged.json` was likely contaminated by concurrent GPU activity and should not be treated as the authoritative Phase 5 result.
+- `src-tauri/src/bin/ta_campaign_perf.rs` now provides a representative headless campaign perf surface with `disabled`, `host_only`, and `host_plus_doublema_vram` modes, route evidence extracted from saved artifacts, and cleanup for temporary run outputs. The same work also surfaced and fixed a real campaign bug where validation request shaping emitted `iterative: null` / `validation_engine: null` instead of omitting defaulted fields.
+- The `Meta -> Batch` UI now exposes both `Auto-run meta after batch` and `Run Stage 5 after meta`, so the backend-owned one-click workflow is fully reachable from the frontend shell instead of depending on hidden request payload fields.
+- The `Meta -> Batch` UI now also exposes preload policy selection. `Host preload` remains the default product path; `host_plus_doublema_vram` is reachable from the normal UI but stays explicitly labeled experimental and plain-`DoubleMa`-specific.
+- `skip_existing` now reuses matching optimization artifacts across the supported campaign families instead of only skipping matching validation artifacts. `CompositeMo` reuse is driven from raw saved `pareto[*].params` JSON rather than a typed deserialization path.
+- The product batch UI now supports three backend-owned execution modes: `full`, `optimize_only`, and `validate_only`. `Optimize only` suppresses meta / Stage 5 follow-up work, while `validate_only` loads saved optimization artifacts and runs only the validation stage plus any optional post-validation follow-up stages.
+- `CompositeMo` artifact reuse no longer needs a typed deserialize path for validation-only or full-campaign reuse. The campaign runner can now derive validation candidates from the saved raw `pareto[*].params` payload in the run artifact.
+- The same harness now supports `scope=optimize_only`, which runs the real dataset preparation + optimization loop but exits before validation, meta, and Stage 5. This is the preferred surface for tuning preload and DoubleMa staging without CPU-heavy validation features dominating the signal.
+- The optimize-only harness now also supports a benchmark-only `full_pack_host` mode. It preloads the entire dataset pack into host memory before the campaign loop starts, records that upfront preload cost separately, and then runs the real optimize-only campaign path over the preloaded pack. This mode is intentionally headless-only and does **not** change product campaign semantics.
+- The first representative CUDA release run on 2026-04-03 used the real four-dataset pack (`data/AAPL.csv`, `data/NVDA.csv`, `data/QQQ.csv`, `data/SPY.csv`) with `GpuKernel`, `validation_max_candidates=1`, `warmup=1`, and `measure=2`. The captured artifacts are `target/ta_campaign_perf_disabled_release_cuda.json`, `target/ta_campaign_perf_host_only_release_cuda.json`, and `target/ta_campaign_perf_host_plus_doublema_vram_release_cuda.json`.
+- That representative run stayed on `GpuKernel` for both optimize and validate across all measured datasets, but it did **not** show a throughput win for preload or staging on the full campaign surface: `disabled` mean total wall was `6356.7224 ms`, `host_only` was `7652.65765 ms`, and `host_plus_doublema_vram` was `7646.70135 ms`.
+- The latest optimize-only CUDA release rerun on 2026-04-03 used the same four-dataset pack and request shape with `warmup=1` and `measure=2`. The captured artifacts are `target/ta_campaign_perf_optimize_only_disabled_release_cuda.json`, `target/ta_campaign_perf_optimize_only_host_only_release_cuda.json`, `target/ta_campaign_perf_optimize_only_full_pack_host_release_cuda.json`, and `target/ta_campaign_perf_optimize_only_host_plus_doublema_vram_release_cuda.json`.
+- On that optimize-only surface, all measured datasets stayed on `GpuKernel`, and the result again differed materially from the full campaign run: `disabled` mean total wall was `4193.4948 ms`, `host_only` was `4092.0294 ms`, `full_pack_host` was `3502.56 ms`, and the latest `host_plus_doublema_vram` rerun was `3406.22 ms`.
+- The same `full_pack_host` benchmark isolates the upfront host-RAM pack transfer cost: `mean_initial_dataset_pack_preload_ms` was `94.03 ms`, while the post-preload optimize-only campaign runtime averaged `3407.5 ms`. That means the one-shot host-RAM pack preload materially beat both `disabled` and incremental `host_only`, but still trailed the current staged DoubleMa path by about `96.34 ms` on the latest rerun.
+- The recorded `host_plus_doublema_vram` warning on that rerun is the expected experimental-mode banner, not a new fallback/error path: `host_plus_doublema_vram is experimental, limited to the plain DoubleMa exact GpuKernel route, and falls back to host preload when GPU staging is unavailable.`
+- A follow-up optimize-only rerun on 2026-04-03 switched the harness to the more favorable `alma/alma` profile with the large benchmark grid (`fast=5:200:1`, `slow=10:400:1`, `top_k=50`) so indicator efficiency would not be the confounder. The captured artifacts are `target/ta_campaign_perf_optimize_only_alma_disabled_release_cuda.json`, `target/ta_campaign_perf_optimize_only_alma_host_only_release_cuda.json`, `target/ta_campaign_perf_optimize_only_alma_full_pack_host_release_cuda.json`, and `target/ta_campaign_perf_optimize_only_alma_host_plus_doublema_vram_release_cuda.json`.
+- On that ALMA optimize-only surface, all measured datasets again stayed on `GpuKernel`, but the mode gap compressed sharply: `disabled` mean total wall was `3943.85 ms`, `host_only` was `3859.84 ms`, `full_pack_host` was `3938.76 ms` total / `3845.0 ms` post-preload runtime, and `host_plus_doublema_vram` was `3852.59 ms`.
+- That ALMA rerun indicates the dominant time is inside the per-dataset optimization chunks themselves, not in dataset readiness overhead. With `full_pack_host`, the upfront host-RAM pack preload averaged `92.63 ms`, and disabling preload entirely only added about `98.85 ms` over the whole four-dataset campaign compared with the post-preload runtime. The optimize chunks still consumed roughly `3.81-3.88 s` of the `3.85-3.94 s` total wall time, so the majority bottleneck on this surface is kernel/backtest work over the large real datasets rather than indicator-load or CSV I/O.
+- Keep both the host-preload claim and `host_plus_doublema_vram` marked experimental until the representative campaign surface shows a real benefit or the preload/staging schedule is tuned to avoid regressing end-to-end wall time.
 
 ## Goals
 

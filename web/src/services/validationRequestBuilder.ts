@@ -619,6 +619,10 @@ export function buildValidationCapabilitySummary(req: ValidationRequestPayload):
 export function buildValidationRequest(inputs: ValidationBuildInputs): ValidationRequestPayload {
   const currentRunReq = asRecord(inputs.currentRunReq)
   if (!currentRunReq || !inputs.currentRunRes) throw new Error('Run an optimization first.')
+  const rawStrategyKind = normalizeText(currentRunReq.strategy_kind ?? currentRunReq.strategyKind)
+  if (rawStrategyKind === 'DynamicDoubleMa') {
+    throw new Error('DynamicDoubleMa validation is not supported yet because validation does not preserve its dynamic strategy IR.')
+  }
 
   const kind = kindFromReq(currentRunReq)
   const dataId = normalizeText(currentRunReq.data_id)

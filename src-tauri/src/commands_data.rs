@@ -1385,7 +1385,11 @@ mod tests {
             "s": 1_700_000_000_000i64,
         });
 
-        assert!(normalize_polygon_live_bar(&accepted, "stocks", "BRK.B", true, "AM.BRK.B").is_some());
-        assert!(normalize_polygon_live_bar(&rejected, "stocks", "BRK.B", true, "AM.BRK.B").is_none());
+        assert!(
+            normalize_polygon_live_bar(&accepted, "stocks", "BRK.B", true, "AM.BRK.B").is_some()
+        );
+        assert!(
+            normalize_polygon_live_bar(&rejected, "stocks", "BRK.B", true, "AM.BRK.B").is_none()
+        );
     }
 }

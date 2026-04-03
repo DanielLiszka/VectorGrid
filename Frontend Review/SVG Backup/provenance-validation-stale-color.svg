@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke="#BA7517" stroke-linecap="round" stroke-linejoin="round">
+  <title>Validation stale</title>
+  <desc>A check mark fading along its length, indicating stale validation</desc>
+
+  <!-- Amber check mark fading along its length -->
+  <path d="M5 12.5 L9.5 17" stroke-width="2.25" opacity="0.6"/>
+  <path d="M9.5 17 L14 12" stroke-width="2.25" opacity="0.38"/>
+  <path d="M14 12 L19 7" stroke-width="2.25" opacity="0.18"/>
+</svg>

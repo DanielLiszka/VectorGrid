@@ -1666,14 +1666,15 @@ mod tests {
                 volume: None,
             }
         ));
-        assert_eq!(pending.as_ref().map(|bar| bar.time_open_unix_ms), Some(2000));
+        assert_eq!(
+            pending.as_ref().map(|bar| bar.time_open_unix_ms),
+            Some(2000)
+        );
     }
 
     #[test]
     fn generation_gate_ignores_stale_runtime_updates() {
-        let _guard = runner_test_guard()
-            .lock()
-            .expect("lock runner test guard");
+        let _guard = runner_test_guard().lock().expect("lock runner test guard");
         let slot = live_execution_runner_slot();
         let mut guard = slot.lock().expect("lock runner slot");
         let prior = guard.take();
@@ -1704,15 +1705,16 @@ mod tests {
         assert!(abort.check().is_ok());
         abort.cancel();
         assert!(is_runner_cancelled_error(
-            abort.check().expect_err("expected cancellation marker").as_str()
+            abort
+                .check()
+                .expect_err("expected cancellation marker")
+                .as_str()
         ));
     }
 
     #[test]
     fn with_active_runner_generation_ignores_stale_runtime_generations() {
-        let _guard = runner_test_guard()
-            .lock()
-            .expect("lock runner test guard");
+        let _guard = runner_test_guard().lock().expect("lock runner test guard");
         let slot = live_execution_runner_slot();
         let mut guard = slot.lock().expect("lock live execution runner slot");
         let prior = guard.take();

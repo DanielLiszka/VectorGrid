@@ -34,14 +34,20 @@ pub use commands_analysis::{
     compute_double_ma_drilldown, compute_double_ma_local_stability,
 };
 pub use commands_artifacts::{
-    delete_run_artifact, list_artifact_library, list_meta_artifacts,
-    list_ml_policy_eval_artifacts, list_run_artifacts, list_stage4_artifacts,
-    list_stage5_artifacts, load_meta_artifact_replay, load_ml_policy_eval_artifact_replay,
-    load_run_artifact, load_run_artifact_detail, load_run_artifact_hydration,
-    load_stage5_artifact_replay, open_runs_dir, save_batch_summary, save_run_artifact,
-    update_artifact_tags,
+    delete_run_artifact, list_artifact_library, list_meta_artifacts, list_ml_policy_eval_artifacts,
+    list_run_artifacts, list_stage4_artifacts, list_stage5_artifacts, load_meta_artifact_replay,
+    load_ml_policy_eval_artifact_replay, load_run_artifact, load_run_artifact_detail,
+    load_run_artifact_hydration, load_stage5_artifact_replay, open_runs_dir, save_batch_summary,
+    save_run_artifact, update_artifact_tags,
 };
-pub use commands_campaign::{run_research_campaign, RunResearchCampaignResponse};
+pub use commands_campaign::{
+    preload_research_campaign_dataset_pack_headless, run_research_campaign,
+    run_research_campaign_blocking_headless, run_research_campaign_optimize_only_blocking_headless,
+    run_research_campaign_optimize_only_preloaded_pack_blocking_headless,
+    HeadlessPreparedResearchCampaignDatasetPack, ResearchCampaignDatasetInput,
+    ResearchCampaignExecutionMode, ResearchCampaignPreloadPolicy, ResearchCampaignRequest,
+    ResearchCampaignValidationConfig, RunResearchCampaignResponse,
+};
 pub use commands_data::{
     clear_loaded_data, clear_market_data_dir, get_market_data_dir_info, list_dynamic_indicators,
     list_gpu_speedups, list_moving_averages, list_repo_data_csvs, list_sample_csvs,
@@ -106,9 +112,8 @@ pub use commands_validation::{
 pub use run_artifacts::{
     ArtifactLibrarySnapshot, MetaArtifactReplayResponse, MetaArtifactSummary,
     MlPolicyEvalArtifactReplayResponse, MlPolicyEvalArtifactSummary, RunArtifactDetailResponse,
-    RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse,
-    Stage4ArtifactSummary, Stage5ArtifactReplayResponse, Stage5ArtifactSummary,
-    WorkflowArtifactsHydrationPayload,
+    RunArtifactSummary, SaveBatchSummaryResponse, SaveRunArtifactResponse, Stage4ArtifactSummary,
+    Stage5ArtifactReplayResponse, Stage5ArtifactSummary, WorkflowArtifactsHydrationPayload,
 };
 
 pub use ta_app_core::{

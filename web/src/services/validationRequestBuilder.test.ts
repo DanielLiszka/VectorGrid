@@ -278,6 +278,91 @@ describe('validationRequestBuilder', () => {
     })
   })
 
+  it.each([
+    ['CompositeTrend', { backend: 'GpuKernel', device_id: 0 }, 'GpuKernel requested'],
+    ['RegimeHybrid', { backend: 'GpuHybridKernel', device_id: 0 }, 'GpuHybridKernel requested'],
+    ['BreakoutMomentum', { backend: 'GpuKernel', device_id: 0 }, 'GpuKernel requested'],
+  ] as const)(
+    'treats %s as a double-like validation strategy with preserved-finalists cross reruns',
+    (strategy_kind, backend, expectedRouteFragment) => {
+      const req = buildValidationRequest({
+        currentRunReq: {
+          strategy_kind,
+          data_id: `${strategy_kind}-data`,
+          backend,
+          ma_source: 'close',
+          fast_ma_types: ['ema'],
+          slow_ma_types: ['sma'],
+          strategy: { fee_bps: 1.25 },
+          halftrend_filter: { enabled: true }
+        },
+        currentRunRes: { ok: true },
+        topRows: [
+          {
+            params: {
+              fast_ma_type: 'ema',
+              slow_ma_type: 'sma',
+              fast_len: 11,
+              slow_len: 44
+            }
+          }
+        ],
+        crossEnable: true,
+        crossMax: '1',
+        crossDatasets: [
+          { csv_path: 'C:/data/SPY.csv', label: 'SPY' }
+        ],
+        candidates: '4'
+      })
+
+      expect(req.validation_context.strategy_kind).toBe(strategy_kind)
+      expect(req.candidates[0]).toMatchObject({
+        fast_ma_type: 'ema',
+        slow_ma_type: 'sma',
+        fast_len: 11,
+        slow_len: 44,
+        strategy: { fee_bps: 1.25 },
+        halftrend_filter: { enabled: true }
+      })
+      expect(req.cross_ticker).toEqual({
+        max_datasets: 1,
+        mode: 'preserved_finalists',
+        datasets: [{ csv_path: 'C:/data/SPY.csv', label: 'SPY' }]
+      })
+
+      const summary = buildValidationCapabilitySummary(req)
+      expect(summary.routeSummary).toContain(expectedRouteFragment)
+      expect(summary.routeSummary).toContain('expected GPU main route')
+      expect(summary.crossSummary).toContain('finalists only')
+      expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
+    }
+  )
+
+  it('rejects DynamicDoubleMa validation requests until dynamic IR replay is implemented', () => {
+    expect(() =>
+      buildValidationRequest({
+        currentRunReq: {
+          strategy_kind: 'DynamicDoubleMa',
+          data_id: 'data-dynamic',
+          ma_source: 'close',
+          strategy: { long_only: true },
+        },
+        currentRunRes: { ok: true },
+        topRows: [
+          {
+            params: {
+              fast_ma_type: 'ema',
+              slow_ma_type: 'ema',
+              fast_len: 12,
+              slow_len: 48,
+            },
+          },
+        ],
+        candidates: '8',
+      })
+    ).toThrow('DynamicDoubleMa validation is not supported yet')
+  })
+
   it('treats Set as a double-like validation strategy', () => {
     const req = buildValidationRequest({
       currentRunReq: {
@@ -1255,6 +1340,35 @@ describe('validationRequestBuilder', () => {
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected CpuOnly fallback for composite validation')
     expect(summary.warningSummary).toContain('CompositeMo GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only')
+  })
+
+  it('defaults CompositeMo validation without an explicit backend to Auto', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeMo',
+        data_id: 'data-composite-auto',
+        ma_source: 'close',
+        strategy: { fee_bps: 1.0 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 9,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'soft_vote',
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    expect(req.backend).toEqual({ backend: 'Auto', device_id: 0 })
   })
 
   it('throws for missing run context or rows', () => {

@@ -133,6 +133,7 @@ const ANALYSIS_CHECKBOX_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   metaEvalHoldout: { key: 'metaEvalHoldout' },
   metaSaveHoldoutRows: { key: 'metaSaveHoldoutRows' },
   batchAutoMeta: { key: 'batchAutoMeta' },
+  batchAutoStage5: { key: 'batchAutoStage5' },
   batchSkipDone: { key: 'batchSkipDone' },
   metaStage4AutoTrain: { key: 'metaStage4AutoTrain' },
   metaStage4RequireHealthy: { key: 'metaStage4RequireHealthy' },
@@ -449,12 +450,27 @@ function readStoreBatchSelectedPaths(): string[] {
   return readBatchSelectedPaths()
 }
 
+function normalizeBatchPreloadPolicy(value: unknown): 'disabled' | 'host_only' | 'host_plus_doublema_vram' {
+  const raw = normalizeText(value).toLowerCase()
+  if (raw === 'disabled' || raw === 'host_plus_doublema_vram') return raw
+  return 'host_only'
+}
+
+function normalizeBatchExecutionMode(value: unknown): 'full' | 'optimize_only' | 'validate_only' {
+  const raw = normalizeText(value).toLowerCase()
+  if (raw === 'optimize_only' || raw === 'validate_only') return raw
+  return 'full'
+}
+
 function tryBuildAutoMetaBatchRequest(): Record<string, unknown> | null {
   return buildMetaBatchRequest({
     selectedPaths: readStoreBatchSelectedPaths(),
     holdoutPct: readStoreTextInputValue('batchHoldoutPct'),
     holdoutTag: readStoreTextInputValue('batchHoldoutTag'),
+    executionMode: readStoreTextInputValue('batchExecutionMode'),
+    preloadPolicy: readStoreTextInputValue('batchPreloadPolicy'),
     autoMeta: readStoreCheckboxValue('batchAutoMeta'),
+    autoStage5: readStoreCheckboxValue('batchAutoStage5'),
     skipDone: readStoreCheckboxValue('batchSkipDone'),
     tags: readStoreTextInputValue('batchTags')
   })
@@ -1393,6 +1409,9 @@ function isCancellationError(error: unknown): boolean {
 
 function normalizeStrategyKind(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
+  if (kind === 'DoubleMa') return 'DoubleMa'
+  if (kind === 'DynamicDoubleMa') return 'DynamicDoubleMa'
+  if (kind === 'MlSignal') return 'MlSignal'
   if (kind === 'Pit') return 'Pit'
   if (kind === 'Set') return 'Set'
   if (kind === 'Mts') return 'Mts'
@@ -1404,12 +1423,42 @@ function normalizeStrategyKind(kindRaw: unknown): string {
   if (kind === 'Vcc') return 'Vcc'
   if (kind === 'Vemr') return 'Vemr'
   if (kind === 'Vcet') return 'Vcet'
+  if (kind === 'Mkcs') return 'Mkcs'
+  if (kind === 'Kqsr') return 'Kqsr'
+  if (kind === 'Carm') return 'Carm'
+  if (kind === 'Kvdf') return 'Kvdf'
+  if (kind === 'Cdmc') return 'Cdmc'
   if (kind === 'CompositeCpu') return 'CompositeCpu'
   if (kind === 'CompositeMo') return 'CompositeMo'
   if (kind === 'CompositeTrend') return 'CompositeTrend'
   if (kind === 'RegimeHybrid') return 'RegimeHybrid'
   if (kind === 'BreakoutMomentum') return 'BreakoutMomentum'
-  return 'DoubleMa'
+  return kind
+}
+
+function isSupportedResearchCampaignStrategy(kind: string): boolean {
+  return kind === 'DoubleMa'
+    || kind === 'Pit'
+    || kind === 'Set'
+    || kind === 'Mts'
+    || kind === 'Orc'
+    || kind === 'Marrt'
+    || kind === 'Vfct'
+    || kind === 'Rocb'
+    || kind === 'Asr'
+    || kind === 'Vcc'
+    || kind === 'Vemr'
+    || kind === 'Vcet'
+    || kind === 'Mkcs'
+    || kind === 'Kqsr'
+    || kind === 'Carm'
+    || kind === 'Kvdf'
+    || kind === 'Cdmc'
+    || kind === 'CompositeCpu'
+    || kind === 'CompositeMo'
+    || kind === 'CompositeTrend'
+    || kind === 'RegimeHybrid'
+    || kind === 'BreakoutMomentum'
 }
 
 function readBatchSelectedPaths(): string[] {
@@ -1499,10 +1548,52 @@ function batchFailedCount(): number {
   return batchSummaryFailedPaths(summary).length
 }
 
+function batchRunDisabledReason(): string {
+  if (BATCH_RUNNING) return 'campaign already running'
+
+  const optimizeStore = getOptimizeStore()
+  const strategyKind = normalizeStrategyKind(optimizeStore?.strategyKind)
+  if (!strategyKind) return 'choose a strategy in Optimize first'
+  if (strategyKind === 'MlSignal') return 'MlSignal uses the dedicated ML Signal workflow'
+  if (strategyKind === 'DynamicDoubleMa') {
+    return 'DynamicDoubleMa campaigns are not supported yet'
+  }
+  if (!isSupportedResearchCampaignStrategy(strategyKind)) {
+    return `strategy '${strategyKind}' is not supported for research campaigns`
+  }
+
+  const selectedPaths = readBatchSelectedPaths()
+  if (selectedPaths.length === 0) {
+    return BATCH_DATASETS_CACHE.length === 0
+      ? 'refresh datasets and select at least 1 dataset'
+      : 'select at least 1 dataset'
+  }
+  if (BATCH_DATASETS_CACHE.length === 0) return ''
+
+  const byPath = new Map<string, BatchDatasetEntry>()
+  for (const entry of BATCH_DATASETS_CACHE) byPath.set(entry.path, entry)
+
+  const dataStore = getDataStore()
+  const timeframeOverride = normalizeText(dataStore?.dataTimeframe)
+  if (timeframeOverride) return ''
+
+  const selectedTimeframes = new Set<string>()
+  for (const path of selectedPaths) {
+    const timeframe = normalizeText(byPath.get(path)?.timeframe)
+    if (timeframe) selectedTimeframes.add(timeframe)
+  }
+  if (selectedTimeframes.size > 1) {
+    const found = Array.from(selectedTimeframes).sort().join(', ')
+    return `selected datasets must share a timeframe unless Data → Timeframe forces resampling (${found})`
+  }
+  return ''
+}
+
 function syncBatchButtons(): void {
   const hasSummaryPath = !!normalizePath(LAST_BATCH_SUMMARY?.path)
+  const disabledReason = batchRunDisabledReason()
   patchAnalysisStore({
-    canRunBatch: !BATCH_RUNNING,
+    canRunBatch: !disabledReason,
     canBatchStop: BATCH_RUNNING,
     canBatchRefresh: !BATCH_RUNNING,
     canBatchSelectAll: !BATCH_RUNNING,
@@ -1517,8 +1608,12 @@ function updateBatchMeta(extra = ''): void {
   const total = Array.isArray(BATCH_DATASETS_CACHE) ? BATCH_DATASETS_CACHE.length : 0
   const selected = readBatchSelectedPaths().length
   const parts = [`selected ${selected}/${total}`]
+  const executionMode = normalizeBatchExecutionMode(readStoreTextInputValue('batchExecutionMode'))
+  parts.push(`mode=${executionMode}`)
   const note = normalizeText(extra)
   if (note) parts.push(note)
+  const disabledReason = batchRunDisabledReason()
+  if (disabledReason && !BATCH_RUNNING) parts.push(`blocked=${disabledReason}`)
   const summaryPath = normalizePath(LAST_BATCH_SUMMARY?.path)
   if (summaryPath) parts.push(`summary=${fileBasename(summaryPath)}`)
   patchAnalysisStore({ batchMeta: parts.join(' • ') })
@@ -1832,6 +1927,19 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
     const optimizeStore = getOptimizeStore()
     const strategyKind = normalizeStrategyKind(req?.strategy_kind ?? optimizeStore?.strategyKind)
 
+    if (strategyKind === 'MlSignal') {
+      setStatusLine('Research campaigns do not support MlSignal. Use the dedicated ML Signal workflow instead.')
+      return
+    }
+    if (strategyKind === 'DynamicDoubleMa') {
+      setStatusLine('Research campaigns do not support DynamicDoubleMa yet because validation does not preserve its dynamic strategy IR.')
+      return
+    }
+    if (!isSupportedResearchCampaignStrategy(strategyKind)) {
+      setStatusLine(`Research campaigns do not support strategy '${strategyKind}' yet.`)
+      return
+    }
+
     await ensureBatchDatasetsLoaded()
 
     const selectedPaths = Array.isArray(req?.selected_paths)
@@ -1853,7 +1961,11 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
     const holdoutPctRaw = Math.floor(Number((req?.holdout_pct ?? readStoreTextInputValue('batchHoldoutPct')) || 0))
     const holdoutPct = Number.isFinite(holdoutPctRaw) ? Math.max(0, Math.min(50, holdoutPctRaw)) : 0
     const holdoutTag = normalizeText(req?.holdout_tag ?? readStoreTextInputValue('batchHoldoutTag')) || 'holdout'
-    const autoMeta = normalizeBoolean(req?.auto_meta ?? readStoreCheckboxValue('batchAutoMeta'))
+    const executionMode = normalizeBatchExecutionMode(req?.execution_mode ?? readStoreTextInputValue('batchExecutionMode'))
+    const preloadPolicy = normalizeBatchPreloadPolicy(req?.preload_policy ?? readStoreTextInputValue('batchPreloadPolicy'))
+    const autoMeta = executionMode !== 'optimize_only'
+      && normalizeBoolean(req?.auto_meta ?? readStoreCheckboxValue('batchAutoMeta'))
+    const autoStage5 = autoMeta && normalizeBoolean(req?.auto_stage5 ?? readStoreCheckboxValue('batchAutoStage5'))
     const skipDone = normalizeBoolean(req?.skip_done ?? req?.skip_existing ?? readStoreCheckboxValue('batchSkipDone'))
     let baseTags = dedupTags(Array.isArray(req?.tags) ? req?.tags : parseTagsInput(readStoreTextInputValue('batchTags')))
     if (baseTags.length === 0) baseTags = [defaultBatchTag()]
@@ -1864,7 +1976,10 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
       analysisStore.batchTags = baseTags.join(', ')
       analysisStore.batchHoldoutPct = String(holdoutPct)
       analysisStore.batchHoldoutTag = holdoutTag
+      analysisStore.batchExecutionMode = executionMode
+      analysisStore.batchPreloadPolicy = preloadPolicy
       analysisStore.batchAutoMeta = autoMeta
+      analysisStore.batchAutoStage5 = autoStage5
       analysisStore.batchSkipDone = skipDone
       if (!normalizeText(analysisStore.metaRequiredTag)) analysisStore.metaRequiredTag = primaryTag
       analysisStore.updatedAtUnixMs = Date.now()
@@ -1892,7 +2007,6 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
     }
 
     let expectedTimeframe = hasTfOverride ? tfOverride : selectedTimeframes.size === 1 ? Array.from(selectedTimeframes)[0] : ''
-    const autoStage5 = normalizeBoolean(req?.auto_stage5 ?? false)
 
     BATCH_RUNNING = true
     syncBatchButtons()
@@ -1966,13 +2080,14 @@ export async function runBatch(options: MetaBatchRunOptions = {}): Promise<void>
       holdout_pct: holdoutPct,
       holdout_tag: holdoutTag || null,
       skip_existing: skipDone,
+      execution_mode: executionMode,
       auto_meta: autoMeta,
       auto_stage5: autoStage5,
       optimization_template: optimizationTemplate,
       validation_config: validationConfig,
       meta_request: metaRequest,
       stage5_request: stage5Request,
-      preload_policy: normalizeText(req?.preload_policy) || 'host_only'
+      preload_policy: preloadPolicy
     }
 
     const response = asRecord((await invokeCommand('run_research_campaign', {

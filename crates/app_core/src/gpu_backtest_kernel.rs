@@ -1566,11 +1566,13 @@ struct CudaKernelRuntime {
     context: std::sync::Arc<Context>,
     module: Module,
     stream: Stream,
+    staging_stream: Stream,
     ma: VramMaComputer,
     scratch: KernelScratch,
     host_exact_combo_scratch: HostExactComboScratch,
     launch_caps: DeviceLaunchCaps,
     resident_market: Option<ResidentMarketSeriesCache>,
+    staged_market: Option<ResidentMarketSeriesCache>,
     valid_pair_maps: HashMap<ValidPairMapSignature, CachedValidPairMap>,
     kernel_caps: RefCell<HashMap<CachedKernelKey, KernelLaunchCaps>>,
 }
@@ -1606,16 +1608,20 @@ impl CudaKernelRuntime {
         let context = std::sync::Arc::new(Context::new(device).map_err(|e| e.to_string())?);
         let module = load_double_crossover_module(device)?;
         let stream = Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|e| e.to_string())?;
+        let staging_stream =
+            Stream::new(StreamFlags::NON_BLOCKING, None).map_err(|e| e.to_string())?;
 
         Ok(Self {
             context,
             module,
             stream,
+            staging_stream,
             ma: VramMaComputer::new(device_id),
             scratch: KernelScratch::default(),
             host_exact_combo_scratch: HostExactComboScratch::default(),
             launch_caps,
             resident_market: None,
+            staged_market: None,
             valid_pair_maps: HashMap::new(),
             kernel_caps: RefCell::new(HashMap::new()),
         })
@@ -1842,15 +1848,6 @@ pub(crate) fn effective_sample_lcb_10_pair_score_for_host(
     metrics: &Metrics,
 ) -> f64 {
     effective_sample_lcb_10_pair_score(params, metrics)
-}
-
-fn emit_progress(
-    progress: Option<&dyn ProgressSink>,
-    processed_pairs: usize,
-    total_pairs: usize,
-    phase: &'static str,
-) {
-    crate::progress::emit_double_ma_progress(progress, processed_pairs, total_pairs, phase);
 }
 
 fn fill_device_buffer_f32(
@@ -3723,6 +3720,56 @@ const MARKET_FIELD_LOW: u8 = 1 << 2;
 const MARKET_FIELD_CLOSE: u8 = 1 << 3;
 const MARKET_FIELD_VOLUME: u8 = 1 << 4;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CampaignVramPrefetchOutcome {
+    Staged,
+    AlreadyResident,
+    Skipped(String),
+}
+
+#[inline]
+fn resident_market_series_estimate_bytes(
+    len: usize,
+    has_source_override: bool,
+    needs_high_low: bool,
+    needs_volume: bool,
+) -> usize {
+    let mut series = 1usize;
+    if needs_high_low {
+        series = series.saturating_add(2);
+    }
+    if needs_volume {
+        series = series.saturating_add(1);
+    }
+    if has_source_override {
+        series = series.saturating_add(1);
+    }
+    series
+        .saturating_mul(len)
+        .saturating_mul(std::mem::size_of::<f32>())
+}
+
+#[inline]
+fn resident_market_series_cached_bytes(cache: &ResidentMarketSeriesCache) -> usize {
+    let mut total = cache
+        .close
+        .len()
+        .saturating_mul(std::mem::size_of::<f32>());
+    if let Some(high) = cache.high.as_ref() {
+        total = total.saturating_add(high.len().saturating_mul(std::mem::size_of::<f32>()));
+    }
+    if let Some(low) = cache.low.as_ref() {
+        total = total.saturating_add(low.len().saturating_mul(std::mem::size_of::<f32>()));
+    }
+    if let Some(volume) = cache.volume.as_ref() {
+        total = total.saturating_add(volume.len().saturating_mul(std::mem::size_of::<f32>()));
+    }
+    for buffer in cache.source_overrides.values() {
+        total = total.saturating_add(buffer.len().saturating_mul(std::mem::size_of::<f32>()));
+    }
+    total
+}
+
 #[inline]
 fn candle_dataset_signature(candles: &Candles) -> CandleDatasetSignature {
     let mut field_mask = 0u8;
@@ -3918,6 +3965,96 @@ fn ensure_resident_market_series(
 
     batch.finish()?;
     Ok(())
+}
+
+fn promote_matching_staged_market_series(
+    active_stream: &Stream,
+    staging_stream: &Stream,
+    resident: &mut Option<ResidentMarketSeriesCache>,
+    staged: &mut Option<ResidentMarketSeriesCache>,
+    expected_signature: CandleDatasetSignature,
+) -> Result<bool, String> {
+    let should_promote = staged
+        .as_ref()
+        .map(|cache| cache.signature == expected_signature)
+        .unwrap_or(false);
+    if !should_promote {
+        return Ok(false);
+    }
+    staging_stream.synchronize().map_err(|e| e.to_string())?;
+    reset_resident_market_cache(active_stream, resident)?;
+    *resident = staged.take();
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_resident_market_series_for_next_dataset(
+    resident_market: &Option<ResidentMarketSeriesCache>,
+    staging_stream: &Stream,
+    staged_market: &mut Option<ResidentMarketSeriesCache>,
+    candles: &Candles,
+    close: &[f64],
+    ma_source: &str,
+    ma_prices: Option<&[f64]>,
+    needs_ma_prices: bool,
+    needs_high_low: bool,
+    high: Option<&[f64]>,
+    low: Option<&[f64]>,
+    needs_volume: bool,
+    volume: Option<&[f64]>,
+) -> Result<CampaignVramPrefetchOutcome, String> {
+    let signature = candle_dataset_signature(candles);
+    if resident_market
+        .as_ref()
+        .map(|cache| cache.signature == signature)
+        .unwrap_or(false)
+    {
+        return Ok(CampaignVramPrefetchOutcome::AlreadyResident);
+    }
+    if staged_market
+        .as_ref()
+        .map(|cache| cache.signature == signature)
+        .unwrap_or(false)
+    {
+        return Ok(CampaignVramPrefetchOutcome::AlreadyResident);
+    }
+
+    let source_key = normalize_market_source_key(ma_source);
+    let has_source_override = needs_ma_prices && source_key != "close";
+    let reclaimed_staged_bytes = staged_market
+        .as_ref()
+        .map(resident_market_series_cached_bytes)
+        .unwrap_or(0);
+    let budget = vram_budget_bytes().saturating_add(reclaimed_staged_bytes);
+    let estimate = resident_market_series_estimate_bytes(
+        close.len(),
+        has_source_override,
+        needs_high_low,
+        needs_volume,
+    );
+    if estimate > budget {
+        return Ok(CampaignVramPrefetchOutcome::Skipped(format!(
+            "double_ma VRAM staging skipped: estimated resident upload {} MiB exceeds available budget {} MiB",
+            estimate / (1024 * 1024),
+            budget / (1024 * 1024)
+        )));
+    }
+
+    ensure_resident_market_series(
+        staging_stream,
+        staged_market,
+        candles,
+        close,
+        ma_source,
+        ma_prices,
+        needs_ma_prices,
+        needs_high_low,
+        high,
+        low,
+        needs_volume,
+        volume,
+    )?;
+    Ok(CampaignVramPrefetchOutcome::Staged)
 }
 
 fn ensure_log_and_simple_returns(
@@ -11397,6 +11534,197 @@ pub(crate) fn optimize_double_ma_gpu_kernel_with_precomputed_and_regime(
     })
 }
 
+pub fn campaign_stage_plain_double_ma_market(
+    device_id: u32,
+    candles: &Candles,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+) -> Result<CampaignVramPrefetchOutcome, String> {
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<CampaignVramPrefetchOutcome, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map.get_mut(&device_id).expect("just inserted");
+        rt.set_current()?;
+        stage_plain_double_ma_market_with_runtime(rt, candles, fast_ma_type, slow_ma_type, ma_source)
+    })
+}
+
+fn stage_plain_double_ma_market_with_runtime(
+    rt: &mut CudaKernelRuntime,
+    candles: &Candles,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+) -> Result<CampaignVramPrefetchOutcome, String> {
+    let fast_ma = fast_ma_type.trim().to_ascii_lowercase();
+    let slow_ma = slow_ma_type.trim().to_ascii_lowercase();
+    let needs_ma_prices = ma_uses_source(fast_ma.as_str()) || ma_uses_source(slow_ma.as_str());
+    let needs_volume = ma_requires_volume(fast_ma.as_str()) || ma_requires_volume(slow_ma.as_str());
+    let needs_high_low =
+        ma_requires_high_low_close(fast_ma.as_str()) || ma_requires_high_low_close(slow_ma.as_str());
+
+    validate_candles_for_selected_mas(
+        candles,
+        needs_ma_prices,
+        ma_source,
+        needs_volume,
+        needs_high_low,
+    )?;
+
+    let close = source_type(candles, "close");
+    let ma_prices = if needs_ma_prices {
+        Some(source_type(candles, ma_source))
+    } else {
+        None
+    };
+    let volume = if needs_volume {
+        Some(source_type(candles, "volume"))
+    } else {
+        None
+    };
+    let high = if needs_high_low {
+        Some(source_type(candles, "high"))
+    } else {
+        None
+    };
+    let low = if needs_high_low {
+        Some(source_type(candles, "low"))
+    } else {
+        None
+    };
+
+    stage_resident_market_series_for_next_dataset(
+        &rt.resident_market,
+        &rt.staging_stream,
+        &mut rt.staged_market,
+        candles,
+        close,
+        ma_source,
+        ma_prices,
+        needs_ma_prices,
+        needs_high_low,
+        high,
+        low,
+        needs_volume,
+        volume,
+    )
+}
+
+fn maybe_stage_campaign_prefetch(
+    current_device_id: u32,
+    resident_market: &Option<ResidentMarketSeriesCache>,
+    staging_stream: &Stream,
+    staged_market: &mut Option<ResidentMarketSeriesCache>,
+    progress: Option<&dyn ProgressSink>,
+) {
+    let Some(progress) = progress else { return };
+    let mut feedback = None;
+    progress.with_double_ma_campaign_vram_prefetch_request(&mut |device_id, candles, fast_ma, slow_ma, ma_source| {
+        feedback = Some(if device_id != current_device_id {
+            crate::progress::DoubleMaCampaignVramPrefetchFeedback::Fatal(format!(
+                "double_ma VRAM staging disabled: runtime device {} did not match requested device {}",
+                current_device_id, device_id
+            ))
+        } else {
+            let fast_ma = fast_ma.trim().to_ascii_lowercase();
+            let slow_ma = slow_ma.trim().to_ascii_lowercase();
+            let needs_ma_prices =
+                ma_uses_source(fast_ma.as_str()) || ma_uses_source(slow_ma.as_str());
+            let needs_volume =
+                ma_requires_volume(fast_ma.as_str()) || ma_requires_volume(slow_ma.as_str());
+            let needs_high_low = ma_requires_high_low_close(fast_ma.as_str())
+                || ma_requires_high_low_close(slow_ma.as_str());
+
+            match validate_candles_for_selected_mas(
+                candles,
+                needs_ma_prices,
+                ma_source,
+                needs_volume,
+                needs_high_low,
+            )
+            .and_then(|_| {
+                let close = source_type(candles, "close");
+                let ma_prices = if needs_ma_prices {
+                    Some(source_type(candles, ma_source))
+                } else {
+                    None
+                };
+                let volume = if needs_volume {
+                    Some(source_type(candles, "volume"))
+                } else {
+                    None
+                };
+                let high = if needs_high_low {
+                    Some(source_type(candles, "high"))
+                } else {
+                    None
+                };
+                let low = if needs_high_low {
+                    Some(source_type(candles, "low"))
+                } else {
+                    None
+                };
+                stage_resident_market_series_for_next_dataset(
+                    resident_market,
+                    staging_stream,
+                    staged_market,
+                    candles,
+                    close,
+                    ma_source,
+                    ma_prices,
+                    needs_ma_prices,
+                    needs_high_low,
+                    high,
+                    low,
+                    needs_volume,
+                    volume,
+                )
+            }) {
+                Ok(CampaignVramPrefetchOutcome::Staged) => {
+                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::Staged
+                }
+                Ok(CampaignVramPrefetchOutcome::AlreadyResident) => {
+                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::AlreadyResident
+                }
+                Ok(CampaignVramPrefetchOutcome::Skipped(reason)) => {
+                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::Warning(reason)
+                }
+                Err(error) => crate::progress::DoubleMaCampaignVramPrefetchFeedback::Fatal(
+                    format!("double_ma VRAM staging disabled: {error}"),
+                ),
+            }
+        });
+    });
+    if let Some(feedback) = feedback {
+        progress.on_double_ma_campaign_vram_prefetch_feedback(feedback);
+    }
+}
+
+fn emit_progress_and_maybe_stage_campaign_prefetch(
+    current_device_id: u32,
+    resident_market: &Option<ResidentMarketSeriesCache>,
+    staging_stream: &Stream,
+    staged_market: &mut Option<ResidentMarketSeriesCache>,
+    progress: Option<&dyn ProgressSink>,
+    processed_pairs: usize,
+    total_pairs: usize,
+    phase: &'static str,
+) {
+    crate::progress::emit_double_ma_progress(progress, processed_pairs, total_pairs, phase);
+    if phase == "gpu-kernel" && processed_pairs > 0 {
+        maybe_stage_campaign_prefetch(
+            current_device_id,
+            resident_market,
+            staging_stream,
+            staged_market,
+            progress,
+        );
+    }
+}
+
 fn optimize_double_ma_gpu_kernel_impl(
     rt: &mut CudaKernelRuntime,
     candles: &Candles,
@@ -11820,7 +12148,6 @@ fn optimize_double_ma_gpu_kernel_impl(
         }
     }
     let mut processed = 0usize;
-    emit_progress(progress, processed, total_pairs, "gpu-kernel");
 
     let metrics_count: usize = search_metrics_count_for_optimization_with_contract(
         objective,
@@ -12182,13 +12509,23 @@ fn optimize_double_ma_gpu_kernel_impl(
     let ma_source_key = normalize_market_source_key(ma_source);
     let ma_is_close = ma_source_key == "close";
     let alloc_ma_buf = needs_ma_prices && !ma_is_close;
-    let (resident_market, ma, scratch, valid_pair_maps) = (
+    let (resident_market, staged_market, staging_stream, ma, scratch, valid_pair_maps) = (
         &mut rt.resident_market,
+        &mut rt.staged_market,
+        &rt.staging_stream,
         &mut rt.ma,
         &mut rt.scratch,
         &mut rt.valid_pair_maps,
     );
     let dataset_sig = candle_dataset_signature(candles);
+    let _ = promote_matching_staged_market_series(
+        bt_stream,
+        staging_stream,
+        resident_market,
+        staged_market,
+        dataset_sig,
+    )
+    .map_err(|e| format!("promote_matching_staged_market_series: {e}"))?;
     ensure_resident_market_series(
         bt_stream,
         resident_market,
@@ -12207,6 +12544,16 @@ fn optimize_double_ma_gpu_kernel_impl(
     let resident = resident_market
         .as_ref()
         .ok_or_else(|| "resident market cache missing after upload".to_string())?;
+    emit_progress_and_maybe_stage_campaign_prefetch(
+        cfg.device_id,
+        resident_market,
+        staging_stream,
+        staged_market,
+        progress,
+        processed,
+        total_pairs,
+        "gpu-kernel",
+    );
     let d_close = &resident.close;
     let d_high = if needs_high_low {
         resident.high.as_ref()
@@ -14236,7 +14583,16 @@ fn optimize_double_ma_gpu_kernel_impl(
                     if cancel.load(Ordering::Relaxed) {
                         return Err("cancelled".to_string());
                     }
-                    emit_progress(progress, processed, total_pairs, "gpu-kernel");
+                    emit_progress_and_maybe_stage_campaign_prefetch(
+                        cfg.device_id,
+                        resident_market,
+                        staging_stream,
+                        staged_market,
+                        progress,
+                        processed,
+                        total_pairs,
+                        "gpu-kernel",
+                    );
                     if pipeline_profile_enabled {
                         bt_stream.synchronize().map_err(|e| e.to_string())?;
                     }
@@ -14664,7 +15020,16 @@ fn optimize_double_ma_gpu_kernel_impl(
                 }
             }
 
-            emit_progress(progress, processed, total_pairs, "gpu-kernel");
+            emit_progress_and_maybe_stage_campaign_prefetch(
+                cfg.device_id,
+                resident_market,
+                staging_stream,
+                staged_market,
+                progress,
+                processed,
+                total_pairs,
+                "gpu-kernel",
+            );
             if pipeline_profile_enabled {
                 bt_stream.synchronize().map_err(|e| e.to_string())?;
             }
@@ -15245,6 +15610,84 @@ mod tests {
         assert_eq!(same_a.field_mask, clone_sig.field_mask);
         assert_ne!(same_a, clone_sig);
         assert_ne!(same_a, shorter_sig);
+    }
+
+    #[test]
+    fn staged_market_promotes_into_active_resident_cache() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+        let _guard = lock_env();
+        let current = make_trending_candles(512);
+        let next = make_oscillating_candles(512);
+
+        super::CUDA_KERNEL_RUNTIME.with(|cell| -> Result<(), String> {
+            let mut map = cell.borrow_mut();
+            map.clear();
+            map.insert(0, super::CudaKernelRuntime::new(0)?);
+            let rt = map.get_mut(&0).expect("runtime inserted");
+            rt.set_current()?;
+
+            let current_close = source_type(&current, "close");
+            super::ensure_resident_market_series(
+                &rt.stream,
+                &mut rt.resident_market,
+                &current,
+                current_close,
+                "close",
+                None,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+            )?;
+
+            let next_close = source_type(&next, "close");
+            let stage_outcome = super::stage_resident_market_series_for_next_dataset(
+                &rt.resident_market,
+                &rt.staging_stream,
+                &mut rt.staged_market,
+                &next,
+                next_close,
+                "close",
+                None,
+                false,
+                false,
+                None,
+                None,
+                false,
+                None,
+            )?;
+            assert!(matches!(
+                stage_outcome,
+                super::CampaignVramPrefetchOutcome::Staged
+                    | super::CampaignVramPrefetchOutcome::AlreadyResident
+            ));
+
+            let next_sig = super::candle_dataset_signature(&next);
+            assert_eq!(
+                rt.staged_market.as_ref().map(|cache| cache.signature),
+                Some(next_sig)
+            );
+
+            let promoted = super::promote_matching_staged_market_series(
+                &rt.stream,
+                &rt.staging_stream,
+                &mut rt.resident_market,
+                &mut rt.staged_market,
+                next_sig,
+            )?;
+            assert!(promoted);
+            assert_eq!(
+                rt.resident_market.as_ref().map(|cache| cache.signature),
+                Some(next_sig)
+            );
+            assert!(rt.staged_market.is_none());
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
