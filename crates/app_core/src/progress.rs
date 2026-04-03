@@ -10,10 +10,20 @@ pub struct DoubleMaProgressPayload {
 
 #[derive(Clone, Debug)]
 pub enum DoubleMaCampaignVramPrefetchFeedback {
-    Staged,
-    AlreadyResident,
-    Warning(String),
-    Fatal(String),
+    Staged {
+        stage_wall_ms: f64,
+    },
+    AlreadyResident {
+        stage_wall_ms: f64,
+    },
+    Warning {
+        note: String,
+        stage_wall_ms: f64,
+    },
+    Fatal {
+        note: String,
+        stage_wall_ms: f64,
+    },
 }
 
 pub trait ProgressSink: Send + Sync {

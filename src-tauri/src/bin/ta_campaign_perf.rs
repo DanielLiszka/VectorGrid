@@ -144,6 +144,14 @@ struct ProgressEventArtifact {
 #[derive(Debug, Serialize)]
 struct DatasetRouteArtifact {
     label: String,
+    prepare_source: Option<String>,
+    prepare_wait_ms: Option<f64>,
+    vram_prefetch_outcome: Option<String>,
+    vram_prefetch_note: Option<String>,
+    vram_prefetch_wall_ms: Option<f64>,
+    optimize_wall_ms: Option<f64>,
+    optimize_artifact_save_ms: Option<f64>,
+    checkpoint_save_ms: Option<f64>,
     optimize_backend_used: Option<String>,
     optimize_backend_route: Option<String>,
     optimize_fallback_reason: Option<String>,
@@ -408,6 +416,38 @@ fn load_dataset_routes(
         .map(|item| {
             let mut route = DatasetRouteArtifact {
                 label: item.label.clone(),
+                prepare_source: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.prepare_source.clone()),
+                prepare_wait_ms: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.prepare_wait_ms),
+                vram_prefetch_outcome: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_outcome.clone()),
+                vram_prefetch_note: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_note.clone()),
+                vram_prefetch_wall_ms: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.vram_prefetch_wall_ms),
+                optimize_wall_ms: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.optimize_wall_ms),
+                optimize_artifact_save_ms: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.optimize_artifact_save_ms),
+                checkpoint_save_ms: item
+                    .diagnostics
+                    .as_ref()
+                    .and_then(|diag| diag.checkpoint_save_ms),
                 optimize_backend_used: None,
                 optimize_backend_route: None,
                 optimize_fallback_reason: None,

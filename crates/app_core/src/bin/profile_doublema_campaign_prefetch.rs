@@ -145,15 +145,17 @@ impl ProgressSink for StageNextDatasetSink<'_> {
         feedback: DoubleMaCampaignVramPrefetchFeedback,
     ) {
         let (outcome, note) = match feedback {
-            DoubleMaCampaignVramPrefetchFeedback::Staged => (StageOutcomeLabel::Staged, None),
-            DoubleMaCampaignVramPrefetchFeedback::AlreadyResident => {
+            DoubleMaCampaignVramPrefetchFeedback::Staged { .. } => {
+                (StageOutcomeLabel::Staged, None)
+            }
+            DoubleMaCampaignVramPrefetchFeedback::AlreadyResident { .. } => {
                 (StageOutcomeLabel::AlreadyResident, None)
             }
-            DoubleMaCampaignVramPrefetchFeedback::Warning(reason) => {
-                (StageOutcomeLabel::Skipped, Some(reason))
+            DoubleMaCampaignVramPrefetchFeedback::Warning { note, .. } => {
+                (StageOutcomeLabel::Skipped, Some(note))
             }
-            DoubleMaCampaignVramPrefetchFeedback::Fatal(error) => {
-                (StageOutcomeLabel::Error, Some(error))
+            DoubleMaCampaignVramPrefetchFeedback::Fatal { note, .. } => {
+                (StageOutcomeLabel::Error, Some(note))
             }
         };
         *self.outcome.lock().unwrap_or_else(|e| e.into_inner()) = outcome;

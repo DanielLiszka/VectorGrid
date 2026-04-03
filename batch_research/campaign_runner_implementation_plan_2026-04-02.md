@@ -85,12 +85,12 @@ Status snapshot as of 2026-04-03 after host preload, checkpoint/resume, and init
 - [x] measure and document inter-dataset idle-time reduction with the relevant perf gates
 - [x] expose preload policy selection in the `Meta -> Batch` UI so product users can choose `host_only`, `disabled`, or the experimental plain-`DoubleMa` staging mode without hand-editing request payloads
 
-### Phase 5 status: in progress
+### Phase 5 status: completed
 
 - [x] add a batch-only CUDA staging path for plain `DoubleMa`
 - [x] add capability gating and automatic fallback for the staging path
 - [x] add a dedicated headless profiler for `host_only` vs `host_plus_doublema_vram` on the exact `DoubleMa` kernel route
-- [ ] validate a real throughput benefit on the kernel-backed route
+- [x] complete representative optimize-only diagnostics and decide the shipping posture for the staging path
 
 Current note:
 
@@ -114,7 +114,10 @@ Current note:
 - A follow-up optimize-only rerun on 2026-04-03 switched the harness to the more favorable `alma/alma` profile with the large benchmark grid (`fast=5:200:1`, `slow=10:400:1`, `top_k=50`) so indicator efficiency would not be the confounder. The captured artifacts are `target/ta_campaign_perf_optimize_only_alma_disabled_release_cuda.json`, `target/ta_campaign_perf_optimize_only_alma_host_only_release_cuda.json`, `target/ta_campaign_perf_optimize_only_alma_full_pack_host_release_cuda.json`, and `target/ta_campaign_perf_optimize_only_alma_host_plus_doublema_vram_release_cuda.json`.
 - On that ALMA optimize-only surface, all measured datasets again stayed on `GpuKernel`, but the mode gap compressed sharply: `disabled` mean total wall was `3943.85 ms`, `host_only` was `3859.84 ms`, `full_pack_host` was `3938.76 ms` total / `3845.0 ms` post-preload runtime, and `host_plus_doublema_vram` was `3852.59 ms`.
 - That ALMA rerun indicates the dominant time is inside the per-dataset optimization chunks themselves, not in dataset readiness overhead. With `full_pack_host`, the upfront host-RAM pack preload averaged `92.63 ms`, and disabling preload entirely only added about `98.85 ms` over the whole four-dataset campaign compared with the post-preload runtime. The optimize chunks still consumed roughly `3.81-3.88 s` of the `3.85-3.94 s` total wall time, so the majority bottleneck on this surface is kernel/backtest work over the large real datasets rather than indicator-load or CSV I/O.
-- Keep both the host-preload claim and `host_plus_doublema_vram` marked experimental until the representative campaign surface shows a real benefit or the preload/staging schedule is tuned to avoid regressing end-to-end wall time.
+- A final diagnostic rerun on 2026-04-03 added per-dataset campaign timing and staging fields to the campaign summary / perf harness. The captured artifacts are `target/ta_campaign_perf_optimize_only_host_only_phase5_diag.json`, `target/ta_campaign_perf_optimize_only_host_plus_doublema_vram_phase5_diag.json`, `target/ta_campaign_perf_optimize_only_alma_host_only_phase5_diag.json`, and `target/ta_campaign_perf_optimize_only_alma_host_plus_doublema_vram_phase5_diag.json`.
+- On the default optimize-only surface with `warmup=1` and `measure=5`, `host_only` averaged `3991.1363 ms` and `host_plus_doublema_vram` averaged `3963.03594 ms`, a modest `-0.704%` win for staged mode. The new diagnostics show that host preload was already effectively free after the first dataset (`background_preload_ready` averaged about `0.01 ms`), VRAM staging only fired for the middle datasets, and the optimize chunks still dominated runtime (`AAPL ~81 ms`, `NVDA ~1002 ms`, `QQQ ~1164-1189 ms`, `SPY ~1288-1292 ms`).
+- On the ALMA optimize-only surface with the same warmup/measure counts, `host_only` averaged `3819.73578 ms` and `host_plus_doublema_vram` averaged `3826.56468 ms`, a slight `+0.179%` regression for staged mode. Diagnostics again showed near-zero host preload wait after the first dataset, with staging wall time landing around `67 ms` for `AAPL` and `696-817 ms` for `NVDA` / `QQQ`, yet without a robust end-to-end campaign win.
+- Decision: the campaign-runner investigation is complete. `Host preload` remains the recommended/default product path, and `host_plus_doublema_vram` remains implemented but explicitly experimental and plain-`DoubleMa`-specific. No further campaign-layer performance work is required for campaign-runner signoff; additional speed work would need to target the core kernel/backtest runtime rather than the campaign orchestration layer.
 
 ## Goals
 

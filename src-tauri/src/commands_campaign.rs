@@ -155,6 +155,26 @@ pub struct ResearchCampaignCounts {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ResearchCampaignItemDiagnostics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_wait_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_prefetch_wall_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optimize_wall_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optimize_artifact_save_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_save_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ResearchCampaignItemSummary {
     pub csv_path: String,
     pub label: String,
@@ -167,6 +187,8 @@ pub struct ResearchCampaignItemSummary {
     pub report_xlsx_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ResearchCampaignItemDiagnostics>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,6 +265,42 @@ struct PreparedCampaignDataset {
     label: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatasetPrepareSource {
+    PreloadedPack,
+    BackgroundPreloadReady,
+    BackgroundPreloadWaited,
+    SyncPrepare,
+}
+
+impl DatasetPrepareSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PreloadedPack => "preloaded_pack",
+            Self::BackgroundPreloadReady => "background_preload_ready",
+            Self::BackgroundPreloadWaited => "background_preload_waited",
+            Self::SyncPrepare => "sync_prepare",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CampaignPrefetchDiagnostics {
+    outcome: &'static str,
+    note: Option<String>,
+    wall_ms: f64,
+}
+
+impl CampaignPrefetchDiagnostics {
+    fn not_attempted() -> Self {
+        Self {
+            outcome: "not_attempted",
+            note: None,
+            wall_ms: 0.0,
+        }
+    }
+}
+
 pub struct HeadlessPreparedResearchCampaignDatasetPack {
     datasets: VecDeque<PreparedCampaignDataset>,
 }
@@ -294,6 +352,21 @@ impl DatasetPreloadJob {
     fn join(mut self) -> Result<PreparedCampaignDataset, String> {
         self.join_worker()?;
         self.take_result()
+    }
+
+    fn join_with_prepare_metrics(self) -> (Result<PreparedCampaignDataset, String>, f64, bool) {
+        let cached_ready = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            try_fill_preload_state(&mut state);
+            state.cached.is_some()
+        };
+        let wait_started = std::time::Instant::now();
+        let result = self.join();
+        (
+            result,
+            wait_started.elapsed().as_secs_f64() * 1000.0,
+            cached_ready,
+        )
     }
 
     fn join_worker(&mut self) -> Result<(), String> {
@@ -661,6 +734,70 @@ fn failed_item(
         artifact_path,
         report_xlsx_path: None,
         error: Some(format!("{stage}: {}", error.into())),
+        diagnostics: None,
+    }
+}
+
+fn build_item_diagnostics(
+    prepare_source: DatasetPrepareSource,
+    prepare_wait_ms: f64,
+    prefetch: &CampaignPrefetchDiagnostics,
+    optimize_wall_ms: Option<f64>,
+    optimize_artifact_save_ms: Option<f64>,
+    checkpoint_save_ms: Option<f64>,
+) -> ResearchCampaignItemDiagnostics {
+    ResearchCampaignItemDiagnostics {
+        prepare_source: Some(prepare_source.as_str().to_string()),
+        prepare_wait_ms: Some(prepare_wait_ms),
+        vram_prefetch_outcome: Some(prefetch.outcome.to_string()),
+        vram_prefetch_note: prefetch.note.clone(),
+        vram_prefetch_wall_ms: Some(prefetch.wall_ms),
+        optimize_wall_ms,
+        optimize_artifact_save_ms,
+        checkpoint_save_ms,
+    }
+}
+
+fn record_prefetch_feedback(
+    warnings: &mut Vec<String>,
+    doublema_vram_prefetch_disabled: &mut bool,
+    feedback: Option<DoubleMaCampaignVramPrefetchFeedback>,
+) -> CampaignPrefetchDiagnostics {
+    let Some(feedback) = feedback else {
+        return CampaignPrefetchDiagnostics::not_attempted();
+    };
+    match feedback {
+        DoubleMaCampaignVramPrefetchFeedback::Staged { stage_wall_ms } => {
+            CampaignPrefetchDiagnostics {
+                outcome: "staged",
+                note: None,
+                wall_ms: stage_wall_ms,
+            }
+        }
+        DoubleMaCampaignVramPrefetchFeedback::AlreadyResident { stage_wall_ms } => {
+            CampaignPrefetchDiagnostics {
+                outcome: "already_resident",
+                note: None,
+                wall_ms: stage_wall_ms,
+            }
+        }
+        DoubleMaCampaignVramPrefetchFeedback::Warning { note, stage_wall_ms } => {
+            push_unique_warning(warnings, note.clone());
+            CampaignPrefetchDiagnostics {
+                outcome: "warning",
+                note: Some(note),
+                wall_ms: stage_wall_ms,
+            }
+        }
+        DoubleMaCampaignVramPrefetchFeedback::Fatal { note, stage_wall_ms } => {
+            push_unique_warning(warnings, note.clone());
+            *doublema_vram_prefetch_disabled = true;
+            CampaignPrefetchDiagnostics {
+                outcome: "fatal",
+                note: Some(note),
+                wall_ms: stage_wall_ms,
+            }
+        }
     }
 }
 
@@ -1565,6 +1702,7 @@ fn run_research_campaign_blocking_with_mode(
                 artifact_path: None,
                 report_xlsx_path: None,
                 error: None,
+                diagnostics: None,
             }
         })
         .collect();
@@ -1606,18 +1744,42 @@ fn run_research_campaign_blocking_with_mode(
         let is_holdout = holdout_paths.contains(&dataset_csv_path);
         let fallback_label = dataset_label_from_input(&dataset);
         let fallback_timeframe = dataset_timeframe_hint(&dataset, timeframe_override.as_deref());
-        let prepared_result = match preloaded_pack.as_mut() {
-            Some(pack) => pack
-                .datasets
-                .pop_front()
-                .ok_or_else(|| "preloaded campaign dataset pack was missing an entry".to_string()),
+        let (prepared_result, prepare_source, prepare_wait_ms) = match preloaded_pack.as_mut() {
+            Some(pack) => {
+                let prepare_started = std::time::Instant::now();
+                (
+                    pack.datasets.pop_front().ok_or_else(|| {
+                        "preloaded campaign dataset pack was missing an entry".to_string()
+                    }),
+                    DatasetPrepareSource::PreloadedPack,
+                    prepare_started.elapsed().as_secs_f64() * 1000.0,
+                )
+            }
             None => match preload.take() {
-                Some(job) => job.join(),
-                None => prepare_campaign_dataset(
-                    dataset.clone(),
-                    timeframe_override.as_deref(),
-                    &app_cache_dir,
-                ),
+                Some(job) => {
+                    let (result, wait_ms, cached_ready) = job.join_with_prepare_metrics();
+                    (
+                        result,
+                        if cached_ready {
+                            DatasetPrepareSource::BackgroundPreloadReady
+                        } else {
+                            DatasetPrepareSource::BackgroundPreloadWaited
+                        },
+                        wait_ms,
+                    )
+                }
+                None => {
+                    let prepare_started = std::time::Instant::now();
+                    (
+                        prepare_campaign_dataset(
+                            dataset.clone(),
+                            timeframe_override.as_deref(),
+                            &app_cache_dir,
+                        ),
+                        DatasetPrepareSource::SyncPrepare,
+                        prepare_started.elapsed().as_secs_f64() * 1000.0,
+                    )
+                }
             },
         };
         if !using_preloaded_pack
@@ -1663,6 +1825,9 @@ fn run_research_campaign_blocking_with_mode(
                 continue;
             }
         };
+        let mut prefetch_diagnostics = CampaignPrefetchDiagnostics::not_attempted();
+        let mut optimize_wall_ms = None;
+        let mut optimize_artifact_save_ms = None;
         if using_preloaded_pack {
             let expected_csv_path = normalize_text(&dataset.csv_path);
             let prepared_csv_path = normalize_text(&prepared.input.csv_path);
@@ -1743,6 +1908,14 @@ fn run_research_campaign_blocking_with_mode(
                         "no matching optimization artifact was found for validate_only mode"
                             .to_string(),
                     ),
+                    diagnostics: Some(build_item_diagnostics(
+                        prepare_source,
+                        prepare_wait_ms,
+                        &prefetch_diagnostics,
+                        None,
+                        None,
+                        None,
+                    )),
                 };
                 summary = build_campaign_summary(
                     &ts,
@@ -1909,6 +2082,14 @@ fn run_research_campaign_blocking_with_mode(
                         artifact_path: existing_optimize_path.clone(),
                         report_xlsx_path: None,
                         error: None,
+                        diagnostics: Some(build_item_diagnostics(
+                            prepare_source,
+                            prepare_wait_ms,
+                            &prefetch_diagnostics,
+                            None,
+                            None,
+                            None,
+                        )),
                     };
                     summary = build_campaign_summary(
                         &ts,
@@ -1982,6 +2163,7 @@ fn run_research_campaign_blocking_with_mode(
                             vram_prefetch: None,
                         })
                     };
+                    let optimize_started = std::time::Instant::now();
                     let optimize_result = match run_optimization_blocking(
                         family,
                         &run_req_value,
@@ -2027,22 +2209,14 @@ fn run_research_campaign_blocking_with_mode(
                             continue;
                         }
                     };
-                    if let Some(feedback) = optimize_progress_sink
-                        .as_ref()
-                        .and_then(CampaignProgressSink::take_prefetch_feedback)
-                    {
-                        match feedback {
-                            DoubleMaCampaignVramPrefetchFeedback::Staged
-                            | DoubleMaCampaignVramPrefetchFeedback::AlreadyResident => {}
-                            DoubleMaCampaignVramPrefetchFeedback::Warning(note) => {
-                                push_unique_warning(&mut warnings, note);
-                            }
-                            DoubleMaCampaignVramPrefetchFeedback::Fatal(note) => {
-                                push_unique_warning(&mut warnings, note);
-                                doublema_vram_prefetch_disabled = true;
-                            }
-                        }
-                    }
+                    optimize_wall_ms = Some(optimize_started.elapsed().as_secs_f64() * 1000.0);
+                    prefetch_diagnostics = record_prefetch_feedback(
+                        &mut warnings,
+                        &mut doublema_vram_prefetch_disabled,
+                        optimize_progress_sink
+                            .as_ref()
+                            .and_then(CampaignProgressSink::take_prefetch_feedback),
+                    );
                     counts.optimized = counts.optimized.saturating_add(1);
                     optimize_result
                 } else {
@@ -2218,6 +2392,7 @@ fn run_research_campaign_blocking_with_mode(
                         vram_prefetch: None,
                     })
                 };
+                let optimize_started = std::time::Instant::now();
                 let optimize_result = match run_optimization_blocking(
                     family,
                     &run_req_value,
@@ -2263,22 +2438,14 @@ fn run_research_campaign_blocking_with_mode(
                         continue;
                     }
                 };
-                if let Some(feedback) = optimize_progress_sink
-                    .as_ref()
-                    .and_then(CampaignProgressSink::take_prefetch_feedback)
-                {
-                    match feedback {
-                        DoubleMaCampaignVramPrefetchFeedback::Staged
-                        | DoubleMaCampaignVramPrefetchFeedback::AlreadyResident => {}
-                        DoubleMaCampaignVramPrefetchFeedback::Warning(note) => {
-                            push_unique_warning(&mut warnings, note);
-                        }
-                        DoubleMaCampaignVramPrefetchFeedback::Fatal(note) => {
-                            push_unique_warning(&mut warnings, note);
-                            doublema_vram_prefetch_disabled = true;
-                        }
-                    }
-                }
+                optimize_wall_ms = Some(optimize_started.elapsed().as_secs_f64() * 1000.0);
+                prefetch_diagnostics = record_prefetch_feedback(
+                    &mut warnings,
+                    &mut doublema_vram_prefetch_disabled,
+                    optimize_progress_sink
+                        .as_ref()
+                        .and_then(CampaignProgressSink::take_prefetch_feedback),
+                );
                 counts.optimized = counts.optimized.saturating_add(1);
                 optimize_result
             }
@@ -2325,6 +2492,7 @@ fn run_research_campaign_blocking_with_mode(
                     vram_prefetch: None,
                 })
             };
+            let optimize_started = std::time::Instant::now();
             let optimize_result = match run_optimization_blocking(
                 family,
                 &run_req_value,
@@ -2366,22 +2534,14 @@ fn run_research_campaign_blocking_with_mode(
                     continue;
                 }
             };
-            if let Some(feedback) = optimize_progress_sink
-                .as_ref()
-                .and_then(CampaignProgressSink::take_prefetch_feedback)
-            {
-                match feedback {
-                    DoubleMaCampaignVramPrefetchFeedback::Staged
-                    | DoubleMaCampaignVramPrefetchFeedback::AlreadyResident => {}
-                    DoubleMaCampaignVramPrefetchFeedback::Warning(note) => {
-                        push_unique_warning(&mut warnings, note);
-                    }
-                    DoubleMaCampaignVramPrefetchFeedback::Fatal(note) => {
-                        push_unique_warning(&mut warnings, note);
-                        doublema_vram_prefetch_disabled = true;
-                    }
-                }
-            }
+            optimize_wall_ms = Some(optimize_started.elapsed().as_secs_f64() * 1000.0);
+            prefetch_diagnostics = record_prefetch_feedback(
+                &mut warnings,
+                &mut doublema_vram_prefetch_disabled,
+                optimize_progress_sink
+                    .as_ref()
+                    .and_then(CampaignProgressSink::take_prefetch_feedback),
+            );
             counts.optimized = counts.optimized.saturating_add(1);
             optimize_result
         };
@@ -2419,8 +2579,13 @@ fn run_research_campaign_blocking_with_mode(
                 None,
                 None,
             );
+            let save_started = std::time::Instant::now();
             match run_artifacts::save_run_artifact_blocking(optimize_artifact, app.clone()) {
-                Ok(saved) => saved.path,
+                Ok(saved) => {
+                    optimize_artifact_save_ms =
+                        Some(save_started.elapsed().as_secs_f64() * 1000.0);
+                    saved.path
+                }
                 Err(error) => {
                     counts.failed = counts.failed.saturating_add(1);
                     items[index] = failed_item(
@@ -2465,6 +2630,14 @@ fn run_research_campaign_blocking_with_mode(
                 artifact_path: Some(artifact_path),
                 report_xlsx_path: None,
                 error: None,
+                diagnostics: Some(build_item_diagnostics(
+                    prepare_source,
+                    prepare_wait_ms,
+                    &prefetch_diagnostics,
+                    optimize_wall_ms,
+                    optimize_artifact_save_ms,
+                    None,
+                )),
             };
             summary = build_campaign_summary(
                 &ts,
@@ -2549,6 +2722,14 @@ fn run_research_campaign_blocking_with_mode(
                 artifact_path: Some(artifact_path),
                 report_xlsx_path: None,
                 error: None,
+                diagnostics: Some(build_item_diagnostics(
+                    prepare_source,
+                    prepare_wait_ms,
+                    &prefetch_diagnostics,
+                    optimize_wall_ms,
+                    optimize_artifact_save_ms,
+                    None,
+                )),
             };
             summary = build_campaign_summary(
                 &ts,
@@ -2882,6 +3063,14 @@ fn run_research_campaign_blocking_with_mode(
             artifact_path: Some(artifact_path),
             report_xlsx_path: None,
             error: None,
+            diagnostics: Some(build_item_diagnostics(
+                prepare_source,
+                prepare_wait_ms,
+                &prefetch_diagnostics,
+                optimize_wall_ms,
+                optimize_artifact_save_ms,
+                None,
+            )),
         };
         summary = build_campaign_summary(
             &ts,

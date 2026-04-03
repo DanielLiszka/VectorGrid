@@ -11623,11 +11623,15 @@ fn maybe_stage_campaign_prefetch(
     let Some(progress) = progress else { return };
     let mut feedback = None;
     progress.with_double_ma_campaign_vram_prefetch_request(&mut |device_id, candles, fast_ma, slow_ma, ma_source| {
+        let stage_started = Instant::now();
         feedback = Some(if device_id != current_device_id {
-            crate::progress::DoubleMaCampaignVramPrefetchFeedback::Fatal(format!(
-                "double_ma VRAM staging disabled: runtime device {} did not match requested device {}",
-                current_device_id, device_id
-            ))
+            crate::progress::DoubleMaCampaignVramPrefetchFeedback::Fatal {
+                note: format!(
+                    "double_ma VRAM staging disabled: runtime device {} did not match requested device {}",
+                    current_device_id, device_id
+                ),
+                stage_wall_ms: stage_started.elapsed().as_secs_f64() * 1000.0,
+            }
         } else {
             let fast_ma = fast_ma.trim().to_ascii_lowercase();
             let slow_ma = slow_ma.trim().to_ascii_lowercase();
@@ -11684,17 +11688,25 @@ fn maybe_stage_campaign_prefetch(
                 )
             }) {
                 Ok(CampaignVramPrefetchOutcome::Staged) => {
-                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::Staged
+                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::Staged {
+                        stage_wall_ms: stage_started.elapsed().as_secs_f64() * 1000.0,
+                    }
                 }
                 Ok(CampaignVramPrefetchOutcome::AlreadyResident) => {
-                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::AlreadyResident
+                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::AlreadyResident {
+                        stage_wall_ms: stage_started.elapsed().as_secs_f64() * 1000.0,
+                    }
                 }
                 Ok(CampaignVramPrefetchOutcome::Skipped(reason)) => {
-                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::Warning(reason)
+                    crate::progress::DoubleMaCampaignVramPrefetchFeedback::Warning {
+                        note: reason,
+                        stage_wall_ms: stage_started.elapsed().as_secs_f64() * 1000.0,
+                    }
                 }
-                Err(error) => crate::progress::DoubleMaCampaignVramPrefetchFeedback::Fatal(
-                    format!("double_ma VRAM staging disabled: {error}"),
-                ),
+                Err(error) => crate::progress::DoubleMaCampaignVramPrefetchFeedback::Fatal {
+                    note: format!("double_ma VRAM staging disabled: {error}"),
+                    stage_wall_ms: stage_started.elapsed().as_secs_f64() * 1000.0,
+                },
             }
         });
     });
