@@ -781,7 +781,10 @@ fn record_prefetch_feedback(
                 wall_ms: stage_wall_ms,
             }
         }
-        DoubleMaCampaignVramPrefetchFeedback::Warning { note, stage_wall_ms } => {
+        DoubleMaCampaignVramPrefetchFeedback::Warning {
+            note,
+            stage_wall_ms,
+        } => {
             push_unique_warning(warnings, note.clone());
             CampaignPrefetchDiagnostics {
                 outcome: "warning",
@@ -789,7 +792,10 @@ fn record_prefetch_feedback(
                 wall_ms: stage_wall_ms,
             }
         }
-        DoubleMaCampaignVramPrefetchFeedback::Fatal { note, stage_wall_ms } => {
+        DoubleMaCampaignVramPrefetchFeedback::Fatal {
+            note,
+            stage_wall_ms,
+        } => {
             push_unique_warning(warnings, note.clone());
             *doublema_vram_prefetch_disabled = true;
             CampaignPrefetchDiagnostics {
@@ -1456,9 +1462,15 @@ fn existing_validation_matches(
     primary_tag: &str,
     prepared: &PreparedCampaignDataset,
 ) -> bool {
-    existing_optimization_match(existing, strategy_kind, config_fingerprint, primary_tag, prepared)
-        .map(|row| row.has_validation)
-        .unwrap_or(false)
+    existing_optimization_match(
+        existing,
+        strategy_kind,
+        config_fingerprint,
+        primary_tag,
+        prepared,
+    )
+    .map(|row| row.has_validation)
+    .unwrap_or(false)
 }
 
 fn existing_optimization_match<'a>(
@@ -1933,8 +1945,7 @@ fn run_research_campaign_blocking_with_mode(
                     &warnings,
                     started.elapsed().as_millis() as u64,
                 );
-                let _ =
-                    save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
                 continue;
             };
             existing_optimize_path = Some(existing_run.path.clone());
@@ -1980,11 +1991,8 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ = save_campaign_summary_blocking(
-                        &summary,
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    let _ =
+                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
                     continue;
                 }
             };
@@ -2017,11 +2025,8 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ = save_campaign_summary_blocking(
-                        &summary,
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    let _ =
+                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
                     continue;
                 }
             };
@@ -2054,11 +2059,8 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ = save_campaign_summary_blocking(
-                        &summary,
-                        &app,
-                        Some(&summary_json_path),
-                    )?;
+                    let _ =
+                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
                     continue;
                 }
             }
@@ -2530,7 +2532,8 @@ fn run_research_campaign_blocking_with_mode(
                         &warnings,
                         started.elapsed().as_millis() as u64,
                     );
-                    let _ = save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
+                    let _ =
+                        save_campaign_summary_blocking(&summary, &app, Some(&summary_json_path))?;
                     continue;
                 }
             };
@@ -2582,8 +2585,7 @@ fn run_research_campaign_blocking_with_mode(
             let save_started = std::time::Instant::now();
             match run_artifacts::save_run_artifact_blocking(optimize_artifact, app.clone()) {
                 Ok(saved) => {
-                    optimize_artifact_save_ms =
-                        Some(save_started.elapsed().as_secs_f64() * 1000.0);
+                    optimize_artifact_save_ms = Some(save_started.elapsed().as_secs_f64() * 1000.0);
                     saved.path
                 }
                 Err(error) => {
@@ -3196,13 +3198,7 @@ fn run_research_campaign_blocking(
     cancel: Arc<AtomicBool>,
 ) -> Result<RunResearchCampaignResponse, String> {
     let execution_mode = req.execution_mode;
-    run_research_campaign_blocking_with_mode(
-        req,
-        app,
-        cancel,
-        execution_mode,
-        None,
-    )
+    run_research_campaign_blocking_with_mode(req, app, cancel, execution_mode, None)
 }
 
 pub fn run_research_campaign_blocking_headless(
@@ -3284,9 +3280,8 @@ pub async fn run_research_campaign(
 mod tests {
     use super::{
         build_composite_candidate_value, build_doublema_vram_prefetch_config,
-        candidate_values_from_optimization,
-        can_reuse_optimization_artifact_for_validation, is_double_like_kind,
-        normalize_backend_value, optimization_family_for_kind,
+        can_reuse_optimization_artifact_for_validation, candidate_values_from_optimization,
+        is_double_like_kind, normalize_backend_value, optimization_family_for_kind,
         optimization_result_from_artifact_value, push_unique_warning, requested_gpu_device_id,
         resolve_campaign_strategy_kind, Backend, CampaignDoubleMaVramPrefetchConfig,
         CampaignOptimizationFamily, CampaignOptimizationResult, DatasetPreloadJob, DoubleMaRequest,

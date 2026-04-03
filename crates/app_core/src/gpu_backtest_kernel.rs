@@ -28,7 +28,6 @@ use vector_ta::utilities::data_loader::{source_type, Candles};
 use crate::alloc_policy::{
     alloc_uninit_copy, alloc_uninit_f32, resize_uninit_f32, resize_uninit_i32,
 };
-use crate::validation_shared::SpaBenchmarkKind;
 use crate::double_ma::{
     derived_active_downside_deviation, derived_active_mean, derived_active_sortino,
     derived_directional_bias, derived_downside_share, derived_drawdown_chronicity,
@@ -50,6 +49,7 @@ use crate::strategy_gpu_runtime::{
     get_or_build_gpu_strategy_executable, with_uploaded_gpu_strategy_executable,
     GpuStrategyExecutableCacheKey, StrategyHandle,
 };
+use crate::validation_shared::SpaBenchmarkKind;
 use crate::vram_ma::{supports_vram_kernel_ma, VramMaComputer, VramMaInputs};
 
 const STRAT_LONG_ONLY: u32 = 1u32 << 0;
@@ -215,6 +215,13 @@ struct PipelineTimingProfile {
     tile_heatmap: Duration,
     tile_finalize: Duration,
     final_finalize: Duration,
+    final_agg_finalize: Duration,
+    final_finalist_recompute: Duration,
+    final_shortlist_union: Duration,
+    final_shortlist_confidence: Duration,
+    final_shortlist_slice: Duration,
+    final_export_flush: Duration,
+    final_cleanup: Duration,
     tile_count: usize,
 }
 
@@ -354,6 +361,55 @@ impl PipelineTimingProfile {
             self.final_finalize.as_secs_f64() * 1000.0,
             Self::pct_str(self.final_finalize, total)
         );
+        let final_other = self
+            .final_finalize
+            .saturating_sub(self.final_agg_finalize)
+            .saturating_sub(self.final_finalist_recompute)
+            .saturating_sub(self.final_shortlist_union)
+            .saturating_sub(self.final_shortlist_confidence)
+            .saturating_sub(self.final_shortlist_slice)
+            .saturating_sub(self.final_export_flush)
+            .saturating_sub(self.final_cleanup);
+        eprintln!(
+            "    agg_finalize{:>10.3} ms  ({})",
+            self.final_agg_finalize.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_agg_finalize, self.final_finalize)
+        );
+        eprintln!(
+            "    finalist_recompute{:>6.3} ms  ({})",
+            self.final_finalist_recompute.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_finalist_recompute, self.final_finalize)
+        );
+        eprintln!(
+            "    shortlist_union{:>9.3} ms  ({})",
+            self.final_shortlist_union.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_shortlist_union, self.final_finalize)
+        );
+        eprintln!(
+            "    shortlist_confidence{:>4.3} ms  ({})",
+            self.final_shortlist_confidence.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_shortlist_confidence, self.final_finalize)
+        );
+        eprintln!(
+            "    shortlist_slice{:>9.3} ms  ({})",
+            self.final_shortlist_slice.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_shortlist_slice, self.final_finalize)
+        );
+        eprintln!(
+            "    export_flush{:>12.3} ms  ({})",
+            self.final_export_flush.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_export_flush, self.final_finalize)
+        );
+        eprintln!(
+            "    cleanup{:>17.3} ms  ({})",
+            self.final_cleanup.as_secs_f64() * 1000.0,
+            Self::pct_str(self.final_cleanup, self.final_finalize)
+        );
+        eprintln!(
+            "    final_other{:>13.3} ms  ({})",
+            final_other.as_secs_f64() * 1000.0,
+            Self::pct_str(final_other, self.final_finalize)
+        );
     }
 }
 
@@ -368,6 +424,13 @@ pub(crate) struct KernelExecutorTimingMs {
     pub(crate) host_decode_ms: u64,
     pub(crate) explicit_sync_ms: u64,
     pub(crate) host_finalize_ms: u64,
+    pub(crate) host_finalize_agg_finalize_ms: u64,
+    pub(crate) host_finalize_finalist_recompute_ms: u64,
+    pub(crate) host_finalize_shortlist_union_ms: u64,
+    pub(crate) host_finalize_shortlist_confidence_ms: u64,
+    pub(crate) host_finalize_shortlist_slice_ms: u64,
+    pub(crate) host_finalize_export_flush_ms: u64,
+    pub(crate) host_finalize_cleanup_ms: u64,
     pub(crate) graph_capture_ms: u64,
     pub(crate) graph_replay_count: u64,
 }
@@ -2488,10 +2551,8 @@ pub fn eval_uploaded_double_ma_dynamic_program_gpu_kernel(
         );
     }
     let _ = get_or_build_gpu_strategy_executable(handle, uploaded_batch.device_id)?;
-    let key = GpuStrategyExecutableCacheKey::new(
-        executable_fingerprint_hex,
-        uploaded_batch.device_id,
-    );
+    let key =
+        GpuStrategyExecutableCacheKey::new(executable_fingerprint_hex, uploaded_batch.device_id);
     let strategy_params = kernel_strategy_params(strategy);
 
     with_uploaded_gpu_strategy_executable(&key, |_uploaded_program| {
@@ -3678,6 +3739,13 @@ fn env_flag_override(name: &str) -> Option<bool> {
 }
 
 #[inline]
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+#[inline]
 fn kernel_async_alloc_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_ASYNC_ALLOC", true)
 }
@@ -3685,6 +3753,15 @@ fn kernel_async_alloc_enabled() -> bool {
 #[inline]
 fn kernel_pinned_h2d_enabled() -> bool {
     env_flag_enabled("VECTORBT_KERNEL_PINNED_H2D", true)
+}
+
+#[inline]
+fn kernel_shortlist_slice_diagnostic_row_limit() -> usize {
+    // Full cross-mode slice diagnostics are useful for research and artifact inspection,
+    // but on the live route they trigger extra windowed reranks that do not affect the
+    // active ranking mode. Cap the diagnostic fanout by default and leave an env override
+    // for deeper profiling or offline analysis.
+    env_usize("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS").unwrap_or(8)
 }
 
 #[inline]
@@ -3751,10 +3828,7 @@ fn resident_market_series_estimate_bytes(
 
 #[inline]
 fn resident_market_series_cached_bytes(cache: &ResidentMarketSeriesCache) -> usize {
-    let mut total = cache
-        .close
-        .len()
-        .saturating_mul(std::mem::size_of::<f32>());
+    let mut total = cache.close.len().saturating_mul(std::mem::size_of::<f32>());
     if let Some(high) = cache.high.as_ref() {
         total = total.saturating_add(high.len().saturating_mul(std::mem::size_of::<f32>()));
     }
@@ -10993,7 +11067,9 @@ fn rerank_shortlist_by_slice_robustness(
             .then_with(|| a.1.max_dd.total_cmp(&b.1.max_dd))
     });
 
-    let diag_count = diagnostic_limit.min(ranked_active.len());
+    let diag_count = diagnostic_limit
+        .min(ranked_active.len())
+        .min(kernel_shortlist_slice_diagnostic_row_limit());
     let diagnostic_rows: Vec<(DoubleMaParams, Metrics)> = ranked_active
         .iter()
         .take(diag_count)
@@ -11548,7 +11624,13 @@ pub fn campaign_stage_plain_double_ma_market(
         }
         let rt = map.get_mut(&device_id).expect("just inserted");
         rt.set_current()?;
-        stage_plain_double_ma_market_with_runtime(rt, candles, fast_ma_type, slow_ma_type, ma_source)
+        stage_plain_double_ma_market_with_runtime(
+            rt,
+            candles,
+            fast_ma_type,
+            slow_ma_type,
+            ma_source,
+        )
     })
 }
 
@@ -11563,8 +11645,8 @@ fn stage_plain_double_ma_market_with_runtime(
     let slow_ma = slow_ma_type.trim().to_ascii_lowercase();
     let needs_ma_prices = ma_uses_source(fast_ma.as_str()) || ma_uses_source(slow_ma.as_str());
     let needs_volume = ma_requires_volume(fast_ma.as_str()) || ma_requires_volume(slow_ma.as_str());
-    let needs_high_low =
-        ma_requires_high_low_close(fast_ma.as_str()) || ma_requires_high_low_close(slow_ma.as_str());
+    let needs_high_low = ma_requires_high_low_close(fast_ma.as_str())
+        || ma_requires_high_low_close(slow_ma.as_str());
 
     validate_candles_for_selected_mas(
         candles,
@@ -15321,9 +15403,20 @@ fn optimize_double_ma_gpu_kernel_impl(
     drop(sync_and_decode_scope);
     let _host_finalize_scope = crate::nvtx::scope("kernel", "host_finalize");
     let final_finalize_t0 = Instant::now();
+    let mut host_finalize_agg_finalize_elapsed = Duration::ZERO;
+    let mut host_finalize_finalist_recompute_elapsed = Duration::ZERO;
+    let mut host_finalize_shortlist_union_elapsed = Duration::ZERO;
+    let mut host_finalize_shortlist_confidence_elapsed = Duration::ZERO;
+    let mut host_finalize_shortlist_slice_elapsed = Duration::ZERO;
+    let mut host_finalize_export_flush_elapsed = Duration::ZERO;
+    let mut host_finalize_cleanup_elapsed = Duration::ZERO;
+
+    let agg_finalize_t0 = Instant::now();
     let mut result = agg
         .finalize()
         .ok_or_else(|| "grid search produced no result".to_string())?;
+    host_finalize_agg_finalize_elapsed =
+        host_finalize_agg_finalize_elapsed.saturating_add(agg_finalize_t0.elapsed());
 
     let finalist_recompute_required = metrics_count < METRICS_COUNT
         && !can_decode_current_gpu_product_metrics_without_recompute(metrics_count);
@@ -15333,6 +15426,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         && !slow_precomputed_enabled
         && kernel_finalist_recompute_enabled()
     {
+        let finalist_recompute_t0 = Instant::now();
         recompute_optimization_result_finalists_with_full_gpu_pass(
             rt,
             candles,
@@ -15349,6 +15443,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             strategy,
             eval_range,
         )?;
+        host_finalize_finalist_recompute_elapsed = host_finalize_finalist_recompute_elapsed
+            .saturating_add(finalist_recompute_t0.elapsed());
     }
     if let Some(mode) = shortlist_union_mode {
         if materialized_shortlist_rows.is_empty() {
@@ -15358,12 +15454,15 @@ fn optimize_double_ma_gpu_kernel_impl(
             );
         }
         let top_limit = result.top.len().max(1);
+        let shortlist_union_t0 = Instant::now();
         let reranked = rerank_shortlist_by_union_mode(
             &materialized_shortlist_rows,
             objective,
             extra_shortlist_objectives.as_slice(),
             mode,
         );
+        host_finalize_shortlist_union_elapsed =
+            host_finalize_shortlist_union_elapsed.saturating_add(shortlist_union_t0.elapsed());
         materialized_shortlist_rows = reranked.clone();
         if let Some((best_params, best_metrics)) = reranked.first() {
             result.best_params = best_params.clone();
@@ -15379,6 +15478,7 @@ fn optimize_double_ma_gpu_kernel_impl(
             );
         }
         let top_limit = result.top.len().max(1);
+        let shortlist_confidence_t0 = Instant::now();
         let reranked = rerank_shortlist_by_confidence(
             &materialized_shortlist_rows,
             mode,
@@ -15391,6 +15491,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             objective,
             score_mode,
         );
+        host_finalize_shortlist_confidence_elapsed = host_finalize_shortlist_confidence_elapsed
+            .saturating_add(shortlist_confidence_t0.elapsed());
         if let Some((best_params, best_metrics)) = reranked.first() {
             result.best_params = best_params.clone();
             result.best_metrics = best_metrics.clone();
@@ -15404,6 +15506,7 @@ fn optimize_double_ma_gpu_kernel_impl(
         } else {
             materialized_shortlist_rows.as_slice()
         };
+        let shortlist_slice_t0 = Instant::now();
         let (reranked, diagnostics) = rerank_shortlist_by_slice_robustness(
             rt,
             candles,
@@ -15429,6 +15532,8 @@ fn optimize_double_ma_gpu_kernel_impl(
             eval_start_t,
             eval_end_t,
         )?;
+        host_finalize_shortlist_slice_elapsed =
+            host_finalize_shortlist_slice_elapsed.saturating_add(shortlist_slice_t0.elapsed());
         record_last_shortlist_slice_diagnostics(diagnostics);
         let (best_params, best_metrics) = reranked
             .first()
@@ -15447,9 +15552,13 @@ fn optimize_double_ma_gpu_kernel_impl(
     }
 
     if let Some(w) = export_writer.as_mut() {
+        let export_flush_t0 = Instant::now();
         w.flush().map_err(|e| e.to_string())?;
+        host_finalize_export_flush_elapsed =
+            host_finalize_export_flush_elapsed.saturating_add(export_flush_t0.elapsed());
     }
 
+    let cleanup_t0 = Instant::now();
     if !kernel_persist_buffers_enabled() {
         rt.ma.clear_cached_constants();
         rt.scratch.clear_async(&rt.stream)?;
@@ -15457,11 +15566,34 @@ fn optimize_double_ma_gpu_kernel_impl(
         rt.host_exact_combo_scratch.last_slow_period_upload = None;
         rt.host_exact_combo_scratch.last_pair_index_upload = None;
     }
+    host_finalize_cleanup_elapsed =
+        host_finalize_cleanup_elapsed.saturating_add(cleanup_t0.elapsed());
 
     let final_finalize_elapsed = final_finalize_t0.elapsed();
     host_finalize_elapsed = host_finalize_elapsed.saturating_add(final_finalize_elapsed);
     if let Some(p) = pipeline_profile.as_mut() {
         p.final_finalize = p.final_finalize.saturating_add(final_finalize_elapsed);
+        p.final_agg_finalize = p
+            .final_agg_finalize
+            .saturating_add(host_finalize_agg_finalize_elapsed);
+        p.final_finalist_recompute = p
+            .final_finalist_recompute
+            .saturating_add(host_finalize_finalist_recompute_elapsed);
+        p.final_shortlist_union = p
+            .final_shortlist_union
+            .saturating_add(host_finalize_shortlist_union_elapsed);
+        p.final_shortlist_confidence = p
+            .final_shortlist_confidence
+            .saturating_add(host_finalize_shortlist_confidence_elapsed);
+        p.final_shortlist_slice = p
+            .final_shortlist_slice
+            .saturating_add(host_finalize_shortlist_slice_elapsed);
+        p.final_export_flush = p
+            .final_export_flush
+            .saturating_add(host_finalize_export_flush_elapsed);
+        p.final_cleanup = p
+            .final_cleanup
+            .saturating_add(host_finalize_cleanup_elapsed);
         p.emit(
             fast_ma.as_str(),
             slow_ma.as_str(),
@@ -15483,6 +15615,17 @@ fn optimize_double_ma_gpu_kernel_impl(
             host_decode_ms: host_decode_elapsed.as_millis() as u64,
             explicit_sync_ms: explicit_sync_elapsed.as_millis() as u64,
             host_finalize_ms: host_finalize_elapsed.as_millis() as u64,
+            host_finalize_agg_finalize_ms: host_finalize_agg_finalize_elapsed.as_millis() as u64,
+            host_finalize_finalist_recompute_ms: host_finalize_finalist_recompute_elapsed
+                .as_millis() as u64,
+            host_finalize_shortlist_union_ms: host_finalize_shortlist_union_elapsed.as_millis()
+                as u64,
+            host_finalize_shortlist_confidence_ms: host_finalize_shortlist_confidence_elapsed
+                .as_millis() as u64,
+            host_finalize_shortlist_slice_ms: host_finalize_shortlist_slice_elapsed.as_millis()
+                as u64,
+            host_finalize_export_flush_ms: host_finalize_export_flush_elapsed.as_millis() as u64,
+            host_finalize_cleanup_ms: host_finalize_cleanup_elapsed.as_millis() as u64,
             graph_capture_ms: graph_capture_elapsed.as_millis() as u64,
             graph_replay_count,
         },
@@ -15503,7 +15646,8 @@ mod tests {
         kernel_async_alloc_enabled, kernel_effective_pair_bars, kernel_extra_shortlist_objectives,
         kernel_pinned_d2h_enabled, kernel_pinned_h2d_enabled, kernel_score_first_topk_enabled,
         kernel_shortlist_confidence_mode, kernel_shortlist_slice_benchmark,
-        kernel_shortlist_slice_mode, kernel_shortlist_union_mode, kernel_should_use_lockstep_time,
+        kernel_shortlist_slice_diagnostic_row_limit, kernel_shortlist_slice_mode,
+        kernel_shortlist_union_mode, kernel_should_use_lockstep_time,
         kernel_should_use_m7_specialize, kernel_strategy_params,
         max_drawdown_constraint_to_search_space, rerank_shortlist_by_confidence,
         rerank_shortlist_by_union_mode, score_first_topk_blockers,
@@ -15515,7 +15659,6 @@ mod tests {
         ShortlistConfidenceMode, ShortlistSliceMode, METRICS_COUNT, PRODUCT_REDUCED_METRICS_COUNT,
         STRAT_SIGNED_EXPOSURE, TRADE_METRICS_COUNT,
     };
-    use crate::validation_shared::SpaBenchmarkKind;
     use crate::double_ma::{
         effective_sample_lcb_10_score, objective_score, DoubleMaConstraints,
         DoubleMaMetricContract, DoubleMaScoreMode, DoubleMaShortlistConfidenceMode,
@@ -15529,6 +15672,7 @@ mod tests {
         reset_gpu_strategy_executable_cache, StrategyCapabilityReport, StrategyHandle,
     };
     use crate::strategy_plan::StrategyPlanBackend;
+    use crate::validation_shared::SpaBenchmarkKind;
     use ta_optimizer::ObjectiveKind;
     use ta_strategies::double_ma::Metrics;
     use ta_strategies::double_ma::{DoubleMaParams, StrategyConfig};
@@ -15633,73 +15777,74 @@ mod tests {
         let current = make_trending_candles(512);
         let next = make_oscillating_candles(512);
 
-        super::CUDA_KERNEL_RUNTIME.with(|cell| -> Result<(), String> {
-            let mut map = cell.borrow_mut();
-            map.clear();
-            map.insert(0, super::CudaKernelRuntime::new(0)?);
-            let rt = map.get_mut(&0).expect("runtime inserted");
-            rt.set_current()?;
+        super::CUDA_KERNEL_RUNTIME
+            .with(|cell| -> Result<(), String> {
+                let mut map = cell.borrow_mut();
+                map.clear();
+                map.insert(0, super::CudaKernelRuntime::new(0)?);
+                let rt = map.get_mut(&0).expect("runtime inserted");
+                rt.set_current()?;
 
-            let current_close = source_type(&current, "close");
-            super::ensure_resident_market_series(
-                &rt.stream,
-                &mut rt.resident_market,
-                &current,
-                current_close,
-                "close",
-                None,
-                false,
-                false,
-                None,
-                None,
-                false,
-                None,
-            )?;
+                let current_close = source_type(&current, "close");
+                super::ensure_resident_market_series(
+                    &rt.stream,
+                    &mut rt.resident_market,
+                    &current,
+                    current_close,
+                    "close",
+                    None,
+                    false,
+                    false,
+                    None,
+                    None,
+                    false,
+                    None,
+                )?;
 
-            let next_close = source_type(&next, "close");
-            let stage_outcome = super::stage_resident_market_series_for_next_dataset(
-                &rt.resident_market,
-                &rt.staging_stream,
-                &mut rt.staged_market,
-                &next,
-                next_close,
-                "close",
-                None,
-                false,
-                false,
-                None,
-                None,
-                false,
-                None,
-            )?;
-            assert!(matches!(
-                stage_outcome,
-                super::CampaignVramPrefetchOutcome::Staged
-                    | super::CampaignVramPrefetchOutcome::AlreadyResident
-            ));
+                let next_close = source_type(&next, "close");
+                let stage_outcome = super::stage_resident_market_series_for_next_dataset(
+                    &rt.resident_market,
+                    &rt.staging_stream,
+                    &mut rt.staged_market,
+                    &next,
+                    next_close,
+                    "close",
+                    None,
+                    false,
+                    false,
+                    None,
+                    None,
+                    false,
+                    None,
+                )?;
+                assert!(matches!(
+                    stage_outcome,
+                    super::CampaignVramPrefetchOutcome::Staged
+                        | super::CampaignVramPrefetchOutcome::AlreadyResident
+                ));
 
-            let next_sig = super::candle_dataset_signature(&next);
-            assert_eq!(
-                rt.staged_market.as_ref().map(|cache| cache.signature),
-                Some(next_sig)
-            );
+                let next_sig = super::candle_dataset_signature(&next);
+                assert_eq!(
+                    rt.staged_market.as_ref().map(|cache| cache.signature),
+                    Some(next_sig)
+                );
 
-            let promoted = super::promote_matching_staged_market_series(
-                &rt.stream,
-                &rt.staging_stream,
-                &mut rt.resident_market,
-                &mut rt.staged_market,
-                next_sig,
-            )?;
-            assert!(promoted);
-            assert_eq!(
-                rt.resident_market.as_ref().map(|cache| cache.signature),
-                Some(next_sig)
-            );
-            assert!(rt.staged_market.is_none());
-            Ok(())
-        })
-        .unwrap();
+                let promoted = super::promote_matching_staged_market_series(
+                    &rt.stream,
+                    &rt.staging_stream,
+                    &mut rt.resident_market,
+                    &mut rt.staged_market,
+                    next_sig,
+                )?;
+                assert!(promoted);
+                assert_eq!(
+                    rt.resident_market.as_ref().map(|cache| cache.signature),
+                    Some(next_sig)
+                );
+                assert!(rt.staged_market.is_none());
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
@@ -16125,6 +16270,24 @@ mod tests {
         assert!(kernel_shortlist_slice_benchmark(None)
             .expect("unset slice benchmark")
             .is_none());
+    }
+
+    #[test]
+    fn shortlist_slice_diagnostic_row_limit_defaults_and_obeys_env_override() {
+        let prev = std::env::var("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS").ok();
+        std::env::remove_var("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS");
+        assert_eq!(kernel_shortlist_slice_diagnostic_row_limit(), 8);
+
+        std::env::set_var("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS", "3");
+        assert_eq!(kernel_shortlist_slice_diagnostic_row_limit(), 3);
+
+        std::env::set_var("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS", "not-a-number");
+        assert_eq!(kernel_shortlist_slice_diagnostic_row_limit(), 8);
+
+        match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_SHORTLIST_SLICE_DIAG_ROWS"),
+        }
     }
 
     fn make_union_row(

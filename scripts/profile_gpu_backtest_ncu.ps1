@@ -9,14 +9,20 @@ param(
   [int]$BenchWarmupTimeSec = 1,
   [ValidateSet("double_ma", "trend_quality", "regime_hybrid", "breakout_momentum")]
   [string]$RunnerStrategy = "breakout_momentum",
+  [string]$RunnerFastMa = "sma",
+  [string]$RunnerSlowMa = "sma",
   [ValidateSet("off", "on")]
   [string]$RunnerAdxMode = "off",
   [ValidateSet("small", "medium", "large", "xlarge")]
   [string]$RunnerWorkload = "xlarge",
   [ValidateSet("auto", "full17", "trade22")]
   [string]$RunnerMetricContract = "auto",
+  [ValidateSet("none", "halves", "quartiles")]
+  [string]$RunnerShortlistSliceMode = "none",
   [ValidateSet("inherit", "off", "on")]
   [string]$RunnerIncludeTradeMetrics = "inherit",
+  [ValidateSet("auto", "synth", "trending", "choppy", "breakout")]
+  [string]$RunnerCandleShape = "auto",
   [int]$RunnerIterations = 1,
   [int]$RunnerWarmupIterations = 0,
   [int]$RunnerHeatmapBins = 64,
@@ -151,8 +157,11 @@ try {
     $requestedNcuArgs += @(
       $targetExe.FullName,
       "--strategy", $RunnerStrategy,
+      "--fast-ma", $RunnerFastMa,
+      "--slow-ma", $RunnerSlowMa,
       "--adx-mode", $RunnerAdxMode,
       "--workload", $RunnerWorkload,
+      "--candle-shape", $RunnerCandleShape,
       "--iterations", "$RunnerIterations",
       "--warmup-iterations", "$RunnerWarmupIterations",
       "--heatmap-bins", "$RunnerHeatmapBins",
@@ -162,6 +171,9 @@ try {
     )
     if ($RunnerMetricContract -ne "auto") {
       $requestedNcuArgs += @("--metric-contract", $RunnerMetricContract)
+    }
+    if ($RunnerShortlistSliceMode -ne "none") {
+      $requestedNcuArgs += @("--shortlist-slice-mode", $RunnerShortlistSliceMode)
     }
     if ($RunnerIncludeTradeMetrics -ne "inherit") {
       $requestedNcuArgs += @("--include-trade-metrics", $RunnerIncludeTradeMetrics)
@@ -203,8 +215,12 @@ $provenance = [ordered]@{
   runner = if ($Target -eq "runner") {
     [ordered]@{
       strategy = $RunnerStrategy
+      fast_ma = $RunnerFastMa
+      slow_ma = $RunnerSlowMa
       adx_mode = $RunnerAdxMode
       workload = $RunnerWorkload
+      candle_shape = $RunnerCandleShape
+      shortlist_slice_mode = $RunnerShortlistSliceMode
       iterations = $RunnerIterations
       warmup_iterations = $RunnerWarmupIterations
       heatmap_bins = $RunnerHeatmapBins

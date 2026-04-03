@@ -16,7 +16,6 @@ use ta_strategies::double_ma::{
 };
 
 use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, alloc_uninit_f32, alloc_uninit_f64};
-use crate::validation_shared::SpaBenchmarkKind;
 use crate::double_ma_backend::{
     backend_kind_label, build_indicator_route_plan_summary, gpu_kernel_blockers_for_request,
     hybrid_backend_enabled, should_cpu_stage_indicator,
@@ -39,6 +38,7 @@ use crate::progress::ProgressSink;
 use crate::request_normalization::{
     normalize_heatmap_bins, normalize_optional_path, normalize_topk_include_all,
 };
+use crate::validation_shared::SpaBenchmarkKind;
 
 static DYNAMIC_GPU_PREFLIGHT_CACHE: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
 static FOLLOWUP_CACHE: OnceLock<Mutex<HashMap<String, FollowupCacheEntry>>> = OnceLock::new();
@@ -689,6 +689,20 @@ pub struct GpuKernelTimingMs {
     pub explicit_sync_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_finalize_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_agg_finalize_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_finalist_recompute_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_union_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_confidence_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_shortlist_slice_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_export_flush_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_finalize_cleanup_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph_capture_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2130,6 +2144,34 @@ fn merge_gpu_kernel_timing(
         merge_optional_u64(&mut cur.host_decode_ms, inc.host_decode_ms);
         merge_optional_u64(&mut cur.explicit_sync_ms, inc.explicit_sync_ms);
         merge_optional_u64(&mut cur.host_finalize_ms, inc.host_finalize_ms);
+        merge_optional_u64(
+            &mut cur.host_finalize_agg_finalize_ms,
+            inc.host_finalize_agg_finalize_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_finalist_recompute_ms,
+            inc.host_finalize_finalist_recompute_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_union_ms,
+            inc.host_finalize_shortlist_union_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_confidence_ms,
+            inc.host_finalize_shortlist_confidence_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_shortlist_slice_ms,
+            inc.host_finalize_shortlist_slice_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_export_flush_ms,
+            inc.host_finalize_export_flush_ms,
+        );
+        merge_optional_u64(
+            &mut cur.host_finalize_cleanup_ms,
+            inc.host_finalize_cleanup_ms,
+        );
         merge_optional_u64(&mut cur.graph_capture_ms, inc.graph_capture_ms);
         merge_optional_u64(&mut cur.graph_replay_count, inc.graph_replay_count);
     } else {
@@ -2151,6 +2193,15 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             host_decode_ms: Some(timing.host_decode_ms),
             explicit_sync_ms: Some(timing.explicit_sync_ms),
             host_finalize_ms: Some(timing.host_finalize_ms),
+            host_finalize_agg_finalize_ms: Some(timing.host_finalize_agg_finalize_ms),
+            host_finalize_finalist_recompute_ms: Some(timing.host_finalize_finalist_recompute_ms),
+            host_finalize_shortlist_union_ms: Some(timing.host_finalize_shortlist_union_ms),
+            host_finalize_shortlist_confidence_ms: Some(
+                timing.host_finalize_shortlist_confidence_ms,
+            ),
+            host_finalize_shortlist_slice_ms: Some(timing.host_finalize_shortlist_slice_ms),
+            host_finalize_export_flush_ms: Some(timing.host_finalize_export_flush_ms),
+            host_finalize_cleanup_ms: Some(timing.host_finalize_cleanup_ms),
             graph_capture_ms: Some(timing.graph_capture_ms),
             graph_replay_count: Some(timing.graph_replay_count),
         }
@@ -2166,6 +2217,13 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
             host_decode_ms: None,
             explicit_sync_ms: None,
             host_finalize_ms: None,
+            host_finalize_agg_finalize_ms: None,
+            host_finalize_finalist_recompute_ms: None,
+            host_finalize_shortlist_union_ms: None,
+            host_finalize_shortlist_confidence_ms: None,
+            host_finalize_shortlist_slice_ms: None,
+            host_finalize_export_flush_ms: None,
+            host_finalize_cleanup_ms: None,
             graph_capture_ms: None,
             graph_replay_count: None,
         }
@@ -2185,6 +2243,13 @@ fn build_gpu_kernel_timing(route_wall_ms: u64) -> GpuKernelTimingMs {
         host_decode_ms: None,
         explicit_sync_ms: None,
         host_finalize_ms: None,
+        host_finalize_agg_finalize_ms: None,
+        host_finalize_finalist_recompute_ms: None,
+        host_finalize_shortlist_union_ms: None,
+        host_finalize_shortlist_confidence_ms: None,
+        host_finalize_shortlist_slice_ms: None,
+        host_finalize_export_flush_ms: None,
+        host_finalize_cleanup_ms: None,
         graph_capture_ms: None,
         graph_replay_count: None,
     }

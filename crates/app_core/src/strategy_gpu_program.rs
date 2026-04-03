@@ -565,13 +565,13 @@ mod tests {
             .clone();
         let mut overrides = std::collections::HashMap::new();
         overrides.insert(first_indicator, IndicatorRouteKind::Cpu);
-        let overridden_plan = compile_strategy_plan(
-            &ir,
-            StrategyPlanBackend::GpuUnified,
-            Some(&overrides),
-        )
-        .expect("overridden plan");
-        assert_eq!(base_plan.ir_fingerprint_hex, overridden_plan.ir_fingerprint_hex);
+        let overridden_plan =
+            compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, Some(&overrides))
+                .expect("overridden plan");
+        assert_eq!(
+            base_plan.ir_fingerprint_hex,
+            overridden_plan.ir_fingerprint_hex
+        );
 
         let base_program =
             compile_gpu_predicate_program(&base_plan).expect("base gpu program should compile");

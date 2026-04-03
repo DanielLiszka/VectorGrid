@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::validation_shared::{PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional};
 use crate::iterative_sim::{IterativeSimConfig, ValidationEngine};
+use crate::validation_shared::{PerturbConfig, TradeBootstrapConfig, WalkForwardConfigOptional};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MetaScoreWeights {

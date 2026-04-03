@@ -1,9 +1,3 @@
-use crate::validation_shared::{
-    canonical_json_key, CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary,
-    PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
-    SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfigOptional, WalkForwardStats,
-};
 use crate::cscv_pbo::{CscvCandidatePboStats, CscvPboConfig, CscvPboResult, SliceReturnStats};
 use crate::double_ma::{
     compute_combined_regime_filter, compute_log_returns_f64, exact_fee_stress_pnl,
@@ -16,6 +10,12 @@ use crate::progress::ProgressSink;
 use crate::validation_pipeline::{
     build_run_verdict, sanitize_hard_gates, ValidationCandidateVerdict, ValidationPostCandidate,
     ValidationRunVerdict,
+};
+use crate::validation_shared::{
+    canonical_json_key, CrossTickerConfig, CrossTickerStats, CrossTickerValidationSummary,
+    PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
+    SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
+    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfigOptional, WalkForwardStats,
 };
 
 use rand::rngs::StdRng;

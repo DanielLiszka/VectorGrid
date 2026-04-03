@@ -62,12 +62,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validation_shared::WalkForwardStats;
     use crate::cscv_pbo::CscvCandidatePboStats;
     use crate::progress::{DoubleMaProgressPayload, ProgressSink};
     use crate::validation_pipeline::{
         ValidationCandidateVerdict, ValidationHardGateConfig, ValidationPostCandidate,
     };
+    use crate::validation_shared::WalkForwardStats;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;

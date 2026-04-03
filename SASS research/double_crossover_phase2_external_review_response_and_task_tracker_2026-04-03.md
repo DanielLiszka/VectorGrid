@@ -99,39 +99,110 @@ Adopt the following policy for the next loop:
 
 ### Stage A: Complete Missing `xlarge` Attribution
 
-- [ ] Re-run whole-process Nsight Systems on `double_ma`, `alma/alma`, `xlarge`, `shortlist_slice_mode=halves`, `metric_contract=full17`.
-- [ ] Re-run whole-process Nsight Systems on `double_ma`, `alma/alma`, `xlarge`, `shortlist_slice_mode=halves`, `metric_contract=trade22`.
-- [ ] Run Nsight Compute on the shortlist-heavy `xlarge/full17` surface with a hot-backtest regex targeting `^double_cross_backtest_tm_flex_f32`.
-- [ ] Run Nsight Compute on the shortlist-heavy `xlarge/trade22` surface with a hot-backtest regex targeting `^double_cross_backtest_tm_flex_f32`.
-- [ ] Run Nsight Compute on the shortlist-heavy `xlarge/full17` surface with the reducer and row-select regex set covering `score_metric_rows_f32`, `select_topk_metric_rows_f32`, `select_topk_metric_rows_f32_v2`, `gather_topk_metric_rows_f32`, `gather_topk_pairs_tm_f32`, `select_topk_scored_candidates_tm_f32`, `gather_topk_scored_scalar_pairs_tm_f32`, and `pack_metric_rows_f32`.
-- [ ] Run the same reducer and row-select Nsight Compute capture on shortlist-heavy `xlarge/trade22`.
-- [ ] Refresh built-in pipeline and dispatch logs on both shortlist-heavy `xlarge` truth surfaces with `VECTORBT_KERNEL_PROFILE_PIPELINE=1` and `VECTORBT_KERNEL_LOG_DISPATCH=1`.
-- [ ] Record route diagnostics for both shortlist-heavy `xlarge` truth surfaces, including `gpu_kernel.path`, `metrics_count`, `tile_metrics_stride`, `decode_without_recompute`, `compact_valid_pair_output`, and score-first blockers.
-- [ ] Append the new artifact paths and provenance to the main Phase 2 plan.
-- [ ] Write a short surfaced-results note that compares `large` vs `xlarge` attribution rather than leaving the `xlarge` profiler outputs implicit.
+- [x] Re-run whole-process Nsight Systems on `double_ma`, `alma/alma`, `xlarge`, `shortlist_slice_mode=halves`, `metric_contract=full17`.
+- [x] Re-run whole-process Nsight Systems on `double_ma`, `alma/alma`, `xlarge`, `shortlist_slice_mode=halves`, `metric_contract=trade22`.
+- [x] Run Nsight Compute on the shortlist-heavy `xlarge/full17` surface with a hot-backtest regex targeting `^double_cross_backtest_tm_flex_f32`.
+- [x] Run Nsight Compute on the shortlist-heavy `xlarge/trade22` surface with a hot-backtest regex targeting `^double_cross_backtest_tm_flex_f32`.
+- [x] Run Nsight Compute on the shortlist-heavy `xlarge/full17` surface with the reducer and row-select regex set covering `score_metric_rows_f32`, `select_topk_metric_rows_f32`, `select_topk_metric_rows_f32_v2`, `gather_topk_metric_rows_f32`, `gather_topk_pairs_tm_f32`, `select_topk_scored_candidates_tm_f32`, `gather_topk_scored_scalar_pairs_tm_f32`, and `pack_metric_rows_f32`.
+- [x] Run the same reducer and row-select Nsight Compute capture on shortlist-heavy `xlarge/trade22`.
+- [x] Refresh built-in pipeline and dispatch logs on both shortlist-heavy `xlarge` truth surfaces with `VECTORBT_KERNEL_PROFILE_PIPELINE=1` and `VECTORBT_KERNEL_LOG_DISPATCH=1`.
+- [x] Record route diagnostics for both shortlist-heavy `xlarge` truth surfaces, including `gpu_kernel.path`, `metrics_count`, `tile_metrics_stride`, `decode_without_recompute`, `compact_valid_pair_output`, and score-first blockers.
+- [x] Append the new artifact paths and provenance to the main Phase 2 plan.
+- [x] Write a short surfaced-results note that compares `large` vs `xlarge` attribution rather than leaving the `xlarge` profiler outputs implicit.
 
 ### Stage B: Decision Gate After `xlarge` Attribution
 
-- [ ] Decide whether shortlist-heavy `xlarge` is still overwhelmingly dominated by the same lockstep backtest families seen on `large`.
-- [ ] Decide whether any reducer, selector, pack, rerank, or replay-adjacent kernels are materially large in absolute time on shortlist-heavy `xlarge`.
-- [ ] Decide whether the new `xlarge` hot kernels show the same primary signature as the current `large` NCU bundle: long scoreboard pressure, weak bytes-per-sector, and no spill story.
-- [ ] Decide whether distribution-aware specialization should stay deferred or move into a bounded follow-up experiment lane.
-- [ ] Record the branch decision in the tracker using exactly one of these labels:
+- [x] Decide whether shortlist-heavy `xlarge` is still overwhelmingly dominated by the same lockstep backtest families seen on `large`.
+- [x] Decide whether any reducer, selector, pack, rerank, or replay-adjacent kernels are materially large in absolute time on shortlist-heavy `xlarge`.
+- [x] Decide whether the new `xlarge` hot kernels show the same primary signature as the current `large` NCU bundle: long scoreboard pressure, weak bytes-per-sector, and no spill story.
+- [x] Decide whether distribution-aware specialization should stay deferred or move into a bounded follow-up experiment lane.
+- [x] Record the branch decision in the tracker using exactly one of these labels:
   - `bounded_lockstep_pass`
   - `compact_exact_search_stage`
   - `measurement_extension`
+
+### Stage B Result
+
+Recorded branch label: `bounded_lockstep_pass`
+
+Repo-grounded rationale:
+
+1. Whole-process Nsight Systems on shortlist-heavy `xlarge` keeps the lockstep backtest kernels as the largest absolute hotspot.
+2. The surfaced secondary `xlarge` GPU cost is the `windowed_m17` / `windowed_m22` shortlist-slice replay family, not the reducer/search-stage kernels.
+3. The reducer/search-stage kernels stay microseconds in whole-process Nsight Systems on the measured truth surfaces, so `compact_exact_search_stage` is not the first promoted branch from the current bundle.
+4. The `xlarge` route does have a real `final_finalize` / `host_finalize` slice, but current code shows that this includes shortlist-slice rerank and replay work. That should become the next architecture candidate only if the bounded lockstep pass stalls.
+
+Additional repo note:
+
+- The profiler wrapper scripts had to be corrected before the retained `xlarge` captures were trustworthy. The successful reruns now pass through `fast-ma`, `slow-ma`, `candle-shape`, and `shortlist-slice-mode`, so the stored artifacts match the intended `alma/alma`, `synth`, shortlist-heavy truth surfaces.
 
 ### Stage C: Conditional Implementation Lane 1
 
 Only start this lane if Stage B resolves to `bounded_lockstep_pass`.
 
-- [ ] Limit code changes to `crates/app_core/src/kernels/double_crossover.cu` around `store_metrics_row_fixed_f32` and `double_cross_backtest_tm_flex_f32_body`, plus any narrow wrapper or instrumentation support needed for the retained exact lockstep families.
-- [ ] Keep `crates/app_core/src/gpu_backtest_kernel.rs` changes measurement-oriented unless the retained body pass requires a narrow route or payload adjustment.
-- [ ] Avoid reopening score-first, reducer, or broad orchestration work inside this lane.
-- [ ] After implementation, refresh direct-runner baselines on the four truth surfaces.
-- [ ] After implementation, run `scripts/run_gpu_perf_gate.ps1 -Mode candidate`.
-- [ ] After implementation, run `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate` as supporting evidence.
-- [ ] After implementation, perform a narrow SASS refresh only for the touched hot kernels.
+- [x] Limit code changes to `crates/app_core/src/kernels/double_crossover.cu` around `store_metrics_row_fixed_f32` and `double_cross_backtest_tm_flex_f32_body`, plus any narrow wrapper or instrumentation support needed for the retained exact lockstep families.
+- [x] Keep `crates/app_core/src/gpu_backtest_kernel.rs` changes measurement-oriented unless the retained body pass requires a narrow route or payload adjustment.
+- [x] Avoid reopening score-first, reducer, or broad orchestration work inside this lane.
+- [x] After implementation, refresh direct-runner baselines on the four truth surfaces.
+- [x] After implementation, run `scripts/run_gpu_perf_gate.ps1 -Mode candidate`.
+- [x] After implementation, run `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate` as supporting evidence.
+- [x] After implementation, perform a narrow SASS refresh only for the touched hot kernels.
+
+### Stage C Result
+
+Retained change:
+
+1. Kept a bounded lockstep-body source change in `crates/app_core/src/kernels/double_crossover.cu`:
+   - add `ld_tm_row_base(...)`
+   - hoist `fast_row_base` / `slow_row_base`
+   - use that row-base load path only on the retained `LOCKSTEP_TIME` exact-body branch
+2. No route-policy, reducer, score-first, or `gpu_backtest_kernel.rs` behavior change was required.
+
+Same-tree direct-runner evidence:
+
+1. Initial four-surface A/B against a reverted same-tree build:
+   - `large/full17`: `69.33 ms` patched vs `71.67 ms` reverted
+   - shortlist-heavy `xlarge/full17`: `381.33 ms` patched vs `409.00 ms` reverted
+   - `large/trade22`: first 3-iteration pass was noisy and inconclusive
+   - shortlist-heavy `xlarge/trade22`: `409.00 ms` patched vs `414.00 ms` reverted on the first pass
+2. Targeted 7-iteration recheck on the ambiguous `trade22` surfaces:
+   - `large/trade22`: `70.00 ms` patched vs `71.86 ms` reverted
+   - shortlist-heavy `xlarge/trade22`: `390.29 ms` patched vs `387.29 ms` reverted
+3. Repo interpretation:
+   - `full17` improvement is clear
+   - `trade22` is mixed on shortlist-heavy `xlarge`, but the swing is small enough that it did not justify dropping the change before an authoritative gate run
+
+Authoritative gate evidence:
+
+1. `scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed and wrote `target/gpu_perf_summary.json`.
+2. `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate` passed and wrote `target/gpu_alma_contract_rows_perf_summary.json`.
+3. The specialized ALMA contract-row gate stayed green on:
+   - `auto`
+   - `full17`
+   - `trade22`
+
+Post-change static refresh:
+
+1. Narrow cuobjdump refresh captured the touched hot kernels into:
+   - `SASS research/double_crossover_sm89_cuobjdump_stagec_lockstep_rowbase_2026-04-03.sass.txt`
+   - `SASS research/double_crossover_sm89_cuobjdump_stagec_lockstep_rowbase_symbols_2026-04-03.txt`
+2. This refresh was intentionally narrow and limited to:
+   - `double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm`
+   - `double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm`
+
+Decision:
+
+1. Keep the bounded lockstep row-base change.
+2. Treat Stage C as complete for this branch.
+3. If another product-facing pass is needed after this retained change, the next candidate should be shortlist-slice replay and diagnostics efficiency rather than a reducer-first or broad SASS reopening.
+
+Planned next branch:
+
+1. The next repo-owned follow-on is now documented in `SASS research/double_crossover_sass_phase2_runtime_profiling_and_optimization_plan_2026-04-03.md`.
+2. That follow-on is:
+   - instrument shortlist-slice `final_finalize`
+   - separate replay, rerank, and diagnostics costs in `crates/app_core/src/gpu_backtest_kernel.rs`
+   - then choose one narrow shortlist-slice intervention before reopening `compact_exact_search_stage`
 
 ### Stage D: Conditional Implementation Lane 2
 
@@ -205,6 +276,13 @@ When the next loop is run, record all of the following in the repo:
 - Adopted the external review's main prioritization points for the retained `large` exact route.
 - Kept the external review's stronger shortlist-heavy `xlarge` claims provisional pending surfaced whole-process and kernel-level attribution.
 - Set the next blocking work to completion of the missing shortlist-heavy `xlarge` profiling bundle and an explicit Stage B branch decision.
+- Completed the missing shortlist-heavy `xlarge` Nsight Systems, Nsight Compute, and built-in pipeline passes on the intended `alma/alma`, `synth`, `shortlist_slice_mode=halves` truth surfaces.
+- Recorded Stage B as `bounded_lockstep_pass`.
+- Kept shortlist-slice replay and diagnostics efficiency as the next architecture follow-on if the bounded lockstep pass stalls, instead of promoting reducer-first work.
+- Retained a bounded lockstep-body row-base addressing change in `crates/app_core/src/kernels/double_crossover.cu` after same-tree direct-runner A/B and authoritative GPU perf-gate validation.
+- Added the narrow post-change cuobjdump refresh for the touched `lockstep_time_m17` / `lockstep_time_m22` hot symbols.
+- Added `SASS research/double_crossover_phase2_stagec_bounded_lockstep_pass_log_2026-04-03.md` to record the exact Stage C commands and saved artifacts.
+- Moved the next planned work into the main Phase 2 plan as a shortlist-slice replay / diagnostics follow-on instead of reopening Stage D or Stage E here.
 
 ## Exit Condition For This Tracker
 
@@ -214,3 +292,9 @@ This tracker is complete when one of the following has happened:
 2. the new `xlarge` evidence proves that another measurement extension is required and that extension is explicitly scoped.
 
 At that point, push the resulting branch decision back into `SASS research/double_crossover_sass_phase2_runtime_profiling_and_optimization_plan_2026-04-03.md` and continue from there rather than creating another parallel plan document.
+
+Current state:
+
+- This exit condition is now satisfied.
+- Further execution should continue in `SASS research/double_crossover_sass_phase2_runtime_profiling_and_optimization_plan_2026-04-03.md` under the `bounded_lockstep_pass` branch.
+- The immediate next planned branch there is the shortlist-slice replay / diagnostics measurement-and-intervention loop.

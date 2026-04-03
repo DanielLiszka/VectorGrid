@@ -93,11 +93,10 @@ pub use double_ma::{
     compute_double_ma_drilldown_blocking_with_candles,
     compute_double_ma_local_stability_blocking_with_candles, reset_dynamic_gpu_preflight_cache,
     run_double_ma_optimization_blocking_with_candles,
-    run_double_ma_optimization_blocking_with_candles_and_eval_range, Backend,
-    BackendOptimizationResult, BackendUsed, DoubleMaCampaignVramPrefetchOutcome,
-    DoubleMaDrilldownRequest, DoubleMaLocalStabilityRequest, DoubleMaParamsResolved,
-    DoubleMaRequest, LocalStabilityResult, OptimizationModeResolved,
-    stage_double_ma_campaign_vram_prefetch,
+    run_double_ma_optimization_blocking_with_candles_and_eval_range,
+    stage_double_ma_campaign_vram_prefetch, Backend, BackendOptimizationResult, BackendUsed,
+    DoubleMaCampaignVramPrefetchOutcome, DoubleMaDrilldownRequest, DoubleMaLocalStabilityRequest,
+    DoubleMaParamsResolved, DoubleMaRequest, LocalStabilityResult, OptimizationModeResolved,
 };
 
 pub use composite_cpu::{

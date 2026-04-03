@@ -92,7 +92,9 @@ struct CompiledGpuPredicateBundleCacheKey {
 impl CompiledGpuPredicateBundleCacheKey {
     fn for_plan(plan: &CompiledStrategyPlan) -> Result<Self, String> {
         Ok(Self {
-            compiled_plan_fingerprint_hex: fingerprint_compiled_strategy_plan_for_gpu_program(plan)?,
+            compiled_plan_fingerprint_hex: fingerprint_compiled_strategy_plan_for_gpu_program(
+                plan,
+            )?,
             program_schema_version: STRATEGY_GPU_PROGRAM_SCHEMA_VERSION,
             abi_version: STRATEGY_GPU_EXECUTABLE_ABI_VERSION,
         })
@@ -249,13 +251,13 @@ pub fn gpu_strategy_executable_cache_stats() -> StrategyExecutableCacheStats {
         .and_then(|cache| cache.lock().ok().map(|guard| guard.len()))
         .unwrap_or(0);
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-    let uploaded_thread_entries = GPU_STRATEGY_EXECUTABLE_UPLOAD_CACHE.with(|cell| cell.borrow().len());
+    let uploaded_thread_entries =
+        GPU_STRATEGY_EXECUTABLE_UPLOAD_CACHE.with(|cell| cell.borrow().len());
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let uploaded_thread_entries = 0usize;
     StrategyExecutableCacheStats {
         compiled_bundle_hits: GPU_STRATEGY_COMPILED_BUNDLE_CACHE_HITS.load(Ordering::Relaxed),
-        compiled_bundle_misses: GPU_STRATEGY_COMPILED_BUNDLE_CACHE_MISSES
-            .load(Ordering::Relaxed),
+        compiled_bundle_misses: GPU_STRATEGY_COMPILED_BUNDLE_CACHE_MISSES.load(Ordering::Relaxed),
         compiled_bundle_entries,
         hits: GPU_STRATEGY_EXECUTABLE_CACHE_HITS.load(Ordering::Relaxed),
         misses: GPU_STRATEGY_EXECUTABLE_CACHE_MISSES.load(Ordering::Relaxed),
@@ -460,14 +462,18 @@ mod tests {
         )
         .expect("compile dynamic plan");
 
-        let first = StrategyHandle::from_plan(plan.clone(), StrategyCapabilityReport::gpu_dynamic_ready())
-            .expect("first handle");
+        let first =
+            StrategyHandle::from_plan(plan.clone(), StrategyCapabilityReport::gpu_dynamic_ready())
+                .expect("first handle");
         let second = StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
             .expect("second handle");
         let stats = gpu_strategy_executable_cache_stats();
 
         assert_eq!(
-            first.gpu_program_abi.as_ref().map(|abi| abi.executable_fingerprint_hex.as_str()),
+            first
+                .gpu_program_abi
+                .as_ref()
+                .map(|abi| abi.executable_fingerprint_hex.as_str()),
             second
                 .gpu_program_abi
                 .as_ref()

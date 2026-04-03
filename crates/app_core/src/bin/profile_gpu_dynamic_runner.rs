@@ -3,12 +3,12 @@ use std::time::Instant;
 
 use serde::Serialize;
 use serde_json::json;
-use ta_app_core::SpaBenchmarkKind;
 use ta_app_core::double_ma::{DoubleMaMetricContract, DoubleMaShortlistSliceMode};
 use ta_app_core::strategy_presets::{
     breakout_strategy_for_kernel, regime_hybrid_strategy_for_kernel,
     trend_quality_strategy_for_kernel,
 };
+use ta_app_core::SpaBenchmarkKind;
 use ta_app_core::{
     run_double_ma_optimization_blocking_with_candles_and_eval_range, Backend, BackendUsed,
     DoubleMaRequest, StrategyExecutableCacheStats,
@@ -1024,7 +1024,7 @@ fn main() {
         );
         if let Some(timing) = res.gpu_kernel_timing_ms.as_ref() {
             println!(
-                "gpu_kernel_timing_ms=route_wall:{} runtime_init:{} set_current:{} gpu_indicator_prep:{} h2d_upload:{} launch_submit_us:{} d2h_copy:{} host_decode:{} explicit_sync:{} host_finalize:{} graph_capture:{} graph_replay_count:{}",
+                "gpu_kernel_timing_ms=route_wall:{} runtime_init:{} set_current:{} gpu_indicator_prep:{} h2d_upload:{} launch_submit_us:{} d2h_copy:{} host_decode:{} explicit_sync:{} host_finalize:{} host_finalize_agg_finalize:{} host_finalize_finalist_recompute:{} host_finalize_shortlist_union:{} host_finalize_shortlist_confidence:{} host_finalize_shortlist_slice:{} host_finalize_export_flush:{} host_finalize_cleanup:{} graph_capture:{} graph_replay_count:{}",
                 timing.route_wall_ms,
                 format_optional_ms(timing.runtime_init_ms),
                 format_optional_ms(timing.set_current_ms),
@@ -1037,6 +1037,13 @@ fn main() {
                 format_optional_ms(timing.host_decode_ms),
                 format_optional_ms(timing.explicit_sync_ms),
                 format_optional_ms(timing.host_finalize_ms),
+                format_optional_ms(timing.host_finalize_agg_finalize_ms),
+                format_optional_ms(timing.host_finalize_finalist_recompute_ms),
+                format_optional_ms(timing.host_finalize_shortlist_union_ms),
+                format_optional_ms(timing.host_finalize_shortlist_confidence_ms),
+                format_optional_ms(timing.host_finalize_shortlist_slice_ms),
+                format_optional_ms(timing.host_finalize_export_flush_ms),
+                format_optional_ms(timing.host_finalize_cleanup_ms),
                 format_optional_ms(timing.graph_capture_ms),
                 timing.graph_replay_count.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
             );

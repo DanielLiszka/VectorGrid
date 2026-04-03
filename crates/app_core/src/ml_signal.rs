@@ -1,5 +1,4 @@
 use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, resize_uninit_i32};
-use crate::validation_shared::ValidationArtifactContext;
 use crate::double_ma::BackendUsed;
 use crate::dynamic_indicator_adapter::{compute_dynamic_indicator_cpu, DynamicIndicatorSeries};
 use crate::indicator_catalog::{IndicatorParamKV, IndicatorParamValue};
@@ -9,6 +8,7 @@ use crate::validation_pipeline::{
     robust_score_from_metrics, sanitize_hard_gates, ValidationCandidateVerdict,
     ValidationPostCandidate, ValidationRunVerdict,
 };
+use crate::validation_shared::ValidationArtifactContext;
 use csv::{ReaderBuilder, StringRecord, WriterBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

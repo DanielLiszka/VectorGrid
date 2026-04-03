@@ -172,17 +172,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ta_strategies::composite_cpu::CompositeSignalMode;
 use ta_strategies::double_ma::{Metrics, StrategyConfig, Trade};
 
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use crate::validation_shared::{canonical_json_eq, canonical_json_key_bytes};
+use crate::validation_shared::{canonical_json_key, ValidationAuxWorkMask};
 pub use crate::validation_shared::{
     CrossTickerConfig, CrossTickerDataset, CrossTickerDatasetMeta, CrossTickerGateConfig,
     CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
     ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfig,
-    WalkForwardConfigOptional, WalkForwardStats,
+    TradeBootstrapStats, ValidationArtifactContext, WalkForwardConfig, WalkForwardConfigOptional,
+    WalkForwardStats,
 };
-use crate::validation_shared::{canonical_json_key, ValidationAuxWorkMask};
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use crate::validation_shared::{canonical_json_eq, canonical_json_key_bytes};
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::composite_profile_route::composite_profile_from_strategy;
@@ -9582,12 +9582,14 @@ where
         | CompositeValidationFamily::Carm
         | CompositeValidationFamily::Cdmc => {
             let series = build_series()?;
-            Ok(Some(crate::validation_pipeline::compute_walk_forward_stats(
-                series_n(&series),
-                series_start_t(&series),
-                cfg,
-                |t0, end| eval_metrics_window(&series, t0, end),
-            )))
+            Ok(Some(
+                crate::validation_pipeline::compute_walk_forward_stats(
+                    series_n(&series),
+                    series_start_t(&series),
+                    cfg,
+                    |t0, end| eval_metrics_window(&series, t0, end),
+                ),
+            ))
         }
         _ => Ok(gpu_eval
             .walk_forward_stats
@@ -9709,14 +9711,16 @@ fn compute_composite_gpu_reopt_walk_forward_for_family(
                 #[cfg(feature = "cuda")]
                 prepared_cuda_inputs,
             )?;
-            Ok(crate::validation_pipeline::compute_reopt_walk_forward_stats(
-                &finalist_series,
-                candles.close.len(),
-                cfg,
-                |(_, series)| series_start_t(series),
-                |(_, series), t0, end| eval_metrics_window(series, t0, end),
-                |(key, _)| key.clone(),
-            ))
+            Ok(
+                crate::validation_pipeline::compute_reopt_walk_forward_stats(
+                    &finalist_series,
+                    candles.close.len(),
+                    cfg,
+                    |(_, series)| series_start_t(series),
+                    |(_, series), t0, end| eval_metrics_window(series, t0, end),
+                    |(key, _)| key.clone(),
+                ),
+            )
         }
     }
 }
@@ -14144,9 +14148,18 @@ mod tests {
         )
         .expect("validation run");
         assert_eq!(res.candidates.len(), 2);
-        assert!(res.candidates.iter().all(|cand| cand.walk_forward.is_some()));
-        assert!(res.candidates.iter().all(|cand| cand.regime_slice_robustness.is_none()));
-        assert!(res.candidates.iter().all(|cand| cand.friction_stress.is_none()));
+        assert!(res
+            .candidates
+            .iter()
+            .all(|cand| cand.walk_forward.is_some()));
+        assert!(res
+            .candidates
+            .iter()
+            .all(|cand| cand.regime_slice_robustness.is_none()));
+        assert!(res
+            .candidates
+            .iter()
+            .all(|cand| cand.friction_stress.is_none()));
     }
 
     #[test]

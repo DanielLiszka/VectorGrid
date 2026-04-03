@@ -1,8 +1,3 @@
-use crate::validation_shared::{
-    PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
-    ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
-};
 use crate::cscv_pbo::{
     compute_cscv_pbo_from_slices, CscvCandidatePboStats, CscvPboConfig, CscvPboResult,
     SliceReturnStats,
@@ -13,6 +8,11 @@ use crate::iterative_sim::{
 };
 use crate::progress::ProgressSink;
 use crate::stats_common::{median, median_u32, quantile, worst_max, worst_min, worst_min_u32};
+use crate::validation_shared::{
+    PerturbConfig, PerturbStats, ReoptWalkForwardConfigOptional, ReoptWalkForwardStats,
+    ReoptWalkForwardWindowStats, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
+    TradeBootstrapStats, WalkForwardConfigOptional, WalkForwardStats,
+};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
