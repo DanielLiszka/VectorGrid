@@ -448,7 +448,10 @@ How should the densest authoring and configuration surfaces be reorganized so th
 
 Required:
 
+- `Frontend Review/Prompt2/visual_system_depth_motion_direction_FINAL.md`
+- `Frontend Review/Prompt2/visual_system_depth_motion_implementation_tracking_2026-04-04.md`
 - `Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md`
+- `web/src/styles/app.css`
 - `web/src/components/StrategyWorkspacePanel.vue`
 - `web/src/components/AdvancedWorkspacePanel.vue`
 - `web/src/components/DataWorkspacePanel.vue`
@@ -467,6 +470,7 @@ Optional:
 - store-driven immediacy versus clearer validation and grouping
 - guidance versus clutter
 - safer defaults versus keeping advanced control nearby
+- structural form improvement versus relitigating the already-landed Prompt 2 visual system
 
 ### Optional Research Targets
 
@@ -488,6 +492,8 @@ Constraints:
 - Do not assume a broad form-library rewrite is the right first move.
 - Respect the repo's current conclusion that schema-driven migration is "later, not now" unless you can justify a narrower slice.
 - Favor progressive disclosure, grouping, summary chips, and safer interaction hierarchy over wizardizing everything.
+- Treat the Prompt 2 visual-system direction and implementation as current baseline. Do not reopen palette, tab grammar, shell chrome, or shared depth/motion decisions unless a form recommendation cannot work inside that baseline.
+- Reuse the shared Prompt 2 surface language already present in `app.css` before proposing panel-local visual systems, one-off card grammars, or new tab/disclosure styles.
 
 Deliverables:
 1. Summarize what the repo already concluded about form architecture.
@@ -495,9 +501,10 @@ Deliverables:
 3. Propose the best organization model for Strategy, Advanced, Data, and Validation.
 4. Explain what should stay always visible versus move behind disclosure, menus, or contextual summaries.
 5. Explain how to make the forms feel more interactive without slowing down expert operators.
-6. Point to code touch points by file and component.
-7. Give a phased implementation and regression plan.
-8. State the changes you would reject because they would hurt speed, discoverability, or capability coverage.
+6. Explain how each surface should reuse the Prompt 2 shared visual/disclosure patterns instead of inventing local styling systems.
+7. Point to code touch points by file and component.
+8. Give a phased implementation and regression plan.
+9. State the changes you would reject because they would hurt speed, discoverability, or capability coverage.
 
 Keep the answer grounded in these repo surfaces rather than giving generic form UX advice.
 ```
@@ -512,12 +519,13 @@ I want you to pressure-test the form-architecture recommendation you just made f
 Tasks:
 1. Identify where your first answer may slow down expert operators, hide capabilities too deeply, or assume more refactor budget than the repo should spend now.
 2. Identify any tensions between readability, speed, and backend-capability reachability.
-3. If targeted current web research would materially improve the answer, use it selectively to study:
+3. Identify anywhere your first answer accidentally re-litigates Prompt 2 visual-system decisions or invents panel-local styling that should stay shared.
+4. If targeted current web research would materially improve the answer, use it selectively to study:
    - dense expert-form patterns
    - progressive disclosure in professional tools
    - safety and scanability patterns in complex configuration UIs
-4. Refine the recommendation to a realistic next-step architecture, not an idealized greenfield form system.
-5. Decide what should be changed now, what should wait, and what should be rejected.
+5. Refine the recommendation to a realistic next-step architecture, not an idealized greenfield form system.
+6. Decide what should be changed now, what should wait, and what should be rejected.
 
 Deliverables:
 1. "Keep / revise / reject" verdict on the first-pass recommendation
@@ -527,8 +535,9 @@ Deliverables:
    - Advanced
    - Data
    - Validation
-4. Immediate wins versus later refactors
-5. Failure modes that would indicate the redesign is hurting power-user speed
+4. Shared Prompt 2 visual-system assumptions that must remain fixed
+5. Immediate wins versus later refactors
+6. Failure modes that would indicate the redesign is hurting power-user speed
 
 Keep the answer tied to the repo's existing panel and store model.
 ```
@@ -550,11 +559,12 @@ The document must contain:
    - Advanced
    - Validation
 4. Always-visible versus progressive-disclosure rules
-5. Capability-preservation rules
-6. Interaction-speed guardrails for expert users
-7. Implementation order by file/component/composable
-8. Regression and UX validation plan
-9. Explicit defers and rejects
+5. Shared Prompt 2 visual-system reuse assumptions
+6. Capability-preservation rules
+7. Interaction-speed guardrails for expert users
+8. Implementation order by file/component/composable
+9. Regression and UX validation plan
+10. Explicit defers and rejects
 
 Present one coherent near-term form direction, not a broad future-state rewrite.
 ```
