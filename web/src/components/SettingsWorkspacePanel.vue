@@ -1054,9 +1054,8 @@ onBeforeUnmount(() => {
   gap: 0.52rem;
   padding: 0.34rem 0.56rem;
   border: 1px solid color-mix(in oklab, var(--border) 84%, transparent);
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--surface-inline) 86%, var(--panel-footer));
-  box-shadow: var(--shadow-inline);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--surface-sunken) 92%, var(--panel-footer));
   color: var(--muted-strong);
 }
 
@@ -1093,9 +1092,9 @@ onBeforeUnmount(() => {
 }
 
 .pane {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: var(--panel-footer);
+  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel-footer));
   padding: 0.75rem 0.8rem;
 }
 
@@ -1173,9 +1172,9 @@ onBeforeUnmount(() => {
 }
 
 .diagnosticsCard {
-  border: 1px solid color-mix(in oklab, var(--border) 84%, var(--surface-working));
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--surface-inline) 76%, var(--panel-footer));
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel-footer));
   padding: 0.7rem;
   display: grid;
   gap: 0.45rem;
@@ -1190,6 +1189,8 @@ onBeforeUnmount(() => {
   align-items: baseline;
   justify-content: space-between;
   gap: 0.6rem;
+  padding-bottom: 0.42rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
 }
 
 .diagnosticsLabel {
@@ -1253,7 +1254,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.28rem;
   border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 0.08rem 0.38rem;
   background: color-mix(in oklab, var(--surface-sunken) 76%, var(--panel-footer));
 }
@@ -1298,6 +1299,10 @@ onBeforeUnmount(() => {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  border: 1px solid color-mix(in oklab, var(--border) 76%, transparent);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+  background: color-mix(in oklab, var(--surface-inline) 84%, var(--panel));
 }
 
 .mono {

@@ -1005,7 +1005,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="showValidationResults" class="pane">
+      <section v-if="showValidationResults" class="pane validationResultsPane">
         <div class="panelSectionHeader">
           <div class="panelHeadCopy">
             <div class="panelEyebrow">Results</div>
@@ -1015,52 +1015,56 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div class="gridFour compactMetaGrid">
-          <div>
-            <label>Route</label>
-            <div class="metaLine mono">{{ validationRouteSummary }}</div>
+        <div class="validationSummary surfaceSunken">
+          <div class="gridFour compactMetaGrid">
+            <div>
+              <label>Route</label>
+              <div class="metaLine mono">{{ validationRouteSummary }}</div>
+            </div>
+            <div>
+              <label>Route Detail</label>
+              <div class="metaLine mono">{{ validationRouteDetailSummary }}</div>
+            </div>
+            <div>
+              <label>Categories</label>
+              <div class="metaLine mono">{{ validationCategorySummary }}</div>
+            </div>
+            <div>
+              <label>Aux CPU</label>
+              <div class="metaLine mono">{{ validationAuxCpuSummary }}</div>
+            </div>
+            <div>
+              <label>Bootstrap</label>
+              <div class="metaLine mono">{{ validationBootstrapSummary }}</div>
+            </div>
+            <div>
+              <label>Regime</label>
+              <div class="metaLine mono">{{ validationRegimeSummary }}</div>
+            </div>
+            <div>
+              <label>Friction</label>
+              <div class="metaLine mono">{{ validationFrictionSummary }}</div>
+            </div>
+            <div>
+              <label>Cross</label>
+              <div class="metaLine mono">{{ validationCrossSummary }}</div>
+            </div>
+            <div>
+              <label>Skipped</label>
+              <div class="metaLine mono">{{ validationSkippedSummary }}</div>
+            </div>
+            <div>
+              <label>Top Warning</label>
+              <div class="metaLine mono">{{ validationWarningSummary }}</div>
+            </div>
           </div>
-          <div>
-            <label>Route Detail</label>
-            <div class="metaLine mono">{{ validationRouteDetailSummary }}</div>
-          </div>
-          <div>
-            <label>Categories</label>
-            <div class="metaLine mono">{{ validationCategorySummary }}</div>
-          </div>
-          <div>
-            <label>Aux CPU</label>
-            <div class="metaLine mono">{{ validationAuxCpuSummary }}</div>
-          </div>
-          <div>
-            <label>Bootstrap</label>
-            <div class="metaLine mono">{{ validationBootstrapSummary }}</div>
-          </div>
-          <div>
-            <label>Regime</label>
-            <div class="metaLine mono">{{ validationRegimeSummary }}</div>
-          </div>
-          <div>
-            <label>Friction</label>
-            <div class="metaLine mono">{{ validationFrictionSummary }}</div>
-          </div>
-          <div>
-            <label>Cross</label>
-            <div class="metaLine mono">{{ validationCrossSummary }}</div>
-          </div>
-          <div>
-            <label>Skipped</label>
-            <div class="metaLine mono">{{ validationSkippedSummary }}</div>
-          </div>
-          <div>
-            <label>Top Warning</label>
-            <div class="metaLine mono">{{ validationWarningSummary }}</div>
+          <div class="validationSummaryMeta">
+            <div class="metaLine mono" role="status" aria-live="polite">{{ validationMeta }}</div>
+            <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
+            <div class="metaLine mono">{{ validationShortlistMeta }}</div>
+            <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
           </div>
         </div>
-        <div class="metaLine mono" role="status" aria-live="polite">{{ validationMeta }}</div>
-        <div v-if="validationReoptMeta !== '-'" class="metaLine mono">{{ validationReoptMeta }}</div>
-        <div class="metaLine mono">{{ validationShortlistMeta }}</div>
-        <div class="metaLine mono">Table visible: {{ tableVisible ? 'yes' : 'no' }}</div>
         <details v-if="renderedColumns.length > 0" class="columnDetails">
           <summary class="columnDetailsSummary">
             <span>Visible columns</span>
@@ -1174,11 +1178,16 @@ onBeforeUnmount(() => {
 }
 
 .pane {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: var(--panel-footer);
+  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel-footer));
   padding: 0.75rem 0.8rem;
   min-width: 0;
+}
+
+.validationResultsPane {
+  display: grid;
+  gap: 0.55rem;
 }
 
 .gridFive {
@@ -1227,28 +1236,58 @@ onBeforeUnmount(() => {
 
 .metaLine {
   font-size: 0.78rem;
-  color: var(--muted);
+  color: var(--muted-strong);
+}
+
+.validationSummary {
+  margin-top: 0;
+  margin-bottom: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
+  padding: calc(var(--density-pane-y) - 0.08rem) calc(var(--density-pane-x) - 0.04rem);
+  display: grid;
+  gap: 0.55rem;
+}
+
+.validationSummaryMeta {
+  display: grid;
+  gap: 0.22rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
 }
 
 .compactMetaGrid {
-  margin-bottom: 0.35rem;
+  margin-bottom: 0;
 }
 
 .compactMetaGrid label {
   display: block;
   margin-bottom: 0.15rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
 }
 
 .tableWrap {
-  margin-top: 0.55rem;
+  margin-top: 0;
   overflow: auto;
+  border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
 }
 
 .columnDetails {
-  margin-top: 0.55rem;
-  border: 1px solid var(--border);
+  margin-top: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: var(--surface-sunken);
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
+}
+
+.columnDetails[open] {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 38%, var(--border));
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel-footer));
 }
 
 .columnDetailsSummary {
@@ -1261,6 +1300,7 @@ onBeforeUnmount(() => {
   padding: calc(var(--density-pane-y) - 0.12rem) calc(var(--density-pane-x) - 0.02rem);
   font-size: 0.78rem;
   font-weight: 600;
+  color: var(--muted-strong);
 }
 
 .columnDetailsSummary::-webkit-details-marker {
@@ -1268,7 +1308,7 @@ onBeforeUnmount(() => {
 }
 
 .columnDetailsBody {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
   padding: calc(var(--density-pane-y) - 0.05rem) calc(var(--density-pane-x) - 0.02rem);
   display: grid;
   gap: 0.65rem;
@@ -1326,6 +1366,13 @@ onBeforeUnmount(() => {
   vertical-align: top;
 }
 
+.validationTableVue th {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+}
+
 .validationTableVue th.left,
 .validationTableVue td.left {
   text-align: left;
@@ -1350,13 +1397,14 @@ onBeforeUnmount(() => {
   margin-top: 0.55rem;
   max-height: 260px;
   overflow: auto;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 10px;
   padding: 0.25rem;
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
 }
 
 .crossItem {
-  border: 1px solid transparent;
+  border: 1px solid color-mix(in oklab, var(--border) 68%, transparent);
   border-radius: 8px;
   padding: 0.42rem 0.5rem;
   display: flex;
@@ -1364,11 +1412,12 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 0.7rem;
   cursor: pointer;
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
 }
 
 .crossItem:hover {
-  border-color: var(--border);
-  background: color-mix(in oklab, var(--panel) 92%, var(--panel-footer));
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 34%, var(--border));
+  background: color-mix(in oklab, var(--surface-focus) 86%, var(--panel));
 }
 
 .crossItem.disabled {

@@ -557,6 +557,7 @@ function onKeydown(event: KeyboardEvent): void {
   z-index: 9998;
   border: 0;
   background: color-mix(in oklab, var(--backdrop) 88%, var(--bg));
+  backdrop-filter: blur(12px);
 }
 
 .cmdPaletteDialog {
@@ -570,10 +571,11 @@ function onKeydown(event: KeyboardEvent): void {
   border-radius: 14px;
   background: linear-gradient(
     145deg,
-    color-mix(in oklab, var(--surface-focus) 92%, var(--panel-footer)),
+    color-mix(in oklab, var(--surface-overlay) 94%, var(--panel-footer)),
     color-mix(in oklab, var(--panel-footer) 94%, var(--surface-working))
   );
   box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
   padding: 0.7rem;
   display: grid;
   gap: 0.6rem;
@@ -596,7 +598,7 @@ function onKeydown(event: KeyboardEvent): void {
 .closeBtn {
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: color-mix(in oklab, var(--surface-inline) 92%, var(--panel));
+  background: color-mix(in oklab, var(--surface-inline) 88%, var(--surface-overlay));
   padding: 0.15rem 0.4rem;
 }
 
@@ -632,7 +634,7 @@ function onKeydown(event: KeyboardEvent): void {
 .row {
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
+  background: color-mix(in oklab, var(--surface-working) 96%, var(--surface-overlay));
   color: inherit;
   cursor: pointer;
   text-align: left;
@@ -644,7 +646,7 @@ function onKeydown(event: KeyboardEvent): void {
 
 .row.selected {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 74%, var(--accent));
-  background: color-mix(in oklab, var(--selection-fill-strong) 82%, var(--surface-working));
+  background: color-mix(in oklab, var(--selection-fill) 82%, var(--surface-working));
   box-shadow: inset 3px 0 0 var(--selection-rail);
 }
 

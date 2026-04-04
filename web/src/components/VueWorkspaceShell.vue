@@ -857,11 +857,11 @@ onBeforeUnmount(() => {
 
 .shellHeader {
   border-bottom: 1px solid var(--border);
-  background: var(--header-bg);
+  background: color-mix(in oklab, var(--header-bg) 92%, var(--surface-shell));
   padding: 0.85rem 1rem 0.8rem;
   display: grid;
   gap: 0.5rem;
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--accent-soft) 38%, transparent);
+  box-shadow: 0 8px 18px color-mix(in srgb, rgb(var(--shadow-overflow-rgb) / 0.14) 72%, transparent);
 }
 
 .brandRow {
@@ -892,6 +892,17 @@ onBeforeUnmount(() => {
 .workspaceBar {
   flex: 1 1 42rem;
   min-width: 0;
+  padding: 0.24rem 0.28rem 0.18rem;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
+}
+
+.workflowStepBar {
+  padding: 0.22rem 0.28rem 0.16rem;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 92%, var(--panel));
 }
 
 .subtitle {
@@ -913,9 +924,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.58rem;
   padding: 0.38rem 0.66rem;
-  border-radius: 12px;
-  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
-  background: color-mix(in oklab, var(--surface-sunken) 90%, var(--panel));
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  background: color-mix(in oklab, var(--surface-shell) 88%, var(--panel));
   transition:
     background-color var(--motion-fast) var(--ease-standard),
     border-color var(--motion-fast) var(--ease-standard),
@@ -924,8 +935,8 @@ onBeforeUnmount(() => {
 }
 
 .taskCenterLauncher:hover {
-  border-color: color-mix(in oklab, var(--panel-focus-edge) 34%, var(--border));
-  background: color-mix(in oklab, var(--surface-focus) 72%, var(--surface-working));
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 42%, var(--border));
+  background: color-mix(in oklab, var(--surface-working) 88%, var(--surface-shell));
   transform: translateY(-1px);
   box-shadow: var(--shadow-inline);
 }
@@ -934,7 +945,7 @@ onBeforeUnmount(() => {
 .taskCenterLauncher.open {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 70%, var(--accent));
   background: color-mix(in oklab, var(--selection-fill) 82%, var(--surface-working));
-  box-shadow: inset 0 -2px 0 var(--selection-rail), 0 0 0 1px color-mix(in oklab, var(--accent) 14%, transparent), var(--shadow-inline);
+  box-shadow: inset 0 -2px 0 var(--selection-rail), 0 0 0 1px color-mix(in oklab, var(--accent) 14%, transparent);
 }
 
 .taskCenterLauncherBody {
@@ -974,9 +985,9 @@ onBeforeUnmount(() => {
 }
 
 .tabBtn {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--surface-sunken) 90%, var(--panel));
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
   color: inherit;
   font-size: 0.76rem;
   padding: 0.38rem 0.7rem;
@@ -992,10 +1003,12 @@ onBeforeUnmount(() => {
 .tabBtn.active {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 76%, var(--accent));
   background: color-mix(in oklab, var(--selection-fill) 84%, var(--surface-working));
-  box-shadow: inset 0 -2px 0 var(--selection-rail), var(--shadow-inline);
+  box-shadow: inset 0 -2px 0 var(--selection-rail);
 }
 
 .tabBtn:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--surface-working) 88%, var(--panel));
+  border-color: color-mix(in oklab, var(--border) 82%, transparent);
   transform: translateY(-1px);
 }
 
@@ -1004,10 +1017,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.32rem;
-  padding: 0.22rem;
+  padding: 0.24rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  border-radius: 14px;
-  box-shadow: var(--shadow-inline);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--surface-shell));
 }
 
 .contextCard {
@@ -1032,7 +1045,7 @@ onBeforeUnmount(() => {
     color-mix(in oklab, var(--surface-focus) 90%, var(--panel-footer)),
     color-mix(in oklab, var(--panel-footer) 92%, var(--surface-working))
   );
-  box-shadow: var(--shadow-inline);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--panel-focus-edge) 16%, transparent);
 }
 
 .contextKey {
@@ -1065,7 +1078,6 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 0.5rem;
   cursor: pointer;
-  box-shadow: var(--shadow-inline);
 }
 
 .contextOverflowSummary::-webkit-details-marker {
@@ -1103,8 +1115,8 @@ onBeforeUnmount(() => {
   gap: 0.32rem;
   padding: 0.35rem;
   border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
-  border-radius: 14px;
-  background: color-mix(in oklab, var(--panel) 97%, var(--surface));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-overlay) 94%, var(--panel));
   box-shadow: var(--shadow-md);
 }
 
@@ -1155,12 +1167,12 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 16px;
   background: var(--panel);
   display: grid;
   align-content: start;
   gap: 0.7rem;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .controlsColumn {
@@ -1168,8 +1180,8 @@ onBeforeUnmount(() => {
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, var(--accent-soft) 30%, var(--panel)),
-      color-mix(in oklab, var(--panel) 98%, var(--surface))
+      color-mix(in oklab, var(--surface-shell) 86%, var(--panel)),
+      color-mix(in oklab, var(--panel) 98%, var(--surface-working))
     );
 }
 
@@ -1178,8 +1190,8 @@ onBeforeUnmount(() => {
   background:
     linear-gradient(
       180deg,
-      color-mix(in oklab, var(--surface) 97%, var(--panel)),
-      color-mix(in oklab, var(--panel) 98%, var(--surface2))
+      color-mix(in oklab, var(--surface-working) 96%, var(--panel)),
+      color-mix(in oklab, var(--panel) 98%, var(--surface-inline))
     );
 }
 
@@ -1213,8 +1225,9 @@ onBeforeUnmount(() => {
   z-index: 6;
   margin: -0.15rem -0.15rem 0.1rem;
   padding: 0.25rem 0.15rem 0.55rem;
-  border-radius: 14px 14px 12px 12px;
-  box-shadow: 0 12px 18px -18px rgb(var(--shadow-overflow-rgb) / 0.8);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 12px 12px 10px 10px;
+  box-shadow: 0 10px 14px -18px rgb(var(--shadow-overflow-rgb) / 0.8);
 }
 
 .srOnly {
@@ -1236,12 +1249,12 @@ onBeforeUnmount(() => {
   width: 8px;
   height: 88px;
   transform: translate(-50%, -50%);
-  border-radius: 999px;
+  border-radius: 10px;
   background:
     radial-gradient(circle at center, color-mix(in oklab, var(--accent) 42%, var(--border)) 0 1px, transparent 1.5px) center / 8px 12px repeat-y,
     color-mix(in oklab, var(--surface2) 86%, transparent);
   border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent-soft) 22%, transparent);
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--accent-soft) 14%, transparent);
 }
 
 .workspaceDivider:hover .workspaceDividerGrip,
@@ -1269,13 +1282,13 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 16px;
   background: color-mix(in oklab, var(--panel) 98%, var(--surface));
   margin: 1rem;
   padding: 1rem;
   display: grid;
   gap: 0.9rem;
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
 }
 
 #executionShellPane {
@@ -1287,7 +1300,7 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel-footer) 98%, var(--surface));
   padding: 0.55rem 0.9rem;
-  box-shadow: 0 -10px 24px color-mix(in srgb, var(--accent-soft) 18%, transparent);
+  box-shadow: 0 -8px 20px color-mix(in srgb, var(--accent-soft) 10%, transparent);
 }
 
 .mono {

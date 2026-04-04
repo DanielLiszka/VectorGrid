@@ -247,9 +247,9 @@ onBeforeUnmount(() => {
   gap: 0.5rem;
   padding: 0.45rem 0.7rem 0.4rem;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  background: color-mix(in oklab, var(--surface-sticky) 94%, var(--header-bg));
-  backdrop-filter: blur(12px);
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--accent-soft) 16%, transparent);
+  background: color-mix(in oklab, var(--surface-shell) 90%, var(--header-bg));
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 18px color-mix(in srgb, rgb(var(--shadow-overflow-rgb) / 0.16) 72%, transparent);
 }
 
 .desktopTitlebar.focused {
@@ -284,7 +284,7 @@ onBeforeUnmount(() => {
 }
 
 .titlebarLogoMark {
-  filter: drop-shadow(0 2px 6px color-mix(in srgb, var(--accent-soft) 28%, transparent));
+  filter: drop-shadow(0 1px 4px color-mix(in srgb, var(--accent-soft) 18%, transparent));
 }
 
 .titlebarBrand {
@@ -327,8 +327,8 @@ onBeforeUnmount(() => {
   gap: 0.42rem;
   border-radius: 10px;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel));
-  box-shadow: var(--shadow-inline);
+  background: color-mix(in oklab, var(--surface-inline) 88%, var(--panel));
+  box-shadow: none;
 }
 
 .titlebarTool {
@@ -337,10 +337,17 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.titlebarTool:hover:not(:disabled),
+.windowControl:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 34%, var(--border));
+  background: color-mix(in oklab, var(--surface-working) 92%, var(--surface-inline));
+}
+
 .titlebarPrimary {
   border-color: color-mix(in oklab, var(--accent) 58%, var(--border));
   background: color-mix(in oklab, var(--selection-fill) 86%, var(--surface-working));
   color: var(--selection-text);
+  box-shadow: inset 0 -2px 0 var(--selection-rail);
 }
 
 .titlebarPrimary:hover:not(:disabled) {

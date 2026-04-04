@@ -495,7 +495,7 @@ onBeforeUnmount(() => {
         <div v-if="hasTopSelectionGuardrail" class="panelAdvisory surfaceWarning mono">{{ topSelectionGuardrail }}</div>
       </section>
 
-      <section class="pane">
+      <section class="pane topReviewPane">
         <div class="panelSectionHeader">
           <div class="panelHeadCopy">
             <div class="panelEyebrow">Table</div>
@@ -723,11 +723,16 @@ onBeforeUnmount(() => {
 }
 
 .pane {
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: var(--panel-footer);
+  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel-footer));
   padding: var(--density-pane-y) var(--density-pane-x);
   min-width: 0;
+}
+
+.topReviewPane {
+  display: grid;
+  gap: 0.65rem;
 }
 
 .gridFive {
@@ -759,13 +764,21 @@ onBeforeUnmount(() => {
 
 .tableWrap {
   overflow: auto;
+  border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
 }
 
 .columnDetails {
-  margin-bottom: 0.65rem;
-  border: 1px solid var(--border);
+  margin-bottom: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
-  background: var(--surface-sunken);
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
+}
+
+.columnDetails[open] {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 38%, var(--border));
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel-footer));
 }
 
 .columnDetailsSummary {
@@ -778,6 +791,7 @@ onBeforeUnmount(() => {
   padding: calc(var(--density-pane-y) - 0.12rem) calc(var(--density-pane-x) - 0.02rem);
   font-size: 0.78rem;
   font-weight: 600;
+  color: var(--muted-strong);
 }
 
 .columnDetailsSummary::-webkit-details-marker {
@@ -785,7 +799,7 @@ onBeforeUnmount(() => {
 }
 
 .columnDetailsBody {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in oklab, var(--border) 78%, transparent);
   padding: calc(var(--density-pane-y) - 0.05rem) calc(var(--density-pane-x) - 0.02rem);
   display: grid;
   gap: 0.65rem;
@@ -840,6 +854,10 @@ onBeforeUnmount(() => {
 
 .topTableVue th {
   user-select: none;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
 }
 
 .topTableVue th.left,
@@ -870,7 +888,7 @@ onBeforeUnmount(() => {
 }
 
 .topSelectionSummary {
-  margin-bottom: 0.65rem;
+  margin-bottom: 0;
   top: -0.1rem;
 }
 
@@ -905,13 +923,14 @@ onBeforeUnmount(() => {
 .staleCueStack {
   display: grid;
   gap: 0.5rem;
-  margin-bottom: 0.65rem;
+  margin-bottom: 0;
 }
 
 .compareTray {
-  margin-bottom: 0.65rem;
-  border: 1px solid var(--border);
+  margin-bottom: 0;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
   border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
   padding: var(--density-pane-y) var(--density-pane-x);
 }
 
@@ -928,6 +947,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: grid;
   gap: 0.35rem;
+  box-shadow: none;
 }
 
 .compareCardMeta {

@@ -154,6 +154,8 @@ onBeforeUnmount(() => {
 .confirmationDialogHeader {
   display: grid;
   gap: 0.24rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
 }
 
 .confirmationDialogBody {
@@ -171,5 +173,6 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 0.55rem;
+  padding-top: 0.1rem;
 }
 </style>

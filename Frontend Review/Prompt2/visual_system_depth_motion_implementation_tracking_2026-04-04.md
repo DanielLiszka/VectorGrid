@@ -4,7 +4,7 @@ Date: 2026-04-04
 
 Scope: implementation tracker for the grounded Prompt 2 visual-system direction in [visual_system_depth_motion_direction_FINAL.md](C:\Rust Projects\ta_desktop_demo\Frontend Review\Prompt2\visual_system_depth_motion_direction_FINAL.md).
 
-Status: ready for implementation
+Status: implemented and verified
 
 Owner posture: frontend visual-system refinement only. Do not broaden into shell information-architecture redesign, backend contract changes, or product-mode decisions.
 
@@ -51,16 +51,16 @@ If an implementation choice would trade away capability reachability for visual 
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline locked and evidence captured
-- [ ] Phase 1 complete: objective shared-token and tab-grammar changes landed
-- [ ] Phase 2 complete: objective shell/titlebar visual tightening landed
-- [ ] Phase 3 complete: objective dense-review surface alignment landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Phase 4 complete: overlay and diagnostics visual alignment landed
-- [ ] Phase 5 complete: subjective weighting refinements landed
-- [ ] Subjective refinement checkpoint complete
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline locked and evidence captured
+- [x] Phase 1 complete: objective shared-token and tab-grammar changes landed
+- [x] Phase 2 complete: objective shell/titlebar visual tightening landed
+- [x] Phase 3 complete: objective dense-review surface alignment landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Phase 4 complete: overlay and diagnostics visual alignment landed
+- [x] Phase 5 complete: subjective weighting refinements landed
+- [x] Subjective refinement checkpoint complete
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
 
 ## Implementation Outcome Target
 
@@ -293,16 +293,16 @@ Goal:
 
 Checklist:
 
-- [ ] Capture before-state screenshots for:
+- [x] Capture before-state screenshots for:
   - Workflow / Optimize / Top
   - Workflow / Validate
   - Settings
   - Task Center
-- [ ] Capture both light and dark themes
-- [ ] Capture Standard and Dense density modes
-- [ ] Capture reduced-motion behavior for tabs and overlays
-- [ ] Note current tab grammar, blur usage, and routine elevation hotspots
-- [ ] Note any components already relying on missing shared tokens
+- [x] Capture both light and dark themes
+- [x] Capture Standard and Dense density modes
+- [x] Capture reduced-motion behavior for tabs and overlays
+- [x] Note current tab grammar, blur usage, and routine elevation hotspots
+- [x] Note any components already relying on missing shared tokens
 
 Acceptance:
 
@@ -320,15 +320,15 @@ Goal:
 
 Checklist:
 
-- [ ] Add `--surface-overlay` in both themes
-- [ ] Add `--font-sans` and `--font-mono` and route shared typography through them
-- [ ] Warm the light theme base values toward the approved paper/mineral direction
-- [ ] Retune warning toward brass/amber while keeping semantic meaning strict
-- [ ] Review whether `--surface-shell` is needed; add only if real shell/titlebar normalization requires it
-- [ ] Rewrite shared tab grammar away from pill-led active states
-- [ ] Reduce inactive tab shadowing and routine raised feel
-- [ ] Keep reduced-motion behavior intact
-- [ ] Replace or normalize any stray raw transition timings encountered in shared primitives
+- [x] Add `--surface-overlay` in both themes
+- [x] Add `--font-sans` and `--font-mono` and route shared typography through them
+- [x] Warm the light theme base values toward the approved paper/mineral direction
+- [x] Retune warning toward brass/amber while keeping semantic meaning strict
+- [x] Review whether `--surface-shell` is needed; add only if real shell/titlebar normalization requires it
+- [x] Rewrite shared tab grammar away from pill-led active states
+- [x] Reduce inactive tab shadowing and routine raised feel
+- [x] Keep reduced-motion behavior intact
+- [x] Replace or normalize any stray raw transition timings encountered in shared primitives
 
 Acceptance:
 
@@ -349,12 +349,12 @@ Goal:
 
 Checklist:
 
-- [ ] Align workspace/workflow/controls/results tabs to the new shared grammar
-- [ ] Reduce shell/titlebar blur and accent-glow intensity at rest
-- [ ] Reduce routine raised-sheet feeling in the shell header and titlebar
-- [ ] Make the context strip read more like a recessed support band than a telemetry shelf
-- [ ] Keep the task-center launcher legible while reducing gadget-like idle weight
-- [ ] Keep titlebar actions clear without making the titlebar itself a visually active dashboard band
+- [x] Align workspace/workflow/controls/results tabs to the new shared grammar
+- [x] Reduce shell/titlebar blur and accent-glow intensity at rest
+- [x] Reduce routine raised-sheet feeling in the shell header and titlebar
+- [x] Make the context strip read more like a recessed support band than a telemetry shelf
+- [x] Keep the task-center launcher legible while reducing gadget-like idle weight
+- [x] Keep titlebar actions clear without making the titlebar itself a visually active dashboard band
 
 Acceptance:
 
@@ -374,12 +374,12 @@ Goal:
 
 Checklist:
 
-- [ ] Keep Top’s selection rail and sticky summary language intact, but align it to the finalized shared tokens
-- [ ] Fix any Top styles relying on missing or ad hoc token assumptions
-- [ ] Make Validation summary and table read as one analytical unit through clearer tiering
-- [ ] Align Validation disclosure, details, column controls, and dense-table framing to shared patterns
-- [ ] Ensure dense-table overflow shadows and selected/hover states remain readable in both themes
-- [ ] Do not add sticky-selection UI to Validation unless a real downstream row-selection dependency is introduced
+- [x] Keep Top’s selection rail and sticky summary language intact, but align it to the finalized shared tokens
+- [x] Fix any Top styles relying on missing or ad hoc token assumptions
+- [x] Make Validation summary and table read as one analytical unit through clearer tiering
+- [x] Align Validation disclosure, details, column controls, and dense-table framing to shared patterns
+- [x] Ensure dense-table overflow shadows and selected/hover states remain readable in both themes
+- [x] Do not add sticky-selection UI to Validation unless a real downstream row-selection dependency is introduced
 
 Acceptance:
 
@@ -390,11 +390,11 @@ Acceptance:
 
 Checklist:
 
-- [ ] Phase 1 complete
-- [ ] Phase 2 complete
-- [ ] Phase 3 complete
-- [ ] Objective verification passed
-- [ ] Clean commit checkpoint prepared
+- [x] Phase 1 complete
+- [x] Phase 2 complete
+- [x] Phase 3 complete
+- [x] Objective verification passed
+- [x] Clean commit checkpoint prepared
 
 ### Phase 4 — Overlay and diagnostics alignment
 
@@ -411,12 +411,12 @@ Goal:
 
 Checklist:
 
-- [ ] Keep overlay panel separation stronger than routine shell chrome
-- [ ] Reduce floating-widget feel in the task-center launcher/toggle
-- [ ] Keep task-center panel visually distinct as an assistant tray
-- [ ] Make Settings diagnostics read more like evidence blocks than dashboard tiles
-- [ ] Align compact semantic badges/chips across task, runtime, and diagnostics surfaces
-- [ ] Keep command palette and confirmation dialogs crisp and overlay-like rather than glassy or theatrical
+- [x] Keep overlay panel separation stronger than routine shell chrome
+- [x] Reduce floating-widget feel in the task-center launcher/toggle
+- [x] Keep task-center panel visually distinct as an assistant tray
+- [x] Make Settings diagnostics read more like evidence blocks than dashboard tiles
+- [x] Align compact semantic badges/chips across task, runtime, and diagnostics surfaces
+- [x] Keep command palette and confirmation dialogs crisp and overlay-like rather than glassy or theatrical
 
 Acceptance:
 
@@ -439,11 +439,11 @@ Goal:
 
 Checklist:
 
-- [ ] Tune exact warmth/contrast values within the approved palette direction
-- [ ] Tune exact shell/titlebar calmness without losing clarity
-- [ ] Tune exact idle emphasis of the task-center launcher
-- [ ] Tune exact overlay border/shadow weight
-- [ ] Tune exact separation between `surfaceSunken`, `surfaceWorking`, and `surfaceFocus`
+- [x] Tune exact warmth/contrast values within the approved palette direction
+- [x] Tune exact shell/titlebar calmness without losing clarity
+- [x] Tune exact idle emphasis of the task-center launcher
+- [x] Tune exact overlay border/shadow weight
+- [x] Tune exact separation between `surfaceSunken`, `surfaceWorking`, and `surfaceFocus`
 
 Acceptance:
 
@@ -481,31 +481,46 @@ Acceptance:
 
 ### Required repo checks
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run test`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
 
 ### Required manual review set
 
-- [ ] Workflow / Optimize / Top
-- [ ] Workflow / Validate
-- [ ] Settings
-- [ ] Task Center
-- [ ] light and dark themes
-- [ ] Standard and Dense density modes
-- [ ] reduced-motion behavior
-- [ ] active-tab clarity
-- [ ] selected-row clarity
-- [ ] overlay hierarchy
+- [x] Workflow / Optimize / Top
+- [x] Workflow / Validate
+- [x] Settings
+- [x] Task Center
+- [x] light and dark themes
+- [x] Standard and Dense density modes
+- [x] reduced-motion behavior
+- [x] active-tab clarity
+- [x] selected-row clarity
+- [x] overlay hierarchy
 
 ### Guardrail review
 
-- [ ] Re-check frontend functional-coverage guardrail after any decluttering around tabs, disclosures, diagnostics, or overlays
-- [ ] Re-check keyboard paths for tabs, dense tables, and overlays
-- [ ] Re-check Prompt 1 shell hierarchy remains visually supported rather than undermined
+- [x] Re-check frontend functional-coverage guardrail after any decluttering around tabs, disclosures, diagnostics, or overlays
+- [x] Re-check keyboard paths for tabs, dense tables, and overlays
+- [x] Re-check Prompt 1 shell hierarchy remains visually supported rather than undermined
+
+## Evidence Captured
+
+- Existing repo baseline captures dated 2026-02-26 and 2026-03-28 were used as historical before-state reference for shell/workspace posture.
+- Refreshed Prompt 2 baseline artifacts were captured on 2026-04-04 under [scripts/baselines/ui_capture](C:\Rust Projects\ta_desktop_demo\scripts\baselines\ui_capture), including:
+  - `workflow_optimize_results_top.png`
+  - `workflow_step_validate.png`
+  - `workspace_settings.png`
+  - `workspace_workflow.png`
+  - `fullpage_final.png`
+  - `perf_metrics.json`
+- Live manual captures were added for surfaces not fully represented by the baseline script:
+  - `task_center_open_manual.png`
+  - `task_center_open_dark_dense_reduce.png`
+  - `settings_diagnostics_manual.png`
 
 ## Risks
 

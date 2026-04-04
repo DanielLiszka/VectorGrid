@@ -439,7 +439,6 @@ function openRelatedView(task: TrackedTask): void {
   <div ref="overlayRootRef" class="taskOverlayRoot" :style="rootStyle">
     <div ref="referenceRef" class="overlayAnchor">
       <button
-        v-if="expanded || !quietMode"
         ref="toggleRef"
         class="overlayToggle"
         :class="{ dragging: toggleDragging, quiet: quietMode }"
@@ -787,12 +786,12 @@ function openRelatedView(task: TrackedTask): void {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 56%, var(--border));
   color: var(--task-muted);
   opacity: 0.84;
-  box-shadow: var(--shadow-inline);
 }
 
 .overlayToggle.quiet:hover {
   opacity: 1;
   transform: translateY(-1px);
+  box-shadow: var(--shadow-inline);
 }
 
 .toggleLabel {
