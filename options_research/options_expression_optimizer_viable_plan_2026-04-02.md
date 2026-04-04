@@ -178,7 +178,9 @@ This one decision removes a large amount of avoidable scope.
 
 - **selector family:** moneyness only
 - **side:** implied from signal direction
-- **data resolution:** 1-minute quotes
+- **data resolution:** 1-minute options data
+  - prefer Massive minute aggregates in v1
+  - treat full historical quotes as an optional higher-realism lane
 - **default DTE set:** `1DTE`, `3DTE`, `5DTE`
 - **expiry policy:** forced liquidation before final tradable cutoff
 - **optimization mode:** isolated-trade normalized metrics
@@ -530,8 +532,14 @@ Minimum fields:
 
 - `options_dataset_id`
 - `root_symbol`
-- `vendor/source`
+- `provider_name`
+- `provider_source_surface`
+  - for example: `massive_all_contracts`, `massive_minute_aggregates`, `massive_quotes`, or `manual_normalized_import`
+- `provider_entitlement_profile`
+  - record the entitlement or access assumption used when the dataset was produced
 - `quote_resolution`
+- `price_semantics`
+  - for example: `top_of_book_quote`, `minute_aggregate`, or `derived_mid_snapshot`
 - `calendar_id`
 - `timezone`
 - `coverage_start`
@@ -539,6 +547,8 @@ Minimum fields:
 - `normalization_version`
 - `quote_semantics_version`
 - `corporate_action_mapping_version`
+- `contract_reference_source`
+- `underlier_reference_source`
 
 ### 6.4 StructuralCandidateCacheV1
 
@@ -629,14 +639,74 @@ The original plan is correct that the data layer will make or break the feature.
 
 To make it viable in the current repo, the data layer must be **separate** from the current Polygon/live path.
 
+### Recommended provider posture
+
+Treat the first-wave implementation as **Massive-first but provider-decoupled**.
+
+That means:
+
+- design the import and normalization layers so they can record provider/source semantics explicitly
+- do **not** hardwire the runtime to current Polygon candle-download flows
+- do **not** assume that every options data surface has the same entitlement, history depth, recency, or file-size economics
+
+The v1 plan should assume:
+
+- contract/reference data can come from Massive contract-reference exports
+- first-wave backtestable price data is more likely to come from Massive minute aggregates than from full historical quotes
+- full historical quotes are an advanced realism lane, not the default baseline
+
+### Recommended Massive-first v1 path
+
+The preferred first-wave data shape is:
+
+1. Massive contract-reference data for contract universe and metadata
+2. Massive options minute aggregates for contract price-path research
+3. optional later quote-aware imports for higher-realism entry/exit semantics
+
+This is the safer first release because:
+
+- contract metadata is needed for deterministic selector compilation either way
+- minute aggregates are dramatically more tractable than full options quote archives
+- quote archives are much heavier and have stricter entitlement requirements, so they should not be assumed as the default path
+
+For v1, phrase the mode as:
+
+- options expression research over normalized Massive-derived options data
+
+not:
+
+- a direct live-connected Massive options workstation
+
+### Important provider assumption
+
+Do **not** assume that historical options quotes are broadly available, lightweight, or included in low-tier plans.
+
+The plan should remain valid even if the user only has:
+
+- Massive contract/reference data
+- Massive options minute aggregates
+
+and does **not** have:
+
+- full historical top-of-book quote entitlement
+
+If quote-aware datasets are available later, they should enter as a stricter realism profile, not as a prerequisite for the entire feature.
+
 ### Recommended v1 ingestion policy
 
-Support import of already-downloaded historical options quotes first.
+Support import of already-downloaded normalized options datasets first.
 
 Suggested first-wave inputs:
 
+- Massive-derived contract-reference exports
+- Massive-derived options minute aggregates
 - normalized Parquet
 - normalized CSV with a strict schema
+
+Optional later:
+
+- Massive-derived historical quote datasets
+- higher-fidelity quote snapshots or derived mids built from quote archives
 
 Do not start with:
 
@@ -644,9 +714,9 @@ Do not start with:
 - live options data streaming
 - broker-linked options discovery
 
-### Minimum normalized quote schema
+### Minimum normalized price-row schema
 
-For each quote row or quote-bar row:
+For each imported price row:
 
 - `root_symbol`
 - `contract_id`
@@ -666,6 +736,10 @@ For each quote row or quote-bar row:
 - `quote_age_ms` optional if derivable
 - `session_id`
 
+If the imported surface is minute aggregates rather than true quotes, the normalized dataset must still declare that explicitly through `price_semantics` and `provider_source_surface`.
+
+Do not silently label minute aggregates as quotes.
+
 ### Recommended normalization responsibilities
 
 - contract-id normalization
@@ -678,6 +752,25 @@ For each quote row or quote-bar row:
 - absurd spread cleanup
 - contract lifecycle tracking
 - expiry cutoff alignment
+- provider-surface normalization
+  - preserve whether the imported series came from contract reference, minute aggregates, or quotes
+- provider-entitlement traceability
+  - store enough metadata to explain what realism assumptions the dataset supports
+
+### Recommended first-wave realism policy
+
+Support two explicit first-wave realism families:
+
+1. **aggregate-based research realism**
+   - built from contract metadata + minute aggregates
+   - suitable for fast expression research and first-wave optimization
+2. **quote-aware realism**
+   - built from top-of-book options quotes when available
+   - suitable for stricter finalist validation and later advanced lanes
+
+The first family should be enough to start the backend implementation.
+
+The second family should improve realism later without being a prerequisite for the whole feature.
 
 ### Recommended partitioning
 
@@ -1078,6 +1171,29 @@ Top-K only:
 - higher fees
 - stricter liquidity filter
 
+### Required options-layer validation stage
+
+Treat this as mandatory for the feature, even if v1 does not expose it as a full standalone workflow tab.
+
+The key rule is:
+
+**the parent strategy being validated does not validate the options expression layer.**
+
+So every meaningful options-expression run should end with a finalist validation stage that:
+
+- evaluates top tuples on untouched holdout folds
+- reruns finalists under harsher fill and liquidity assumptions
+- stores in-sample, holdout, and stress results separately
+- promotes finalists based on robustness, not only best-case search metrics
+
+For v1, this can ship as:
+
+- a backend-first finalist-validation / robustness pass
+- a saved artifact section and results view
+- no dedicated top-level `Validate` tab required yet
+
+If the options mode later becomes a discrete shell mode, this stage can grow into a more explicit validation surface.
+
 ### Recommended first-wave ranking outputs
 
 - EV per trade
@@ -1352,14 +1468,18 @@ Exit criterion:
 Deliverables:
 
 - normalized import path
+- Massive-first provider adapters for:
+  - contract-reference imports
+  - minute-aggregate imports
 - dataset manifest
 - coverage queries
 - session/calendar alignment
-- quote cleanup rules
+- price/quote cleanup rules
+- provider-surface semantics captured in the manifest
 
 Exit criterion:
 
-- for one liquid root and date range, normalized quote access is reliable and auditable
+- for one liquid root and date range, normalized Massive-derived contract metadata and minute-price access are reliable and auditable
 
 ### Phase 3 — Signal manifest + candidate compiler
 
@@ -1426,13 +1546,14 @@ Exit criterion:
 Deliverables:
 
 - final options-expression artifact kind
+- required finalist validation stage for the options layer
 - holdout metrics
 - stress rescore
 - conservative ranking view
 
 Exit criterion:
 
-- the feature can save, reopen, inspect, and compare robust finalists
+- the feature can save, reopen, inspect, validate, and compare robust finalists
 
 ### Phase 7 — UI polish + CSV export
 

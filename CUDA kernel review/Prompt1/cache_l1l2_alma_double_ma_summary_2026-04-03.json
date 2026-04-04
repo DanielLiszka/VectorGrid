@@ -1,0 +1,80 @@
+[
+  {
+    "workload": "large",
+    "metric_contract": "auto",
+    "kernel": "double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_eps0_nocomm",
+    "l1_tex_hit_rate_pct": 63.4,
+    "l2_hit_rate_pct": 97.01,
+    "l2_persisting_size_mbyte": 14.16,
+    "memory_throughput_gbyte_per_s": 15.18,
+    "mem_busy_pct": 11.98,
+    "report_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_auto.ncu-rep",
+    "memory_details_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_auto.memory.txt",
+    "capture_log_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_auto.capture.log"
+  },
+  {
+    "workload": "large",
+    "metric_contract": "full17",
+    "kernel": "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm",
+    "l1_tex_hit_rate_pct": 63.38,
+    "l2_hit_rate_pct": 96.92,
+    "l2_persisting_size_mbyte": 14.16,
+    "memory_throughput_gbyte_per_s": 15.37,
+    "mem_busy_pct": 11.51,
+    "report_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_full17.ncu-rep",
+    "memory_details_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_full17.memory.txt",
+    "capture_log_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_full17.capture.log"
+  },
+  {
+    "workload": "large",
+    "metric_contract": "trade22",
+    "kernel": "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm",
+    "l1_tex_hit_rate_pct": 63.38,
+    "l2_hit_rate_pct": 96.41,
+    "l2_persisting_size_mbyte": 14.16,
+    "memory_throughput_gbyte_per_s": 15.39,
+    "mem_busy_pct": 11.2,
+    "report_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_trade22.ncu-rep",
+    "memory_details_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_trade22.memory.txt",
+    "capture_log_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_large_trade22.capture.log"
+  },
+  {
+    "workload": "xlarge",
+    "metric_contract": "auto",
+    "kernel": "double_cross_backtest_tm_flex_f32_lockstep_time_m10_regime_off_norisk_eps0_nocomm",
+    "l1_tex_hit_rate_pct": 42.41,
+    "l2_hit_rate_pct": 87.33,
+    "l2_persisting_size_mbyte": 14.16,
+    "memory_throughput_gbyte_per_s": 224.56,
+    "mem_busy_pct": 28.88,
+    "report_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_auto.ncu-rep",
+    "memory_details_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_auto.memory.txt",
+    "capture_log_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_auto.capture.log"
+  },
+  {
+    "workload": "xlarge",
+    "metric_contract": "full17",
+    "kernel": "double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm",
+    "l1_tex_hit_rate_pct": 36.44,
+    "l2_hit_rate_pct": 70.21,
+    "l2_persisting_size_mbyte": 14.16,
+    "memory_throughput_gbyte_per_s": 318.78,
+    "mem_busy_pct": 28.12,
+    "report_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_full17.ncu-rep",
+    "memory_details_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_full17.memory.txt",
+    "capture_log_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_full17.capture.log"
+  },
+  {
+    "workload": "xlarge",
+    "metric_contract": "trade22",
+    "kernel": "double_cross_backtest_tm_flex_f32_lockstep_time_m22_regime_off_norisk_eps0_nocomm",
+    "l1_tex_hit_rate_pct": 38.84,
+    "l2_hit_rate_pct": 84.54,
+    "l2_persisting_size_mbyte": 14.16,
+    "memory_throughput_gbyte_per_s": 176.19,
+    "mem_busy_pct": 23.06,
+    "report_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_trade22.ncu-rep",
+    "memory_details_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_trade22.memory.txt",
+    "capture_log_path": "C:\\Rust Projects\\ta_desktop_demo\\target\\nsight\\cache_l1l2_alma_double_ma_xlarge_trade22.capture.log"
+  }
+]

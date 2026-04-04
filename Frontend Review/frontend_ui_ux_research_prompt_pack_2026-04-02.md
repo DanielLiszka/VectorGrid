@@ -156,7 +156,7 @@ This pack is intended to cover the full major frontend surface area.
   - Prompt 7
 - Desktop presence, titlebar-adjacent native posture, tray/shortcut decisions:
   - Prompt 8
-- `MlSignal` shell-mode separation:
+- Mode separation / workflow branch separation:
   - Prompt 9
 - Verification, accessibility, browser smoke, desktop smoke, evidence:
   - Prompt 10
@@ -179,7 +179,7 @@ Use this order when you want answers that build on one another and stay fresh:
 6. Prompt 6: Execution, Settings, and operator-safety UX
 7. Prompt 7: Startup animation replacement
 8. Prompt 8: Desktop presence and chrome decisions
-9. Prompt 9: `MlSignal` mode separation UX
+9. Prompt 9: mode separation vs workflow branch separation UX
 10. Prompt 10: UI/UX verification and evidence strategy
 
 Reason:
@@ -188,7 +188,7 @@ Reason:
 - form and results redesign should inherit the shell and visual-system choices
 - history/artifact and execution/settings decisions should inherit the shell and visual-system choices too
 - startup animation should match the chosen product tone, not define it alone
-- desktop presence and `MlSignal` questions are partly downstream of the broader shell model
+- desktop presence and mode-separation questions are partly downstream of the broader shell model
 - verification strategy is easiest to shape once the intended UX direction is clearer
 
 ## Prompt 1: Shell Hierarchy And Workstation Posture Refresh
@@ -1156,11 +1156,11 @@ The document must contain:
 Make one coherent desktop-presence recommendation set for this repo.
 ```
 
-## Prompt 9: `MlSignal` Mode Separation UX
+## Prompt 9: Mode Separation Vs Workflow Branch Separation UX
 
 ### Research Question
 
-Should `MlSignal` become a distinct shell mode from a UI/UX standpoint, and if so, what is the cleanest way to make that separation legible without fragmenting the product?
+When should this repo create a true shell mode versus a workflow branch inside the conventional workflow, and how should that decision apply to `MlSignal`, options backtest optimization, and future specialized flows?
 
 ### Attach These Files
 
@@ -1173,6 +1173,7 @@ Required:
 - `web/src/components/VueWorkspaceShell.vue`
 - `web/src/components/WorkflowQuickSwitch.vue`
 - `web/src/App.vue`
+- `web/src/components/DataWorkspacePanel.vue`
 - `web/src/components/OptimizeWorkspacePanel.vue`
 - `web/src/components/MlSignalWorkspacePanel.vue`
 
@@ -1184,43 +1185,52 @@ Optional:
 
 ### Specific Tensions To Resolve
 
-- product clarity versus shell complexity
-- separate mode versus special-case strategy handling
-- mode clarity versus persistence/history migration risk
-- shared app shell versus mental-model fragmentation
-- conventional default posture versus ML-specific workflow needs
+- true mode separation versus workflow branching inside the conventional shell
+- product clarity versus shell proliferation
+- shared data/history foundations versus mode-specific vocabulary
+- future extensibility for options or other specialized flows versus premature taxonomy
+- persistence/restoration clarity versus migration risk
+- conventional default posture versus specialized branch needs
 
 ### Optional Research Targets
 
-- mode separation in complex technical applications
-- workflow restoration across multiple product modes
+- mode separation versus workflow-branch patterns in complex technical applications
+- workflow and artifact restoration across mixed-mode products
 - shell vocabulary patterns when one branch behaves qualitatively differently
+- shared-data entry patterns when specialized workflows consume upstream artifacts
 
 ### Prompt
 
 ```text
-You are reviewing the frontend user-model question around `MlSignal` in this repo.
+You are reviewing the frontend user-model question around true shell modes versus workflow branches in this repo.
 
 Using the attached files, answer this repo-specific question:
 
-Should `MlSignal` become a distinct shell mode from a UI/UX standpoint, and if so, what is the cleanest way to make that separation obvious to users without fragmenting the product or confusing history/persistence behavior?
+When should this repo create a true shell mode versus a workflow branch inside the conventional workflow, and how should that decision apply to `MlSignal`, options backtest optimization, and future specialized flows?
 
 Constraints:
 - Keep one app shell.
+- Treat shared dataset loading and Polygon-driven data acquisition as likely shared foundations unless you have a strong repo-specific reason to split them.
 - Preserve artifact/history restoration behavior.
 - Treat the current conventional workflow as the default unless you have a strong repo-specific reason to argue otherwise.
+- Assume options backtest optimization is a plausible downstream workflow that may optionally consume a validated conventional signal artifact rather than replacing the conventional workflow outright.
 - Focus on user model, shell vocabulary, and workflow clarity more than backend implementation mechanics.
 
 Deliverables:
-1. Summarize the current `MlSignal` posture and why it creates UX drift.
-2. State whether a separate mode is the right product move now.
-3. Propose the cleanest shell vocabulary and navigation model if the split happens.
-4. Explain the impact on strategy selection, quick-switch, command palette, persistence, and history reopening.
-5. Point to code touch points by file and component/store.
-6. Give a phased implementation and migration plan.
-7. State the failure modes that would make you reject the split or delay it.
+1. Summarize the repo's current shell model and why it creates user-model pressure for `MlSignal` or future specialized flows.
+2. Define explicit decision criteria for when something should remain:
+   - a strategy or feature within the conventional workflow
+   - a workflow branch within the conventional shell
+   - a true top-level shell mode
+3. Apply that framework to `MlSignal`.
+4. Apply that framework to a plausible options backtest optimization branch that may consume validated conventional artifacts and shared Polygon data.
+5. Recommend the cleanest shell vocabulary and navigation model for this repo now.
+6. Explain the impact on strategy selection, Data, quick-switch, command palette, persistence, and history reopening.
+7. Point to code touch points by file and component/store.
+8. Give a phased implementation and migration plan.
+9. State the failure modes that would make you reject mode separation, reject workflow branching, or delay either decision.
 
-Keep the answer grounded in the repo's current shell model rather than generic product-taxonomy advice.
+Keep the answer grounded in the repo's current shell model rather than generic product-taxonomy advice. Do not assume every specialized capability deserves its own mode.
 ```
 
 ### Second-Pass Prompt
@@ -1228,24 +1238,30 @@ Keep the answer grounded in the repo's current shell model rather than generic p
 ```text
 Review your prior answer to Prompt 9 as a critical second pass.
 
-I want you to challenge the `MlSignal` mode-separation recommendation you just made for this repo.
+I want you to challenge the mode-separation versus workflow-branch recommendation you just made for this repo.
 
 Tasks:
 1. Identify where the first answer may create too much shell complexity, persistence risk, or conceptual fragmentation.
-2. Identify the strongest arguments for leaving `MlSignal` as-is versus separating it now.
+2. Identify the strongest arguments for keeping specialized flows inside the conventional workflow rather than splitting them into branches or modes.
 3. If targeted current web research would materially improve the answer, use it selectively to study:
-   - mode separation in complex technical applications
-   - workflow and artifact restoration across multiple modes
+   - mode separation versus workflow-branch patterns in technical applications
+   - workflow and artifact restoration across mixed-mode products
    - shell vocabulary patterns when one branch is qualitatively different
+   - shared-data entry patterns for specialized downstream workflows
 4. Refine the recommendation to the clearest product choice for this repo now.
-5. Decide what conditions would justify delaying the split.
+5. Decide what conditions would justify:
+   - keeping `MlSignal` embedded
+   - splitting `MlSignal`
+   - keeping options as a workflow branch
+   - promoting options to a true mode later
 
 Deliverables:
 1. "Keep / revise / reject" verdict on the first-pass direction
-2. Refined `MlSignal` UX recommendation
-3. Strongest arguments for and against separating now
-4. Migration/persistence risk summary
-5. Failure modes that would make the split not worth doing yet
+2. Refined decision framework for mode versus branch separation
+3. Refined repo recommendation for `MlSignal`
+4. Refined repo recommendation for options-style workflows
+5. Migration/persistence risk summary
+6. Failure modes that would make splitting or branching not worth doing yet
 
 Keep the answer grounded in the repo's current shell and artifact behavior.
 ```
@@ -1256,17 +1272,19 @@ Keep the answer grounded in the repo's current shell and artifact behavior.
 Using your first-pass and second-pass answers for Prompt 9, produce one final implementation-ready markdown document for this repo.
 
 Write the output as if it will become:
-`Frontend Review/mlsignal_mode_separation_direction_FINAL.md`
+`Frontend Review/mode_separation_vs_workflow_branch_direction_FINAL.md`
 
 The document must contain:
 1. Executive summary
-2. Final product decision on `MlSignal`
-3. Recommended shell vocabulary
-4. Navigation and persistence implications
-5. Impact on strategy selection, quick switch, command palette, and history restoration
-6. Implementation order by file/component/store
-7. Validation plan
-8. Explicit defers, risks, and rejection conditions
+2. Decision framework for strategy/branch/mode separation
+3. Final product decision on `MlSignal`
+4. Final product decision on options-style workflows
+5. Recommended shell vocabulary
+6. Navigation, Data, and persistence implications
+7. Impact on strategy selection, quick switch, command palette, and history restoration
+8. Implementation order by file/component/store
+9. Validation plan
+10. Explicit defers, risks, and rejection conditions
 
 Choose one direction for the repo. Do not leave this as an unresolved taxonomy debate.
 ```
@@ -1396,7 +1414,7 @@ Make one practical sustained validation strategy for the repo, not a maximalist 
   - Prompt 6 execution/settings/operator safety
   - Prompt 7 startup animation replacement
   - Prompt 8 desktop presence decisions
-  - Prompt 9 `MlSignal` mode separation
+  - Prompt 9 mode separation vs workflow branch separation
   - Prompt 10 verification strategy
 
 ## Bottom Line
