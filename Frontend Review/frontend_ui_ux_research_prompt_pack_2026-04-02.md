@@ -201,10 +201,6 @@ How should the current desktop shell evolve so the app feels more modern, intera
 
 Required:
 
-- `Frontend Review/frontend_design_system_spec_2026-03-28.md`
-- `Frontend Review/frontend_target_comps_2026-03-28.md`
-- `Frontend Review/workstation_behavior_plan_2026-03-28.md`
-- `Frontend Review/frontend_functional_coverage_matrix_2026-03-28.md`
 - `web/src/App.vue`
 - `web/src/components/VueWorkspaceShell.vue`
 - `web/src/components/DesktopTitlebar.vue`
@@ -326,9 +322,11 @@ Required:
 
 - `Frontend Review/Unfinished/frontend_theme_proposal_2026-03-28.md`
 - `Frontend Review/Unfinished/frontend_depth_ux_implementation_brief_2026-03-28.md`
-- `Frontend Review/frontend_design_system_spec_2026-03-28.md`
+- `Frontend Review/Prompt1/shell_hierarchy_workstation_direction_FINAL.md`
+- `Frontend Review/Prompt1/shell_hierarchy_workstation_implementation_tracking_2026-04-03.md`
 - `web/src/styles/app.css`
 - `web/src/components/VueWorkspaceShell.vue`
+- `web/src/components/DesktopTitlebar.vue`
 - `web/src/components/TopWorkspacePanel.vue`
 - `web/src/components/SettingsWorkspacePanel.vue`
 
@@ -363,6 +361,7 @@ How should the repo concretize its current theme, depth, and motion direction in
 Constraints:
 - Keep the product in workstation territory, not retail-fintech SaaS or flashy motion-heavy UI.
 - Use the current design-system and theme docs as the starting point.
+- Treat the Prompt 1 shell hierarchy direction as already implemented baseline context. Do not reopen shell information architecture unless you identify a narrow visual inconsistency that must be corrected.
 - Prefer semantic tokens, shared primitives, and repeatable patterns over one-off component styling.
 - Preserve readability on dense tables, forms, charts, and status surfaces.
 
@@ -389,12 +388,13 @@ I want you to challenge the visual-system recommendation you just made for this 
 Tasks:
 1. Identify where your first answer may still be too abstract, too aesthetic, or not concrete enough for implementation in `app.css` and the current component set.
 2. Identify any ways your proposal could hurt dense readability, overuse motion, or drift away from the repo's workstation posture.
-3. If targeted current web research would materially improve the answer, use it selectively to study:
+3. Treat the Prompt 1 shell hierarchy implementation as fixed baseline unless you identify a narrow visual inconsistency that truly requires adjustment.
+4. If targeted current web research would materially improve the answer, use it selectively to study:
    - modern dense-data desktop UI patterns
    - motion/accessibility guidance for data-dense interfaces
    - component-level hierarchy systems for professional tools
-4. Refine the recommendation down to the minimum token, pattern, and motion changes that would create a visible step up.
-5. Decide which ideas are core, which are optional, and which should be rejected.
+5. Refine the recommendation down to the minimum token, pattern, and motion changes that would create a visible step up.
+6. Decide which ideas are core, which are optional, and which should be rejected.
 
 Deliverables:
 1. "Keep / revise / reject" verdict on your first-pass visual direction
@@ -449,8 +449,6 @@ How should the densest authoring and configuration surfaces be reorganized so th
 Required:
 
 - `Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md`
-- `Frontend Review/frontend_target_comps_2026-03-28.md`
-- `Frontend Review/frontend_functional_coverage_matrix_2026-03-28.md`
 - `web/src/components/StrategyWorkspacePanel.vue`
 - `web/src/components/AdvancedWorkspacePanel.vue`
 - `web/src/components/DataWorkspacePanel.vue`
@@ -571,8 +569,6 @@ How should the analysis and review surfaces evolve so candidate triage feels fas
 
 Required:
 
-- `Frontend Review/workstation_behavior_plan_2026-03-28.md`
-- `Frontend Review/frontend_functional_coverage_matrix_2026-03-28.md`
 - `web/src/components/OverviewWorkspacePanel.vue`
 - `web/src/components/TopWorkspacePanel.vue`
 - `web/src/components/DrillWorkspacePanel.vue`
@@ -692,9 +688,6 @@ How should the repo modernize the run-library, history, and artifact-management 
 
 Required:
 
-- `Frontend Review/frontend_target_comps_2026-03-28.md`
-- `Frontend Review/frontend_functional_coverage_matrix_2026-03-28.md`
-- `Frontend Review/workstation_behavior_plan_2026-03-28.md`
 - `web/src/components/HistoryWorkspacePanel.vue`
 - `web/src/components/MetaWorkspacePanel.vue`
 - `web/src/stores/historyStore.ts`
@@ -811,9 +804,7 @@ How should the repo improve execution, settings, and diagnostics UX so high-stak
 
 Required:
 
-- `Frontend Review/frontend_functional_coverage_matrix_2026-03-28.md`
 - `Frontend Review/frontend_audit_2026-03-27.md`
-- `Frontend Review/frontend_target_comps_2026-03-28.md`
 - `web/src/components/ExecutionWorkspacePanel.vue`
 - `web/src/components/SettingsWorkspacePanel.vue`
 - `web/src/components/AppRuntimeBanner.vue`
@@ -1291,9 +1282,6 @@ How should this repo prove that a larger UI/UX modernization pass actually impro
 Required:
 
 - `Frontend Review/Unfinished/tauri_desktop_e2e_plan_2026-03-29.md`
-- `Frontend Review/frontend_functional_coverage_matrix_2026-03-28.md`
-- `Frontend Review/existing_stack_utilization_plan_2026-03-28.md`
-- `web/README.md`
 - `web/scripts/check-a11y-smoke.mjs`
 - `web/scripts/capture-baseline-ui.mjs`
 - `web/e2e/desktop/README.md`

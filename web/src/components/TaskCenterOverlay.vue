@@ -439,6 +439,7 @@ function openRelatedView(task: TrackedTask): void {
   <div ref="overlayRootRef" class="taskOverlayRoot" :style="rootStyle">
     <div ref="referenceRef" class="overlayAnchor">
       <button
+        v-if="expanded || !quietMode"
         ref="toggleRef"
         class="overlayToggle"
         :class="{ dragging: toggleDragging, quiet: quietMode }"

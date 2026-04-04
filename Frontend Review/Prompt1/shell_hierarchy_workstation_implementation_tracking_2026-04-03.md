@@ -641,10 +641,11 @@ Before/after behavior:
 Subjective outcomes recorded:
 
 - kept:
-  - one compact titlebar task signal
   - visible `Status` in the five-field default context strip
-  - shell subtitle with existing emphasis
+  - shell subtitle with softened visual emphasis
+  - shell-level task-center launcher with lighter idle visual weight
 - rejected:
+  - restoring a persistent titlebar task/status chip
   - restoring dataset or wide status duplication in the titlebar
   - adding permanent perspective chrome to the shell
 - deferred:

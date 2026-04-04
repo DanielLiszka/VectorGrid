@@ -200,7 +200,7 @@ const allContextItems = computed<ContextItem[]>(() => {
       defaultVisible: true,
     },
     { key: 'Backend', value: backendLabel || '—', current: false, defaultVisible: true },
-    { key: 'Status', value: status || 'Ready.', current: true, defaultVisible: true },
+    { key: 'Status', value: status || 'Ready.', current: statusCardCurrent.value, defaultVisible: true },
     { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—', current: false, defaultVisible: false },
   ]
 })
@@ -212,6 +212,10 @@ const taskCenterLauncherStatus = computed(() => {
   return centerStatusLabel.value
 })
 const taskCenterLauncherLabel = computed(() => `Open task center. ${taskCenterLauncherStatus.value}.`)
+const statusCardCurrent = computed(() => {
+  const progress = String(progressMeta.value || '').trim()
+  return progress.length > 0 || activeTaskCount.value > 0 || taskCenterOpen.value
+})
 
 watch(
   [currentWorkspace, currentWorkflowStep, visibleControlsItems, visibleResultsItems],
@@ -862,14 +866,14 @@ onBeforeUnmount(() => {
 
 .brandRow {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 1rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.95rem;
 }
 
 .brandBlock {
   display: grid;
-  gap: 0.18rem;
+  gap: 0.12rem;
 }
 
 .brandRow h1 {
@@ -891,29 +895,27 @@ onBeforeUnmount(() => {
 }
 
 .subtitle {
-  font-size: 0.74rem;
-  color: var(--muted);
+  align-self: baseline;
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: color-mix(in oklab, var(--muted) 88%, var(--text));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: min(42rem, 56%);
-  padding: 0.28rem 0.62rem;
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  max-width: min(48rem, 100%);
+  padding: 0.08rem 0;
 }
 
 .taskCenterLauncher {
   margin-left: auto;
-  min-height: 42px;
+  min-height: 38px;
   display: inline-flex;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.45rem 0.72rem;
-  border-radius: 14px;
-  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
-  background: color-mix(in oklab, var(--surface-working) 95%, var(--panel));
-  box-shadow: var(--shadow-inline);
+  gap: 0.58rem;
+  padding: 0.38rem 0.66rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  background: color-mix(in oklab, var(--surface-sunken) 90%, var(--panel));
   transition:
     background-color var(--motion-fast) var(--ease-standard),
     border-color var(--motion-fast) var(--ease-standard),
@@ -922,14 +924,17 @@ onBeforeUnmount(() => {
 }
 
 .taskCenterLauncher:hover {
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 34%, var(--border));
+  background: color-mix(in oklab, var(--surface-focus) 72%, var(--surface-working));
   transform: translateY(-1px);
+  box-shadow: var(--shadow-inline);
 }
 
 .taskCenterLauncher.active,
 .taskCenterLauncher.open {
   border-color: color-mix(in oklab, var(--panel-focus-edge) 70%, var(--accent));
   background: color-mix(in oklab, var(--selection-fill) 82%, var(--surface-working));
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 14%, transparent), var(--shadow-inline);
+  box-shadow: inset 0 -2px 0 var(--selection-rail), 0 0 0 1px color-mix(in oklab, var(--accent) 14%, transparent), var(--shadow-inline);
 }
 
 .taskCenterLauncherBody {
@@ -940,15 +945,16 @@ onBeforeUnmount(() => {
 }
 
 .taskCenterLauncherText {
-  font-size: 0.66rem;
+  font-size: 0.64rem;
   line-height: 1;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted-soft);
+  letter-spacing: 0.06em;
+  color: var(--muted);
 }
 
 .taskCenterLauncherValue {
-  font-size: 0.77rem;
+  font-size: 0.74rem;
+  color: var(--muted-strong);
   white-space: nowrap;
 }
 
