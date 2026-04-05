@@ -3880,7 +3880,9 @@ fn kernel_persist_buffers_enabled() -> bool {
 
 #[inline]
 fn kernel_fast_path_enabled(fast_ma: &str, slow_ma: &str) -> bool {
-    if !matches!(fast_ma, "sma" | "alma") || !matches!(slow_ma, "sma" | "alma") {
+    let classic_pair = matches!(fast_ma, "sma" | "alma") && matches!(slow_ma, "sma" | "alma");
+    let vwma_pilot_pair = fast_ma == "vwma" && slow_ma == "vwma";
+    if !(classic_pair || vwma_pilot_pair) {
         return false;
     }
     match std::env::var("VECTORBT_KERNEL_FAST_PATH") {

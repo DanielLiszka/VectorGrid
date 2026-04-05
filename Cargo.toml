@@ -6,3 +6,6 @@ members = [
   "crates/optimizer",
 ]
 resolver = "2"
+
+[patch.crates-io]
+vector-ta = { path = "vendor/vector-ta-0.2.4" }

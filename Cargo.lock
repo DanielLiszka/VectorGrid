@@ -5824,8 +5824,6 @@ checksum = "7ba6f5989077681266825251a52748b8c1d8a4ad098cc37e440103d0ea717fc0"
 [[package]]
 name = "vector-ta"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dbb17048bf20a3fb24bff24f7c1daa049677ba91ec22800612ec8e6925adccc"
 dependencies = [
  "aligned-vec",
  "anyhow",

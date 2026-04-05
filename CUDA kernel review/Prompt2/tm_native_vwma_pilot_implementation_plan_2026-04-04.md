@@ -8,13 +8,41 @@ This document extracts the valid, action-driving parts of `tm_native_ma_expansio
 
 This is a **bounded architecture pilot**, not a broad TM-native MA expansion campaign.
 
+## Execution Outcome
+
+Status: retained.
+
+Repo-owned outcome summary:
+
+- Stage 0 result: `small external addition required`
+- bounded dependency extension completed through a vendored `vector-ta 0.2.4` patch
+- runtime admission widened only for `vwma/vwma`
+- no `double_crossover.cu` or frontend/request-builder changes were required
+- deterministic `VFCT` parity and missing-volume rejection are now covered by targeted tests
+- post-review hardening widened the vendored VWMA TM-writer output index to `size_t` and tightened the parity test so it must actually run on `backend_route = GpuKernel`
+- hybrid/precomputed GPU fallback tests were rerun and remained green
+- `cargo check -p ta_app_core` passed
+- `scripts/run_gpu_perf_gate.ps1 -Mode candidate` passed
+- `scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate` passed
+- the plain `DoubleMa vwma/vwma` large exact-grid GPU surface improved from mean `route_wall_ms 100.33 -> 96.33`
+- the coarse `gpu_indicator_prep_ms` bucket was neutral in the final refreshed rerun: `30.00 -> 30.00`
+
+Resulting branch decision:
+
+- keep the bounded `vwma/vwma` pilot
+- do not promote broader TM-native MA expansion from this branch alone
+
+Primary retained findings document:
+
+- `CUDA kernel review/Prompt2/tm_native_vwma_pilot_findings_2026-04-04.md`
+
 The current repo evidence supports a narrower question:
 
 1. the current `double_ma` GPU runtime already has a VRAM-resident MA path
 2. the direct TM-native writer is currently admitted only for `sma/alma`
 3. unsupported MA families currently fall back to row-major device output plus `transpose_row_to_tm`
 4. `vwma` is a meaningful first pilot because it already has explicit device-side prefix preparation and real product surfaces
-5. current Phase 2 evidence does **not** prove that MA-prep is the next headline performance bottleneck, so this lane must justify itself on unsupported-family product coverage and measured prep-time reduction, not on the existing `alma/alma` benchmark story
+5. current Phase 2 evidence does **not** prove that MA-prep is the next headline performance bottleneck, so this lane must justify itself on unsupported-family product coverage and measured end-to-end payoff, not on the existing `alma/alma` benchmark story
 
 Primary evidence baseline:
 
@@ -142,28 +170,28 @@ Parity/fallback surfaces:
 
 ## Phase 0: Preflight And Feasibility Snapshot
 
-- [ ] Confirm no benchmark or profiler process is active.
-- [ ] Record current branch and commit.
-- [ ] Record `vector-ta` version pinned in:
+- [x] Confirm no benchmark or profiler process is active.
+- [x] Record current branch and commit.
+- [x] Record `vector-ta` version pinned in:
   - `crates/app_core/Cargo.toml`
   - `src-tauri/Cargo.toml`
-- [ ] Record current local source evidence for `vector-ta 0.2.4`:
+- [x] Record current local source evidence for `vector-ta 0.2.4`:
   - `compute_period_ma_tm_into(...)` support set
   - VWMA device-native selector support
-- [ ] Confirm current repo behavior:
+- [x] Confirm current repo behavior:
   - `kernel_fast_path_enabled(...)` admits only `sma/alma`
   - VWMA prefix prep already exists
-- [ ] Keep the retained Phase 2 code state fixed while the pilot is being scoped.
+- [x] Keep the retained Phase 2 code state fixed while the pilot is being scoped.
 
 ## Phase 1: Stage-0 Gate
 
 Goal: determine whether current `vector-ta 0.2.4` already supports TM-native VWMA output.
 
-- [ ] Attempt a compile/API check for TM-native VWMA support.
-- [ ] If needed, add a tiny non-retained scratch probe or compile-only branch to verify whether:
+- [x] Attempt a compile/API check for TM-native VWMA support.
+- [x] If needed, add a tiny non-retained scratch probe or compile-only branch to verify whether:
   - `compute_period_ma_tm_into("vwma", ...)` exists and works
   - or the current dependency only supports row-major VWMA output
-- [ ] Record the result as one of:
+- [x] Record the result as one of:
   - `already supported`
   - `small external addition required`
   - `broad dependency redesign required`
@@ -171,22 +199,22 @@ Goal: determine whether current `vector-ta 0.2.4` already supports TM-native VWM
 Stage-0 decision:
 
 - [ ] If the result is `already supported`, continue to Phase 3.
-- [ ] If the result is `small external addition required`, continue to Phase 2.
+- [x] If the result is `small external addition required`, continue to Phase 2.
 - [ ] If the result is `broad dependency redesign required`, stop the branch with a no-go note.
 
 ## Phase 2: Conditional External Dependency Extension
 
 Only start this phase if Stage 0 shows that TM-native VWMA output is missing but can be added surgically.
 
-- [ ] Keep the change narrowly scoped to TM-native VWMA output.
-- [ ] Do not broaden into a general multi-family TM-native redesign.
-- [ ] Keep workspace `vector-ta` versions aligned in:
+- [x] Keep the change narrowly scoped to TM-native VWMA output.
+- [x] Do not broaden into a general multi-family TM-native redesign.
+- [x] Keep workspace `vector-ta` versions aligned in:
   - `crates/app_core/Cargo.toml`
   - `src-tauri/Cargo.toml`
-- [ ] Record exactly what was added:
+- [x] Record exactly what was added:
   - TM-native VWMA writer path only
   - no unrelated MA-family work
-- [ ] Re-check CPU-only build expectations after dependency adjustment.
+- [x] Re-check CPU-only build expectations after dependency adjustment.
 
 Stop conditions for Phase 2:
 
@@ -197,30 +225,30 @@ Stop conditions for Phase 2:
 
 Only start this phase if Stage 0 or Phase 2 makes TM-native VWMA output available.
 
-- [ ] Update `gpu_backtest_kernel.rs` so the runtime can admit `vwma/vwma` to the TM-native writer path.
-- [ ] Keep the implementation pair-level and narrow.
-- [ ] Do **not** introduce a generalized per-side capability framework in this wave.
-- [ ] Reuse the existing VWMA prefix prep path.
-- [ ] Keep row-major plus `transpose_row_to_tm` as the fallback for all other unsupported families.
-- [ ] Keep `double_crossover.cu` unchanged.
+- [x] Update `gpu_backtest_kernel.rs` so the runtime can admit `vwma/vwma` to the TM-native writer path.
+- [x] Keep the implementation pair-level and narrow.
+- [x] Do **not** introduce a generalized per-side capability framework in this wave.
+- [x] Reuse the existing VWMA prefix prep path.
+- [x] Keep row-major plus `transpose_row_to_tm` as the fallback for all other unsupported families.
+- [x] Keep `double_crossover.cu` unchanged.
 
 Implementation rule:
 
-- [ ] the first retained runtime pilot should only change writer-path admission and should not change backtest-kernel semantics
+- [x] the first retained runtime pilot should only change writer-path admission and should not change backtest-kernel semantics
 
 ## Phase 4: Parity And Regression Hardening
 
-- [ ] Add or update tests to prove TM-native VWMA output matches the existing row-major-plus-transpose result on deterministic candles.
-- [ ] Add or update a missing-volume test for VWMA.
-- [ ] Re-run or extend the existing hybrid/precomputed tests to prove those routes stay intact.
-- [ ] Re-run sentinel checks proving current `sma/alma` fast-path behavior stays unchanged.
+- [x] Add or update tests to prove TM-native VWMA output matches the existing row-major-plus-transpose result on deterministic candles.
+- [x] Add or update a missing-volume test for VWMA.
+- [x] Re-run or extend the existing hybrid/precomputed tests to prove those routes stay intact.
+- [x] Re-run sentinel checks proving current `sma/alma` fast-path behavior stays unchanged.
 
 Suggested parity focus:
 
-- [ ] best params
-- [ ] top-k ordering
-- [ ] metric rows
-- [ ] deterministic row equivalence between new TM-native VWMA and old fallback VWMA path
+- [x] best params
+- [x] top-k ordering
+- [x] metric rows
+- [x] deterministic row equivalence between new TM-native VWMA and old fallback VWMA path
 
 ## Phase 5: Benchmark And Measurement Pass
 
@@ -228,22 +256,27 @@ Goal: prove that the pilot matters on non-ALMA product surfaces.
 
 ### 5A. Regression sentinels
 
-- [ ] Run the README-style `Double MA`, `ALMA/ALMA`, exact-grid warm app-path surface.
-- [ ] Run the Criterion anchor:
+- [x] Run the README-style `Double MA`, `ALMA/ALMA`, exact-grid warm app-path surface.
+- [x] Run the Criterion anchor:
   - `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`
 
 ### 5B. Pilot payoff surfaces
 
-- [ ] Run `DoubleMa`, `vwma/vwma`, exact-grid GPU route.
+- [x] Run `DoubleMa`, `vwma/vwma`, exact-grid GPU route.
 - [ ] Run `VFCT`, `vwma/vwma`, exact-grid GPU route.
 - [ ] Optionally run `MARRT`, `vwma/vwma`, exact-grid GPU route.
 
+Current retained scope note:
+
+- the measured runner artifact in this branch is the plain `DoubleMa vwma/vwma` route
+- `VFCT` coverage is currently provided by targeted parity/error-path tests rather than by a dedicated runner benchmark artifact
+
 ### 5C. What to measure
 
-- [ ] `gpu_kernel_timing_ms.route_wall_ms`
-- [ ] `gpu_kernel_timing_ms.gpu_indicator_prep_ms`
-- [ ] route diagnostics needed to confirm the intended GPU path
-- [ ] any parity deltas on result ordering or metrics
+- [x] `gpu_kernel_timing_ms.route_wall_ms`
+- [x] `gpu_kernel_timing_ms.gpu_indicator_prep_ms`
+- [x] route diagnostics needed to confirm the intended GPU path
+- [x] any parity deltas on result ordering or metrics
 
 ### 5D. Optional deeper profiling only if ambiguous
 
@@ -252,14 +285,22 @@ Goal: prove that the pilot matters on non-ALMA product surfaces.
 
 ## Phase 6: Decision Gate
 
-Only retain this branch if all of the following are true:
+Only retain this branch if the bounded pilot produces a clear non-ALMA payoff without widening scope or breaking parity.
 
-- [ ] the repo can run TM-native VWMA output without broad external redesign
+Final retained evaluation:
+
+- [x] the repo can run TM-native VWMA output without broad external redesign
 - [ ] `vwma/vwma` pilot surfaces show a clear, repeatable reduction in `gpu_indicator_prep_ms`
-- [ ] route wall time moves in the same direction on at least one meaningful non-ALMA payoff surface
-- [ ] `alma/alma` regression sentinels stay healthy
-- [ ] hybrid/precomputed and missing-volume behavior remain correct
-- [ ] the change remains backend-local and additive
+- [x] route wall time moves in the same direction on at least one meaningful non-ALMA payoff surface
+- [x] `alma/alma` regression sentinels stay healthy
+- [x] hybrid/precomputed and missing-volume behavior remain correct
+- [x] the change remains backend-local and additive
+
+Retain note:
+
+- the final refreshed rerun kept a bounded `route_wall_ms` win on the plain `DoubleMa vwma/vwma` surface
+- the coarse prep bucket did not retain a measurable mean reduction
+- this branch is therefore retained as a bounded unsupported-family route improvement, not as a clean proof that `gpu_indicator_prep_ms` was the decisive mechanism
 
 If the gate is not met:
 
@@ -269,9 +310,15 @@ If the gate is not met:
 ## Verification Checklist
 
 - [ ] `cargo test -p ta_app_core`
-- [ ] `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
-- [ ] `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
-- [ ] keep benchmark and profiling runs serialized
+- [x] `cargo check -p ta_app_core`
+- [x] targeted CUDA parity/fallback tests for the pilot and existing hybrid/precomputed routes
+- [x] `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+- [x] `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_alma_contract_rows_perf_gate.ps1 -Mode candidate`
+- [x] keep benchmark and profiling runs serialized
+
+Verification note:
+
+- `cargo test -p ta_app_core --features cuda,cuda-backtest-kernel` remains red in the current repo on unrelated failures, so the retained gate for this pilot is `cargo check`, targeted CUDA tests, and the existing GPU perf gates.
 
 ## Artifact Checklist
 
@@ -281,12 +328,12 @@ Suggested artifact stem:
 
 Suggested files:
 
-- [ ] Stage-0 feasibility note
-- [ ] external dependency delta note, if Phase 2 is used
-- [ ] deterministic parity test output or summary
-- [ ] README sentinel benchmark outputs
-- [ ] VWMA pilot benchmark outputs
-- [ ] one summary markdown note comparing:
+- [x] Stage-0 feasibility note
+- [x] external dependency delta note, if Phase 2 is used
+- [x] deterministic parity test output or summary
+- [x] README sentinel benchmark outputs
+- [x] VWMA pilot benchmark outputs
+- [x] one summary markdown note comparing:
   - pre-pilot fallback path
   - post-pilot path
   - non-ALMA payoff surfaces

@@ -21470,6 +21470,192 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
+    fn gpu_vfct_vwma_fast_path_matches_fallback_small_grid() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_fast_path = std::env::var("VECTORBT_KERNEL_FAST_PATH").ok();
+        let restore_fast_path = |prev: &Option<String>| match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FAST_PATH", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FAST_PATH"),
+        };
+
+        let candles = make_breakout_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 17, 2),
+            slow_range: (12, 36, 4),
+            fast_ma_types: vec!["vwma".to_string()],
+            slow_ma_types: vec!["vwma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: vfct_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(8),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
+
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: false,
+            metric_contract: None,
+            hurdle_tau: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_FAST_PATH", "0");
+        let fallback =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("fallback vwma vfct run");
+
+        std::env::set_var("VECTORBT_KERNEL_FAST_PATH", "1");
+        let fast_path =
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("fast-path vwma vfct run");
+
+        restore_fast_path(&prev_fast_path);
+
+        assert!(matches!(fallback.backend_used, BackendUsed::Gpu));
+        assert!(matches!(fast_path.backend_used, BackendUsed::Gpu));
+        assert_eq!(fallback.backend_route.as_deref(), Some("GpuKernel"));
+        assert_eq!(fast_path.backend_route.as_deref(), Some("GpuKernel"));
+
+        assert_eq!(fallback.num_combos, fast_path.num_combos);
+        assert_eq!(fallback.best_params.fast_len, fast_path.best_params.fast_len);
+        assert_eq!(fallback.best_params.slow_len, fast_path.best_params.slow_len);
+        assert_eq!(fallback.top.len(), fast_path.top.len());
+        assert!((fallback.best_metrics.sharpe - fast_path.best_metrics.sharpe).abs() <= 1e-9);
+        assert!((fallback.best_metrics.pnl - fast_path.best_metrics.pnl).abs() <= 1e-9);
+        assert_eq!(fallback.best_metrics.trades, fast_path.best_metrics.trades);
+
+        let fallback_top: Vec<(u16, u16)> = fallback
+            .top
+            .iter()
+            .map(|(p, _)| (p.fast_len, p.slow_len))
+            .collect();
+        let fast_path_top: Vec<(u16, u16)> = fast_path
+            .top
+            .iter()
+            .map(|(p, _)| (p.fast_len, p.slow_len))
+            .collect();
+        assert_eq!(fallback_top, fast_path_top);
+
+        for ((_, left), (_, right)) in fallback.top.iter().zip(fast_path.top.iter()) {
+            assert!((left.sharpe - right.sharpe).abs() <= 1e-9);
+            assert!((left.pnl - right.pnl).abs() <= 1e-9);
+            assert_eq!(left.trades, right.trades);
+        }
+
+        let fallback_heatmap = fallback.heatmap.expect("fallback heatmap");
+        let fast_path_heatmap = fast_path.heatmap.expect("fast-path heatmap");
+        assert_eq!(fallback_heatmap.bins_fast, fast_path_heatmap.bins_fast);
+        assert_eq!(fallback_heatmap.bins_slow, fast_path_heatmap.bins_slow);
+        assert_eq!(fallback_heatmap.fast_min, fast_path_heatmap.fast_min);
+        assert_eq!(fallback_heatmap.fast_max, fast_path_heatmap.fast_max);
+        assert_eq!(fallback_heatmap.slow_min, fast_path_heatmap.slow_min);
+        assert_eq!(fallback_heatmap.slow_max, fast_path_heatmap.slow_max);
+        assert_eq!(fallback_heatmap.values, fast_path_heatmap.values);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_vfct_vwma_fast_path_rejects_missing_volume() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_fast_path = std::env::var("VECTORBT_KERNEL_FAST_PATH").ok();
+        let restore_fast_path = |prev: &Option<String>| match prev {
+            Some(v) => std::env::set_var("VECTORBT_KERNEL_FAST_PATH", v),
+            None => std::env::remove_var("VECTORBT_KERNEL_FAST_PATH"),
+        };
+
+        let mut candles = make_breakout_candles(8_000);
+        candles.volume.clear();
+        candles.fields.volume = false;
+
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 17, 2),
+            slow_range: (12, 36, 4),
+            fast_ma_types: vec!["vwma".to_string()],
+            slow_ma_types: vec!["vwma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: vfct_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(8),
+            include_all: Some(false),
+            heatmap_bins: Some(16),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: false,
+            metric_contract: None,
+            hurdle_tau: None,
+        };
+
+        std::env::set_var("VECTORBT_KERNEL_FAST_PATH", "0");
+        let fallback_err =
+            run_double_ma_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect_err("fallback vwma vfct should reject missing volume");
+
+        std::env::set_var("VECTORBT_KERNEL_FAST_PATH", "1");
+        let fast_path_err =
+            run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect_err("fast-path vwma vfct should reject missing volume");
+
+        restore_fast_path(&prev_fast_path);
+
+        assert_eq!(fallback_err, fast_path_err);
+        assert!(
+            fallback_err.contains("requires 'high', 'low', and 'volume' candle columns")
+                || fallback_err.contains("Selected MA requires 'volume' but CSV has no volume column"),
+            "unexpected missing-volume error: {fallback_err}"
+        );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
     fn gpu_pit_small_grid_runs() {
         if !cuda_available() {
             return;
