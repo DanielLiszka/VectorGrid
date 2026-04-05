@@ -11,6 +11,12 @@ import { useWorkflowStore } from '../stores/workflowStore'
 import { describeStrategyOptimizationCapabilities } from '../utils/strategyOptimizationCapabilities'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
+interface GuidanceItem {
+  key: string
+  title: string
+  detail: string
+}
+
 const advancedStore = useAdvancedStore()
 const optimizeStore = useOptimizeStore()
 const strategyStore = useStrategyStore()
@@ -398,6 +404,93 @@ const advancedSummaryChips = computed(() => {
   ]
   return chips
 })
+const activeAdvancedStateSummary = computed(() => {
+  const states: string[] = []
+  if (scoreModeDraft.value.trim().length > 0) {
+    states.push(`Score ${optionLabel(scoreModeOptionItems.value, scoreModeDraft.value, scoreModeDraft.value)}`)
+  }
+  if (metricContractDraft.value !== 'auto') {
+    states.push(`Metrics ${optionLabel(metricContractOptionItems.value, metricContractDraft.value, metricContractDraft.value)}`)
+  }
+  if (extraShortlistObjectivesDraft.value.trim().length > 0) {
+    states.push(`Extra heads ${extraShortlistObjectivesDraft.value.trim()}`)
+  }
+  if (shortlistConfidenceModeDraft.value.trim().length > 0) {
+    states.push(`Confidence ${optionLabel(shortlistConfidenceModeOptionItems.value, shortlistConfidenceModeDraft.value, shortlistConfidenceModeDraft.value)}`)
+  }
+  if (shortlistUnionModeDraft.value.trim().length > 0) {
+    states.push(`Union ${optionLabel(shortlistUnionModeOptionItems.value, shortlistUnionModeDraft.value, shortlistUnionModeDraft.value)}`)
+  }
+  if (shortlistSliceModeDraft.value.trim().length > 0) {
+    states.push(`Slices ${optionLabel(shortlistSliceModeOptionItems.value, shortlistSliceModeDraft.value, shortlistSliceModeDraft.value)}`)
+  }
+  if (shortlistNeighborhoodRadiusDraft.value.trim().length > 0) {
+    states.push(`Neighborhood radius ${shortlistNeighborhoodRadiusDraft.value.trim()}`)
+  }
+  return states.join(' · ')
+})
+const rankingGuidanceItems = computed<GuidanceItem[]>(() => {
+  const items: GuidanceItem[] = []
+  if (showScoreModeControl.value) {
+    items.push({
+      key: 'score',
+      title: 'Score mode',
+      detail: `${shortlistConfidenceModeDraft.value.trim().length > 0 ? 'Confidence rerank remains independent of score mode. ' : ''}${hurdleTauStateNote.value}`.trim().length > 0
+        ? `Composite score modes are additive opt-ins over the existing metric row. Leaving Score mode at the default preserves objective-only ranking. ${hurdleTauStateNote.value}`.trim()
+        : 'Composite score modes are additive opt-ins over the existing metric row.',
+    })
+  }
+  if (showMetricContractControl.value) {
+    items.push({
+      key: 'metric-contract',
+      title: 'Metric contract',
+      detail: metricContractStateNote.value,
+    })
+  }
+  if (showExtraShortlistObjectivesControl.value) {
+    items.push({
+      key: 'extra-shortlist',
+      title: 'Extra shortlist objectives',
+      detail: extraShortlistObjectivesStateNote.value,
+    })
+  }
+  if (showShortlistConfidenceModeControl.value) {
+    items.push({
+      key: 'confidence',
+      title: 'Confidence rerank',
+      detail: shortlistConfidenceModeStateNote.value,
+    })
+  }
+  if (showShortlistUnionModeControl.value) {
+    items.push({
+      key: 'union',
+      title: 'Union rerank',
+      detail: shortlistUnionModeStateNote.value,
+    })
+  }
+  if (showShortlistSliceModeControl.value) {
+    items.push({
+      key: 'slice',
+      title: 'Slice diagnostics',
+      detail: shortlistSliceModeStateNote.value,
+    })
+  }
+  if (showShortlistSliceBenchmarkControl.value) {
+    items.push({
+      key: 'slice-benchmark',
+      title: 'Slice benchmark',
+      detail: shortlistSliceBenchmarkStateNote.value,
+    })
+  }
+  if (showShortlistNeighborhoodControls.value) {
+    items.push({
+      key: 'neighborhood',
+      title: 'Neighborhood diagnostics',
+      detail: shortlistNeighborhoodStateNote.value,
+    })
+  }
+  return items
+})
 
 watch(
   () => [
@@ -515,6 +608,9 @@ onBeforeUnmount(() => {
           {{ chip }}
         </span>
       </div>
+      <div v-if="activeAdvancedStateSummary" class="panelMuted mono">
+        Active advanced state: {{ activeAdvancedStateSummary }}
+      </div>
 
       <section class="pane panelProminentPane">
         <div class="panelSectionHeader">
@@ -616,15 +712,6 @@ onBeforeUnmount(() => {
               @change="commitInputValue('hurdleTau', hurdleTauDraft)"
             />
           </div>
-          <details class="panelDetails panelInlineDetails spanTwo">
-            <summary>Score mode guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">
-                Composite score modes are additive opt-ins over the existing metric row. Leaving Score mode at the default preserves objective-only ranking.
-                {{ ` ${hurdleTauStateNote}` }}
-              </div>
-            </div>
-          </details>
         </div>
         <div v-if="showMetricContractControl" class="gridThree stackBlock">
           <div>
@@ -648,12 +735,6 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <details class="panelDetails panelInlineDetails spanTwo">
-            <summary>Metric contract guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">{{ metricContractStateNote }}</div>
-            </div>
-          </details>
         </div>
         <div v-if="showExtraShortlistObjectivesControl" class="gridThree stackBlock">
           <div>
@@ -667,12 +748,6 @@ onBeforeUnmount(() => {
               @change="commitInputValue('extraShortlistObjectives', extraShortlistObjectivesDraft)"
             />
           </div>
-          <details class="panelDetails panelInlineDetails spanTwo">
-            <summary>Extra shortlist guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">{{ extraShortlistObjectivesStateNote }}</div>
-            </div>
-          </details>
         </div>
         <div v-if="showShortlistConfidenceModeControl" class="gridThree stackBlock">
           <div>
@@ -692,12 +767,6 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <details class="panelDetails panelInlineDetails spanTwo">
-            <summary>Confidence rerank guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">{{ shortlistConfidenceModeStateNote }}</div>
-            </div>
-          </details>
         </div>
         <div v-if="showShortlistUnionModeControl" class="gridThree stackBlock">
           <div>
@@ -717,12 +786,6 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <details class="panelDetails panelInlineDetails spanTwo">
-            <summary>Union rerank guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">{{ shortlistUnionModeStateNote }}</div>
-            </div>
-          </details>
         </div>
         <div v-if="showShortlistSliceModeControl" class="gridThree stackBlock">
           <div>
@@ -742,12 +805,6 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <details class="panelDetails panelInlineDetails spanTwo">
-            <summary>Slice diagnostics guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">{{ shortlistSliceModeStateNote }}</div>
-            </div>
-          </details>
         </div>
         <div v-if="showShortlistSliceBenchmarkControl" class="gridThree stackBlock">
           <div>
@@ -767,12 +824,6 @@ onBeforeUnmount(() => {
               </option>
             </select>
           </div>
-          <details class="panelDetails panelInlineDetails spanTwo">
-            <summary>Slice benchmark guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">{{ shortlistSliceBenchmarkStateNote }}</div>
-            </div>
-          </details>
         </div>
         <div v-if="showShortlistNeighborhoodControls" class="gridThree stackBlock">
           <div>
@@ -797,13 +848,16 @@ onBeforeUnmount(() => {
               @change="commitInputValue('shortlistNeighborhoodStep', shortlistNeighborhoodStepDraft)"
             />
           </div>
-          <details class="panelDetails panelInlineDetails">
-            <summary>Neighborhood guidance</summary>
-            <div class="panelDetailsBody">
-              <div class="panelMuted">{{ shortlistNeighborhoodStateNote }}</div>
-            </div>
-          </details>
         </div>
+        <details v-if="rankingGuidanceItems.length" class="panelDetails advancedGuidanceDetails">
+          <summary>Ranking guidance</summary>
+          <div class="panelDetailsBody guidanceList">
+            <div v-for="item in rankingGuidanceItems" :key="item.key" class="guidanceItem">
+              <div class="guidanceTitle">{{ item.title }}</div>
+              <div class="panelMuted">{{ item.detail }}</div>
+            </div>
+          </div>
+        </details>
       </section>
 
       <section class="pane">
@@ -942,6 +996,28 @@ onBeforeUnmount(() => {
 
 .panelInlineDetails {
   margin-top: 0.15rem;
+}
+
+.advancedGuidanceDetails {
+  margin-top: 0.75rem;
+}
+
+.guidanceList {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.guidanceItem {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.guidanceTitle {
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted-strong);
 }
 
 .pathRow {

@@ -579,6 +579,8 @@ How should the analysis and review surfaces evolve so candidate triage feels fas
 
 Required:
 
+- `Frontend Review/Prompt3/dense_form_progressive_disclosure_direction_FINAL.md`
+- `Frontend Review/Prompt3/dense_form_progressive_disclosure_implementation_tracking_2026-04-04.md`
 - `web/src/components/OverviewWorkspacePanel.vue`
 - `web/src/components/TopWorkspacePanel.vue`
 - `web/src/components/DrillWorkspacePanel.vue`
@@ -588,6 +590,7 @@ Required:
 
 Optional:
 
+- `web/src/components/ValidationWorkspacePanel.vue`
 - `web/src/components/HistoryWorkspacePanel.vue`
 - `web/src/components/MetaWorkspacePanel.vue`
 - `web/src/services/analysisService.ts`
@@ -616,6 +619,7 @@ Using the attached files, answer this repo-specific question:
 How should the analysis surfaces evolve so result review feels more modern, interactive, and decision-oriented across shortlist tables, charts, compare flows, and provenance cues, while still preserving dense information access?
 
 Constraints:
+- Treat the Prompt 3 dense-form and validation-sequencing implementation as landed baseline context. Do not move canonical run setup, modules/automation policy, or validation export/report ownership into the analysis surfaces unless you identify a narrow and explicit handoff problem.
 - Do not collapse the workflow into chart-only exploration.
 - Keep a strong keyboard-safe path between shortlist review and deeper inspection.
 - Treat compare, provenance, and stale-state cues as real workstation value, not decorative extras.
@@ -650,6 +654,7 @@ Tasks:
    - chart/table coordination patterns for expert users
 4. Refine the recommendation down to the highest-ROI interaction changes.
 5. Decide which analysis improvements should happen now versus later.
+6. Treat Prompt 3 control-surface ownership as fixed baseline unless you identify a concrete workflow conflict that cannot be solved within the current separation between authoring/setup surfaces and analysis/review surfaces.
 
 Deliverables:
 1. "Keep / revise / reject" verdict on the first-pass direction
@@ -684,6 +689,8 @@ The document must contain:
 7. Implementation order by file/store/service
 8. Verification plan
 9. Explicit rejects
+
+Assume Prompt 3 remains in place. Your final analysis-workflow recommendation must fit the current setup/review boundary rather than reassigning control-surface responsibilities.
 
 Make a decision and present one coherent results-workflow direction for this repo.
 ```

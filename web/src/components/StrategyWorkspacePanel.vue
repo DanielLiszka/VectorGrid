@@ -324,6 +324,37 @@ const selectedCostPresetLabel = computed(() =>
 const selectedExitModeLabel = computed(() =>
   optionLabel(exitModeOptionItems.value, exitModeDraft.value, "Cross"),
 );
+function hasDraftValue(nextValue: string): boolean {
+  return String(nextValue || "").trim().length > 0;
+}
+const coreConstraintActiveCount = computed(() =>
+  [
+    minTradesDraft.value,
+    maxDdDraft.value,
+    minSharpeDraft.value,
+    minSortinoDraft.value,
+  ].filter(hasDraftValue).length,
+);
+const additionalConstraintActiveCount = computed(() =>
+  [
+    minCalmarDraft.value,
+    maxVolatilityDraft.value,
+    minExposureDraft.value,
+    maxExposureDraft.value,
+    maxAbsNetExposureDraft.value,
+    minOmegaDraft.value,
+    maxUlcerDraft.value,
+    maxDownsideDeviationDraft.value,
+  ].filter(hasDraftValue).length,
+);
+const hasAdditionalConstraints = computed(
+  () => additionalConstraintActiveCount.value > 0,
+);
+const additionalConstraintSummary = computed(() =>
+  hasAdditionalConstraints.value
+    ? `${additionalConstraintActiveCount.value} active`
+    : "Optional long-tail guards",
+);
 const strategySummaryChips = computed(() => {
   const chips = [
     `Strategy ${strategyKindNormalized.value}`,
@@ -332,7 +363,13 @@ const strategySummaryChips = computed(() => {
     longOnly.value ? "Long only" : "Long + short",
     tradeOnNext.value ? "Trade on next bar" : "Trade on signal bar",
   ];
-  if (showDmConstraints.value) chips.push("Constraints active");
+  if (showDmConstraints.value) {
+    const totalConstraints =
+      coreConstraintActiveCount.value + additionalConstraintActiveCount.value;
+    if (totalConstraints > 0) {
+      chips.push(`Constraints ${totalConstraints} active`);
+    }
+  }
   return chips;
 });
 
@@ -1006,7 +1043,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="rowThree" v-if="showDmConstraints">
+        <div class="rowTwo" v-if="showDmConstraints">
           <div>
             <label for="vueDmMinSharpe">Min Sharpe (optional)</label>
             <input
@@ -1043,188 +1080,207 @@ onBeforeUnmount(() => {
               "
             />
           </div>
-          <div>
-            <label for="vueDmMinCalmar">Min Calmar (optional)</label>
-            <input
-              id="vueDmMinCalmar"
-              type="number"
-              step="0.01"
-              :value="minCalmarDraft"
-              @input="
-                minCalmarDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue('dmConstraintMinCalmar', minCalmarDraft);
-              "
-              @change="
-                commitInputValue('dmConstraintMinCalmar', minCalmarDraft)
-              "
-            />
-          </div>
         </div>
 
-        <div class="rowThree" v-if="showDmConstraints">
-          <div>
-            <label for="vueDmMaxVolatility">Max volatility (optional)</label>
-            <input
-              id="vueDmMaxVolatility"
-              type="number"
-              min="0"
-              step="0.0001"
-              :value="maxVolatilityDraft"
-              @input="
-                maxVolatilityDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue(
-                  'dmConstraintMaxVolatility',
-                  maxVolatilityDraft,
-                );
-              "
-              @change="
-                commitInputValue(
-                  'dmConstraintMaxVolatility',
-                  maxVolatilityDraft,
-                )
-              "
-            />
-          </div>
-          <div>
-            <label for="vueDmMinExposure">Min exposure (optional)</label>
-            <input
-              id="vueDmMinExposure"
-              type="number"
-              min="0"
-              max="1"
-              step="0.0001"
-              :value="minExposureDraft"
-              @input="
-                minExposureDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue('dmConstraintMinExposure', minExposureDraft);
-              "
-              @change="
-                commitInputValue('dmConstraintMinExposure', minExposureDraft)
-              "
-            />
-          </div>
-          <div>
-            <label for="vueDmMaxExposure">Max exposure (optional)</label>
-            <input
-              id="vueDmMaxExposure"
-              type="number"
-              min="0"
-              max="1"
-              step="0.0001"
-              :value="maxExposureDraft"
-              @input="
-                maxExposureDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue('dmConstraintMaxExposure', maxExposureDraft);
-              "
-              @change="
-                commitInputValue('dmConstraintMaxExposure', maxExposureDraft)
-              "
-            />
-          </div>
-        </div>
+        <details
+          v-if="showDmConstraints"
+          class="panelDetails strategyConstraintDetails"
+          :open="hasAdditionalConstraints"
+        >
+          <summary>
+            <span>More constraints</span>
+            <span class="mono">{{ additionalConstraintSummary }}</span>
+          </summary>
+          <div class="panelDetailsBody">
+            <div class="panelMuted">
+              Keep the most frequently used shortlist gates visible and place lower-frequency exposure, downside, and robustness guards here.
+            </div>
+            <div class="rowThree">
+              <div>
+                <label for="vueDmMinCalmar">Min Calmar (optional)</label>
+                <input
+                  id="vueDmMinCalmar"
+                  type="number"
+                  step="0.01"
+                  :value="minCalmarDraft"
+                  @input="
+                    minCalmarDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue('dmConstraintMinCalmar', minCalmarDraft);
+                  "
+                  @change="
+                    commitInputValue('dmConstraintMinCalmar', minCalmarDraft)
+                  "
+                />
+              </div>
+              <div>
+                <label for="vueDmMaxVolatility">Max volatility (optional)</label>
+                <input
+                  id="vueDmMaxVolatility"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  :value="maxVolatilityDraft"
+                  @input="
+                    maxVolatilityDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue(
+                      'dmConstraintMaxVolatility',
+                      maxVolatilityDraft,
+                    );
+                  "
+                  @change="
+                    commitInputValue(
+                      'dmConstraintMaxVolatility',
+                      maxVolatilityDraft,
+                    )
+                  "
+                />
+              </div>
+              <div>
+                <label for="vueDmMinExposure">Min exposure (optional)</label>
+                <input
+                  id="vueDmMinExposure"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.0001"
+                  :value="minExposureDraft"
+                  @input="
+                    minExposureDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue('dmConstraintMinExposure', minExposureDraft);
+                  "
+                  @change="
+                    commitInputValue('dmConstraintMinExposure', minExposureDraft)
+                  "
+                />
+              </div>
+            </div>
 
-        <div class="rowThree" v-if="showDmConstraints">
-          <div>
-            <label for="vueDmMaxAbsNetExposure"
-              >Max abs net exposure (optional)</label
-            >
-            <input
-              id="vueDmMaxAbsNetExposure"
-              type="number"
-              min="0"
-              max="1"
-              step="0.0001"
-              :value="maxAbsNetExposureDraft"
-              @input="
-                maxAbsNetExposureDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue(
-                  'dmConstraintMaxAbsNetExposure',
-                  maxAbsNetExposureDraft,
-                );
-              "
-              @change="
-                commitInputValue(
-                  'dmConstraintMaxAbsNetExposure',
-                  maxAbsNetExposureDraft,
-                )
-              "
-            />
-          </div>
-          <div>
-            <label for="vueDmMinOmega">Min Omega (optional)</label>
-            <input
-              id="vueDmMinOmega"
-              type="number"
-              min="0"
-              step="0.01"
-              :value="minOmegaDraft"
-              @input="
-                minOmegaDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue('dmConstraintMinOmega', minOmegaDraft);
-              "
-              @change="commitInputValue('dmConstraintMinOmega', minOmegaDraft)"
-            />
-          </div>
-          <div>
-            <label for="vueDmMaxUlcer">Max ulcer index (optional)</label>
-            <input
-              id="vueDmMaxUlcer"
-              type="number"
-              min="0"
-              step="0.0001"
-              :value="maxUlcerDraft"
-              @input="
-                maxUlcerDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue('dmConstraintMaxUlcer', maxUlcerDraft);
-              "
-              @change="commitInputValue('dmConstraintMaxUlcer', maxUlcerDraft)"
-            />
-          </div>
-        </div>
+            <div class="rowThree">
+              <div>
+                <label for="vueDmMaxExposure">Max exposure (optional)</label>
+                <input
+                  id="vueDmMaxExposure"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.0001"
+                  :value="maxExposureDraft"
+                  @input="
+                    maxExposureDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue('dmConstraintMaxExposure', maxExposureDraft);
+                  "
+                  @change="
+                    commitInputValue('dmConstraintMaxExposure', maxExposureDraft)
+                  "
+                />
+              </div>
+              <div>
+                <label for="vueDmMaxAbsNetExposure"
+                  >Max abs net exposure (optional)</label
+                >
+                <input
+                  id="vueDmMaxAbsNetExposure"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.0001"
+                  :value="maxAbsNetExposureDraft"
+                  @input="
+                    maxAbsNetExposureDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue(
+                      'dmConstraintMaxAbsNetExposure',
+                      maxAbsNetExposureDraft,
+                    );
+                  "
+                  @change="
+                    commitInputValue(
+                      'dmConstraintMaxAbsNetExposure',
+                      maxAbsNetExposureDraft,
+                    )
+                  "
+                />
+              </div>
+              <div>
+                <label for="vueDmMinOmega">Min Omega (optional)</label>
+                <input
+                  id="vueDmMinOmega"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  :value="minOmegaDraft"
+                  @input="
+                    minOmegaDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue('dmConstraintMinOmega', minOmegaDraft);
+                  "
+                  @change="
+                    commitInputValue('dmConstraintMinOmega', minOmegaDraft)
+                  "
+                />
+              </div>
+            </div>
 
-        <div class="rowThree" v-if="showDmConstraints">
-          <div>
-            <label for="vueDmMaxDownsideDeviation"
-              >Max downside deviation (optional)</label
-            >
-            <input
-              id="vueDmMaxDownsideDeviation"
-              type="number"
-              min="0"
-              step="0.0001"
-              :value="maxDownsideDeviationDraft"
-              @input="
-                maxDownsideDeviationDraft = String(
-                  ($event.target as HTMLInputElement).value || '',
-                );
-                queueInputValue(
-                  'dmConstraintMaxDownsideDeviation',
-                  maxDownsideDeviationDraft,
-                );
-              "
-              @change="
-                commitInputValue(
-                  'dmConstraintMaxDownsideDeviation',
-                  maxDownsideDeviationDraft,
-                )
-              "
-            />
+            <div class="rowTwo">
+              <div>
+                <label for="vueDmMaxUlcer">Max ulcer index (optional)</label>
+                <input
+                  id="vueDmMaxUlcer"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  :value="maxUlcerDraft"
+                  @input="
+                    maxUlcerDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue('dmConstraintMaxUlcer', maxUlcerDraft);
+                  "
+                  @change="
+                    commitInputValue('dmConstraintMaxUlcer', maxUlcerDraft)
+                  "
+                />
+              </div>
+              <div>
+                <label for="vueDmMaxDownsideDeviation"
+                  >Max downside deviation (optional)</label
+                >
+                <input
+                  id="vueDmMaxDownsideDeviation"
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  :value="maxDownsideDeviationDraft"
+                  @input="
+                    maxDownsideDeviationDraft = String(
+                      ($event.target as HTMLInputElement).value || '',
+                    );
+                    queueInputValue(
+                      'dmConstraintMaxDownsideDeviation',
+                      maxDownsideDeviationDraft,
+                    );
+                  "
+                  @change="
+                    commitInputValue(
+                      'dmConstraintMaxDownsideDeviation',
+                      maxDownsideDeviationDraft,
+                    )
+                  "
+                />
+              </div>
+            </div>
           </div>
-        </div>
+        </details>
 
         <div class="rowTwo">
           <div>

@@ -45,6 +45,14 @@ describe('ValidationWorkspacePanel', () => {
 
     expect(document.body.textContent || '').toContain('Run validation')
     expect(document.querySelector('#vueValAdmissionPolicy')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('Modules and automation')
+    expect(document.querySelector('#vueValWfWindow')).not.toBeNull()
+    expect(document.querySelector('#vueValCrossMode')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('Export shortlist CSV')
+    expect(document.body.textContent || '').toContain('Export validation JSON')
+    expect(document.body.textContent || '').toContain('Export report JSON')
+    expect(document.body.textContent || '').toContain('Export report XLSX')
+    expect(document.body.textContent || '').toContain('Open reports folder')
     const runButtons = Array.from(document.querySelectorAll('button')).filter(
       (button) => button.textContent?.trim() === 'Run validation',
     )

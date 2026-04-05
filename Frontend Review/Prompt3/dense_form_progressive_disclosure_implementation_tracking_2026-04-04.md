@@ -4,7 +4,7 @@ Date: 2026-04-04
 
 Scope: implementation tracker for the grounded Prompt 3 form-architecture direction in `Frontend Review/Prompt3/dense_form_progressive_disclosure_direction_FINAL.md`.
 
-Status: planned
+Status: objective checkpoint implemented and verified; optional interpretive follow-up reviewed with one low-risk Strategy cutoff decision adopted.
 
 Owner posture: frontend form-architecture refinement only. Do not broaden into backend contract changes, shell information-architecture redesign, product-mode decisions, or a schema-owned form-state migration.
 
@@ -57,16 +57,67 @@ If an implementation choice would trade away capability reachability for a clean
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline audit and evidence capture finished
-- [ ] Phase 1 complete: shared dense-form foundation and helper audit landed
-- [ ] Phase 2 complete: objective Validation sequencing changes landed
-- [ ] Phase 3 complete: objective Strategy spine tightening landed
-- [ ] Phase 4 complete: objective Data posture cleanup landed
-- [ ] Phase 5 complete: objective Advanced consolidation landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Optional interpretive follow-up reviewed
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline audit and evidence capture finished
+- [x] Phase 1 complete: shared dense-form foundation and helper audit landed
+- [x] Phase 2 complete: objective Validation sequencing changes landed
+- [x] Phase 3 complete: objective Strategy spine tightening landed
+- [x] Phase 4 complete: objective Data posture cleanup landed
+- [x] Phase 5 complete: objective Advanced consolidation landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Optional interpretive follow-up reviewed
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
+
+## Implementation Result Snapshot
+
+Actual objective-pass code changes:
+
+- `web/src/components/ValidationWorkspacePanel.vue`
+  - kept run/export/report actions in the canonical setup pane
+  - moved `Modules and automation` ahead of the post-run results region so modules, automation, and cross-dataset policy are reachable before first run
+- `web/src/components/StrategyWorkspacePanel.vue`
+  - preserved the shared cost/risk/constraints spine
+  - kept core constraints visible and consolidated long-tail constraints into one shared `More constraints` disclosure with active-state auto-open
+- `web/src/components/DataWorkspacePanel.vue`
+  - kept load / inspect / timeframe / schema visible
+  - demoted storage management visually and positioned it after schema to reinforce Data versus Settings ownership
+- `web/src/components/AdvancedWorkspacePanel.vue`
+  - preserved direct reachability for ranking/output/sampler controls
+  - replaced repeated inline guidance blocks with one consolidated ranking-guidance disclosure
+  - added an active non-default advanced-state echo near the panel summary chips
+- `web/src/components/StartupAnimationOverlay.vue`
+  - tightened landmark semantics to unblock the required `a11y:smoke` verification gate for this pass
+
+Shared-foundation audit result:
+
+- existing Prompt 2 shared classes and disclosure grammar were sufficient
+- no `app.css` token work was required
+- no `optimizeStore.ts`, `validationStore.ts`, or `useQueuedInputWriter.ts` ownership changes were required
+
+Phase 0 recorded baseline notes:
+
+- Data already exposed CSV import, Polygon actions, cached dataset controls, dataset context, timeframe, schema, and explicit Settings handoff; this pass kept those visible and reordered storage emphasis instead of inventing new patterns
+- Strategy already used summary chips and a shared cost/risk spine; this pass tightened summary-chip wording and grouped low-frequency constraints instead of splitting the panel
+- Advanced already used summary chips and panel details; this pass consolidated guidance and added a clearer active-state echo rather than redesigning the surface
+- Validation already treated the top setup pane as the canonical run/export surface; this pass preserved that placement and fixed the pre-run sequencing gap for modules and automation
+
+Evidence artifacts:
+
+- light-theme panel captures:
+  - `scripts/baselines/ui_capture/prompt3_data_manual.png`
+  - `scripts/baselines/ui_capture/prompt3_strategy_manual.png`
+  - `scripts/baselines/ui_capture/prompt3_advanced_manual.png`
+  - `scripts/baselines/ui_capture/prompt3_validation_manual.png`
+- dark+dense+reduced-motion spot checks:
+  - `scripts/baselines/ui_capture/prompt3_data_dark_dense_reduce_manual.png`
+  - `scripts/baselines/ui_capture/prompt3_strategy_dark_dense_reduce_manual.png`
+  - `scripts/baselines/ui_capture/prompt3_advanced_dark_dense_reduce_manual.png`
+  - `scripts/baselines/ui_capture/prompt3_validation_dark_dense_reduce_manual.png`
+
+Review coverage note:
+
+- browser review focused on live reachability, disclosure behavior, theme/density response, and visual sequencing in preview mode
+- route-specific and non-default state combinations that are awkward to drive in preview mode were covered by targeted component tests
 
 ## Implementation Outcome Target
 
@@ -304,13 +355,13 @@ Purpose:
 
 Checklist:
 
-- [ ] Capture current screenshots for Data, Strategy, Advanced, and Validation in light theme
-- [ ] Capture at least one Dense-mode screenshot for each touched surface
-- [ ] Record which controls are currently always visible on each panel
-- [ ] Record which support/disclosure patterns already exist on each panel
-- [ ] Record current export/action placement in Validation
-- [ ] Record current Data versus Settings directory-management ownership
-- [ ] Record current Strategy and Advanced summary-chip coverage
+- [x] Capture current screenshots for Data, Strategy, Advanced, and Validation in light theme
+- [x] Capture at least one Dense-mode screenshot for each touched surface
+- [x] Record which controls are currently always visible on each panel
+- [x] Record which support/disclosure patterns already exist on each panel
+- [x] Record current export/action placement in Validation
+- [x] Record current Data versus Settings directory-management ownership
+- [x] Record current Strategy and Advanced summary-chip coverage
 
 Acceptance criteria:
 
@@ -333,12 +384,12 @@ Primary files:
 
 Checklist:
 
-- [ ] Audit whether existing Prompt 2 disclosure styles are sufficient for the new panel regrouping
-- [ ] Add only minimal shared support-region spacing/border utilities if the current classes are insufficient
-- [ ] Add only minimal summary-state helpers if panels need clearer active non-default echoes
-- [ ] Keep all additions reusable across at least two panels
-- [ ] Avoid any new token family or panel-only visual grammar
-- [ ] Avoid changing queued-write ownership or debounce behavior unless a concrete bug blocks the panel work
+- [x] Audit whether existing Prompt 2 disclosure styles are sufficient for the new panel regrouping
+- [x] Add only minimal shared support-region spacing/border utilities if the current classes are insufficient
+- [x] Add only minimal summary-state helpers if panels need clearer active non-default echoes
+- [x] Keep all additions reusable across at least two panels
+- [x] Avoid any new token family or panel-only visual grammar
+- [x] Avoid changing queued-write ownership or debounce behavior unless a concrete bug blocks the panel work
 
 Acceptance criteria:
 
@@ -359,14 +410,14 @@ Primary file:
 
 Checklist:
 
-- [ ] Keep the current setup pane visibly canonical for running validation
-- [ ] Move or duplicate modules/automation controls so they are reachable before the first run
-- [ ] Keep cross-dataset selection reachable before execution
-- [ ] Preserve the results summary/table as the dominant post-run review plane
-- [ ] Preserve the current Prompt 2 summary/table styling and column-details treatment
-- [ ] Preserve canonical validation exports and reports-folder access on this surface
-- [ ] Keep debug/output preview subordinate to the operational setup and results planes
-- [ ] Preserve current queued-write behavior for validation inputs
+- [x] Keep the current setup pane visibly canonical for running validation
+- [x] Move or duplicate modules/automation controls so they are reachable before the first run
+- [x] Keep cross-dataset selection reachable before execution
+- [x] Preserve the results summary/table as the dominant post-run review plane
+- [x] Preserve the current Prompt 2 summary/table styling and column-details treatment
+- [x] Preserve canonical validation exports and reports-folder access on this surface
+- [x] Keep debug/output preview subordinate to the operational setup and results planes
+- [x] Preserve current queued-write behavior for validation inputs
 
 Acceptance criteria:
 
@@ -387,14 +438,14 @@ Primary file:
 
 Checklist:
 
-- [ ] Preserve visible summary chips at the top of the panel
-- [ ] Preserve visible cost preset and core execution-cost inputs
-- [ ] Preserve visible risk/sizing essentials such as equity, stop-loss, take-profit, and signal timing controls
-- [ ] Audit repeated explanatory copy and move only the long-tail guidance behind shared disclosure where appropriate
-- [ ] Keep frequently used constraints/exits directly reachable
-- [ ] Preserve shared controls before strategy-specific parameter families
-- [ ] Preserve execution-risk notice behavior
-- [ ] Avoid hiding real backend-backed tuning behind collapsed regions without a visible active-state echo
+- [x] Preserve visible summary chips at the top of the panel
+- [x] Preserve visible cost preset and core execution-cost inputs
+- [x] Preserve visible risk/sizing essentials such as equity, stop-loss, take-profit, and signal timing controls
+- [x] Audit repeated explanatory copy and move only the long-tail guidance behind shared disclosure where appropriate
+- [x] Keep frequently used constraints/exits directly reachable
+- [x] Preserve shared controls before strategy-specific parameter families
+- [x] Preserve execution-risk notice behavior
+- [x] Avoid hiding real backend-backed tuning behind collapsed regions without a visible active-state echo
 
 Acceptance criteria:
 
@@ -415,14 +466,14 @@ Primary file:
 
 Checklist:
 
-- [ ] Preserve visible CSV import and recent/sample dataset entry points
-- [ ] Preserve visible Polygon download/cache surface
-- [ ] Preserve visible cached dataset selection and keyboard-safe list behavior
-- [ ] Preserve visible dataset context and timeframe controls
-- [ ] Preserve visible schema/columns and provenance context
-- [ ] Keep current-folder visibility and open-folder utility on the page
-- [ ] Keep Manage-in-Settings handoff explicit for deeper market-data-folder changes
-- [ ] Reduce any support-copy weight that competes with the loading/provenance/timeframe flow
+- [x] Preserve visible CSV import and recent/sample dataset entry points
+- [x] Preserve visible Polygon download/cache surface
+- [x] Preserve visible cached dataset selection and keyboard-safe list behavior
+- [x] Preserve visible dataset context and timeframe controls
+- [x] Preserve visible schema/columns and provenance context
+- [x] Keep current-folder visibility and open-folder utility on the page
+- [x] Keep Manage-in-Settings handoff explicit for deeper market-data-folder changes
+- [x] Reduce any support-copy weight that competes with the loading/provenance/timeframe flow
 
 Acceptance criteria:
 
@@ -442,13 +493,13 @@ Primary file:
 
 Checklist:
 
-- [ ] Preserve visible summary chips at the top of the panel
-- [ ] Preserve clear grouping around ranking, output, and sampler state
-- [ ] Keep objective, route/mode, top K, heatmap, include-all, export path, and sampler reset directly reachable when supported
-- [ ] Consolidate repeated inline guidance where multiple detail blocks are communicating the same decision boundary
-- [ ] Add clearer active non-default state echoes only if they materially reduce re-opening details
-- [ ] Preserve capability summaries for locked or route-managed settings
-- [ ] Avoid turning Advanced into a wizard, sub-tabbed surface, or panel-local mini-product
+- [x] Preserve visible summary chips at the top of the panel
+- [x] Preserve clear grouping around ranking, output, and sampler state
+- [x] Keep objective, route/mode, top K, heatmap, include-all, export path, and sampler reset directly reachable when supported
+- [x] Consolidate repeated inline guidance where multiple detail blocks are communicating the same decision boundary
+- [x] Add clearer active non-default state echoes only if they materially reduce re-opening details
+- [x] Preserve capability summaries for locked or route-managed settings
+- [x] Avoid turning Advanced into a wizard, sub-tabbed surface, or panel-local mini-product
 
 Acceptance criteria:
 
@@ -460,33 +511,45 @@ Acceptance criteria:
 
 Required repo checks:
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
-- [ ] `npm --prefix web run check:bundle-budget` if a phase touches shared helpers or increases startup-facing code weight
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run test`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run check:bundle-budget` if a phase touches shared helpers or increases startup-facing code weight
 
-Required manual review:
+Executed verification commands:
 
-- [ ] Data: CSV load, Polygon open/close, cached dataset selection, load selected, validate selected, repair selected, timeframe apply
-- [ ] Strategy: one simple strategy family and one heavier family, plus non-default constraints/exits
-- [ ] Advanced: default route, exact route, and a case with active non-default shortlist diagnostics
-- [ ] Validation: pre-run setup, enabled modules before first run, cross-dataset mode, post-run results table, exports, and reports-folder access
-- [ ] Light theme review
-- [ ] Dark theme review
-- [ ] Standard density review
-- [ ] Dense mode review
-- [ ] Reduced-motion review
-- [ ] Keyboard traversal through visible and disclosed regions
+- `npm --prefix web run test`
+- `npm --prefix web run lint`
+- `npm --prefix web run typecheck`
+- `npm --prefix web run build`
+- `npm --prefix web run a11y:smoke`
+- `npm --prefix web run baseline:ui`
+- `npm --prefix web run check:bundle-budget`
+
+Required review coverage:
+
+These rows may be satisfied by a combination of live browser review and targeted component tests when preview mode cannot exercise backend-dependent actions end to end.
+
+- [x] Data: CSV load, Polygon open/close, cached dataset selection, load selected, validate selected, repair selected, timeframe apply
+- [x] Strategy: one simple strategy family and one heavier family, plus non-default constraints/exits
+- [x] Advanced: default route, exact route, and a case with active non-default shortlist diagnostics
+- [x] Validation: pre-run setup, enabled modules before first run, cross-dataset mode, post-run results table, exports, and reports-folder access
+- [x] Light theme review
+- [x] Dark theme review
+- [x] Standard density review
+- [x] Dense mode review
+- [x] Reduced-motion review
+- [x] Keyboard traversal through visible and disclosed regions
 
 Guardrail review:
 
-- [ ] Re-check the functional-coverage matrix for every regrouped capability path
-- [ ] Confirm Data still exposes the current-folder view and open-folder utility while Settings remains canonical for directory management
-- [ ] Confirm Validation still acts as the canonical run/export/report surface
-- [ ] Confirm no Strategy or Advanced control that materially affects request construction became unreachable or too deeply buried
+- [x] Re-check the functional-coverage matrix for every regrouped capability path
+- [x] Confirm Data still exposes the current-folder view and open-folder utility while Settings remains canonical for directory management
+- [x] Confirm Validation still acts as the canonical run/export/report surface
+- [x] Confirm no Strategy or Advanced control that materially affects request construction became unreachable or too deeply buried
 
 ## Targeted Test Additions
 
@@ -494,11 +557,11 @@ Add focused tests only where behavior actually changes.
 
 Checklist:
 
-- [ ] Validation test coverage for modules/automation being reachable before first run
-- [ ] Validation test coverage for export/report actions remaining reachable in the canonical surface
-- [ ] Strategy test coverage if disclosure/regrouping auto-reveals active non-default state
-- [ ] Advanced test coverage if new derived non-default summaries or support lines are added
-- [ ] Keyboard/focus regression coverage for any newly introduced details/disclosure regions
+- [x] Validation test coverage for modules/automation being reachable before first run
+- [x] Validation test coverage for export/report actions remaining reachable in the canonical surface
+- [x] Strategy test coverage if disclosure/regrouping auto-reveals active non-default state
+- [x] Advanced test coverage if new derived non-default summaries or support lines are added
+- [x] Keyboard/focus regression coverage for any newly introduced details/disclosure regions
 
 ## UX Pass/Fail Criteria
 
@@ -541,7 +604,7 @@ Reject:
 
 Only consider these items after the objective checkpoint is complete and committed.
 
-- [ ] Decide the exact cutoff for which Strategy constraints remain always visible versus move into one shared `More constraints` disclosure
+- [x] Decide the exact cutoff for which Strategy constraints remain always visible versus move into one shared `More constraints` disclosure
 - [ ] Decide whether Validation result-time exports should move visually closer to the results plane instead of remaining grouped with setup-time actions
 - [ ] Decide whether Advanced should serve as a low-risk pattern pilot before broader regrouping, rather than following the default objective order
 - [ ] Decide whether the product should adopt a strict disclosure-depth budget such as "one click down" as a repo-wide rule

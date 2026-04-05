@@ -191,7 +191,7 @@ onBeforeUnmount(() => {
     @click="requestSkip"
   >
     <div class="startupVeil" aria-hidden="true"></div>
-    <section class="startupScene" role="status" aria-live="polite" aria-label="VectorGrid startup">
+    <section class="startupScene" role="region" aria-label="VectorGrid startup overlay">
       <div class="startupBrand">
         <div class="startupLogoHalo">
           <img
@@ -240,7 +240,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="startupStatusRail">
+      <div class="startupStatusRail" role="status" aria-live="polite">
         <div class="startupStatus">
           <span class="startupStatusDot" aria-hidden="true"></span>
           <span class="startupStatusLabel">{{ statusLabel }}</span>

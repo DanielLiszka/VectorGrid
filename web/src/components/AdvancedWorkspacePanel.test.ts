@@ -327,6 +327,33 @@ describe('AdvancedWorkspacePanel', () => {
     wrapper.unmount()
   })
 
+  it('echoes active non-default advanced state near the panel header', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    optimize.backend = 'GpuKernel'
+    advanced.scoreMode = 'balanced_risk_adjusted_10'
+    advanced.extraShortlistObjectives = 'Pnl,Omega'
+    advanced.shortlistUnionMode = 'lexicographic'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.body.textContent || '').toContain('Active advanced state:')
+    expect(document.body.textContent || '').toContain('Score Balanced Risk-Adjusted 10')
+    expect(document.body.textContent || '').toContain('Extra heads Pnl,Omega')
+    expect(document.body.textContent || '').toContain('Union Lexicographic union')
+
+    wrapper.unmount()
+  })
+
   it('shows the explicit metric contract control for CompositeCpu on its fixed route', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -445,6 +472,31 @@ describe('AdvancedWorkspacePanel', () => {
 
     expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
     expect(document.body.textContent || '').toContain('The current route does not support shortlist slice mode')
+
+    wrapper.unmount()
+  })
+
+  it('keeps the consolidated ranking guidance disclosure focusable', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    optimize.backend = 'GpuKernel'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    const summary = document.querySelector('.advancedGuidanceDetails summary') as HTMLElement | null
+    expect(summary).not.toBeNull()
+
+    summary?.focus()
+    expect(document.activeElement).toBe(summary)
 
     wrapper.unmount()
   })

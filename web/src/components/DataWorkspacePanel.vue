@@ -517,36 +517,6 @@ onBeforeUnmount(() => {
       <section class="pane">
         <div class="panelSectionHeader">
           <div>
-            <div class="panelEyebrow">Storage</div>
-            <h3 class="panelPaneTitle">Storage and cache</h3>
-          </div>
-          <ContextHelpTip
-            title="Storage controls"
-            summary="Review the active market-data folder here and jump to Settings when you need to change or migrate it."
-            detail="Directory-level storage management is centralized in Settings so the data step stays focused on loading, downloading, and validating datasets. Opening the folder remains available here for quick inspection."
-            aria-label="Storage controls help"
-          />
-        </div>
-        <label for="vueMarketDataDir">Market data folder</label>
-        <div class="inputWithActions">
-          <input
-            id="vueMarketDataDir"
-            type="text"
-            :value="marketDataDirDraft"
-            placeholder="Default (AppData)"
-            readonly
-          />
-          <div class="actions">
-            <button type="button" :disabled="!canOpenMarketDataDir" @click="dataStore.openMarketDataDir()">Open folder</button>
-            <button type="button" @click="openStorageSettings">Manage in Settings</button>
-          </div>
-        </div>
-        <div class="muted mono">{{ marketDataDirHint }}</div>
-      </section>
-
-      <section class="pane">
-        <div class="panelSectionHeader">
-          <div>
             <div class="panelEyebrow">Context</div>
             <h3 class="panelPaneTitle">Dataset context</h3>
           </div>
@@ -613,6 +583,36 @@ onBeforeUnmount(() => {
           <span v-if="!dataFields.length" class="muted">No columns available.</span>
         </div>
         <div class="muted mono">{{ dataFieldHint || '—' }}</div>
+      </section>
+
+      <section class="pane subtlePane">
+        <div class="panelSectionHeader">
+          <div>
+            <div class="panelEyebrow">Storage</div>
+            <h3 class="panelPaneTitle">Storage and cache</h3>
+          </div>
+          <ContextHelpTip
+            title="Storage controls"
+            summary="Review the active market-data folder here and jump to Settings when you need to change or migrate it."
+            detail="Directory-level storage management is centralized in Settings so the data step stays focused on loading, downloading, and validating datasets. Opening the folder remains available here for quick inspection."
+            aria-label="Storage controls help"
+          />
+        </div>
+        <label for="vueMarketDataDir">Market data folder</label>
+        <div class="inputWithActions">
+          <input
+            id="vueMarketDataDir"
+            type="text"
+            :value="marketDataDirDraft"
+            placeholder="Default (AppData)"
+            readonly
+          />
+          <div class="actions">
+            <button type="button" :disabled="!canOpenMarketDataDir" @click="dataStore.openMarketDataDir()">Open folder</button>
+            <button type="button" @click="openStorageSettings">Manage in Settings</button>
+          </div>
+        </div>
+        <div class="muted mono">{{ marketDataDirHint }}</div>
       </section>
 
       <div class="status mono" role="status" aria-live="polite">{{ statusLine }}</div>

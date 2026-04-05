@@ -666,15 +666,20 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <section v-if="showValidationResults" class="pane">
+      <section class="pane">
         <div class="panelSectionHeader">
           <div class="panelHeadCopy">
             <div class="panelEyebrow">Policies</div>
-            <h3 class="panelPaneTitle">Checks and automation</h3>
+            <h3 class="panelPaneTitle">Modules and automation</h3>
             <div class="panelSectionLead">
-              Decide which robustness modules should run automatically and how much follow-up evidence to save.
+              Configure robustness modules, automation, and cross-dataset policy before the next validation pass. Results, exports, and debug output remain below once a run completes.
             </div>
           </div>
+        </div>
+        <div class="panelMuted">
+          {{ showValidationResults
+            ? 'These settings still shape reruns and follow-up validation passes for the current shortlist.'
+            : 'Set automation and module policy now so the first validation run already reflects the intended robustness workflow.' }}
         </div>
         <div class="checks">
           <label>
