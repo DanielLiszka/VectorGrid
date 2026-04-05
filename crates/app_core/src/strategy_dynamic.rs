@@ -2671,7 +2671,10 @@ mod tests {
             static_metrics.downside_severity,
             dynamic_metrics.downside_severity
         ));
-        assert!(approx_eq(static_metrics.kappa_tau, dynamic_metrics.kappa_tau));
+        assert!(approx_eq(
+            static_metrics.kappa_tau,
+            dynamic_metrics.kappa_tau
+        ));
         assert!(approx_eq(
             static_metrics.long_mean_return,
             dynamic_metrics.long_mean_return
@@ -2689,10 +2692,19 @@ mod tests {
             dynamic_metrics.max_underwater_duration_bars
         );
         assert_eq!(static_metrics.closed_trades, dynamic_metrics.closed_trades);
-        assert_eq!(static_metrics.winning_trades, dynamic_metrics.winning_trades);
+        assert_eq!(
+            static_metrics.winning_trades,
+            dynamic_metrics.winning_trades
+        );
         assert_eq!(static_metrics.losing_trades, dynamic_metrics.losing_trades);
-        assert!(approx_eq(static_metrics.gross_profit, dynamic_metrics.gross_profit));
-        assert!(approx_eq(static_metrics.gross_loss, dynamic_metrics.gross_loss));
+        assert!(approx_eq(
+            static_metrics.gross_profit,
+            dynamic_metrics.gross_profit
+        ));
+        assert!(approx_eq(
+            static_metrics.gross_loss,
+            dynamic_metrics.gross_loss
+        ));
     }
 
     #[test]
@@ -2999,13 +3011,7 @@ mod tests {
             );
 
         let dynamic_metrics = eval_dynamic_plan_metrics_cpu_with_candles(
-            &plan,
-            &candles,
-            &context,
-            fast,
-            slow,
-            start_t,
-            true,
+            &plan, &candles, &context, fast, slow, start_t, true,
         )
         .expect("dynamic eval with candles should succeed");
 

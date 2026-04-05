@@ -1,7 +1,7 @@
 # Options Expression Optimizer — Repo-Fit Viable Implementation Plan
 
 Date: 2026-04-02
-Status: revised implementation plan aligned to the current VectorGrid product shape, artifact system, and benchmark priorities.
+Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice now landed in the repo while the feasibility spike, GPU scorer, and richer drilldown/productization work remain pending.
 
 ## Executive Verdict
 
@@ -482,7 +482,7 @@ It is not rewritten.
 This should be generated deterministically from:
 
 - parent artifact
-- loaded dataset identity
+- persistent source dataset identity
 - current strategy/result metadata
 
 It should contain both **timestamp-based** and **index-based** coordinates.
@@ -492,9 +492,12 @@ It should contain both **timestamp-based** and **index-based** coordinates.
 - `manifest_id`
 - `parent_artifact_id`
 - `parent_run_kind`
-- `dataset_id`
+- `source_dataset_identity_hash`
+- `source_content_fingerprint`
 - `dataset_hash`
 - `timeframe`
+- `resample_spec_hash` if relevant
+- `adjustment_mode`
 - `symbol_root`
 - `side`
 - `decision_timestamp`
@@ -510,6 +513,8 @@ It should contain both **timestamp-based** and **index-based** coordinates.
 - `session_id`
 - optional tags: regime, confidence, parent-score bucket
 - `calendar_id`
+- `runtime_dataset_id` optional
+  - launch-only handle for the currently loaded app session
 - `manifest_version`
 
 #### Why bar indices matter
@@ -523,6 +528,40 @@ That gives:
 - deterministic joins back to the current dataset model
 - fewer DST/session-boundary bugs
 - cheaper indexing during candidate compilation
+
+#### Canonical projector rule
+
+Do not treat manifest projection as a generic reshape of arbitrary run artifacts.
+
+For each supported parent artifact family, define:
+
+- one canonical projector
+- one projector version
+- one explicit source of fold/split labels
+- one explicit rule for recovering `raw_underlier_price` at decision and tradable time
+
+For the first implementation slice, freeze one parent family only.
+
+Recommended default:
+
+- the current validated `DoubleMa` family
+
+Other parent families should remain out of scope until they each have a deterministic projector contract.
+
+#### Persistent identity rule
+
+`runtime_dataset_id` is not persistent identity.
+
+It is only a temporary launch handle for the currently loaded app session.
+
+All persistent manifest and cache identity must be derived from:
+
+- source content fingerprint
+- timeframe / resample specification
+- adjustment mode
+- calendar/session version
+
+not from runtime `data-N` ids.
 
 ### 6.3 OptionsDatasetManifestV1
 
@@ -548,6 +587,7 @@ Minimum fields:
 - `quote_semantics_version`
 - `corporate_action_mapping_version`
 - `contract_reference_source`
+- `contract_reference_as_of_utc`
 - `underlier_reference_source`
 
 ### 6.4 StructuralCandidateCacheV1
@@ -592,7 +632,9 @@ Suggested fields:
 - `static_filter_bundle`
 - `summary_cache_hash`
 - `ranked_results`
+- `selection_metrics`
 - `holdout_metrics`
+- `sealed_evaluation_metrics` optional
 - `stress_metrics`
 - `coverage_diagnostics`
 - `environment_metadata`
@@ -610,6 +652,33 @@ Required consequences:
 - artifact listing and load summaries must expose enough kind-specific metadata to route options-expression results correctly
 - frontend workflow artifact sync must gain an options-aware payload path rather than forcing options results through `currentRun` / `currentValidation`
 - history rehydration must reopen through the options-expression store/service path rather than the standard optimization rerun path
+
+Minimum summary metadata for list/detail surfaces should include:
+
+- `parent_artifact_id`
+- `root_symbol`
+- `options_dataset_hash`
+- `backend_used`
+- `price_semantics`
+- whether sealed evaluation metrics are present
+
+### 6.8 Rehydration contract
+
+Do not assume the current generic rerun flow is sufficient.
+
+Options-expression reopen and rerun must define:
+
+- whether the parent underlying dataset is reloaded from source on every reopen
+- how timeframe/resample state is reconstructed deterministically
+- how source fingerprint mismatches are detected
+- how missing or moved underlying CSVs fail
+- whether compiled candidate/summary caches can be reused only after identity rechecks succeed
+- how options dataset manifests are revalidated before any cached artifact is trusted
+
+The safe default is:
+
+- re-verify parent source identity and options dataset identity on every reopen
+- refuse silent reuse when fingerprints, calendar versions, or provider-semantics metadata do not match
 
 For the first spike, freeze one parent artifact family if needed.
 
@@ -725,9 +794,9 @@ For each imported price row:
 - `strike`
 - `multiplier`
 - `quote_timestamp`
-- `bid`
-- `ask`
-- `mid` or derivable mid
+- `bid` optional
+- `ask` optional
+- `mid` optional or derivable when the provider surface supports it
 - `last` optional
 - `volume` optional
 - `open_interest` optional
@@ -739,6 +808,18 @@ For each imported price row:
 If the imported surface is minute aggregates rather than true quotes, the normalized dataset must still declare that explicitly through `price_semantics` and `provider_source_surface`.
 
 Do not silently label minute aggregates as quotes.
+
+#### Contract-reference time-validity rule
+
+The candidate compiler must not use a post-hoc contract master as if it were timeless truth.
+
+For every eligible contract decision, the backend must be able to prove that the contract reference snapshot used for selection was valid **as of the event timestamp**.
+
+That means:
+
+- contract-reference sources need an explicit `as_of` version or timestamp
+- candidate compilation must reject contracts that were not eligible/listed as of the event time
+- this rule must be enforced before any GPU-facing dense slot is emitted
 
 ### Recommended normalization responsibilities
 
@@ -756,6 +837,18 @@ Do not silently label minute aggregates as quotes.
   - preserve whether the imported series came from contract reference, minute aggregates, or quotes
 - provider-entitlement traceability
   - store enough metadata to explain what realism assumptions the dataset supports
+
+### Semantics gating rule
+
+`price_semantics` must gate what execution models, invalid-reason codes, and target/stop rules are allowed.
+
+At minimum:
+
+- `minute_aggregate` datasets may support aggregate-based research fills and bar-level ambiguity rules
+- `top_of_book_quote` datasets may support quote-side fills, quote staleness rules, and spread-based invalidation
+- `derived_mid_snapshot` datasets may support mid-style fills only if the derivation rule is explicit and versioned
+
+Do not let aggregate-based datasets silently opt into quote-aware execution semantics.
 
 ### Recommended first-wave realism policy
 
@@ -921,7 +1014,7 @@ For each event:
 
 1. resolve earliest tradable bar/time
 2. apply entry delay
-3. locate the first valid quote at or after entry time
+3. locate the first valid price row at or after entry time
 4. resolve the target expiration bucket
 5. resolve the nearest strike/moneyness bucket
 6. apply the static filter bundle
@@ -931,7 +1024,7 @@ For each event:
 
 Keep the original proposal here, but make them first-class product data:
 
-- no quote after entry
+- no price row after entry
 - no expiration in bucket
 - no strike in tolerance
 - spread too wide
@@ -940,7 +1033,14 @@ Keep the original proposal here, but make them first-class product data:
 - insufficient open interest
 - entry past cutoff
 - insufficient future path
-- stale/missing quote path
+- stale/missing path
+
+Not every code applies to every `price_semantics` family.
+
+For example:
+
+- `spread too wide` and `stale quote` are quote-aware codes
+- aggregate-based datasets need their own bar/path completeness codes and must not fabricate quote-specific failures
 
 These should be visible in:
 
@@ -994,10 +1094,17 @@ The fill-model family used by the summary compiler should be coarse and explicit
 
 Suggested first-wave families:
 
-- `conservative_quote`
-- `research_mid`
+- `aggregate_research`
+- `quote_conservative`
+- `quote_mid`
 
 Do not create a large menu of nuanced fill models yet.
+
+Also:
+
+- `aggregate_research` is valid for `minute_aggregate`
+- `quote_conservative` and `quote_mid` require `top_of_book_quote`
+- fill-model families must be rejected if they do not match the dataset `price_semantics`
 
 ---
 
@@ -1009,7 +1116,16 @@ Freeze these rules before code is written.
 
 ### Fill policy
 
-#### Conservative model
+#### Aggregate-based research model (`minute_aggregate`)
+
+For long options:
+
+- use an explicit aggregate-derived entry/exit field, versioned in the dataset semantics
+- do not claim true bid/ask realism
+- use conservative same-bar ambiguity handling when target and stop are both reachable within one bar
+- treat this as research realism, not executable quote realism
+
+#### Quote-aware conservative model (`top_of_book_quote`)
 
 For long options:
 
@@ -1018,13 +1134,21 @@ For long options:
 - target/stop checks against the exitable side
 - fees included
 
-#### Research model
+#### Quote-aware research model (`top_of_book_quote` or explicit `derived_mid_snapshot`)
 
 For long options:
 
 - entry at `mid`
 - exit at `mid`
 - target/stop checks at `mid`
+
+#### Fill-family compatibility rule
+
+The backend must reject incompatible combinations:
+
+- no `ask/bid` model on `minute_aggregate`
+- no spread-based invalidation on aggregate-only datasets
+- no quote-age or crossed-market logic unless the imported surface actually supports it
 
 ### Ambiguity policy
 
@@ -1161,6 +1285,21 @@ Instead:
 - search on allowed folds only
 - score finalists on untouched folds
 - store in-sample and holdout separately
+
+### Sealed finalist evaluation rule
+
+Do not let the first holdout become a second tuning surface.
+
+At minimum, the implementation must choose one of these:
+
+1. `train -> finalist selection -> final sealed test`
+2. walk-forward evaluation where the reported score comes from slices never reused for finalist selection
+
+Also require:
+
+- a frozen finalist-count budget before holdout evaluation
+- no repeated manual retuning against the same sealed evaluation slice
+- final artifacts to label `search`, `selection`, and `sealed evaluation` metrics separately when applicable
 
 ### Stress rescore
 
@@ -1381,10 +1520,12 @@ It is appropriate for the risk profile.
 
 - CPU vs GPU on identical compiled tensors
 - repeated-run determinism
+- chunk-size invariance on identical compiled tensors
+- cache invalidation when `price_semantics`, fill family, calendar version, or contract-reference `as_of` metadata changes
 
 #### Edge-case fixtures
 
-- no quote after signal
+- no price row after signal
 - quote gap mid-trade
 - late-day 0DTE entry
 - early close session
@@ -1393,6 +1534,8 @@ It is appropriate for the risk profile.
 - stale quote chain
 - no strike in selector tolerance
 - missing expiration bucket
+- contract not listed as of event time
+- aggregate dataset incorrectly paired with quote-only fill family
 
 ### Trade inspector is part of correctness
 
@@ -1406,6 +1549,67 @@ If users cannot inspect why a slot was selected or rejected, trust will collapse
 
 This roadmap is more viable than the original because it inserts explicit go/no-go checkpoints.
 
+### Working implementation checklist
+
+This section is meant to stay short and operational.
+
+Use it as the current build-status view, while the phase sections below remain the fuller design rationale.
+
+Status key:
+
+- `[x]` implemented in the repo
+- `[ ]` not implemented yet
+- `[~]` partially implemented / intentionally narrow first slice
+
+#### Completed in the current vertical slice
+
+- `[x]` Add dedicated app-core options types and artifact contracts
+- `[x]` Add deterministic `DoubleMa -> SignalEventManifestV1` projector
+- `[x]` Add normalized options dataset import/load path for single-root datasets
+- `[x]` Add options dataset manifest persistence and listing
+- `[x]` Add the explicit compiled structural candidate cache / candidate-compiler stage for the current constrained search space
+- `[x]` Add the explicit exit-summary cache / exit-summary compiler stage for the current constrained search space
+- `[x]` Add staging diagnostics to run results, saved artifacts, and the current frontend follow-up surface
+- `[x]` Add CPU reference options-expression scorer for the constrained single-leg search space
+- `[x]` Add options-expression artifact persistence, listing, and reopen support
+- `[x]` Add Tauri commands for options dataset import/list/load and options-expression run/list/load
+- `[x]` Add frontend service bindings for the new commands
+- `[x]` Add isolated frontend store for options-expression follow-up state
+- `[x]` Mount options expression as a History follow-up panel rather than a new primary workspace mode
+- `[x]` Keep the new feature isolated from `workflowArtifactsStore` hydration
+- `[x]` Add targeted backend tests for signal-manifest projection, dataset loading, and CPU scoring
+- `[x]` Add targeted frontend tests for service/store/component behavior
+- `[x]` Verify the full frontend test suite still passes after integration
+- `[x]` Verify web typecheck and production build still pass
+- `[x]` Harden parent-artifact and saved-artifact path checks to stay inside app-owned run directories
+- `[x]` Sanitize options dataset ids before manifest lookup and persisted request usage
+- `[x]` Reject unsupported aggregate semantics for the current minute-aggregate v1 path
+- `[x]` Stop artifact listing from failing hard on malformed options-expression files
+- `[x]` Add CSV export for ranked options-expression tuples in the current History follow-up workflow
+- `[x]` Expose invalid-rate plus holdout/sealed/stress reporting columns in the current result table when those metrics are present
+- `[x]` Add a tuple detail inspector and dataset-provenance reporting inside the current History follow-up panel
+- `[x]` Surface richer saved-artifact summaries plus run/artifact provenance using the existing response payload
+- `[~]` Add lazy per-tuple event drilldown in the History follow-up panel without widening the main run payload or touching workflow hydration
+- `[x]` Add a feasibility preview path with density, invalid-reason, event-coverage, compile-timing, and replay-cost reporting
+
+#### Still pending for the full roadmap
+
+- `[~]` Run the documented Phase `0.5` compiled-tensor feasibility spike and capture real density/cache metrics
+- `[ ]` Implement the GPU scorer / compiled-tensor evaluation path
+- `[ ]` Prove the GPU scorer materially beats CPU on representative large jobs before product promotion
+- `[ ]` Add robustness rescore variants beyond the current narrow baseline
+- `[ ]` Add sealed finalist evaluation artifact/reporting beyond the current basic split-aware scoring
+- `[ ]` Add richer trade inspector / full path-level event drilldown beyond the current lazy tuple-event table
+- `[x]` Add broader reporting surfaces beyond the current CSV export path
+- `[ ]` Add optional post-v1 multi-leg fixed-geometry expression families only if tensor density remains acceptable
+
+#### Intentionally narrow first-slice constraints that still hold
+
+- `[~]` Parent artifact support is currently limited to `DoubleMa`
+- `[~]` Current options data realism is limited to the constrained minute-aggregate path
+- `[~]` The current scorer is `cpu_reference`; GPU productization is still pending
+- `[~]` The current frontend host is the History follow-up panel, not a dedicated options mode
+
 ### Phase 0 — Repo-fit contract spike
 
 Deliverables:
@@ -1414,6 +1618,7 @@ Deliverables:
 - freeze first-spike parent artifact family
 - audit current validated artifact kinds and run-artifact loading paths for deterministic manifest projection requirements
 - define parent artifact -> SignalEventManifestV1 projection
+- define persistent dataset identity rules separate from runtime `data_id`
 - define storage split between runs and data cache
 - define one-root-per-job rule
 - define static compile config vs runtime tuple grid
@@ -1457,11 +1662,11 @@ Deliverables:
 - history/validation action: **Express with Options**
 - options-expression store/service shell
 - parent artifact rehydration
-- preflight diagnostics endpoint with no scorer yet
+- parent-artifact diagnostics and identity checks with no scorer yet
 
 Exit criterion:
 
-- a validated artifact can launch into an options-expression draft workflow and surface coverage diagnostics
+- a validated artifact can launch into an options-expression draft workflow and surface deterministic parent-artifact / rehydration diagnostics
 
 ### Phase 2 — Options data import and normalization
 
@@ -1476,10 +1681,11 @@ Deliverables:
 - session/calendar alignment
 - price/quote cleanup rules
 - provider-surface semantics captured in the manifest
+- contract-reference `as_of` semantics enforced
 
 Exit criterion:
 
-- for one liquid root and date range, normalized Massive-derived contract metadata and minute-price access are reliable and auditable
+- for one liquid root and date range, normalized Massive-derived contract metadata and minute-price access are reliable, auditable, and time-valid as of the event horizon
 
 ### Phase 3 — Signal manifest + candidate compiler
 
@@ -1547,6 +1753,7 @@ Deliverables:
 
 - final options-expression artifact kind
 - required finalist validation stage for the options layer
+- search / selection / sealed-evaluation metrics separation where applicable
 - holdout metrics
 - stress rescore
 - conservative ranking view

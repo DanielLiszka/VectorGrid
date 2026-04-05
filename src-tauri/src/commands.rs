@@ -16,6 +16,10 @@ mod commands_meta;
 mod commands_ml_signal;
 #[path = "commands_optimize.rs"]
 mod commands_optimize;
+#[path = "commands_options_data.rs"]
+mod commands_options_data;
+#[path = "commands_options_expression.rs"]
+mod commands_options_expression;
 #[path = "commands_reports.rs"]
 mod commands_reports;
 #[path = "commands_reports_api.rs"]
@@ -96,6 +100,16 @@ pub use commands_optimize::{
     run_composite_cpu_optimization, run_composite_mo_optimization, run_double_ma_optimization,
 };
 pub(crate) use commands_optimize::{OffsetProgressSink, TauriProgressSink};
+pub use commands_options_data::{
+    import_options_dataset, list_options_datasets, load_options_dataset_manifest,
+    OptionsDatasetImportRequest,
+};
+pub use commands_options_expression::{
+    analyze_options_expression_feasibility, inspect_options_expression_tuple,
+    list_options_expression_artifacts, load_options_expression_artifact, run_options_expression,
+    AnalyzeOptionsExpressionFeasibilityResponse, InspectOptionsExpressionTupleRequest,
+    OptionsExpressionArtifactSummary, RunOptionsExpressionResponse,
+};
 pub use commands_reports::build_report_xlsx_bytes_headless;
 pub(crate) use commands_reports::{
     build_meta_report_xlsx_bytes, quantile, reveal_path_blocking, sanitize_filename_component,
@@ -130,5 +144,6 @@ pub use ta_app_core::{
     MlSignalModelBundleStatus, MlSignalModelBundleSummary, MlSignalPolicyParams,
     MlSignalPolicySweepRequest, MlSignalPolicySweepResult, MlSignalScoreCacheBuildRequest,
     MlSignalScoreCacheBuildResult, MlSignalValidationRequest, MlSignalValidationResult,
-    OptimizationModeResolved,
+    OptimizationModeResolved, OptionsDatasetManifestV1, OptionsExpressionArtifactV1,
+    OptionsExpressionFeasibilityReport, OptionsExpressionRunRequest, OptionsExpressionRunResult,
 };

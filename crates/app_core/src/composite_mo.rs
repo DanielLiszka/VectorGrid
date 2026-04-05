@@ -472,16 +472,8 @@ fn composite_mo_trade22_request(
     CompositeCpuRequest {
         backend: Backend::CpuOnly,
         data_id: req.data_id.clone(),
-        fast_range: (
-            params.fast_len as u32,
-            params.fast_len as u32,
-            1,
-        ),
-        slow_range: (
-            params.slow_len as u32,
-            params.slow_len as u32,
-            1,
-        ),
+        fast_range: (params.fast_len as u32, params.fast_len as u32, 1),
+        slow_range: (params.slow_len as u32, params.slow_len as u32, 1),
         fast_ma_types: vec![params.fast_ma_type.clone()],
         slow_ma_types: vec![params.slow_ma_type.clone()],
         ma_source: req.ma_source.clone(),

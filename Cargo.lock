@@ -4816,6 +4816,7 @@ dependencies = [
 name = "ta_app_core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "criterion",
  "csv",

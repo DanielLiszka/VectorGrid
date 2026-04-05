@@ -145,7 +145,10 @@ fn artifact_requested_metric_contract(artifact: &Value) -> String {
 
 fn artifact_requested_trade22(artifact: &Value) -> bool {
     let metric_contract = artifact_requested_metric_contract(artifact);
-    if matches!(metric_contract.as_str(), "trade_22" | "trade22" | "trade-22") {
+    if matches!(
+        metric_contract.as_str(),
+        "trade_22" | "trade22" | "trade-22"
+    ) {
         return true;
     }
 
@@ -244,9 +247,7 @@ fn strategy_kind_supports_exact_gpu_metric_surface(artifact: &Value) -> bool {
     )
 }
 
-fn detect_exact_gpu_kernel_surface_kind(
-    artifact: &Value,
-) -> Option<OptimizationMetricSurfaceKind> {
+fn detect_exact_gpu_kernel_surface_kind(artifact: &Value) -> Option<OptimizationMetricSurfaceKind> {
     if !strategy_kind_supports_exact_gpu_metric_surface(artifact) {
         return None;
     }
@@ -348,8 +349,7 @@ fn detect_surface_kind(artifact: &Value) -> OptimizationMetricSurfaceKind {
         return OptimizationMetricSurfaceKind::Legacy;
     }
 
-    if artifact_requested_trade22(artifact) && strategy_kind_supports_trade22(artifact)
-    {
+    if artifact_requested_trade22(artifact) && strategy_kind_supports_trade22(artifact) {
         return OptimizationMetricSurfaceKind::Trade22;
     }
 
@@ -1468,7 +1468,8 @@ mod tests {
     }
 
     #[test]
-    fn artifact_metric_surface_kind_keeps_stale_exact_gpu_kernel_artifact_legacy_without_evidence() {
+    fn artifact_metric_surface_kind_keeps_stale_exact_gpu_kernel_artifact_legacy_without_evidence()
+    {
         let artifact = json!({
             "optimization_metric_surface": {
                 "schema_version": 1,

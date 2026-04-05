@@ -481,7 +481,9 @@ mod real {
         match raw.trim().to_ascii_lowercase().as_str() {
             "inventory" => Ok(CommandMode::Inventory),
             "capture" => Ok(CommandMode::Capture),
-            other => Err(format!("unsupported --mode '{other}' (expected: inventory|capture)")),
+            other => Err(format!(
+                "unsupported --mode '{other}' (expected: inventory|capture)"
+            )),
         }
     }
 
@@ -497,7 +499,9 @@ mod real {
         match raw.trim().to_ascii_lowercase().as_str() {
             "large" => Ok(WorkloadKind::Large),
             "xlarge" => Ok(WorkloadKind::Xlarge),
-            other => Err(format!("unsupported --workload '{other}' (expected: large|xlarge)")),
+            other => Err(format!(
+                "unsupported --workload '{other}' (expected: large|xlarge)"
+            )),
         }
     }
 
@@ -582,9 +586,7 @@ mod real {
         parse_arg_value("--output-dir")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from(
-                    r"C:\Rust Projects\ta_desktop_demo\target\cupti_sass_probe",
-                )
+                PathBuf::from(r"C:\Rust Projects\ta_desktop_demo\target\cupti_sass_probe")
             })
     }
 
@@ -829,7 +831,10 @@ mod real {
             ("architecture".to_string(), status.architecture),
             ("sli".to_string(), status.sli),
             ("vgpu".to_string(), status.vgpu),
-            ("confidential_compute".to_string(), status.confidential_compute),
+            (
+                "confidential_compute".to_string(),
+                status.confidential_compute,
+            ),
             ("cmp".to_string(), status.cmp),
             ("wsl".to_string(), status.wsl),
             ("sku".to_string(), status.sku),
@@ -846,8 +851,7 @@ mod real {
 
     fn device_supported_params(device: cuda::CUdevice) -> CUpti_Profiler_DeviceSupported_Params {
         CUpti_Profiler_DeviceSupported_Params {
-            struct_size: offset_of!(CUpti_Profiler_DeviceSupported_Params, sku)
-                + size_of::<i32>(),
+            struct_size: offset_of!(CUpti_Profiler_DeviceSupported_Params, sku) + size_of::<i32>(),
             p_priv: std::ptr::null_mut(),
             cu_device: device,
             is_supported: 0,
@@ -964,10 +968,8 @@ mod real {
         ctx: cuda::CUcontext,
     ) -> CUpti_SassMetricsGetDataProperties_Params {
         CUpti_SassMetricsGetDataProperties_Params {
-            struct_size: offset_of!(
-                CUpti_SassMetricsGetDataProperties_Params,
-                num_of_instances
-            ) + size_of::<usize>(),
+            struct_size: offset_of!(CUpti_SassMetricsGetDataProperties_Params, num_of_instances)
+                + size_of::<usize>(),
             p_priv: std::ptr::null_mut(),
             ctx,
             num_of_patched_instruction_records: 0,
@@ -1084,8 +1086,12 @@ mod real {
     }
 
     fn ensure_output_dir(path: &Path) -> Result<(), String> {
-        fs::create_dir_all(path)
-            .map_err(|e| format!("failed to create output directory '{}': {e}", path.display()))
+        fs::create_dir_all(path).map_err(|e| {
+            format!(
+                "failed to create output directory '{}': {e}",
+                path.display()
+            )
+        })
     }
 
     fn write_json_file<T: Serialize>(path: &Path, payload: &T) -> Result<(), String> {
@@ -1136,11 +1142,7 @@ mod real {
         let request = make_request(config);
         let t0 = Instant::now();
         let result = run_double_ma_optimization_blocking_with_candles_and_eval_range(
-            request,
-            &candles,
-            &cancel,
-            None,
-            None,
+            request, &candles, &cancel, None, None,
         )?;
         if !matches!(result.backend_used, BackendUsed::Gpu) {
             return Err(format!(
@@ -1232,7 +1234,8 @@ mod real {
                 ),
             ];
 
-            if data_props.num_of_patched_instruction_records == 0 || data_props.num_of_instances == 0
+            if data_props.num_of_patched_instruction_records == 0
+                || data_props.num_of_instances == 0
             {
                 let mut disable_params = metric_disable_params(ctx);
                 api.check(
@@ -1256,8 +1259,10 @@ mod real {
                         fast_ma: "alma".to_string(),
                         slow_ma: "alma".to_string(),
                         metric_contract: metric_contract_label(config.metric_contract).to_string(),
-                        shortlist_slice_mode: shortlist_slice_mode_label(config.shortlist_slice_mode)
-                            .to_string(),
+                        shortlist_slice_mode: shortlist_slice_mode_label(
+                            config.shortlist_slice_mode,
+                        )
+                        .to_string(),
                         shortlist_slice_benchmark: shortlist_slice_benchmark_label(
                             config.shortlist_slice_benchmark.as_ref(),
                         )
@@ -1369,19 +1374,21 @@ mod real {
 
             let region_metrics = grouped
                 .into_iter()
-                .map(|((function_name, cubin_crc, function_index), mut pc_records)| {
-                    pc_records.sort_by_key(|record| record.pc_offset);
-                    KernelMetricSummary {
-                        function_name: function_name.clone(),
-                        cubin_crc,
-                        function_index,
-                        record_count: pc_records.len(),
-                        metric_totals: totals
-                            .remove(&(function_name, cubin_crc, function_index))
-                            .unwrap_or_default(),
-                        pc_records,
-                    }
-                })
+                .map(
+                    |((function_name, cubin_crc, function_index), mut pc_records)| {
+                        pc_records.sort_by_key(|record| record.pc_offset);
+                        KernelMetricSummary {
+                            function_name: function_name.clone(),
+                            cubin_crc,
+                            function_index,
+                            record_count: pc_records.len(),
+                            metric_totals: totals
+                                .remove(&(function_name, cubin_crc, function_index))
+                                .unwrap_or_default(),
+                            pc_records,
+                        }
+                    },
+                )
                 .collect::<Vec<_>>();
 
             Ok(CaptureOutput {

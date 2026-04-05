@@ -46,6 +46,10 @@ pub mod mkcs_gpu_kernel;
 pub mod ml_confidence;
 pub mod ml_signal;
 pub mod nvtx;
+pub mod options_data_store;
+pub mod options_expression;
+pub mod options_signal_manifest;
+pub mod options_types;
 pub(crate) mod prescan_predictive;
 pub mod progress;
 pub(crate) mod request_normalization;
@@ -199,6 +203,30 @@ pub use ml_signal::{
     MlSignalScoreCacheBuildRequest, MlSignalScoreCacheBuildResult, MlSignalScoreCacheManifest,
     MlSignalSplitPlan, MlSignalSplitWindow, MlSignalSweepAxisF64, MlSignalSweepAxisUsize,
     MlSignalTickerHoldoutConfig, MlSignalValidationRequest, MlSignalValidationResult,
+};
+
+pub use options_data_store::{
+    dataset_manifest_path, load_imported_options_dataset_from_csv, read_options_dataset_manifest,
+    scan_options_dataset_manifests, write_options_dataset_manifest,
+    ImportedOptionsDatasetCsvBuildRequest,
+};
+pub use options_expression::{
+    analyze_options_expression_feasibility_blocking, inspect_options_expression_tuple_blocking,
+    run_options_expression_blocking,
+};
+pub use options_signal_manifest::build_options_signal_manifest_from_double_ma;
+pub use options_types::{
+    ImportedOptionsDataset, OptionType, OptionsCandidateInvalidReason,
+    OptionsCandidateInvalidReasonCount, OptionsContractSeries, OptionsDatasetManifestV1,
+    OptionsEvaluationSplit, OptionsExitTemplateFamily, OptionsExpressionArtifactV1,
+    OptionsExpressionDiagnostics, OptionsExpressionEventDetailRow, OptionsExpressionEventStatus,
+    OptionsExpressionExitReason, OptionsExpressionFeasibilityReport, OptionsExpressionMetrics,
+    OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    OptionsExpressionTupleInspectionResult, OptionsExpressionTupleResult, OptionsFillModelFamily,
+    OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
+    OptionsSignalEventManifestV1, OptionsStaticFilterBundle, OptionsTupleSpec, SignalSide,
+    OPTIONS_DATASET_MANIFEST_VERSION, OPTIONS_EXPRESSION_ARTIFACT_VERSION,
+    OPTIONS_SIGNAL_MANIFEST_VERSION,
 };
 
 pub use sharpe_stats::{

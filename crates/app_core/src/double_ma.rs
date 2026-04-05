@@ -2990,12 +2990,14 @@ fn maybe_enrich_nonexact_trade22_result(
 
     let close = vector_ta::utilities::data_loader::source_type(candles, "close");
     let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
-    let fv_close = first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let fv_ma = first_finite_idx(ma_prices)
-        .ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
     let mut first_valid = fv_close.max(fv_ma);
 
-    let regime_filter = compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
+    let regime_filter =
+        compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
     if let Some(trend) = regime_filter.as_ref() {
         let fv_regime = first_finite_idx(trend)
             .ok_or_else(|| "regime trend series all non-finite".to_string())?;
@@ -3012,7 +3014,11 @@ fn maybe_enrich_nonexact_trade22_result(
     }
 
     let lr = compute_log_returns_f64(close);
-    let trade_offset = if strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let trade_offset = if strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
     let mut fast_cache: HashMap<(u16, u16), Vec<f64>> = HashMap::new();
     let mut slow_cache: HashMap<(u16, u16), Vec<f64>> = HashMap::new();
 
@@ -3069,7 +3075,9 @@ fn maybe_enrich_nonexact_trade22_result(
         let slow = slow_cache
             .get(&(params.slow_len, params.slow_ma_id))
             .ok_or_else(|| "slow MA cache miss".to_string())?;
-        let max_p = (params.fast_len as usize).max(params.slow_len as usize).max(1);
+        let max_p = (params.fast_len as usize)
+            .max(params.slow_len as usize)
+            .max(1);
         let start_t = first_valid
             .saturating_add(max_p.saturating_sub(1))
             .saturating_add(trade_offset);
@@ -15996,7 +16004,9 @@ mod tests {
             &candles,
         )
         .expect("plain trade22 drilldown");
-        let trade_stats = drill.trade_stats.expect("plain trade22 drilldown trade stats");
+        let trade_stats = drill
+            .trade_stats
+            .expect("plain trade22 drilldown trade stats");
         assert!(trade_stats.closed_trades > 0);
 
         assert_trade22_metrics_match_trade_stats(
@@ -16004,11 +16014,7 @@ mod tests {
             &res.best_metrics,
             &trade_stats,
         );
-        assert_trade22_metrics_match_trade_stats(
-            "plain trade22 top",
-            &res.top[0].1,
-            &trade_stats,
-        );
+        assert_trade22_metrics_match_trade_stats("plain trade22 top", &res.top[0].1, &trade_stats);
     }
 
     #[test]
@@ -16550,13 +16556,9 @@ mod tests {
             req.data_id = format!("dynamic-{label}-trade22");
             req.include_trade_metrics = true;
 
-            let res = run_double_ma_optimization_blocking_with_candles(
-                req,
-                &candles,
-                &cancel,
-                None,
-            )
-            .unwrap_or_else(|err| panic!("{label} dynamic cpu trade22 run failed: {err}"));
+            let res =
+                run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                    .unwrap_or_else(|err| panic!("{label} dynamic cpu trade22 run failed: {err}"));
 
             assert!(matches!(res.backend_used, BackendUsed::Cpu));
             assert_eq!(
@@ -16582,10 +16584,8 @@ mod tests {
     fn request_dynamic_strategy_ir_cpu_composite_cpu_accepts_full17_metric_contract() {
         let candles = make_trending_candles(8_000);
         let cancel = AtomicBool::new(false);
-        let ir = make_dynamic_composite_ir(
-            StrategyProfileKind::CompositeCpu,
-            StrategyConfig::default(),
-        );
+        let ir =
+            make_dynamic_composite_ir(StrategyProfileKind::CompositeCpu, StrategyConfig::default());
         let mut req = make_dynamic_request(Backend::CpuOnly, Some(ir));
         req.metric_contract = Some(DoubleMaMetricContract::Full17);
 
@@ -21541,8 +21541,14 @@ mod tests {
         assert_eq!(fast_path.backend_route.as_deref(), Some("GpuKernel"));
 
         assert_eq!(fallback.num_combos, fast_path.num_combos);
-        assert_eq!(fallback.best_params.fast_len, fast_path.best_params.fast_len);
-        assert_eq!(fallback.best_params.slow_len, fast_path.best_params.slow_len);
+        assert_eq!(
+            fallback.best_params.fast_len,
+            fast_path.best_params.fast_len
+        );
+        assert_eq!(
+            fallback.best_params.slow_len,
+            fast_path.best_params.slow_len
+        );
         assert_eq!(fallback.top.len(), fast_path.top.len());
         assert!((fallback.best_metrics.sharpe - fast_path.best_metrics.sharpe).abs() <= 1e-9);
         assert!((fallback.best_metrics.pnl - fast_path.best_metrics.pnl).abs() <= 1e-9);
@@ -21649,7 +21655,8 @@ mod tests {
         assert_eq!(fallback_err, fast_path_err);
         assert!(
             fallback_err.contains("requires 'high', 'low', and 'volume' candle columns")
-                || fallback_err.contains("Selected MA requires 'volume' but CSV has no volume column"),
+                || fallback_err
+                    .contains("Selected MA requires 'volume' but CSV has no volume column"),
             "unexpected missing-volume error: {fallback_err}"
         );
     }

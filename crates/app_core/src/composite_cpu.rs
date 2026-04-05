@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationMode, OptimizationResult};
 use ta_strategies::composite_cpu::CompositeSignalMode;
-use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig, TradeStats};
+use ta_strategies::double_ma::{
+    DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig, TradeStats,
+};
 #[cfg(feature = "cuda")]
 use vector_ta::utilities::enums::Kernel;
 
@@ -568,7 +570,8 @@ fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
 }
 
 fn composite_trade22_requested(req: &CompositeCpuRequest) -> bool {
-    req.include_trade_metrics || matches!(req.metric_contract, Some(DoubleMaMetricContract::Trade22))
+    req.include_trade_metrics
+        || matches!(req.metric_contract, Some(DoubleMaMetricContract::Trade22))
 }
 
 fn composite_metric_surface_kind(req: &CompositeCpuRequest) -> &'static str {
@@ -691,8 +694,14 @@ fn evaluate_asr_trade22_metrics(
         #[cfg(feature = "cuda")]
         None,
     )?;
-    let max_period =
-        usize::from(periods.squeeze.max(periods.trend).max(periods.er).max(periods.z)).max(1);
+    let max_period = usize::from(
+        periods
+            .squeeze
+            .max(periods.trend)
+            .max(periods.er)
+            .max(periods.z),
+    )
+    .max(1);
     let start_t = compute_asr_start_t(
         fv_close,
         fv_ma,
@@ -752,8 +761,7 @@ fn evaluate_vcc_trade22_metrics(
         #[cfg(feature = "cuda")]
         None,
     )?;
-    let max_period =
-        usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1);
+    let max_period = usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1);
     let start_t = compute_vcc_start_t(
         fv_close,
         fv_ma,
@@ -848,8 +856,7 @@ fn evaluate_rocb_trade22_metrics(
     let low = vector_ta::utilities::data_loader::source_type(candles, "low");
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let fv_high =
-        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let lr = compute_log_returns_f64(close);
     let periods = resolve_rocb_periods(&rocb_cfg, params.fast_len, params.slow_len);
@@ -907,8 +914,7 @@ fn evaluate_vcet_trade22_metrics(
     let low = vector_ta::utilities::data_loader::source_type(candles, "low");
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let fv_high =
-        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let lr = compute_log_returns_f64(close);
     let periods = resolve_vcet_periods(&vcet_cfg, params.fast_len, params.slow_len);
@@ -938,14 +944,8 @@ fn evaluate_vcet_trade22_metrics(
         chandelier.first_valid,
         strategy.trade_on_next_bar,
     );
-    let desired = build_vcet_desired_positions(
-        close,
-        &vidya,
-        &chandelier,
-        start_t,
-        &strategy,
-        &vcet_cfg,
-    );
+    let desired =
+        build_vcet_desired_positions(close, &vidya, &chandelier, start_t, &strategy, &vcet_cfg);
     Ok(eval_asr_metrics_from_desired(
         candles, &lr, &desired, start_t, &strategy,
     ))
@@ -966,8 +966,7 @@ fn evaluate_mkcs_trade22_metrics(
     let low = vector_ta::utilities::data_loader::source_type(candles, "low");
     let fv_close =
         first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
-    let fv_high =
-        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_high = first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
     let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
     let lr = compute_log_returns_f64(close);
     let periods = resolve_mkcs_periods(&mkcs_cfg, params.fast_len, params.slow_len);
@@ -13662,9 +13661,13 @@ mod tests {
         req.heatmap_bins = Some(0);
         req.metric_contract = Some(DoubleMaMetricContract::Trade22);
 
-        let res =
-            run_composite_cpu_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
-                .expect("composite cpu trade22 run");
+        let res = run_composite_cpu_optimization_blocking_with_candles(
+            req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("composite cpu trade22 run");
         assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
 
         let all = res
@@ -15822,13 +15825,9 @@ mod tests {
 
         let mut gpu_req = cpu_req.clone();
         gpu_req.backend = Backend::GpuKernel { device_id: 0 };
-        let gpu_res = run_composite_cpu_optimization_blocking_with_candles(
-            gpu_req,
-            &candles,
-            &cancel,
-            None,
-        )
-        .expect("asr gpu trade22 optimization run");
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, &candles, &cancel, None)
+                .expect("asr gpu trade22 optimization run");
 
         assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
@@ -15883,13 +15882,30 @@ mod tests {
             .as_ref()
             .expect("asr trade22 drilldown trade stats");
 
-        assert_trade22_metrics_match_trade_stats("asr cpu trade22 best", &cpu_res.best_metrics, trade_stats);
-        assert_trade22_metrics_match_trade_stats("asr cpu trade22 top", &cpu_res.top[0].1, trade_stats);
+        assert_trade22_metrics_match_trade_stats(
+            "asr cpu trade22 best",
+            &cpu_res.best_metrics,
+            trade_stats,
+        );
+        assert_trade22_metrics_match_trade_stats(
+            "asr cpu trade22 top",
+            &cpu_res.top[0].1,
+            trade_stats,
+        );
         assert_trade22_metrics_match_trade_stats("asr cpu trade22 all", &cpu_all[0].1, trade_stats);
 
-        assert_eq!(cpu_res.best_metrics.closed_trades, gpu_res.best_metrics.closed_trades);
-        assert_eq!(cpu_res.best_metrics.winning_trades, gpu_res.best_metrics.winning_trades);
-        assert_eq!(cpu_res.best_metrics.losing_trades, gpu_res.best_metrics.losing_trades);
+        assert_eq!(
+            cpu_res.best_metrics.closed_trades,
+            gpu_res.best_metrics.closed_trades
+        );
+        assert_eq!(
+            cpu_res.best_metrics.winning_trades,
+            gpu_res.best_metrics.winning_trades
+        );
+        assert_eq!(
+            cpu_res.best_metrics.losing_trades,
+            gpu_res.best_metrics.losing_trades
+        );
         assert!(
             (cpu_res.best_metrics.gross_profit - gpu_res.best_metrics.gross_profit).abs() <= 1.0e-9
         );

@@ -16,6 +16,7 @@ import { useWorkflowStore } from "../stores/workflowStore";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
+import OptionsExpressionPanel from "./OptionsExpressionPanel.vue";
 
 const historyStore = useHistoryStore();
 const workflowStore = useWorkflowStore();
@@ -767,6 +768,13 @@ onBeforeUnmount(() => {
           </div>
         </details>
       </section>
+
+      <OptionsExpressionPanel
+        v-if="historyStage === 'ready'"
+        :parent-artifact-path="String(savedValue || '').trim()"
+        :parent-strategy-kind="savedRunDetailStrategy"
+        :parent-dataset-label="savedRunDetailDataset"
+      />
 
       <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
       <ConfirmationDialog
