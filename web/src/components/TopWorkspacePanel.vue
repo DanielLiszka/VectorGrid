@@ -277,6 +277,7 @@ const canPinSelectedTopCandidate = computed(
   () => selectedTopIndex.value >= 0 && !!selectedTopRowId.value && !pinnedTopCandidateIds.value.has(selectedTopRowId.value),
 )
 const canReplaceWithCurrent = computed(() => selectedTopIndex.value >= 0 && !!selectedTopRowId.value)
+const canOpenDrilldown = computed(() => selectedTopIndex.value >= 0 && hasTopResults.value)
 
 function rowPinned(rowId: string | undefined): boolean {
   const next = String(rowId || '').trim()
@@ -285,6 +286,15 @@ function rowPinned(rowId: string | undefined): boolean {
 
 function pinCellLabel(rowId: string | undefined): string {
   return rowPinned(rowId) ? 'Pinned' : 'Pin'
+}
+
+function reviewOverview(): void {
+  workflowStore.selectResultsTab('overview')
+}
+
+function openDrilldown(): void {
+  if (!canOpenDrilldown.value) return
+  workflowStore.selectResultsTab('drill')
 }
 
 function topColumnToggleId(columnKey: string): string {
@@ -526,7 +536,16 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="panelMuted">{{ displayedSelectedTopDecisionNote }}</div>
+          <div class="panelMuted topSelectionPathNote">
+            Use Drilldown for deeper proof and Overview for baseline framing. Pareto and Heatmap stay optional lenses once the shortlist decision is made.
+          </div>
           <div class="actions stickySelectionActions">
+            <button type="button" class="primary" :disabled="!canOpenDrilldown" @click="openDrilldown()">
+              <span>Open Drilldown</span>
+            </button>
+            <button type="button" :disabled="!hasTopResults" @click="reviewOverview()">
+              <span>Review Overview</span>
+            </button>
             <button type="button" :disabled="!canPinSelectedTopCandidate" @click="analysisStore.pinSelectedTopRow()">
               <component :is="pinCompareIcon" class="actionIcon" aria-hidden="true" />
               <span>Pin current candidate</span>
@@ -540,77 +559,6 @@ onBeforeUnmount(() => {
         <div v-if="displayedTopStaleCues.length > 0" class="staleCueStack">
           <div v-for="cue in displayedTopStaleCues" :key="cue" class="panelAdvisory surfaceWarning mono">{{ cue }}</div>
         </div>
-        <details v-if="topStage === 'ready' && renderedColumns.length > 0" class="columnDetails">
-          <summary class="columnDetailsSummary">
-            <span>Visible columns</span>
-            <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
-          </summary>
-          <div class="columnDetailsBody">
-            <div class="panelMuted">{{ columnVisibilityHint }}</div>
-            <div class="columnToggleGrid" role="group" aria-label="Visible top result columns">
-              <label
-                v-for="column in columnOptions"
-                :key="column.key"
-                class="columnToggle"
-                :class="{ disabled: !canHideColumn(column.key) && column.visible }"
-                :for="topColumnToggleId(column.key)"
-              >
-                <input
-                  :id="topColumnToggleId(column.key)"
-                  type="checkbox"
-                  :checked="column.visible"
-                  :disabled="!canHideColumn(column.key) && column.visible"
-                  @change="toggleColumnVisibility(column.key)"
-                />
-                <span>{{ column.label }}</span>
-              </label>
-            </div>
-            <div class="actions columnDetailsActions">
-              <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
-                Restore defaults
-              </button>
-            </div>
-          </div>
-        </details>
-        <section v-if="pinnedTopCandidates.length > 0" class="compareTray surfaceSunken">
-          <div class="panelSectionHeader">
-            <div class="panelHeadCopy">
-              <div class="panelEyebrow">Compare</div>
-              <h4 class="panelPaneTitle">Pinned candidates</h4>
-              <div class="panelSectionLead">
-                Keep up to four shortlist candidates in view while you move through ranking, drilldown, and validation review.
-              </div>
-            </div>
-          </div>
-          <div class="compareTrayGrid">
-            <article v-for="candidate in pinnedTopCandidates" :key="candidate.id" class="compareCard surfaceFocus">
-              <div class="compareCardMeta mono">#{{ candidate.rank }}</div>
-              <div class="compareCardTitle">{{ candidate.title }}</div>
-              <div class="compareCardSummary">{{ candidate.summary }}</div>
-              <div v-if="candidate.badges.length > 0" class="panelSummaryChips" aria-label="Pinned candidate context">
-                <span
-                  v-for="badge in candidate.badges"
-                  :key="`${candidate.id}_${badge}`"
-                  class="panelSummaryChip mono"
-                >
-                  {{ badge }}
-                </span>
-              </div>
-              <div v-if="candidate.detail" class="panelMuted">{{ candidate.detail }}</div>
-              <div v-if="candidate.staleReason" class="panelAdvisory surfaceWarning mono">{{ candidate.staleReason }}</div>
-              <div class="actions">
-                <button type="button" :disabled="!canReplaceWithCurrent" @click="analysisStore.replacePinnedTopCandidate(candidate.id)">
-                  <component :is="replaceCompareIcon" class="actionIcon" aria-hidden="true" />
-                  <span>Replace with current</span>
-                </button>
-                <button type="button" @click="analysisStore.unpinTopCandidate(candidate.id)">
-                  <component :is="removeCompareIcon" class="actionIcon" aria-hidden="true" />
-                  <span>Remove</span>
-                </button>
-              </div>
-            </article>
-          </div>
-        </section>
         <div v-if="topStage !== 'ready' || !hasTopResults" class="emptyState topEmptyState">
           <div class="emptyTitle">{{ emptyTitle }}</div>
           <div class="emptyBody">{{ emptyBody }}</div>
@@ -702,6 +650,77 @@ onBeforeUnmount(() => {
             </tbody>
           </table>
         </div>
+        <details v-if="topStage === 'ready' && renderedColumns.length > 0" class="columnDetails">
+          <summary class="columnDetailsSummary">
+            <span>Visible columns</span>
+            <span class="mono panelNumeric">{{ columnVisibilitySummary }}</span>
+          </summary>
+          <div class="columnDetailsBody">
+            <div class="panelMuted">{{ columnVisibilityHint }}</div>
+            <div class="columnToggleGrid" role="group" aria-label="Visible top result columns">
+              <label
+                v-for="column in columnOptions"
+                :key="column.key"
+                class="columnToggle"
+                :class="{ disabled: !canHideColumn(column.key) && column.visible }"
+                :for="topColumnToggleId(column.key)"
+              >
+                <input
+                  :id="topColumnToggleId(column.key)"
+                  type="checkbox"
+                  :checked="column.visible"
+                  :disabled="!canHideColumn(column.key) && column.visible"
+                  @change="toggleColumnVisibility(column.key)"
+                />
+                <span>{{ column.label }}</span>
+              </label>
+            </div>
+            <div class="actions columnDetailsActions">
+              <button type="button" :disabled="!canRestoreDefaults" @click="restoreDefaultColumns()">
+                Restore defaults
+              </button>
+            </div>
+          </div>
+        </details>
+        <section v-if="pinnedTopCandidates.length > 0" class="compareTray surfaceSunken">
+          <div class="panelSectionHeader">
+            <div class="panelHeadCopy">
+              <div class="panelEyebrow">Compare</div>
+              <h4 class="panelPaneTitle">Pinned candidates</h4>
+              <div class="panelSectionLead">
+                Keep comparison available without letting it outweigh shortlist scanning and candidate choice.
+              </div>
+            </div>
+          </div>
+          <div class="compareTrayGrid">
+            <article v-for="candidate in pinnedTopCandidates" :key="candidate.id" class="compareCard surfaceFocus">
+              <div class="compareCardMeta mono">#{{ candidate.rank }}</div>
+              <div class="compareCardTitle">{{ candidate.title }}</div>
+              <div class="compareCardSummary">{{ candidate.summary }}</div>
+              <div v-if="candidate.badges.length > 0" class="panelSummaryChips" aria-label="Pinned candidate context">
+                <span
+                  v-for="badge in candidate.badges"
+                  :key="`${candidate.id}_${badge}`"
+                  class="panelSummaryChip mono"
+                >
+                  {{ badge }}
+                </span>
+              </div>
+              <div v-if="candidate.detail" class="panelMuted">{{ candidate.detail }}</div>
+              <div v-if="candidate.staleReason" class="panelAdvisory surfaceWarning mono">{{ candidate.staleReason }}</div>
+              <div class="actions">
+                <button type="button" :disabled="!canReplaceWithCurrent" @click="analysisStore.replacePinnedTopCandidate(candidate.id)">
+                  <component :is="replaceCompareIcon" class="actionIcon" aria-hidden="true" />
+                  <span>Replace with current</span>
+                </button>
+                <button type="button" @click="analysisStore.unpinTopCandidate(candidate.id)">
+                  <component :is="removeCompareIcon" class="actionIcon" aria-hidden="true" />
+                  <span>Remove</span>
+                </button>
+              </div>
+            </article>
+          </div>
+        </section>
       </section>
 
       <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
@@ -918,6 +937,10 @@ onBeforeUnmount(() => {
 
 .stickySelectionActions {
   margin-top: 0;
+}
+
+.topSelectionPathNote {
+  margin-top: 0.15rem;
 }
 
 .staleCueStack {

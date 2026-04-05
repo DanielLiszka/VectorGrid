@@ -91,6 +91,10 @@ function reviewExecutionSettings(): void {
   workflowStore.selectWorkspace('settings')
 }
 
+function reviewTopResults(): void {
+  workflowStore.selectResultsTab('top')
+}
+
 </script>
 
 <template>
@@ -158,9 +162,6 @@ function reviewExecutionSettings(): void {
             <div class="bestTitle mono">{{ bestTitle }}</div>
             <div class="panelMuted" style="margin-top: 0.25rem; font-size: 0.85rem;">{{ bestMeta }}</div>
           </div>
-          <div class="actions" style="margin-top: 0;">
-            <button type="button" :disabled="!canCopyBest" @click="analysisStore.copyBest()">Copy</button>
-          </div>
         </div>
         <div class="bestGrid">
           <div
@@ -178,9 +179,19 @@ function reviewExecutionSettings(): void {
           <summary>Details</summary>
           <div class="mono summaryDetails">{{ bestSummary }}</div>
         </details>
-        <div class="actions" style="margin-top: 0.9rem;">
-          <button type="button" :disabled="!canExportCsv" @click="analysisStore.exportTopCsv()">Export top CSV</button>
-          <button type="button" :disabled="!canExportJson" @click="analysisStore.exportTopJson()">Export JSON</button>
+        <div class="bestUtilityBand surfaceSunken">
+          <div class="bestUtilityCopy">
+            <div class="bestUtilityTitle">Next step</div>
+            <div class="panelMuted">
+              Use Top Results for shortlist triage and candidate switching. Overview stays focused on winner framing and baseline review.
+            </div>
+          </div>
+          <div class="actions bestUtilityActions">
+            <button type="button" class="primary" @click="reviewTopResults">Review Top results</button>
+            <button type="button" :disabled="!canCopyBest" @click="analysisStore.copyBest()">Copy</button>
+            <button type="button" :disabled="!canExportCsv" @click="analysisStore.exportTopCsv()">Export top CSV</button>
+            <button type="button" :disabled="!canExportJson" @click="analysisStore.exportTopJson()">Export JSON</button>
+          </div>
         </div>
       </section>
 
@@ -219,6 +230,9 @@ function reviewExecutionSettings(): void {
             <pre class="mono summary">{{ compareSummary }}</pre>
           </div>
         </details>
+        <div class="panelMuted baselineOwnershipNote">
+          Baseline comparison stays here. Use Top Results when you need to change the working candidate rather than just compare the current winner.
+        </div>
       </section>
 
       <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
@@ -279,6 +293,27 @@ function reviewExecutionSettings(): void {
   font-size: 0.9rem;
 }
 
+.bestUtilityBand {
+  margin-top: 0.9rem;
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: 12px;
+  padding: 0.75rem 0.8rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.bestUtilityTitle {
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-soft);
+}
+
+.bestUtilityActions {
+  margin-top: 0;
+}
+
 .summaryDetails {
   margin-top: 0.65rem;
   white-space: pre-wrap;
@@ -307,6 +342,10 @@ function reviewExecutionSettings(): void {
 .actions button {
   padding: 0.42rem 0.6rem;
   font-size: 0.76rem;
+}
+
+.baselineOwnershipNote {
+  margin-top: 0.75rem;
 }
 
 .mono {

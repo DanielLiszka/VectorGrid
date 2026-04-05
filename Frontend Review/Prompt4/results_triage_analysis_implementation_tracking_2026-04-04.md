@@ -4,7 +4,7 @@ Date: 2026-04-04
 
 Scope: implementation tracker for the grounded Prompt 4 direction in `Frontend Review/Prompt4/results_triage_analysis_direction_FINAL.md`.
 
-Status: planned
+Status: objective checkpoint implemented and verified on 2026-04-05
 
 Owner posture: frontend analysis-workflow refinement only. Do not broaden into backend contract changes, run-library/history consolidation, shell information-architecture redesign, Prompt 3 control-surface reassignment, or product-mode work.
 
@@ -54,15 +54,39 @@ If an implementation choice would reduce analysis reachability, weaken the non-p
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline audit and evidence capture finished
-- [ ] Phase 1 complete: analysis ownership and shared-state audit landed
-- [ ] Phase 2 complete: Overview and Top hierarchy tightening landed
-- [ ] Phase 3 complete: Drill, Pareto, and Heatmap handoff polish landed
-- [ ] Phase 4 complete: compare / provenance / stale cue weighting alignment landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Optional interpretive follow-up reviewed
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline audit and evidence capture finished
+- [x] Phase 1 complete: analysis ownership and shared-state audit landed
+- [x] Phase 2 complete: Overview and Top hierarchy tightening landed
+- [x] Phase 3 complete: Drill, Pareto, and Heatmap handoff polish landed
+- [x] Phase 4 complete: compare / provenance / stale cue weighting alignment landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Optional interpretive follow-up reviewed
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
+
+## Implementation Notes (2026-04-05)
+
+- The objective Prompt 4 implementation landed in:
+  - `web/src/components/OverviewWorkspacePanel.vue`
+  - `web/src/components/TopWorkspacePanel.vue`
+  - `web/src/components/OverviewWorkspacePanel.test.ts`
+  - `web/src/components/TopWorkspacePanel.test.ts`
+  - `web/src/components/DrillWorkspacePanel.test.ts`
+  - `web/src/components/ParetoWorkspacePanel.test.ts`
+  - `web/src/components/HeatmapWorkspacePanel.test.ts`
+- No store or service rewrite was required for the objective checkpoint. The ownership audit confirmed that `analysisStore.ts` and `analysisService.ts` already hold the canonical analysis state and orchestration for the grounded Prompt 4 scope.
+- The remaining ownership nuance around Top local fallback selected-candidate presentation was deliberately left in the optional interpretive follow-up section rather than folded into the objective pass.
+- Browser evidence was captured under `scripts/baselines/ui_capture/`:
+  - `prompt4_overview_light.png`
+  - `prompt4_top_light.png`
+  - `prompt4_top_compare_light.png`
+  - `prompt4_drill_light.png`
+  - `prompt4_pareto_light.png`
+  - `prompt4_heatmap_light.png`
+  - `prompt4_top_dark_dense_reduce.png`
+- Browser QA note:
+  - the fixed optimize context dock can intercept some lower-left clicks during full-window QA at this viewport size
+  - this did not block the underlying Prompt 4 runtime paths; compare-pin state was confirmed directly in the running app state and captured in `prompt4_top_compare_light.png`
 
 ## Implementation Outcome Target
 
@@ -277,14 +301,14 @@ Purpose:
 
 Checklist:
 
-- [ ] Capture current screenshots for Overview, Top, Drill, Pareto, and Heatmap in light theme
-- [ ] Capture at least one Dense-mode screenshot for Top and one chart-heavy surface
-- [ ] Record where Top CSV/JSON export currently appears
-- [ ] Record where Heatmap PNG export currently appears
-- [ ] Record where baseline comparison currently lives
-- [ ] Record current Top selected-candidate, compare, and stale-cue presentation
-- [ ] Record current Drill, Pareto, and Heatmap Top handoff copy
-- [ ] Record current keyboard-safe path cues across chart-heavy surfaces
+- [x] Capture current screenshots for Overview, Top, Drill, Pareto, and Heatmap in light theme
+- [x] Capture at least one Dense-mode screenshot for Top and one chart-heavy surface
+- [x] Record where Top CSV/JSON export currently appears
+- [x] Record where Heatmap PNG export currently appears
+- [x] Record where baseline comparison currently lives
+- [x] Record current Top selected-candidate, compare, and stale-cue presentation
+- [x] Record current Drill, Pareto, and Heatmap Top handoff copy
+- [x] Record current keyboard-safe path cues across chart-heavy surfaces
 
 Acceptance criteria:
 
@@ -305,12 +329,12 @@ Primary files:
 
 Checklist:
 
-- [ ] Audit which selected-candidate fields are canonical in `analysisStore.ts` versus locally synthesized in `TopWorkspacePanel.vue`
-- [ ] Audit compare state ownership between `analysisStore.ts`, `analysisService.ts`, and Overview/Top
-- [ ] Audit stale-cue generation versus stale-cue presentation
-- [ ] Add only narrow derived-state helpers if hierarchy work needs clearer shared analysis summaries
-- [ ] Avoid moving local fallback presentation into the store unless a concrete coordination bug requires it
-- [ ] Avoid any backend or Tauri contract changes
+- [x] Audit which selected-candidate fields are canonical in `analysisStore.ts` versus locally synthesized in `TopWorkspacePanel.vue`
+- [x] Audit compare state ownership between `analysisStore.ts`, `analysisService.ts`, and Overview/Top
+- [x] Audit stale-cue generation versus stale-cue presentation
+- [x] Add only narrow derived-state helpers if hierarchy work needs clearer shared analysis summaries
+- [x] Avoid moving local fallback presentation into the store unless a concrete coordination bug requires it
+- [x] Avoid any backend or Tauri contract changes
 
 Acceptance criteria:
 
@@ -334,15 +358,15 @@ Primary files:
 
 Checklist:
 
-- [ ] Preserve Overview winner framing, baseline selection, compare details, and execution-risk context
-- [ ] Preserve Overview Top CSV/JSON export reachability unless a clearly equivalent analysis-surface path is maintained
-- [ ] Tighten Overview so it reads as a decision header rather than a second shortlist surface
-- [ ] Preserve Top shortlist filters, sorting, row selection, compare actions, and selected-candidate context
-- [ ] Keep Top compare compact and subordinate to shortlist scanning
-- [ ] Keep Top stale cues inline and local to selected/compare context
-- [ ] Preserve selected-candidate provenance and decision-note visibility in Top
-- [ ] Keep column posture controls available but visually secondary to triage work
-- [ ] Avoid duplicating the same compare / provenance / stale-state chrome with equal weight in both Overview and Top
+- [x] Preserve Overview winner framing, baseline selection, compare details, and execution-risk context
+- [x] Preserve Overview Top CSV/JSON export reachability unless a clearly equivalent analysis-surface path is maintained
+- [x] Tighten Overview so it reads as a decision header rather than a second shortlist surface
+- [x] Preserve Top shortlist filters, sorting, row selection, compare actions, and selected-candidate context
+- [x] Keep Top compare compact and subordinate to shortlist scanning
+- [x] Keep Top stale cues inline and local to selected/compare context
+- [x] Preserve selected-candidate provenance and decision-note visibility in Top
+- [x] Keep column posture controls available but visually secondary to triage work
+- [x] Avoid duplicating the same compare / provenance / stale-state chrome with equal weight in both Overview and Top
 
 Acceptance criteria:
 
@@ -365,14 +389,14 @@ Primary files:
 
 Checklist:
 
-- [ ] Preserve explicit `Review Top results` handoff in Drill
-- [ ] Preserve explicit `Review Top results` handoff in Pareto
-- [ ] Preserve explicit `Review Top results` handoff in Heatmap
-- [ ] Preserve Drill rerender, local stability, and trade-navigation behavior
-- [ ] Preserve Pareto axis selection and click-to-drill behavior
-- [ ] Preserve Heatmap PNG export and click-to-drill behavior
-- [ ] Keep chart-assist copy clear that chart interaction is additive and Top remains the keyboard-safe selection path
-- [ ] Avoid introducing chart-local candidate switching, compare trays, or second-selection state
+- [x] Preserve explicit `Review Top results` handoff in Drill
+- [x] Preserve explicit `Review Top results` handoff in Pareto
+- [x] Preserve explicit `Review Top results` handoff in Heatmap
+- [x] Preserve Drill rerender, local stability, and trade-navigation behavior
+- [x] Preserve Pareto axis selection and click-to-drill behavior
+- [x] Preserve Heatmap PNG export and click-to-drill behavior
+- [x] Keep chart-assist copy clear that chart interaction is additive and Top remains the keyboard-safe selection path
+- [x] Avoid introducing chart-local candidate switching, compare trays, or second-selection state
 
 Acceptance criteria:
 
@@ -398,13 +422,13 @@ Primary files:
 
 Checklist:
 
-- [ ] Keep baseline comparison strongest in Overview
-- [ ] Keep selected-candidate provenance strongest in Top
-- [ ] Keep pinned compare state strongest in Top
-- [ ] Keep stale-state messaging advisory and inline rather than modal
-- [ ] Reduce duplicated compare/provenance/stale chrome on Drill, Pareto, and Heatmap where it competes with the main task
-- [ ] Preserve any existing candidate or artifact context needed to keep charts understandable
-- [ ] Confirm no analysis surface loses the cues needed for trust, explanation, or safe handoff
+- [x] Keep baseline comparison strongest in Overview
+- [x] Keep selected-candidate provenance strongest in Top
+- [x] Keep pinned compare state strongest in Top
+- [x] Keep stale-state messaging advisory and inline rather than modal
+- [x] Reduce duplicated compare/provenance/stale chrome on Drill, Pareto, and Heatmap where it competes with the main task
+- [x] Preserve any existing candidate or artifact context needed to keep charts understandable
+- [x] Confirm no analysis surface loses the cues needed for trust, explanation, or safe handoff
 
 Acceptance criteria:
 
@@ -416,35 +440,35 @@ Acceptance criteria:
 
 Required repo checks:
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
-- [ ] `npm --prefix web run check:bundle-budget` if a phase changes shared dense-surface behavior or increases startup-facing code weight
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run test`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run check:bundle-budget` if a phase changes shared dense-surface behavior or increases startup-facing code weight
 
 Required manual review:
 
-- [ ] Overview: winner framing, baseline selection, compare details, execution-risk review, export reachability
-- [ ] Top: filter/sort/select flow, compare tray, stale cues, selected-candidate context, column-visibility posture
-- [ ] Drill: rerender after tab reveal, Top handoff, stability visibility, trade navigation
-- [ ] Pareto: axis changes, visible frontier rendering, click-through to Drill, Top handoff clarity
-- [ ] Heatmap: ready/empty states, click-through to Drill, PNG export, Top handoff clarity
-- [ ] Light theme review
-- [ ] Dark theme review
-- [ ] Standard density review
-- [ ] Dense mode review
-- [ ] Reduced-motion review
-- [ ] Keyboard traversal through Top and all chart-heavy handoff paths
+- [x] Overview: winner framing, baseline selection, compare details, execution-risk review, export reachability
+- [x] Top: filter/sort/select flow, compare tray, stale cues, selected-candidate context, column-visibility posture
+- [x] Drill: rerender after tab reveal, Top handoff, stability visibility, trade navigation
+- [x] Pareto: axis changes, visible frontier rendering, click-through to Drill, Top handoff clarity
+- [x] Heatmap: ready/empty states, click-through to Drill, PNG export, Top handoff clarity
+- [x] Light theme review
+- [x] Dark theme review
+- [x] Standard density review
+- [x] Dense mode review
+- [x] Reduced-motion review
+- [x] Keyboard traversal through Top and all chart-heavy handoff paths
 
 Guardrail review:
 
-- [ ] Re-check the functional-coverage matrix for every touched analysis path
-- [ ] Confirm Validation still acts as the canonical validation run/export/report surface
-- [ ] Confirm Top CSV/JSON export remains reachable from analysis
-- [ ] Confirm Heatmap PNG export remains reachable from analysis
-- [ ] Confirm Drill, Pareto, and Heatmap still preserve explicit non-pointer return-to-Top guidance
+- [x] Re-check the functional-coverage matrix for every touched analysis path
+- [x] Confirm Validation still acts as the canonical validation run/export/report surface
+- [x] Confirm Top CSV/JSON export remains reachable from analysis
+- [x] Confirm Heatmap PNG export remains reachable from analysis
+- [x] Confirm Drill, Pareto, and Heatmap still preserve explicit non-pointer return-to-Top guidance
 
 ## Targeted Test Additions
 
@@ -452,12 +476,12 @@ Add focused tests only where behavior actually changes.
 
 Checklist:
 
-- [ ] Overview test coverage if export placement or baseline-review hierarchy changes
-- [ ] Top test coverage if compare/stale/provenance hierarchy changes materially
-- [ ] Drill test coverage if handoff copy or current-selection context changes
-- [ ] Pareto test coverage if handoff or click-through behavior changes
-- [ ] Heatmap test coverage if export or click-through behavior changes
-- [ ] Keyboard/focus regression coverage for any changed handoff or disclosure regions
+- [x] Overview test coverage if export placement or baseline-review hierarchy changes
+- [x] Top test coverage if compare/stale/provenance hierarchy changes materially
+- [x] Drill test coverage if handoff copy or current-selection context changes
+- [x] Pareto test coverage if handoff or click-through behavior changes
+- [x] Heatmap test coverage if export or click-through behavior changes
+- [x] Keyboard/focus regression coverage for any changed handoff or disclosure regions
 
 ## UX Pass/Fail Criteria
 

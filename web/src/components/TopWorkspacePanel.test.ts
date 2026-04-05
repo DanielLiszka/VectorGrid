@@ -491,4 +491,68 @@ describe('TopWorkspacePanel', () => {
     pinButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(pinSpy).toHaveBeenCalledWith(0)
   })
+
+  it('routes current-candidate actions into drilldown and overview while keeping compare below the ranked table', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 1
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      {
+        rowId: 'candidate_a',
+        selected: true,
+        cells: [{ text: 'row 1', className: 'left', title: 'row 1' }],
+      },
+    ]
+    analysisStore.pinnedTopCandidates = [
+      {
+        id: 'candidate_a',
+        rank: 1,
+        title: 'Rank #1 · row 1',
+        summary: 'Return 12% · Sharpe 1.8',
+        detail: 'Strategy DoubleMa · Objective Sharpe',
+        badges: ['Current leader'],
+        staleReason: '',
+      },
+    ]
+
+    const resultsSpy = vi.spyOn(workflowStore, 'selectResultsTab')
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const tableWrap = document.querySelector('.tableWrap')
+    const compareTray = document.querySelector('.compareTray')
+    expect(tableWrap).not.toBeNull()
+    expect(compareTray).not.toBeNull()
+    if (!tableWrap || !compareTray) {
+      throw new Error('Expected Top table and compare tray to be rendered.')
+    }
+    expect(
+      Boolean(tableWrap.compareDocumentPosition(compareTray) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true)
+
+    const openDrilldownButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Open Drilldown'),
+    )
+    const reviewOverviewButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Review Overview'),
+    )
+
+    openDrilldownButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    reviewOverviewButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    expect(resultsSpy).toHaveBeenCalledWith('drill')
+    expect(resultsSpy).toHaveBeenCalledWith('overview')
+  })
 })
