@@ -63,6 +63,7 @@ function createDeferred<T>(): {
 function seedWorkflowRun(payload: {
   ts?: string;
   artifactPath?: string;
+  optimizationMetricSurface?: unknown;
   req?: unknown;
   res?: unknown;
   validationRes?: unknown;
@@ -72,6 +73,7 @@ function seedWorkflowRun(payload: {
     currentRun: {
       ts: payload.ts || "2026-02-26T12:00:00.000Z",
       artifactPath: payload.artifactPath || "",
+      optimizationMetricSurface: payload.optimizationMetricSurface ?? null,
       req: payload.req ?? null,
       res: payload.res ?? null,
     },
@@ -1339,6 +1341,10 @@ describe("analysis service", () => {
     seedWorkflowRun({
       ts: "2026-02-26T12:01:00.000Z",
       artifactPath: "C:/runs/run_a.json",
+      optimizationMetricSurface: {
+        surface: "core17",
+        fields: ["pnl", "trades", "max_dd"],
+      },
       req: { objective: "Sharpe" },
       res: { top: [] },
     });
@@ -1350,6 +1356,9 @@ describe("analysis service", () => {
     expect(String(analysisStore.statusLine || "")).toContain("Set baseline");
     expect(String(analysisStore.compareSummary || "")).toContain(
       "Optimization best:",
+    );
+    expect(String(analysisStore.compareSummary || "")).toContain(
+      "metric surface: baseline=- | current=Core17",
     );
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact", {
       path: "C:/runs/run_a.json",

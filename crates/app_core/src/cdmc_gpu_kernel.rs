@@ -2,7 +2,7 @@
 
 use crate::cdmc::CdmcStrategyParams;
 use crate::composite_gpu_metric_decode::{
-    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE,
 };
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
@@ -24,7 +24,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 use ta_strategies::double_ma::{Metrics, StrategyConfig};
 
-const CDMC_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
+const CDMC_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE;
 const CDMC_FLAG_LONG_ONLY: u32 = 1u32 << 0;
 const CDMC_FLAG_DISABLE_FLIP: u32 = 1u32 << 1;
 const CDMC_FLAG_TRADE_NEXT_BAR: u32 = 1u32 << 2;
@@ -524,6 +524,7 @@ pub fn eval_cdmc_metrics_gpu_kernel_device_rows(
         let mut commission_f = strategy.effective_commission().clamp(0.0, 0.95) as f32;
         let mut phase_threshold_f =
             cdmc.phase_threshold.abs().clamp(0.0, f64::from(f32::MAX)) as f32;
+        let mut hurdle_tau_f = strategy.hurdle_tau.unwrap_or(0.0) as f32;
         let mut out_stride_i = checked_i32("CDMC GPU metrics stride", CDMC_METRICS_STRIDE)?;
         let mut out_ptr = rt
             .scratch
@@ -559,6 +560,7 @@ pub fn eval_cdmc_metrics_gpu_kernel_device_rows(
                 &mut flags_u as *mut _ as *mut c_void,
                 &mut commission_f as *mut _ as *mut c_void,
                 &mut phase_threshold_f as *mut _ as *mut c_void,
+                &mut hurdle_tau_f as *mut _ as *mut c_void,
                 &mut out_stride_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];

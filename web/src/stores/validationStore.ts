@@ -178,6 +178,9 @@ function applyVueTextFieldUpdate(state: ValidationState, field: string, value: s
     case 'valCandidates':
       state.candidates = next
       return true
+    case 'valAdmissionPolicy':
+      state.admissionPolicy = next
+      return true
     case 'valSeed':
       state.seed = next
       return true
@@ -321,6 +324,7 @@ interface ValidationState {
   crossMeta: string
   tableRowCount: number
   candidates: string
+  admissionPolicy: string
   seed: string
   minPsr: string
   minDsr: string
@@ -398,6 +402,7 @@ export const useValidationStore = defineStore('validation', {
     crossMeta: '—',
     tableRowCount: 0,
     candidates: '32',
+    admissionPolicy: 'legacy_topk',
     seed: '1',
     minPsr: '0.80',
     minDsr: '0.60',
@@ -475,6 +480,7 @@ export const useValidationStore = defineStore('validation', {
       this.crossMeta = String(snapshot.crossMeta ?? this.crossMeta ?? '—').trim() || '—'
       this.tableRowCount = Math.max(0, Math.floor(Number(snapshot.tableRowCount ?? this.tableRowCount ?? 0)))
       this.candidates = String(snapshot.candidates ?? this.candidates ?? '32').trim() || '32'
+      this.admissionPolicy = String(snapshot.admissionPolicy ?? this.admissionPolicy ?? 'legacy_topk').trim() || 'legacy_topk'
       this.seed = String(snapshot.seed ?? this.seed ?? '1').trim() || '1'
       this.minPsr = String(snapshot.minPsr ?? this.minPsr ?? '').trim()
       this.minDsr = String(snapshot.minDsr ?? this.minDsr ?? '').trim()

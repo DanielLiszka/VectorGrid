@@ -1146,6 +1146,7 @@ mod tests {
                 followup_cache_key: None,
                 shortlist_slice_diagnostics: None,
                 score_observation_context: None,
+                metric_surface_kind: None,
             },
         }
     }

@@ -1,7 +1,7 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
 use crate::composite_gpu_metric_decode::{
-    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE,
 };
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
@@ -31,7 +31,7 @@ use std::sync::Arc;
 use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 use vector_ta::utilities::data_loader::Candles;
 
-const VCET_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
+const VCET_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE;
 
 pub struct VcetGpuDeviceSignalMatrices<'a> {
     pub close_f32: &'a [f32],
@@ -873,6 +873,7 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
         let mut commission_f = commission;
         let mut require_vidya_slope_i = if vcet.require_vidya_slope { 1i32 } else { 0i32 };
         let mut max_trade_bars_i = i32::from(vcet.max_trade_bars.max(1));
+        let mut hurdle_tau_f = strategy.hurdle_tau.unwrap_or(0.0) as f32;
         let mut out_stride_i = checked_i32("VCET GPU metrics stride", VCET_METRICS_STRIDE)?;
         let mut out_ptr = rt
             .scratch
@@ -901,6 +902,7 @@ pub fn eval_vcet_metrics_gpu_kernel_device_rows(
                 &mut commission_f as *mut _ as *mut c_void,
                 &mut require_vidya_slope_i as *mut _ as *mut c_void,
                 &mut max_trade_bars_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_f as *mut _ as *mut c_void,
                 &mut out_stride_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];

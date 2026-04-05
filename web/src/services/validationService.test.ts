@@ -7,12 +7,15 @@ import {
   exportShortlistCsv,
   exportValidationJson,
   openReportsDir,
+  previewValidationAdmissionComparisonFromStores,
   previewValidationExecutionSummaryFromStores,
   runValidation,
   toggleCrossDataset,
 } from './validationService'
 import { invokeCommand } from '../tauri/invoke'
 import { bindRuntimePinia } from '../stores/runtimePinia'
+import { useDataStore } from '../stores/dataStore'
+import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 
 vi.mock('../tauri/invoke', () => ({
@@ -199,6 +202,13 @@ describe('validationService', () => {
     expect(req.data_id).toBe('data-123')
     expect(req.backend).toEqual({ backend: 'GpuKernel', device_id: 0 })
     expect(req.max_candidates).toBe(32)
+    expect(req.admission_policy).toBe('legacy_topk')
+    expect(req.admission_provenance).toMatchObject({
+      requested_policy: 'legacy_topk',
+      applied_policy: 'legacy_topk',
+      source_kind: 'top_rows',
+      post_cap_count: 1,
+    })
     expect(req.seed).toBe(1)
     expect(req.spa).toEqual({
       slices: 8,
@@ -222,6 +232,8 @@ describe('validationService', () => {
     expect(Number(validationState.tableRowCount || 0)).toBeGreaterThan(0)
     expect(String(validationState.validationReoptMeta || '')).toContain('reopt_wf:')
     expect(String(validationState.validationMeta || '')).toContain('backend=Cpu')
+    expect(String(validationState.validationMeta || '')).toContain('admission=legacy_topk')
+    expect(String(validationState.validationMeta || '')).toContain('heads=legacy_topk')
     expect(String(validationState.validationMeta || '')).toContain('route=GpuKernel->CpuOnly')
     expect(String(validationState.validationMeta || '')).toContain('fallback=GPU validation runtime not implemented yet; using CPU validation.')
     expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • GpuKernel->CpuOnly • fallback: GPU validation runtime not implemented yet; using CPU validation.')
@@ -238,6 +250,215 @@ describe('validationService', () => {
     expect(savedArtifact?.kind).toBe('vectorgrid_run_artifact')
     expect(invokeCommandMock).toHaveBeenCalledWith('save_run_artifact', expect.any(Object))
 
+  })
+
+  it('previews legacy and improved admission against the same source artifact', () => {
+    const dataStore = useDataStore(pinia)
+    const validationStore = useValidationStore(pinia)
+
+    dataStore.csvPath = 'C:/data/aapl.csv'
+    dataStore.dataTimeframe = '1m'
+    validationStore.candidates = '2'
+    validationStore.admissionPolicy = 'scalar_union'
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T10:00:00Z',
+        csv_path: 'C:/data/aapl.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/aapl.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-admission-preview',
+          objective: 'Sharpe',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+              metrics: {
+                pnl: 0.15,
+                sharpe: 1.8,
+                calmar: 0.7,
+                omega: 1.02,
+                max_dd: 0.32,
+              },
+            },
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 12,
+                slow_len: 48,
+              },
+              metrics: {
+                pnl: 0.13,
+                sharpe: 1.4,
+                calmar: 0.85,
+                omega: 1.08,
+                max_dd: 0.24,
+              },
+            },
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 8,
+                slow_len: 26,
+              },
+              metrics: {
+                pnl: 0.1,
+                sharpe: 0.9,
+                calmar: 1.6,
+                omega: 1.35,
+                max_dd: 0.06,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationAdmissionComparisonFromStores()
+
+    expect(preview.summary).toBe(
+      'scalar_union vs legacy • overlap=1 • current-only=1 • legacy-only=1',
+    )
+    expect(preview.detail).toContain('current=2')
+    expect(preview.detail).toContain('legacy=2')
+    expect(preview.detail).toContain('heads=Sharpe/MaxDrawdown/Omega/Calmar')
+  })
+
+  it('previews shortlist admission from the artifact even when no dataset is currently loaded', () => {
+    const validationStore = useValidationStore(pinia)
+    validationStore.candidates = '2'
+    validationStore.admissionPolicy = 'scalar_union'
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T10:30:00Z',
+        csv_path: 'C:/data/aapl.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/aapl.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-admission-preview-no-dataset',
+          objective: 'Sharpe',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+              metrics: {
+                pnl: 0.15,
+                sharpe: 1.8,
+                calmar: 0.7,
+                omega: 1.02,
+                max_dd: 0.32,
+              },
+            },
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 8,
+                slow_len: 26,
+              },
+              metrics: {
+                pnl: 0.1,
+                sharpe: 0.9,
+                calmar: 1.6,
+                omega: 1.35,
+                max_dd: 0.06,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationAdmissionComparisonFromStores()
+
+    expect(preview.summary).not.toBe('Validation preview unavailable.')
+    expect(preview.summary).toContain('scalar_union')
+  })
+
+  it('reports requested-policy fallback when preview admission downgrades to legacy', () => {
+    const validationStore = useValidationStore(pinia)
+    validationStore.candidates = '2'
+    validationStore.admissionPolicy = 'pareto_frontier'
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T11:00:00Z',
+        csv_path: 'C:/data/aapl.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/aapl.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-admission-preview-fallback',
+          objective: 'Sharpe',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+              metrics: {
+                pnl: 0.15,
+                sharpe: 1.8,
+                calmar: 0.7,
+                omega: 1.02,
+                max_dd: 0.32,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationAdmissionComparisonFromStores()
+
+    expect(preview.summary).toBe('pareto_frontier -> legacy_topk fallback')
+    expect(preview.detail).toContain('pareto_frontier_fallback_missing_frontier')
   })
 
   it('surfaces skipped-module and run-note metadata in validation summary text', async () => {
@@ -1781,6 +2002,71 @@ describe('validationService', () => {
     const req = firstValidationRequest()
     expect(req.data_id).toBe('data-store-1')
     expect(req.max_candidates).toBe(16)
+  })
+
+  it('builds validation candidates from tuple-shaped saved top rows', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '12',
+      admissionPolicy: 'scalar_union',
+      seed: '2',
+      minPsr: '',
+      minDsr: '',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+      crossMax: '0',
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-tuple-top',
+          objective: 'Sharpe',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 2 },
+        },
+        res: {
+          top: [
+            [
+              {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 8,
+                slow_len: 32,
+              },
+              {
+                pnl: 0.12,
+                sharpe: 1.1,
+                calmar: 0.8,
+                omega: 1.02,
+                max_dd: 0.2,
+              },
+            ],
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const req = firstValidationRequest()
+    expect(req.data_id).toBe('data-tuple-top')
+    expect(req.admission_policy).toBe('scalar_union')
+    expect(Array.isArray(req.candidates)).toBe(true)
+    expect((req.candidates as Array<Record<string, unknown>>)[0]).toMatchObject({
+      fast_len: 8,
+      slow_len: 32,
+    })
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationMeta || '')).toContain('admission=scalar_union')
+    expect(String(validationState.validationMeta || '')).toContain('heads=Sharpe/MaxDrawdown')
   })
 
   it('keeps validation successful when auto-export XLSX fails', async () => {

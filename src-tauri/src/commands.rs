@@ -24,6 +24,8 @@ mod commands_reports_api;
 mod commands_system;
 #[path = "commands_validation.rs"]
 mod commands_validation;
+#[path = "metric_surface.rs"]
+mod metric_surface;
 #[path = "run_artifacts.rs"]
 mod run_artifacts;
 #[path = "validation_common.rs"]

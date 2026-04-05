@@ -178,6 +178,7 @@ fn build_validation_report_from_artifact(artifact: &Value) -> Result<Value, Stri
         "kind": "vectorgrid_report",
         "ts": ts,
         "data": build_report_data_from_dataset_meta(artifact.pointer("/dataset_meta")),
+        "optimization_metric_surface": artifact.pointer("/optimization_metric_surface").cloned().unwrap_or(Value::Null),
         "run": {
             "req": artifact.pointer("/run/req").cloned().unwrap_or(Value::Null),
             "res": artifact.pointer("/run/res").cloned().unwrap_or(Value::Null),
@@ -3088,6 +3089,7 @@ fn build_report_xlsx_bytes(report: &Value, max_rows: Option<usize>) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -3314,6 +3316,10 @@ mod tests {
     fn artifact_report_builder_uses_persisted_dataset_meta() {
         let artifact = json!({
           "ts": "2026-04-02T12:00:00Z",
+          "optimization_metric_surface": {
+            "surface": "core17",
+            "fields": ["pnl", "trades", "max_dd"]
+          },
           "dataset_meta": {
             "csv_path": "C:/data/AAPL.csv",
             "timeframe": "1h",
@@ -3352,6 +3358,98 @@ mod tests {
         assert_eq!(
             report.pointer("/data/ctx/csv_path").and_then(Value::as_str),
             Some("C:/data/AAPL.csv")
+        );
+        assert_eq!(
+            report
+                .pointer("/optimization_metric_surface/surface")
+                .and_then(Value::as_str),
+            Some("core17")
+        );
+    }
+
+    #[test]
+    fn artifact_report_builder_preserves_canonical_metric_surface_field_order() {
+        let mut artifact = json!({
+          "ts": "2026-04-02T12:00:00Z",
+          "run": {
+            "req": {
+              "strategy_kind": "CompositeTrend",
+              "metric_contract": null,
+              "include_trade_metrics": false
+            },
+            "res": {
+              "backend_route": "GpuKernel",
+              "metric_surface_kind": "core17",
+              "best_metrics": {
+                "pnl": 1.0,
+                "sharpe": 0.5,
+                "volatility": 0.25,
+                "max_dd": 0.2,
+                "trades": 8,
+                "exposure": 0.6,
+                "net_exposure": 0.2,
+                "downside_deviation": 0.1,
+                "ulcer_index": 0.08,
+                "omega": 1.2,
+                "downside_frequency": 0.15,
+                "downside_severity": 0.04,
+                "long_mean_return": 0.03,
+                "short_mean_return": -0.02,
+                "kappa_tau": 0.2,
+                "underwater_fraction": 0.18,
+                "max_underwater_duration_bars": 11
+              },
+              "top": []
+            }
+          },
+          "validation": {
+            "req": { "candidates": [] },
+            "res": { "candidates": [] }
+          }
+        });
+
+        let metric_surface =
+            build_optimization_metric_surface_artifact_value(&artifact).expect("metric surface");
+        if let Some(root) = artifact.as_object_mut() {
+            root.insert("optimization_metric_surface".to_string(), metric_surface);
+        }
+
+        let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
+        let fields = report
+            .pointer("/optimization_metric_surface/fields")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            });
+        assert_eq!(
+            fields,
+            Some(
+                [
+                    "pnl",
+                    "trades",
+                    "max_dd",
+                    "mean",
+                    "std",
+                    "exposure",
+                    "net_exposure",
+                    "downside_deviation",
+                    "ulcer_index",
+                    "omega",
+                    "downside_frequency",
+                    "downside_severity",
+                    "long_mean_return",
+                    "short_mean_return",
+                    "kappa_tau",
+                    "underwater_fraction",
+                    "max_underwater_duration_bars",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+            )
         );
     }
 

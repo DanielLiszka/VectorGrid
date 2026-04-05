@@ -141,8 +141,9 @@ pub use validation_shared::{
     CrossTickerMode, CrossTickerStats, CrossTickerValidationSummary, PerturbConfig, PerturbStats,
     ReoptWalkForwardConfigOptional, ReoptWalkForwardStats, ReoptWalkForwardWindowStats,
     SpaBenchmarkKind, SpaConfigOptional, SpaValidationStats, TradeBootstrapConfig,
-    TradeBootstrapStats, ValidationArtifactContext, ValidationAuxWorkMask, WalkForwardConfig,
-    WalkForwardConfigOptional, WalkForwardStats,
+    TradeBootstrapStats, ValidationAdmissionHeadProvenance, ValidationAdmissionPolicy,
+    ValidationAdmissionProvenance, ValidationArtifactContext, ValidationAuxWorkMask,
+    WalkForwardConfig, WalkForwardConfigOptional, WalkForwardStats,
 };
 
 pub use iterative_sim::{

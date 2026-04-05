@@ -113,6 +113,7 @@ describe('validation store actions', () => {
   it('updates Vue validation state without requiring legacy DOM mirroring', () => {
     const store = useValidationStore()
     store.setInputField('valCandidates', '64')
+    store.setInputField('valAdmissionPolicy', 'scalar_union')
     store.setCheckboxField('valAutoRun', true)
 
     const autoRun = harness.fields.valAutoRun as LegacyCheckboxField
@@ -121,6 +122,7 @@ describe('validation store actions', () => {
     expect(harness.eventsById.valCandidates).toBeUndefined()
     expect(harness.eventsById.valAutoRun).toBeUndefined()
     expect(store.candidates).toBe('64')
+    expect(store.admissionPolicy).toBe('scalar_union')
     expect(store.autoRun).toBe(true)
     expect(store.source).toBe('vue')
     expect(store.updatedAtUnixMs).toBeGreaterThan(0)

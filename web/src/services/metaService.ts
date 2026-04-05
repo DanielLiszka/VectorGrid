@@ -462,6 +462,14 @@ function normalizeBatchExecutionMode(value: unknown): 'full' | 'optimize_only' |
   return 'full'
 }
 
+function normalizeValidationAdmissionPolicy(value: unknown): 'legacy_topk' | 'scalar_union' | 'pareto_frontier' | 'auto' {
+  const raw = normalizeText(value).toLowerCase().replace(/[\s-]+/g, '_')
+  if (raw === 'scalar_union') return 'scalar_union'
+  if (raw === 'pareto_frontier') return 'pareto_frontier'
+  if (raw === 'auto') return 'auto'
+  return 'legacy_topk'
+}
+
 function tryBuildAutoMetaBatchRequest(): Record<string, unknown> | null {
   return buildMetaBatchRequest({
     selectedPaths: readStoreBatchSelectedPaths(),
@@ -1782,6 +1790,7 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
   const strategyKind = normalizeStrategyKind(runReq.strategy_kind ?? runReq.strategyKind)
   const candidates = Math.max(1, Math.floor(Number(validation?.candidates || 32)))
   const seed = Math.max(0, Math.floor(Number(validation?.seed || 1)))
+  const admissionPolicy = normalizeValidationAdmissionPolicy(validation?.admissionPolicy)
   const minPsr = normalizeProbability(validation?.minPsr)
   const minDsr = normalizeProbability(validation?.minDsr)
 
@@ -1852,6 +1861,7 @@ function buildValidationFingerprintReq(runReq: Record<string, unknown>): Record<
       : null,
     seed,
     max_candidates: candidates,
+    admission_policy: admissionPolicy,
     min_psr: minPsr,
     min_dsr: minDsr
   }

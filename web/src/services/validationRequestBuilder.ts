@@ -1,5 +1,8 @@
 interface ValidationRowLike {
   params?: unknown
+  metrics?: unknown
+  mo?: unknown
+  source_kind?: unknown
 }
 
 interface ValidationCrossDatasetInput {
@@ -47,6 +50,7 @@ interface ValidationBuildInputs {
   crossMax?: unknown
   crossMode?: unknown
   crossDatasets?: ValidationCrossDatasetInput[]
+  admissionPolicy?: unknown
 }
 
 interface ValidationCandidateLike {
@@ -72,6 +76,40 @@ interface ValidationCandidateLike {
   macz?: unknown
   ott?: unknown
   signal_mode?: string
+}
+
+type ValidationObjectiveKind =
+  | 'Pnl'
+  | 'Sharpe'
+  | 'Sortino'
+  | 'Calmar'
+  | 'Omega'
+  | 'Volatility'
+  | 'MaxDrawdown'
+
+type ValidationAdmissionPolicy =
+  | 'legacy_topk'
+  | 'scalar_union'
+  | 'pareto_frontier'
+  | 'auto'
+
+interface ValidationAdmissionHeadProvenance {
+  head: string
+  objective?: string | null
+  candidate_count: number
+  note?: string | null
+}
+
+interface ValidationAdmissionProvenance {
+  requested_policy: ValidationAdmissionPolicy
+  applied_policy: ValidationAdmissionPolicy
+  source_kind: string
+  source_candidate_count: number
+  pre_dedupe_count: number
+  post_dedupe_count: number
+  post_cap_count: number
+  heads: ValidationAdmissionHeadProvenance[]
+  note?: string | null
 }
 
 export interface ValidationRequestPayload {
@@ -121,6 +159,8 @@ export interface ValidationRequestPayload {
   } | null
   seed: number
   max_candidates: number
+  admission_policy: ValidationAdmissionPolicy
+  admission_provenance: ValidationAdmissionProvenance
   min_psr: number | null
   min_dsr: number | null
   min_cscv_oos_rank_frac: number | null
@@ -150,6 +190,35 @@ function num(value: unknown, fallback: number): number {
 
 function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
+}
+
+function normalizeObjectiveKindToken(value: unknown): ValidationObjectiveKind | null {
+  const raw = normalizeText(value)
+  if (!raw) return null
+  const normalized = raw.toLowerCase().replace(/[\s-]+/g, '_')
+  if (normalized === 'pnl') return 'Pnl'
+  if (normalized === 'sharpe') return 'Sharpe'
+  if (normalized === 'sortino') return 'Sortino'
+  if (normalized === 'calmar') return 'Calmar'
+  if (normalized === 'omega') return 'Omega'
+  if (normalized === 'volatility' || normalized === 'vol') return 'Volatility'
+  if (
+    normalized === 'maxdrawdown' ||
+    normalized === 'max_drawdown' ||
+    normalized === 'drawdown' ||
+    normalized === 'dd'
+  ) {
+    return 'MaxDrawdown'
+  }
+  return null
+}
+
+function normalizeValidationAdmissionPolicy(value: unknown): ValidationAdmissionPolicy {
+  const raw = normalizeText(value).toLowerCase().replace(/[\s-]+/g, '_')
+  if (raw === 'scalar_union') return 'scalar_union'
+  if (raw === 'pareto_frontier') return 'pareto_frontier'
+  if (raw === 'auto') return 'auto'
+  return 'legacy_topk'
 }
 
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
@@ -228,6 +297,18 @@ function parseFiniteNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function scoreMetricsForObjective(metrics: Record<string, unknown> | null, objective: ValidationObjectiveKind): number {
+  if (!metrics) return Number.NaN
+  const read = (key: string): number => num(metrics[key], Number.NaN)
+  if (objective === 'Pnl') return read('pnl')
+  if (objective === 'Sharpe') return read('sharpe')
+  if (objective === 'Sortino') return read('sortino')
+  if (objective === 'Calmar') return read('calmar')
+  if (objective === 'Omega') return read('omega')
+  if (objective === 'Volatility') return -read('volatility')
+  return -read('max_dd')
+}
+
 function normalizeCrossDatasets(value: unknown, maxDatasets: number): Array<{ csv_path: string; label: string }> {
   if (maxDatasets <= 0 || !Array.isArray(value)) return []
   const out: Array<{ csv_path: string; label: string }> = []
@@ -254,6 +335,279 @@ function normalizeCrossTickerMode(value: unknown, strategyKind: string): 'lightw
   if (raw === 'lightweight') return 'lightweight'
   if (raw === 'preserved_finalists' || raw === 'preserved-finalists') return 'preserved_finalists'
   return isDoubleLikeKind(strategyKind) ? 'preserved_finalists' : 'lightweight'
+}
+
+interface ValidationAdmissionRow {
+  row: ValidationRowLike
+  params: Record<string, unknown>
+  metrics: Record<string, unknown> | null
+  key: string
+  input_index: number
+}
+
+interface ValidationAdmissionSelection {
+  rows: ValidationAdmissionRow[]
+  provenance: ValidationAdmissionProvenance
+}
+
+function objectiveFromRunReq(req: Record<string, unknown>): ValidationObjectiveKind {
+  const direct = normalizeObjectiveKindToken(req.objective)
+  if (direct) return direct
+  const objectives = asRecord(req.objectives)
+  return normalizeObjectiveKindToken(objectives?.maximize) ?? 'Sharpe'
+}
+
+function buildAdmissionRows(rows: ValidationRowLike[]): ValidationAdmissionRow[] {
+  const out: ValidationAdmissionRow[] = []
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    if (!row) continue
+    const params = asRecord(row?.params)
+    if (!params) continue
+    out.push({
+      row,
+      params,
+      metrics: asRecord(row?.metrics),
+      key: canonicalKey(params),
+      input_index: index,
+    })
+  }
+  return out
+}
+
+function sourceKindForRows(baseRows: ValidationRowLike[], useFiltered: boolean): string {
+  if (useFiltered) return 'filtered_top_rows'
+  const first = baseRows[0]
+  const sourceKind = normalizeText(first?.source_kind)
+  if (sourceKind) return sourceKind
+  return 'top_rows'
+}
+
+function selectAdmissionPolicy(
+  requested: ValidationAdmissionPolicy,
+  strategyKind: string,
+  rows: ValidationAdmissionRow[],
+): ValidationAdmissionPolicy {
+  if (requested === 'auto') {
+    return strategyKind === 'CompositeMo' && rows.some((row) => !!asRecord(row.row.mo))
+      ? 'pareto_frontier'
+      : 'scalar_union'
+  }
+  return requested
+}
+
+function stableObjectiveSort(
+  rows: ValidationAdmissionRow[],
+  objective: ValidationObjectiveKind,
+): ValidationAdmissionRow[] {
+  return [...rows].sort((left, right) => {
+    const leftScore = scoreMetricsForObjective(left.metrics, objective)
+    const rightScore = scoreMetricsForObjective(right.metrics, objective)
+    const leftFinite = Number.isFinite(leftScore)
+    const rightFinite = Number.isFinite(rightScore)
+    if (leftFinite !== rightFinite) return leftFinite ? -1 : 1
+    if (leftFinite && rightFinite && leftScore !== rightScore) return rightScore - leftScore
+    return left.input_index - right.input_index
+  })
+}
+
+function dedupeAdmissionRows(rows: ValidationAdmissionRow[]): ValidationAdmissionRow[] {
+  const out: ValidationAdmissionRow[] = []
+  const seen = new Set<string>()
+  for (const row of rows) {
+    if (seen.has(row.key)) continue
+    seen.add(row.key)
+    out.push(row)
+  }
+  return out
+}
+
+function collectScalarUnionObjectives(
+  currentRunReq: Record<string, unknown>,
+): ValidationObjectiveKind[] {
+  const primary = objectiveFromRunReq(currentRunReq)
+  const out: ValidationObjectiveKind[] = [primary]
+  const push = (value: unknown): void => {
+    const objective = normalizeObjectiveKindToken(value)
+    if (!objective || out.includes(objective)) return
+    out.push(objective)
+  }
+  const extraObjectives = Array.isArray(currentRunReq.extra_shortlist_objectives)
+    ? currentRunReq.extra_shortlist_objectives
+    : []
+  for (const objective of extraObjectives) push(objective)
+  push('MaxDrawdown')
+  push('Omega')
+  push('Calmar')
+  return out
+}
+
+function buildLegacyAdmissionSelection(
+  rows: ValidationAdmissionRow[],
+  sourceKind: string,
+  requestedPolicy: ValidationAdmissionPolicy,
+  maxCandidates: number,
+  note?: string | null,
+): ValidationAdmissionSelection {
+  const deduped = dedupeAdmissionRows(rows)
+  return {
+    rows: deduped.slice(0, maxCandidates),
+    provenance: {
+      requested_policy: requestedPolicy,
+      applied_policy: 'legacy_topk',
+      source_kind: sourceKind,
+      source_candidate_count: rows.length,
+      pre_dedupe_count: rows.length,
+      post_dedupe_count: deduped.length,
+      post_cap_count: Math.min(deduped.length, maxCandidates),
+      heads: [
+        {
+          head: 'legacy_topk',
+          objective: null,
+          candidate_count: rows.length,
+          note: note ?? null,
+        },
+      ],
+      note: note ?? null,
+    },
+  }
+}
+
+function buildScalarUnionSelection(
+  rows: ValidationAdmissionRow[],
+  currentRunReq: Record<string, unknown>,
+  sourceKind: string,
+  requestedPolicy: ValidationAdmissionPolicy,
+  maxCandidates: number,
+): ValidationAdmissionSelection {
+  const objectives = collectScalarUnionObjectives(currentRunReq)
+  const orderedHeads: ValidationAdmissionRow[][] = []
+  const heads: ValidationAdmissionHeadProvenance[] = []
+  for (const objective of objectives) {
+    const ranked = stableObjectiveSort(rows, objective).filter((row) =>
+      Number.isFinite(scoreMetricsForObjective(row.metrics, objective)),
+    )
+    if (!ranked.length) {
+      heads.push({
+        head: objective === objectives[0] ? 'primary' : 'secondary',
+        objective,
+        candidate_count: 0,
+        note: 'no_finite_metrics',
+      })
+      continue
+    }
+    orderedHeads.push(ranked)
+    heads.push({
+      head: objective === objectives[0] ? 'primary' : 'secondary',
+      objective,
+      candidate_count: ranked.length,
+      note: null,
+    })
+  }
+
+  if (!orderedHeads.length) {
+    return buildLegacyAdmissionSelection(
+      rows,
+      sourceKind,
+      requestedPolicy,
+      maxCandidates,
+      'scalar_union_fallback_missing_metrics',
+    )
+  }
+
+  const concatenated: ValidationAdmissionRow[] = []
+  const longestHead = orderedHeads.reduce((max, head) => Math.max(max, head.length), 0)
+  for (let rank = 0; rank < longestHead; rank += 1) {
+    for (const headRows of orderedHeads) {
+      const next = headRows[rank]
+      if (next) concatenated.push(next)
+    }
+  }
+  const deduped = dedupeAdmissionRows(concatenated)
+  return {
+    rows: deduped.slice(0, maxCandidates),
+    provenance: {
+      requested_policy: requestedPolicy,
+      applied_policy: 'scalar_union',
+      source_kind: sourceKind,
+      source_candidate_count: rows.length,
+      pre_dedupe_count: concatenated.length,
+      post_dedupe_count: deduped.length,
+      post_cap_count: Math.min(deduped.length, maxCandidates),
+      heads,
+      note: null,
+    },
+  }
+}
+
+function buildParetoFrontierSelection(
+  rows: ValidationAdmissionRow[],
+  sourceKind: string,
+  requestedPolicy: ValidationAdmissionPolicy,
+  maxCandidates: number,
+): ValidationAdmissionSelection {
+  if (!rows.some((row) => !!asRecord(row.row.mo))) {
+    return buildLegacyAdmissionSelection(
+      rows,
+      sourceKind,
+      requestedPolicy,
+      maxCandidates,
+      'pareto_frontier_fallback_missing_frontier',
+    )
+  }
+  const deduped = dedupeAdmissionRows(rows)
+  const isFeasibleParetoRow = (row: ValidationAdmissionRow): boolean => {
+    const mo = asRecord(row.row.mo)
+    return Number(mo?.violation ?? 0) <= 0
+  }
+  const selectEvenlySpacedRows = (
+    sourceRows: ValidationAdmissionRow[],
+    keepCount: number,
+  ): ValidationAdmissionRow[] => {
+    if (sourceRows.length <= keepCount) return [...sourceRows]
+    if (keepCount <= 1) return sourceRows.slice(0, 1)
+    const selected = new Set<number>()
+    for (let slot = 0; slot < keepCount; slot += 1) {
+      const rawIndex = (slot * (sourceRows.length - 1)) / (keepCount - 1)
+      selected.add(Math.round(rawIndex))
+    }
+    for (let index = 0; selected.size < keepCount && index < sourceRows.length; index += 1) {
+      selected.add(index)
+    }
+    return [...selected]
+      .sort((left, right) => left - right)
+      .slice(0, keepCount)
+      .map((index) => sourceRows[index]!)
+  }
+  const feasible = deduped.filter(isFeasibleParetoRow)
+  const infeasible = deduped.filter((row) => !isFeasibleParetoRow(row))
+  const trimmedRows = deduped.length > maxCandidates
+    ? feasible.length >= maxCandidates
+      ? selectEvenlySpacedRows(feasible, maxCandidates)
+      : [...feasible, ...selectEvenlySpacedRows(infeasible, maxCandidates - feasible.length)]
+    : deduped.slice(0, maxCandidates)
+  const trimNote = deduped.length > maxCandidates ? 'pareto_diversity_trim' : null
+  return {
+    rows: trimmedRows,
+    provenance: {
+      requested_policy: requestedPolicy,
+      applied_policy: 'pareto_frontier',
+      source_kind: sourceKind,
+      source_candidate_count: rows.length,
+      pre_dedupe_count: rows.length,
+      post_dedupe_count: deduped.length,
+      post_cap_count: trimmedRows.length,
+      heads: [
+        {
+          head: 'pareto_frontier',
+          objective: null,
+          candidate_count: rows.length,
+          note: trimNote,
+        },
+      ],
+      note: trimNote,
+    },
+  }
 }
 
 function firstNonEmptyText(...values: unknown[]): string {
@@ -629,6 +983,7 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
   if (!dataId) throw new Error('Missing data id (run an optimization first).')
 
   const maxCandidates = Math.max(1, Math.floor(num(inputs.candidates, 32)))
+  const requestedAdmissionPolicy = normalizeValidationAdmissionPolicy(inputs.admissionPolicy)
   const seed = Math.max(0, Math.floor(num(inputs.seed, 1)))
   const min_psr = parseProbabilityGate(inputs.minPsr)
   const min_dsr = parseProbabilityGate(inputs.minDsr)
@@ -648,11 +1003,22 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
   const useFiltered = inputs.useFiltered !== false
   const baseRows = useFiltered && rowsFiltered.length ? rowsFiltered : rowsAll
   if (!baseRows.length) throw new Error('No Top rows available. Go to the Top tab and run an optimization.')
+  const admissionRows = buildAdmissionRows(baseRows)
+  if (!admissionRows.length) throw new Error('No valid shortlist rows are available for validation.')
+  const sourceKind = sourceKindForRows(baseRows, useFiltered && rowsFiltered.length > 0)
+  const appliedAdmissionPolicy = selectAdmissionPolicy(requestedAdmissionPolicy, kind, admissionRows)
+  const selection = appliedAdmissionPolicy === 'scalar_union'
+    ? buildScalarUnionSelection(admissionRows, currentRunReq, sourceKind, requestedAdmissionPolicy, maxCandidates)
+    : appliedAdmissionPolicy === 'pareto_frontier'
+      ? buildParetoFrontierSelection(admissionRows, sourceKind, requestedAdmissionPolicy, maxCandidates)
+      : buildLegacyAdmissionSelection(admissionRows, sourceKind, requestedAdmissionPolicy, maxCandidates)
+  const selectedRows = selection.rows.map((entry) => entry.row)
+  if (!selectedRows.length) throw new Error('No valid candidates found (try lowering filters or increasing Candidates).')
 
   const fastMaTypeFallback = Array.isArray(currentRunReq.fast_ma_types) ? normalizeText(currentRunReq.fast_ma_types[0]) : ''
   const slowMaTypeFallback = Array.isArray(currentRunReq.slow_ma_types) ? normalizeText(currentRunReq.slow_ma_types[0]) : ''
 
-  const candidatesNormalized = baseRows
+  const candidatesNormalized = selectedRows
     .map((row): ValidationCandidateLike | null => {
       const rowRecord = asRecord(row)
       const p = asRecord(rowRecord?.params) || {}
@@ -873,6 +1239,7 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
   }
 
   if (!candidates.length) throw new Error('No valid candidates found (try lowering filters or increasing Candidates).')
+  selection.provenance.post_cap_count = candidates.length
 
   const walk_forward = inputs.wfEnable
     ? {
@@ -958,6 +1325,8 @@ export function buildValidationRequest(inputs: ValidationBuildInputs): Validatio
     cscv_pbo,
     seed,
     max_candidates: maxCandidates,
+    admission_policy: selection.provenance.applied_policy,
+    admission_provenance: selection.provenance,
     min_psr,
     min_dsr,
     min_cscv_oos_rank_frac,

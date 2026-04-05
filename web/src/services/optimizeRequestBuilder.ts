@@ -205,6 +205,8 @@ export interface CompositeCpuOptimizationBuildInputs extends StrategyConfigBuild
   context: OptimizeBuildContext;
   maSupportMap?: unknown;
   backend?: unknown;
+  metricContract?: unknown;
+  includeTradeMetrics?: unknown;
   fastStart?: unknown;
   fastEnd?: unknown;
   fastStep?: unknown;
@@ -2474,19 +2476,6 @@ export function buildDoubleMaOptimizationRequest(
       "Shortlist neighborhood step requires shortlist neighborhood radius.",
     );
   }
-  if (includeTradeMetrics) {
-    if (!kernelRoute) {
-      throw new Error(
-        "include_trade_metrics currently requires the exact GpuKernel backend route",
-      );
-    }
-  }
-  if (metricContract !== "auto" && !kernelRoute) {
-    throw new Error(
-      "metricContract currently requires the exact GpuKernel backend route",
-    );
-  }
-
   if (exportAllCsvPath) {
     if (includeAll)
       throw new Error(
@@ -2843,6 +2832,15 @@ export function buildCompositeCpuOptimizationRequest(
   const ott = { period: ottPeriod, percent: ottPercent, ma_type: ottMaType };
 
   const objective = normalizeText(inputs.objective || "Sharpe") || "Sharpe";
+  const metricContract = normalizeDoubleMaMetricContract(inputs.metricContract);
+  const includeTradeMetricsRequested = normalizeBoolean(inputs.includeTradeMetrics);
+  if (metricContract === "full_17" && includeTradeMetricsRequested) {
+    throw new Error(
+      "metricContract=full_17 conflicts with includeTradeMetrics=true.",
+    );
+  }
+  const includeTradeMetrics =
+    metricContract === "trade_22" || includeTradeMetricsRequested;
   const extraShortlistObjectives = normalizeExtraShortlistObjectives(
     inputs.extraShortlistObjectives,
     objective,
@@ -3364,6 +3362,8 @@ export function buildCompositeCpuOptimizationRequest(
     mkcs,
     cdmc,
     objective,
+    include_trade_metrics: includeTradeMetrics,
+    metric_contract: metricContract === "auto" ? null : metricContract,
     extra_shortlist_objectives: extraShortlistObjectives,
     shortlist_confidence_mode: shortlistConfidenceMode,
     shortlist_union_mode: shortlistUnionMode,

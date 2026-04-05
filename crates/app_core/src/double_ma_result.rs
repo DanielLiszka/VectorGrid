@@ -35,6 +35,7 @@ pub(crate) struct BackendResultContext<'a> {
     pub followup_cache_key: Option<String>,
     pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnostics>,
     pub score_observation_context: Option<PairObservationScoreContextResolved>,
+    pub metric_surface_kind: Option<String>,
 }
 
 fn resolve_params(
@@ -249,6 +250,7 @@ pub(crate) fn build_backend_optimization_result(
         followup_cache_key: ctx.followup_cache_key,
         shortlist_slice_diagnostics,
         score_observation_context: ctx.score_observation_context,
+        metric_surface_kind: ctx.metric_surface_kind,
     }
 }
 
@@ -317,6 +319,7 @@ mod tests {
                 followup_cache_key: None,
                 shortlist_slice_diagnostics: None,
                 score_observation_context: Some(expected),
+                metric_surface_kind: None,
             },
         );
 
@@ -373,9 +376,61 @@ mod tests {
                 followup_cache_key: None,
                 shortlist_slice_diagnostics: None,
                 score_observation_context: None,
+                metric_surface_kind: None,
             },
         );
 
         assert_eq!(built.gpu_kernel_timing_ms, Some(expected));
+    }
+
+    #[test]
+    fn build_backend_result_preserves_metric_surface_kind() {
+        let result = OptimizationResult {
+            best_params: DoubleMaParams {
+                fast_len: 5,
+                slow_len: 20,
+                fast_ma_id: 0,
+                slow_ma_id: 0,
+            },
+            best_metrics: Metrics::default(),
+            best_score: None,
+            top: Vec::new(),
+            top_scores: None,
+            all: None,
+            all_scores: None,
+            heatmap: None,
+            num_combos: 1,
+            num_candles: 200,
+        };
+        let built = build_backend_optimization_result(
+            result,
+            BackendResultContext {
+                mode_used: OptimizationModeResolved::Grid,
+                backend_used: BackendUsed::Gpu,
+                fast_periods: &[5],
+                slow_periods: &[20],
+                fast_ma_label: "sma",
+                slow_ma_label: "ema",
+                fast_param_variants: &[None],
+                slow_param_variants: &[None],
+                num_combos: 1,
+                num_candles: 200,
+                runtime_ms: 1,
+                vdps: None,
+                hybrid_timing_ms: None,
+                gpu_kernel_timing_ms: None,
+                backend_route: Some("GpuKernel".to_string()),
+                backend_fallback_reason: None,
+                route_diagnostics: None,
+                indicator_route_plan: None,
+                residency: None,
+                followup_cache_key: None,
+                shortlist_slice_diagnostics: None,
+                score_observation_context: None,
+                metric_surface_kind: Some("trade22".to_string()),
+            },
+        );
+
+        assert_eq!(built.metric_surface_kind.as_deref(), Some("trade22"));
     }
 }

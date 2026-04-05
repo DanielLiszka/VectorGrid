@@ -105,4 +105,30 @@ describe("workflowArtifactsStore", () => {
     });
     expect(store.updatedAtUnixMs).toBe(2_000);
   });
+
+  it("normalizes optimization metric surface metadata from hydrated artifacts", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+
+    applyWorkflowArtifactsPayload(
+      {
+        currentRun: {
+          ts: "2026-04-01T12:00:00Z",
+          artifact_path: "C:/runs/run.json",
+          optimization_metric_surface: {
+            surface: "core17",
+            fields: ["pnl", "trades", "max_dd"],
+          },
+          req: { strategy_kind: "CompositeTrend" },
+          res: { top: [] },
+        },
+        currentValidation: null,
+      },
+      "vue",
+    );
+
+    expect(store.currentRun?.optimizationMetricSurface).toMatchObject({
+      surface: "core17",
+      fields: ["pnl", "trades", "max_dd"],
+    });
+  });
 });

@@ -45,6 +45,22 @@ function normalizeText(value: unknown): string {
   return String(value || '').trim()
 }
 
+function canonicalizePreviewValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizePreviewValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nextValue]) => [key, canonicalizePreviewValue(nextValue)]),
+    )
+  }
+  return value
+}
+
+function canonicalPreviewKey(value: unknown): string {
+  return JSON.stringify(canonicalizePreviewValue(value))
+}
+
 function normalizeStrategyKindRaw(kindRaw: unknown): string {
   const kind = normalizeText(kindRaw || 'DoubleMa') || 'DoubleMa'
   if (kind === 'Pit') return 'Pit'
@@ -124,8 +140,8 @@ interface CrossSelectionEntry {
 interface LegacyValidationBuildContext {
   currentRunReq: unknown
   currentRunRes: unknown
-  topRows: Array<{ params?: unknown }>
-  topRowsFiltered: Array<{ params?: unknown }>
+  topRows: Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }>
+  topRowsFiltered: Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }>
 }
 
 interface RunSnapshot {
@@ -212,6 +228,7 @@ interface VueStoreFieldBinding {
 
 const VUE_TEXT_FIELD_BINDINGS: Record<string, VueStoreFieldBinding> = {
   valCandidates: { key: 'candidates' },
+  valAdmissionPolicy: { key: 'admissionPolicy' },
   valSeed: { key: 'seed' },
   valMinPsr: { key: 'minPsr' },
   valMinDsr: { key: 'minDsr' },
@@ -394,22 +411,75 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
-function extractTopRowsFromRunResult(runRes: unknown): Array<{ params?: unknown }> {
+function extractTopRowsFromRunResult(runRes: unknown): Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }> {
   const row = asRecord(runRes)
   if (!row) return []
+  const rows: Array<{ params?: unknown; metrics?: unknown; mo?: unknown; source_kind?: unknown }> = []
+
+  const paretoRowsRaw = Array.isArray(row.pareto) ? row.pareto : []
+  if (paretoRowsRaw.length > 0) {
+    const pts = paretoRowsRaw
+      .map((entry) => {
+        const point = asRecord(entry)
+        return {
+          params: asRecord(point?.params),
+          metrics: asRecord(point?.metrics),
+          maximize_value: Number(point?.maximize_value ?? Number.NEGATIVE_INFINITY),
+          minimize_value: Number(point?.minimize_value ?? Number.POSITIVE_INFINITY),
+          violation: Number(point?.violation ?? 0),
+        }
+      })
+      .filter((entry) => !!entry.params)
+    pts.sort((left, right) => {
+      const leftFeasible = left.violation <= 0
+      const rightFeasible = right.violation <= 0
+      if (leftFeasible !== rightFeasible) return leftFeasible ? -1 : 1
+      if (left.maximize_value !== right.maximize_value) return right.maximize_value - left.maximize_value
+      if (left.minimize_value !== right.minimize_value) return left.minimize_value - right.minimize_value
+      return 0
+    })
+    for (const entry of pts) {
+      rows.push({
+        params: entry.params,
+        metrics: entry.metrics,
+        mo: {
+          maximize_value: entry.maximize_value,
+          minimize_value: entry.minimize_value,
+          violation: entry.violation,
+        },
+        source_kind: 'pareto_frontier',
+      })
+    }
+    return rows
+  }
+
   const topRowsRaw = Array.isArray(row.top) ? row.top : []
-  const rows: Array<{ params?: unknown }> = []
   for (const entry of topRowsRaw) {
+    if (Array.isArray(entry)) {
+      rows.push({
+        params: entry[0],
+        metrics: entry[1],
+        source_kind: 'top_rows',
+      })
+      continue
+    }
     const item = asRecord(entry)
-    if (!item) continue
-    if (!item.params) continue
-    rows.push({ params: item.params })
+    if (!item || !item.params) continue
+    rows.push({
+      params: item.params,
+      metrics: item.metrics,
+      source_kind: 'top_rows',
+    })
   }
 
   if (rows.length > 0) return rows
   const bestParams = row.best_params
   if (!bestParams || typeof bestParams !== 'object') return []
-  return [{ params: bestParams }]
+  return [{
+    params: bestParams,
+    metrics: row.best_metrics,
+    source_kind: 'best_params_fallback',
+  }]
 }
 
 function readRunSnapshotFromStore(): RunSnapshot | null {
@@ -826,7 +896,7 @@ function selectWorkflowResultsTab(tab: 'validate', persist: boolean): void {
   workflowStore.selectResultsTab(tab, { persist })
 }
 
-function buildValidationMetaText(result: unknown): string {
+function buildValidationMetaText(result: unknown, validationReq?: unknown): string {
   const row = asRecord(result)
   const candidates = Array.isArray(row?.candidates) ? row.candidates.length : 0
   const runtimeMs = Math.max(0, Math.floor(Number(row?.runtime_ms ?? 0)))
@@ -904,8 +974,30 @@ function buildValidationMetaText(result: unknown): string {
   const runState = hasRunVerdict ? ` • hard_gates=${survived}/${tested}${runVerdict?.passed === false ? ' fail' : ''}` : ''
   const runReason = failReasons[0] || warningFlags[0] || ''
   const runReasonSuffix = runReason ? ` • note=${runReason}` : ''
+  const req = asRecord(validationReq)
+  const admissionPolicy = normalizeText(req?.admission_policy)
+  const admissionProvenance = asRecord(req?.admission_provenance)
+  const admissionSource = normalizeText(admissionProvenance?.source_kind)
+  const admissionPostCap = Math.max(0, Math.floor(Number(admissionProvenance?.post_cap_count ?? 0)))
+  const admissionPostDedupe = Math.max(0, Math.floor(Number(admissionProvenance?.post_dedupe_count ?? 0)))
+  const admissionRequested = normalizeText(admissionProvenance?.requested_policy)
+  const admissionHeads = Array.isArray(admissionProvenance?.heads)
+    ? admissionProvenance.heads
+      .map((entry) => asRecord(entry))
+      .map((entry) => normalizeText(entry?.objective ?? entry?.head))
+      .filter((value, index, values) => value.length > 0 && values.indexOf(value) === index)
+      .slice(0, 4)
+      .join('/')
+    : ''
+  const admissionSummary = admissionPolicy
+    ? ` • admission=${admissionPolicy}`
+      + (admissionRequested && admissionRequested !== admissionPolicy ? ` req=${admissionRequested}` : '')
+      + (admissionSource ? ` src=${admissionSource}` : '')
+      + (admissionPostDedupe > 0 ? ` kept=${admissionPostCap}/${admissionPostDedupe}` : '')
+      + (admissionHeads ? ` heads=${admissionHeads}` : '')
+    : ''
 
-  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${runReasonSuffix}${minTrlSuffix}`
+  return `validated ${candidates} candidates in ${runtimeMs}ms (${backendSummary})${admissionSummary}${crossSuffix}${cscvSuffix}${reoptSuffix}${spaSuffix}${runState}${approvalSuffix}${runReasonSuffix}${minTrlSuffix}`
 }
 
 function buildValidationHintText(result: unknown): string {
@@ -1795,6 +1887,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     topRows: buildContext.topRows,
     topRowsFiltered: buildContext.topRowsFiltered,
     candidates: readStoreTextInputValue('valCandidates'),
+    admissionPolicy: readStoreTextInputValue('valAdmissionPolicy'),
     seed: readStoreTextInputValue('valSeed'),
     minPsr: readStoreTextInputValue('valMinPsr'),
     minDsr: readStoreTextInputValue('valMinDsr'),
@@ -1855,7 +1948,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
     const commandStartedAt = nowMs()
     const validationRes = await invokeCommand(command, { req: validationReq })
     const commandMs = Math.max(0, nowMs() - commandStartedAt)
-    const validationMeta = buildValidationMetaText(validationRes)
+    const validationMeta = buildValidationMetaText(validationRes, validationReq)
     const validationReoptMeta = buildValidationReoptMetaText(validationRes)
     const executionSummary = buildValidationExecutionSummary(validationRes, validationReq)
     const minPsrGate = parseProbabilityGateValue(validationReq.min_psr)
@@ -1995,6 +2088,7 @@ export function previewValidationExecutionSummaryFromStores(): {
       topRows: buildContext.topRows,
       topRowsFiltered: buildContext.topRowsFiltered,
       candidates: readStoreTextInputValue('valCandidates'),
+      admissionPolicy: readStoreTextInputValue('valAdmissionPolicy'),
       seed: readStoreTextInputValue('valSeed'),
       minPsr: readStoreTextInputValue('valMinPsr'),
       minDsr: readStoreTextInputValue('valMinDsr'),
@@ -2038,6 +2132,151 @@ export function previewValidationExecutionSummaryFromStores(): {
       categorySummary: '-',
       skippedSummary: '-',
       warningSummary: message || 'Unable to build validation preview from the current workflow state.',
+    }
+  }
+}
+
+export function previewValidationAdmissionComparisonFromStores(): {
+  summary: string
+  detail: string
+} {
+  const buildContext = resolveValidationBuildContextFromWorkflowArtifacts()
+  if (!buildContext) {
+    return {
+      summary: 'Run an optimization first.',
+      detail: 'No shortlist comparison is available without an optimization artifact.',
+    }
+  }
+
+  const runSnapshot = readRunSnapshotFromStore()
+  const workflowRun = readWorkflowRunArtifactFromStore()
+  const runReq = asRecord(runSnapshot?.req ?? buildContext.currentRunReq)
+  const runRes = runSnapshot?.res ?? buildContext.currentRunRes
+  if (!runReq || !runRes || !workflowRun) {
+    return {
+      summary: 'Run artifact unavailable.',
+      detail: 'Re-run optimization before previewing shortlist admission changes.',
+    }
+  }
+
+  try {
+    const buildPreviewRequest = (admissionPolicyOverride?: string) =>
+      buildValidationRequest({
+        currentRunReq: runReq,
+        currentRunRes: runRes,
+        runDatasetMeta: workflowRun.datasetMeta,
+        runCsvPath: workflowRun.csvPath,
+        topRows: buildContext.topRows,
+        topRowsFiltered: buildContext.topRowsFiltered,
+        candidates: readStoreTextInputValue('valCandidates'),
+        admissionPolicy: admissionPolicyOverride ?? readStoreTextInputValue('valAdmissionPolicy'),
+        seed: readStoreTextInputValue('valSeed'),
+        minPsr: readStoreTextInputValue('valMinPsr'),
+        minDsr: readStoreTextInputValue('valMinDsr'),
+        minCscvOosRankFrac: readStoreTextInputValue('valMinCscvRank'),
+        minCscvOosMetric: readStoreTextInputValue('valMinCscvMetric'),
+        maxPbo: readStoreTextInputValue('valMaxPbo'),
+        spaEnable: readStoreCheckboxValue('valSpaEnable'),
+        spaSlices: readStoreTextInputValue('valSpaSlices'),
+        spaBootstrapSamples: readStoreTextInputValue('valSpaBootstrapSamples'),
+        spaBlockLength: readStoreTextInputValue('valSpaBlockLength'),
+        reoptWfEnable: readStoreCheckboxValue('valReoptWfEnable'),
+        reoptWfWindow: readStoreTextInputValue('valReoptWfWindow'),
+        reoptWfStep: readStoreTextInputValue('valReoptWfStep'),
+        reoptWfTopN: readStoreTextInputValue('valReoptWfTopN'),
+        wfEnable: readStoreCheckboxValue('valWfEnable'),
+        wfWindow: readStoreTextInputValue('valWfWindow'),
+        wfStep: readStoreTextInputValue('valWfStep'),
+        perturbEnable: readStoreCheckboxValue('valPerturbEnable'),
+        perturbIters: readStoreTextInputValue('valPerturbIters'),
+        perturbMin: readStoreTextInputValue('valPerturbMin'),
+        perturbMax: readStoreTextInputValue('valPerturbMax'),
+        mcEnable: readStoreCheckboxValue('valMcEnable'),
+        mcSims: readStoreTextInputValue('valMcSims'),
+        mcBlockLen: readStoreTextInputValue('valMcBlockLen'),
+        mcMode: readStoreTextInputValue('valMcMode'),
+        cscvEnable: readStoreCheckboxValue('valCscvEnable'),
+        cscvSlices: readStoreTextInputValue('valCscvSlices'),
+        crossEnable: readStoreCheckboxValue('valCrossEnable'),
+        crossMax: readStoreTextInputValue('valCrossMax'),
+        crossMode: readStoreTextInputValue('valCrossMode'),
+        crossDatasets: readVueCrossSelection(),
+      })
+
+    const currentReq = buildPreviewRequest()
+    const currentPolicy = normalizeText(currentReq.admission_policy) || 'legacy_topk'
+    const currentProvenance = asRecord(currentReq.admission_provenance)
+    const requestedPolicy =
+      normalizeText(currentProvenance?.requested_policy) || currentPolicy
+    const currentNote = normalizeText(currentProvenance?.note)
+    const currentHeads = Array.isArray(currentProvenance?.heads)
+      ? (currentProvenance?.heads as unknown[])
+          .map((entry) => asRecord(entry))
+          .map((entry) => normalizeText(entry?.objective ?? entry?.head))
+          .filter(
+            (value, index, values) =>
+              value.length > 0 && values.indexOf(value) === index,
+          )
+          .slice(0, 4)
+      : []
+    if (currentPolicy === 'legacy_topk') {
+      if (requestedPolicy !== currentPolicy) {
+        const detailParts = []
+        if (currentNote) detailParts.push(currentNote)
+        if (currentHeads.length > 0) {
+          detailParts.push(`heads=${currentHeads.join('/')}`)
+        }
+        return {
+          summary: `${requestedPolicy} -> legacy_topk fallback`,
+          detail:
+            detailParts.join(' • ') ||
+            'The requested admission policy is unavailable for this artifact, so preview falls back to the legacy shortlist.',
+        }
+      }
+      return {
+        summary: 'Legacy Top K active.',
+        detail: 'Switch the admission policy to compare a diversified shortlist against the legacy ordering.',
+      }
+    }
+
+    const legacyReq = buildPreviewRequest('legacy_topk')
+    const currentCandidates = Array.isArray(currentReq.candidates)
+      ? currentReq.candidates
+      : []
+    const legacyCandidates = Array.isArray(legacyReq.candidates)
+      ? legacyReq.candidates
+      : []
+    const currentKeys = currentCandidates.map((candidate) =>
+      canonicalPreviewKey(candidate),
+    )
+    const legacyKeys = legacyCandidates.map((candidate) =>
+      canonicalPreviewKey(candidate),
+    )
+    const legacySet = new Set(legacyKeys)
+    const currentOnlyCount = currentKeys.filter((key) => !legacySet.has(key)).length
+    const currentSet = new Set(currentKeys)
+    const legacyOnlyCount = legacyKeys.filter((key) => !currentSet.has(key)).length
+    const overlap = currentKeys.filter((key) => legacySet.has(key)).length
+
+    const summary =
+      currentOnlyCount === 0 && legacyOnlyCount === 0
+        ? `${currentPolicy} matches legacy • ${currentCandidates.length} candidates`
+        : `${currentPolicy} vs legacy • overlap=${overlap} • current-only=${currentOnlyCount} • legacy-only=${legacyOnlyCount}`
+    const detailParts = [
+      `current=${currentCandidates.length}`,
+      `legacy=${legacyCandidates.length}`,
+    ]
+    if (currentHeads.length > 0) {
+      detailParts.push(`heads=${currentHeads.join('/')}`)
+    }
+    return {
+      summary,
+      detail: detailParts.join(' • '),
+    }
+  } catch (error) {
+    return {
+      summary: 'Validation preview unavailable.',
+      detail: normalizeText(error) || 'Unable to compare shortlist admission policies.',
     }
   }
 }

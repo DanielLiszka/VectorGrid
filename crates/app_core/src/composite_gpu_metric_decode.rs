@@ -2,7 +2,7 @@
 
 use ta_strategies::double_ma::Metrics;
 
-pub(crate) const NON_DOUBLE_MA_GPU_METRICS_STRIDE: usize = 12;
+pub(crate) const NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE: usize = 19;
 
 const CLAMP_MAX: f64 = 1.0e6;
 const EPS_DENOM: f64 = 1.0e-12;
@@ -41,6 +41,13 @@ pub(crate) fn decode_non_double_ma_gpu_metrics_row(row: &[f32]) -> Metrics {
     let net_exposure = row[9] as f64;
     let downside_deviation = row[10] as f64;
     let ulcer_index = row[11] as f64;
+    let downside_frequency = row.get(12).copied().unwrap_or(0.0) as f64;
+    let downside_severity = row.get(13).copied().unwrap_or(0.0) as f64;
+    let long_mean_return = row.get(14).copied().unwrap_or(0.0) as f64;
+    let short_mean_return = row.get(15).copied().unwrap_or(0.0) as f64;
+    let kappa_tau = row.get(16).copied().unwrap_or(0.0) as f64;
+    let underwater_fraction = row.get(17).copied().unwrap_or(0.0) as f64;
+    let max_underwater_duration_bars_f = row.get(18).copied().unwrap_or(0.0);
 
     let pnl = if pnl.is_finite() { pnl } else { 0.0 };
     let ulcer_index = clamp_non_negative(ulcer_index);
@@ -50,11 +57,15 @@ pub(crate) fn decode_non_double_ma_gpu_metrics_row(row: &[f32]) -> Metrics {
         sharpe: if sharpe.is_finite() { sharpe } else { 0.0 },
         sortino: if sortino.is_finite() { sortino } else { 0.0 },
         downside_deviation: clamp_non_negative(downside_deviation),
-        downside_frequency: 0.0,
-        downside_severity: 0.0,
+        downside_frequency: clamp_non_negative(downside_frequency).min(1.0),
+        downside_severity: clamp_non_negative(downside_severity),
         calmar: if calmar.is_finite() { calmar } else { 0.0 },
         omega: if omega.is_finite() { omega } else { 0.0 },
-        kappa_tau: 0.0,
+        kappa_tau: if kappa_tau.is_finite() {
+            kappa_tau
+        } else {
+            0.0
+        },
         volatility: clamp_non_negative(volatility),
         ulcer_index,
         martin_ratio: derive_martin_ratio(pnl, ulcer_index),
@@ -70,14 +81,28 @@ pub(crate) fn decode_non_double_ma_gpu_metrics_row(row: &[f32]) -> Metrics {
         } else {
             0.0
         },
-        long_mean_return: 0.0,
-        short_mean_return: 0.0,
+        long_mean_return: if long_mean_return.is_finite() {
+            long_mean_return
+        } else {
+            0.0
+        },
+        short_mean_return: if short_mean_return.is_finite() {
+            short_mean_return
+        } else {
+            0.0
+        },
         closed_trades: 0,
         winning_trades: 0,
         losing_trades: 0,
         gross_profit: 0.0,
         gross_loss: 0.0,
-        underwater_fraction: 0.0,
-        max_underwater_duration_bars: 0,
+        underwater_fraction: clamp_non_negative(underwater_fraction).min(1.0),
+        max_underwater_duration_bars: if max_underwater_duration_bars_f.is_finite()
+            && max_underwater_duration_bars_f >= 0.0
+        {
+            max_underwater_duration_bars_f as u32
+        } else {
+            0
+        },
     }
 }

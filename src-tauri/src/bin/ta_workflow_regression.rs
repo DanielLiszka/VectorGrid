@@ -485,6 +485,8 @@ fn run_workflow_once(
             top_k: Some(64),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
         let opt_res =
             run_composite_cpu_optimization_blocking_with_candles(opt_req, candles, cancel, None)?;

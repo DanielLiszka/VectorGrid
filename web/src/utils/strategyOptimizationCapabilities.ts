@@ -43,6 +43,8 @@ export interface StrategyOptimizationCapabilities {
   supportsIncludeAll: boolean
   supportsExtraShortlistObjectives: boolean
   supportsTradeMetrics: boolean
+  supportsCore17MetricSurface: boolean
+  supportsMetricContract: boolean
   supportsShortlistConfidenceMode: boolean
   supportsShortlistUnionMode: boolean
   supportsAdvancedExactKernelControls: boolean
@@ -142,6 +144,7 @@ function describeCompositeOutputSummary(
   supportsExportAll: boolean
   supportsExtraShortlistObjectives: boolean
   supportsTradeMetrics: boolean
+  supportsMetricContract: boolean
   supportsShortlistConfidenceMode: boolean
   supportsShortlistUnionMode: boolean
   supportsAdvancedExactKernelControls: boolean
@@ -161,24 +164,26 @@ function describeCompositeOutputSummary(
       supportsExportAll: true,
       supportsExtraShortlistObjectives: true,
       supportsTradeMetrics: true,
+      supportsMetricContract: true,
       supportsShortlistConfidenceMode: true,
       supportsShortlistUnionMode: true,
       supportsAdvancedExactKernelControls: true,
-      outputSummary: `Top-K, heatmap, include-all, export, and advanced exact-kernel shortlist/score/metric-contract controls apply to ${kind} through the current kernel-targeted double-MA route.`,
+      outputSummary: `Top-K, heatmap, include-all, export, and advanced exact-kernel shortlist/score/metric-contract controls apply to ${kind} through the current kernel-targeted double-MA route. Saved optimization artifacts on this audited route emit the canonical Core17 surface.`,
     }
   }
 
   return {
     supportsExportAll: false,
     supportsExtraShortlistObjectives: false,
-    supportsTradeMetrics: false,
+    supportsTradeMetrics: true,
+    supportsMetricContract: true,
     supportsShortlistConfidenceMode: false,
     supportsShortlistUnionMode: false,
     supportsAdvancedExactKernelControls: false,
     outputSummary:
       route.targetBackend === 'CpuOnly'
-        ? `Top-K, heatmap, and include-all controls apply to ${kind} through the current CPU double-MA route. Export-all and advanced exact-kernel shortlist/score/metric-contract controls are disabled on this route.`
-        : `Top-K, heatmap, and include-all controls apply to ${kind} through the current hybrid double-MA route. Export-all and advanced exact-kernel shortlist/score/metric-contract controls are disabled on this route.`,
+        ? `Top-K, heatmap, and include-all controls apply to ${kind} through the current CPU double-MA route. Explicit Full17 and Trade22 metric-contract requests are available on this audited route. Export-all and advanced exact-kernel shortlist/score controls remain disabled on this route.`
+        : `Top-K, heatmap, and include-all controls apply to ${kind} through the current hybrid double-MA route. Explicit Full17 and Trade22 metric-contract requests are available on this audited route. Export-all and advanced exact-kernel shortlist/score controls remain disabled on this route.`,
   }
 }
 
@@ -200,6 +205,40 @@ function supportsRequestedExactKernelControls(
   return requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
 }
 
+function supportsRequestedCore17MetricSurface(
+  kind: StrategyOptimizationKind,
+  _inputs: StrategyOptimizationCapabilityInputs,
+): boolean {
+  switch (kind) {
+    case 'DoubleMa':
+    case 'DynamicDoubleMa':
+    case 'Pit':
+    case 'Set':
+    case 'Mts':
+    case 'Orc':
+    case 'Marrt':
+    case 'Vfct':
+    case 'CompositeCpu':
+    case 'CompositeTrend':
+    case 'RegimeHybrid':
+    case 'BreakoutMomentum':
+      return true
+    case 'Asr':
+    case 'Vcc':
+    case 'Vemr':
+    case 'Rocb':
+    case 'Vcet':
+    case 'Kqsr':
+    case 'Carm':
+    case 'Mkcs':
+    case 'Kvdf':
+    case 'Cdmc':
+      return true
+    default:
+      return false
+  }
+}
+
 export function describeStrategyOptimizationCapabilities(
   value: unknown,
   inputs: StrategyOptimizationCapabilityInputs = {},
@@ -214,10 +253,8 @@ export function describeStrategyOptimizationCapabilities(
             kind === 'DynamicDoubleMa'
               ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
               : supportsRequestedExactKernelControls(kind, inputs),
-          supportsTradeMetrics:
-            kind === 'DynamicDoubleMa'
-              ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
-              : supportsRequestedExactKernelControls(kind, inputs),
+          supportsTradeMetrics: true,
+          supportsMetricContract: true,
           supportsShortlistConfidenceMode:
             kind === 'DynamicDoubleMa'
               ? requestedGlobalBackendIsGpuKernel(inputs.requestedBackend)
@@ -233,15 +270,15 @@ export function describeStrategyOptimizationCapabilities(
           outputSummary:
             kind === 'DynamicDoubleMa'
               ? 'DynamicDoubleMa builds constrained strategy_ir payloads, previews the resolved backend, and runs through the normal optimizer path after validation. Include-all stays available broadly; extra shortlist objectives are requestable on the GpuKernel preview path for exact-compatible dynamic_strategy_v1 shapes.'
-                + ' Explicit 17-row and 22-row metric-contract overrides follow that same exact-compatible dynamic GpuKernel path.'
+                + ' Explicit 17-row and 22-row metric-contract overrides are available on exact-compatible dynamic_strategy_v1 GpuKernel shapes and on audited dynamic CPU fallback surfaces, including constrained composite/profile plans that resolve to CPU.'
                 + ' Shortlist confidence mode follows that same exact-compatible dynamic GpuKernel path.'
                 + ' Shortlist union mode follows that same exact-compatible dynamic GpuKernel path once extra shortlist heads are present.'
                 + ' Shortlist slice and neighborhood diagnostics follow that same exact-compatible dynamic GpuKernel path.'
               : kind === 'Vfct'
-                ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend.'
+                ? 'Top-K, heatmap, include-all, and export controls apply to VFCT runs through the double-MA backend. Saved optimization artifacts on this audited route emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; advanced shortlist/score controls stay exact-route only.'
               : kind === 'DoubleMa'
-                  ? 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs. Exact GpuKernel routes also expose explicit 17-row and 22-row metric-contract overrides.'
-                  : `Top-K, heatmap, include-all, and export controls apply to ${kind} through the double-MA backend.`,
+                  ? 'Top-K, heatmap, include-all, and export controls all apply to Double MA runs. Saved optimization artifacts on current audited Double-MA routes emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; advanced shortlist/score controls stay exact-route only.'
+                  : `Top-K, heatmap, include-all, and export controls apply to ${kind} through the double-MA backend. Saved optimization artifacts on current audited ${kind} routes emit the canonical Core17 surface. Explicit Full17 and Trade22 metric-contract requests are available on current audited CPU/GPU routes; advanced shortlist/score controls stay exact-route only.`,
         }
 
     return {
@@ -255,6 +292,8 @@ export function describeStrategyOptimizationCapabilities(
       supportsExtraShortlistObjectives:
         compositeOutput.supportsExtraShortlistObjectives,
       supportsTradeMetrics: compositeOutput.supportsTradeMetrics,
+      supportsCore17MetricSurface: supportsRequestedCore17MetricSurface(kind, inputs),
+      supportsMetricContract: compositeOutput.supportsMetricContract,
       supportsShortlistConfidenceMode:
         compositeOutput.supportsShortlistConfidenceMode,
       supportsShortlistUnionMode: compositeOutput.supportsShortlistUnionMode,
@@ -292,6 +331,8 @@ export function describeStrategyOptimizationCapabilities(
       supportsIncludeAll: false,
       supportsExtraShortlistObjectives: false,
       supportsTradeMetrics: false,
+      supportsCore17MetricSurface: false,
+      supportsMetricContract: false,
       supportsShortlistConfidenceMode: false,
       supportsShortlistUnionMode: false,
       supportsAdvancedExactKernelControls: false,
@@ -325,7 +366,9 @@ export function describeStrategyOptimizationCapabilities(
       supportsTopK: true,
       supportsIncludeAll: true,
       supportsExtraShortlistObjectives: standaloneGpuKernelPreview,
-      supportsTradeMetrics: false,
+      supportsTradeMetrics: true,
+      supportsCore17MetricSurface: supportsRequestedCore17MetricSurface(kind, inputs),
+      supportsMetricContract: true,
       supportsShortlistConfidenceMode: standaloneGpuKernelPreview,
       supportsShortlistUnionMode: standaloneGpuKernelPreview,
       supportsAdvancedExactKernelControls: false,
@@ -344,9 +387,11 @@ export function describeStrategyOptimizationCapabilities(
                     ? 'CDMC can use CPU or unified GPU execution, with GPU scoring fed by staged cycle, MAMA/FAMA, and decycler signal matrices.'
                     : `${kind} can use CPU or unified GPU execution, but optimization mode is fixed to Grid.`,
       modeSummary: `${kind} always runs in Grid mode.`,
-      outputSummary: standaloneGpuKernelPreview
-        ? `${kind} supports Top-K and include-all native candidate returns. On requested standalone kernel-capable previews it also supports host-side extra shortlist heads, union reranking, and retained-shortlist confidence reranking. Extra shortlist heads and union reranking currently require include_all=true, confidence reranking requires top_k > 0, include-all is meaningful and not free, and this route does not emit the Double MA heatmap or per-pair CSV export.`
-        : `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface.`,
+        outputSummary: standaloneGpuKernelPreview
+        ? `${kind} supports Top-K and include-all native candidate returns. On requested standalone kernel-capable previews it also supports host-side extra shortlist heads, union reranking, and retained-shortlist confidence reranking. Extra shortlist heads and union reranking currently require include_all=true, confidence reranking requires top_k > 0, include-all is meaningful and not free, and this route does not emit the Double MA heatmap or per-pair CSV export. Explicit Full17 and Trade22 metric-contract requests are available on both CPU-backed and standalone GpuKernel previews; Trade22 on standalone GpuKernel uses bounded host-side enrichment after GPU search.`
+        : supportsRequestedCore17MetricSurface(kind, inputs)
+          ? `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface. Explicit Full17 and Trade22 metric-contract requests are available on this CPU-backed route.`
+          : `${kind} supports Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or per-pair CSV export. Include-all remains meaningful and not free on this surface.`,
     }
   }
   if (kind === 'CompositeCpu') {
@@ -359,14 +404,16 @@ export function describeStrategyOptimizationCapabilities(
       supportsTopK: true,
       supportsIncludeAll: true,
       supportsExtraShortlistObjectives: false,
-      supportsTradeMetrics: false,
+      supportsTradeMetrics: true,
+      supportsCore17MetricSurface: true,
+      supportsMetricContract: true,
       supportsShortlistConfidenceMode: false,
       supportsShortlistUnionMode: false,
       supportsAdvancedExactKernelControls: false,
       executionSummary:
         'CompositeCpu uses the composite CPU optimization path.',
       modeSummary: `${kind} always runs in Grid mode.`,
-      outputSummary: `${kind} supports ranked Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or CSV export.`,
+      outputSummary: `${kind} supports ranked Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or CSV export. Explicit Full17 and Trade22 metric-contract requests are available on this route.`,
     }
   }
   if (kind === 'CompositeMo') {
@@ -379,7 +426,9 @@ export function describeStrategyOptimizationCapabilities(
       supportsTopK: false,
       supportsIncludeAll: false,
       supportsExtraShortlistObjectives: false,
-      supportsTradeMetrics: false,
+      supportsTradeMetrics: true,
+      supportsCore17MetricSurface: true,
+      supportsMetricContract: false,
       supportsShortlistConfidenceMode: false,
       supportsShortlistUnionMode: false,
       supportsAdvancedExactKernelControls: false,
@@ -388,7 +437,7 @@ export function describeStrategyOptimizationCapabilities(
       modeSummary:
         'Composite MO does not use the global backend selector or the global optimization-mode selector. Prescan mode only affects the stage-0 Double-MA narrowing pass.',
       outputSummary:
-        'Composite MO returns Pareto points from its own search-space and prescan settings rather than Double-MA Top-K, heatmap, include-all, or export-all outputs. Validation currently uses the CPU route; GPU fixed-candidate validation only supports plain CompositeCpu HardGate candidates.',
+        'Composite MO returns Pareto points from its own search-space and prescan settings rather than Double-MA Top-K, heatmap, include-all, or export-all outputs. Saved optimization artifacts on this audited route emit the canonical Trade22 surface for Pareto points, but there is no explicit metric-contract selector on this workflow. Validation currently uses the CPU route; GPU fixed-candidate validation only supports plain CompositeCpu HardGate candidates.',
     }
   }
   return {
@@ -401,6 +450,8 @@ export function describeStrategyOptimizationCapabilities(
     supportsIncludeAll: true,
     supportsExtraShortlistObjectives: false,
     supportsTradeMetrics: false,
+    supportsCore17MetricSurface: false,
+    supportsMetricContract: false,
     supportsShortlistConfidenceMode: false,
     supportsShortlistUnionMode: false,
     supportsAdvancedExactKernelControls: false,

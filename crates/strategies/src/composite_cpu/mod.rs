@@ -1,4 +1,6 @@
-use crate::double_ma::{DoubleMaCurves, Metrics, MinMaxBins, StrategyConfig, Trade, TradeStats};
+use crate::double_ma::{
+    finalize_risk_metrics, DoubleMaCurves, Metrics, MinMaxBins, StrategyConfig, Trade, TradeStats,
+};
 use serde::{Deserialize, Serialize};
 
 fn clamp_bins(requested: usize, n_steps: usize) -> usize {
@@ -497,12 +499,21 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
     let mut sum_neg_sq = 0.0_f64;
+    let mut sum_neg_cu = 0.0_f64;
+    let mut count_neg: u64 = 0;
     let mut sum_pos_r = 0.0_f64;
     let mut sum_neg_abs_r = 0.0_f64;
+    let mut long_obs: u64 = 0;
+    let mut short_obs: u64 = 0;
+    let mut long_sum_r = 0.0_f64;
+    let mut short_sum_r = 0.0_f64;
 
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
     let mut trade_log_ret = 0.0_f64;
+    let mut underwater_bars: u64 = 0;
+    let mut underwater_run: u32 = 0;
+    let mut max_underwater_duration_bars: u32 = 0;
     let mut overlay_state = ExecutionOverlayState::default();
 
     for t in start_t..n_total {
@@ -581,6 +592,13 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
         }
+        if dd_log > 0.0 {
+            underwater_bars = underwater_bars.saturating_add(1);
+            underwater_run = underwater_run.saturating_add(1);
+            max_underwater_duration_bars = max_underwater_duration_bars.max(underwater_run);
+        } else {
+            underwater_run = 0;
+        }
         let dd = if dd_log > 0.0 {
             -(-dd_log).exp_m1()
         } else {
@@ -600,11 +618,22 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
             let delta2 = step_r - mean;
             m2 += delta * delta2;
 
-            if step_r < 0.0 {
-                sum_neg_sq += step_r * step_r;
-                sum_neg_abs_r += -step_r;
+            let excess_r = step_r - cfg.hurdle_tau.unwrap_or(0.0);
+            if excess_r < 0.0 {
+                count_neg += 1;
+                sum_neg_sq += excess_r * excess_r;
+                let neg_mag = -excess_r;
+                sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                sum_neg_abs_r += neg_mag;
             } else {
-                sum_pos_r += step_r;
+                sum_pos_r += excess_r;
+            }
+            if pos_bar > 0 {
+                long_obs += 1;
+                long_sum_r += step_r;
+            } else if pos_bar < 0 {
+                short_obs += 1;
+                short_sum_r += step_r;
             }
         }
 
@@ -612,39 +641,46 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         sum_pos += pos_bar as i64;
     }
 
-    const EPS_DENOM: f64 = 1e-12;
-    const CLAMP_MAX: f64 = 1e6;
-
-    let (sharpe, volatility, sortino, downside_deviation, omega) = if COMPUTE_SHARPE {
-        let variance = if count > 1 {
-            m2 / (count as f64 - 1.0)
-        } else {
-            0.0
-        };
-        let std = variance.sqrt();
-        let sharpe = if std > 0.0 { mean / std } else { 0.0 };
-        let volatility = std;
-
-        let denom = (count as f64).max(1.0);
-        let downside_deviation = (sum_neg_sq / denom).sqrt();
-        let sortino_raw = if downside_deviation > 0.0 {
-            mean / downside_deviation
-        } else if mean > 0.0 {
-            CLAMP_MAX
-        } else if mean < 0.0 {
-            -CLAMP_MAX
-        } else {
-            0.0
-        };
-        let sortino = sortino_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-
-        let omega_raw = (sum_pos_r + EPS_DENOM) / (sum_neg_abs_r + EPS_DENOM);
-        let omega = omega_raw.clamp(0.0, CLAMP_MAX);
-
-        (sharpe, volatility, sortino, downside_deviation, omega)
-    } else {
-        (0.0, 0.0, 0.0, 0.0, 0.0)
-    };
+    let (
+        sharpe,
+        volatility,
+        sortino,
+        downside_deviation,
+        downside_frequency,
+        downside_severity,
+        omega,
+        kappa_tau,
+        max_dd,
+        ulcer_index,
+        martin_ratio,
+        calmar,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
+    ) = finalize_risk_metrics(
+        COMPUTE_SHARPE,
+        true,
+        count,
+        obs,
+        cfg.hurdle_tau.unwrap_or(0.0),
+        mean,
+        m2,
+        sum_neg_sq,
+        sum_neg_cu,
+        count_neg,
+        sum_pos_r,
+        sum_neg_abs_r,
+        long_obs,
+        short_obs,
+        long_sum_r,
+        short_sum_r,
+        ulcer_sum_sq,
+        max_log_dd,
+        log_eq,
+        underwater_bars,
+        max_underwater_duration_bars as u64,
+    );
     let denom = if COMPUTE_SHARPE { count } else { obs };
     let exposure = if denom > 0 {
         sum_abs_pos as f64 / denom as f64
@@ -656,45 +692,18 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
     } else {
         0.0
     };
-    let max_dd = if max_log_dd > 0.0 {
-        -(-max_log_dd).exp_m1()
-    } else {
-        0.0
-    };
-    let ulcer_index = (ulcer_sum_sq / (obs as f64).max(1.0)).sqrt();
-
     let pnl = log_eq.exp() - 1.0;
-    let calmar_raw = if max_dd > EPS_DENOM {
-        pnl / max_dd
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let calmar = calmar_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
-    let martin_raw = if ulcer_index > EPS_DENOM {
-        pnl / ulcer_index
-    } else if pnl > 0.0 {
-        CLAMP_MAX
-    } else if pnl < 0.0 {
-        -CLAMP_MAX
-    } else {
-        0.0
-    };
-    let martin_ratio = martin_raw.clamp(-CLAMP_MAX, CLAMP_MAX);
 
     Metrics {
         pnl,
         sharpe,
         sortino,
         downside_deviation,
-        downside_frequency: 0.0,
-        downside_severity: 0.0,
+        downside_frequency,
+        downside_severity,
         calmar,
         omega,
-        kappa_tau: 0.0,
+        kappa_tau,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -702,8 +711,10 @@ fn eval_composite_metrics_from_log_returns_and_mas_f64_impl<const COMPUTE_SHARPE
         trades,
         exposure,
         net_exposure,
-        long_mean_return: 0.0,
-        short_mean_return: 0.0,
+        long_mean_return,
+        short_mean_return,
+        underwater_fraction,
+        max_underwater_duration_bars,
         ..Metrics::default()
     }
 }
@@ -1220,6 +1231,59 @@ mod tests {
         assert_eq!(a.trades, b.trades);
         assert!((a.exposure - b.exposure).abs() < 1e-12);
         assert!((a.net_exposure - b.net_exposure).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hard_gate_metrics_emit_core17_risk_fields() {
+        let n = 96usize;
+        let mut prices: Vec<f64> = Vec::with_capacity(n);
+        let mut price: f64 = 100.0;
+        for i in 0..n {
+            let step = if i < n / 2 {
+                if i % 4 == 0 {
+                    -0.7
+                } else {
+                    1.2
+                }
+            } else if i % 4 == 0 {
+                0.6
+            } else {
+                -1.1
+            };
+            price += step;
+            prices.push(price.max(1.0));
+        }
+        let lr = compute_log_returns(&prices);
+        let fast: Vec<f64> = (0..n).map(|i| if i < n / 2 { 2.0 } else { 0.5 }).collect();
+        let slow: Vec<f64> = vec![1.0; n];
+        let ht: Vec<f64> = (0..n).map(|i| if i < n / 2 { 0.0 } else { 1.0 }).collect();
+        let macz: Vec<f64> = (0..n).map(|i| if i < n / 2 { 0.8 } else { -0.8 }).collect();
+        let ott_line: Vec<f64> = vec![1.0; n];
+        let ott_prices: Vec<f64> = (0..n).map(|i| if i < n / 2 { 2.0 } else { 0.5 }).collect();
+
+        let metrics = eval_composite_metrics_from_log_returns_and_mas_f64(
+            &lr,
+            &ott_prices,
+            &fast,
+            &slow,
+            &ht,
+            &macz,
+            &ott_line,
+            1,
+            &StrategyConfig::default(),
+        );
+
+        assert!(metrics.downside_frequency.is_finite());
+        assert!((0.0..=1.0).contains(&metrics.downside_frequency));
+        assert!(metrics.downside_frequency > 0.0);
+        assert!(metrics.downside_severity.is_finite());
+        assert!(metrics.downside_severity > 0.0);
+        assert!(metrics.kappa_tau.is_finite());
+        assert!(metrics.long_mean_return.is_finite());
+        assert!(metrics.long_mean_return.abs() > 0.0);
+        assert!(metrics.short_mean_return.is_finite());
+        assert!((0.0..=1.0).contains(&metrics.underwater_fraction));
+        assert!(metrics.max_underwater_duration_bars > 0);
     }
 
     #[test]

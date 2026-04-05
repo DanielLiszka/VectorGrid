@@ -16849,6 +16849,8 @@ mod tests {
             top_k: Some(6),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let opt =

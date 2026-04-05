@@ -14,7 +14,10 @@ import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import ContextHelpTip from './ContextHelpTip.vue'
 import { useValidationStore } from '../stores/validationStore'
 import { useWorkflowStore } from '../stores/workflowStore'
-import { previewValidationExecutionSummaryFromStores } from '../services/validationService'
+import {
+  previewValidationAdmissionComparisonFromStores,
+  previewValidationExecutionSummaryFromStores,
+} from '../services/validationService'
 import { VALIDATION_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
@@ -65,6 +68,7 @@ const {
   crossMeta,
   tableRowCount,
   candidates,
+  admissionPolicy,
   seed,
   minPsr,
   minDsr,
@@ -119,6 +123,9 @@ const {
 } = storeToRefs(validationStore)
 const { resultsTab } = storeToRefs(workflowStore)
 const expectedExecutionSummary = computed(() => previewValidationExecutionSummaryFromStores())
+const expectedAdmissionComparison = computed(() =>
+  previewValidationAdmissionComparisonFromStores(),
+)
 
 const { mountReady } = useShellMount('#validationVueShellMount', {
   paneSelector: '[data-vue-panel="validate"]',
@@ -126,6 +133,7 @@ const { mountReady } = useShellMount('#validationVueShellMount', {
 })
 
 const candidatesDraft = ref('32')
+const admissionPolicyDraft = ref('legacy_topk')
 const seedDraft = ref('1')
 const minPsrDraft = ref('')
 const minDsrDraft = ref('')
@@ -225,6 +233,7 @@ const columnVisibilityHint = computed(() => {
 watch(
   () => [
     String(candidates.value || '32'),
+    String(admissionPolicy.value || 'legacy_topk'),
     String(seed.value || '1'),
     String(minPsr.value || ''),
     String(minDsr.value || ''),
@@ -263,6 +272,7 @@ watch(
   ] as const,
   ([
     nextCandidates,
+    nextAdmissionPolicy,
     nextSeed,
     nextMinPsr,
     nextMinDsr,
@@ -300,6 +310,7 @@ watch(
     nextCrossSearch,
   ]) => {
     if (candidatesDraft.value !== nextCandidates) candidatesDraft.value = nextCandidates
+    if (admissionPolicyDraft.value !== nextAdmissionPolicy) admissionPolicyDraft.value = nextAdmissionPolicy
     if (seedDraft.value !== nextSeed) seedDraft.value = nextSeed
     if (minPsrDraft.value !== nextMinPsr) minPsrDraft.value = nextMinPsr
     if (minDsrDraft.value !== nextMinDsr) minDsrDraft.value = nextMinDsr
@@ -506,6 +517,19 @@ onBeforeUnmount(() => {
             />
           </div>
           <div>
+            <label for="vueValAdmissionPolicy">Admission policy</label>
+            <select
+              id="vueValAdmissionPolicy"
+              :value="admissionPolicyDraft"
+              @change="admissionPolicyDraft = String(($event.target as HTMLSelectElement).value || 'legacy_topk'); setInputValue('valAdmissionPolicy', admissionPolicyDraft)"
+            >
+              <option value="legacy_topk">Legacy Top K</option>
+              <option value="scalar_union">Scalar union</option>
+              <option value="pareto_frontier">Pareto frontier</option>
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+          <div>
             <label for="vueValSeed">Seed</label>
             <input
               id="vueValSeed"
@@ -630,6 +654,14 @@ onBeforeUnmount(() => {
           <div>
             <label>Expected Notes</label>
             <div class="metaLine mono">{{ expectedExecutionSummary.warningSummary }}</div>
+          </div>
+          <div>
+            <label>Admission Compare</label>
+            <div class="metaLine mono">{{ expectedAdmissionComparison.summary }}</div>
+          </div>
+          <div>
+            <label>Admission Delta</label>
+            <div class="metaLine mono">{{ expectedAdmissionComparison.detail }}</div>
           </div>
         </div>
       </section>

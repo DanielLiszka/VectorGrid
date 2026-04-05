@@ -5,6 +5,7 @@ import { invokeCommand } from '../tauri/invoke'
 import { runBatch } from './metaService'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { useValidationStore } from '../stores/validationStore'
 
 vi.mock('../tauri/invoke', () => ({
   invokeCommand: vi.fn(async () => undefined),
@@ -196,6 +197,43 @@ describe('meta-service campaign strategy routing', () => {
     expect(useAnalysisStore().batchPreloadPolicy).toBe(
       'host_plus_doublema_vram',
     )
+  })
+
+  it('passes the current validation admission policy through to the backend campaign request', async () => {
+    const optimizeStore = useOptimizeStore()
+    optimizeStore.strategyKind = 'DoubleMa'
+    optimizeStore.updatedAtUnixMs = Date.now()
+    const validationStore = useValidationStore()
+    validationStore.admissionPolicy = 'scalar_union'
+
+    await runBatch({
+      request: {
+        selected_paths: ['C:/a.csv'],
+        holdout_pct: 0,
+        holdout_tag: 'holdout',
+        auto_meta: false,
+        auto_stage5: false,
+        skip_done: false,
+        tags: ['campaign'],
+        optimization_template: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-1',
+          ma_source: 'close',
+        },
+      },
+    })
+
+    const call = invokeCommandMock.mock.calls.find(
+      ([command]) => command === 'run_research_campaign',
+    )
+    expect(call).toBeTruthy()
+    expect(call?.[1]).toMatchObject({
+      req: {
+        validation_config: {
+          admission_policy: 'scalar_union',
+        },
+      },
+    })
   })
 
   it('passes validate_only through to the backend campaign request', async () => {

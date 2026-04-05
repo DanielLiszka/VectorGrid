@@ -4,7 +4,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
-use super::{reveal_path_blocking, sanitize_filename_component};
+use super::{
+    metric_surface::build_optimization_metric_surface_artifact_value, reveal_path_blocking,
+    sanitize_filename_component,
+};
 
 const DATASET_META_SCHEMA_VERSION: u64 = 2;
 const CONFIG_FINGERPRINT_SCHEMA_VERSION: u64 = 1;
@@ -183,6 +186,8 @@ pub struct WorkflowArtifactRunPayload {
     pub dataset_meta: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_signal: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization_metric_surface: Option<Value>,
     pub tags: Vec<String>,
     pub req: Value,
     pub res: Value,
@@ -218,6 +223,8 @@ pub struct RunArtifactDetailResponse {
     pub dataset_meta: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ml_signal: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimization_metric_surface: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_req: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -552,6 +559,12 @@ pub(super) fn save_run_artifact_blocking(
                     }
                 }
             }
+        }
+    }
+
+    if let Some(metric_surface) = build_optimization_metric_surface_artifact_value(&artifact) {
+        if let Value::Object(root) = &mut artifact {
+            root.insert("optimization_metric_surface".to_string(), metric_surface);
         }
     }
 
@@ -1110,6 +1123,7 @@ fn build_workflow_artifacts_hydration_payload(
         csv_path: resolve_run_artifact_csv_path(artifact),
         dataset_meta: artifact.pointer("/dataset_meta").cloned(),
         ml_signal: artifact.pointer("/ml_signal").cloned(),
+        optimization_metric_surface: artifact.pointer("/optimization_metric_surface").cloned(),
         tags: normalized_tags(artifact),
         req: run_req,
         res: run_res,
@@ -1137,6 +1151,7 @@ fn build_run_artifact_detail_response(
     let ts = normalize_text_value(artifact.get("ts"));
     let dataset_meta = artifact.pointer("/dataset_meta").cloned();
     let ml_signal = artifact.pointer("/ml_signal").cloned();
+    let optimization_metric_surface = artifact.pointer("/optimization_metric_surface").cloned();
     let run_req = artifact.pointer("/run/req").cloned();
     let validation_req = artifact.pointer("/validation/req").cloned();
     let validation_res = artifact.pointer("/validation/res").cloned();
@@ -1156,6 +1171,7 @@ fn build_run_artifact_detail_response(
         tags: normalized_tags(artifact),
         dataset_meta,
         ml_signal: ml_signal.clone(),
+        optimization_metric_surface,
         run_req: run_req.clone(),
         validation_req: validation_req.clone(),
         validation_res: validation_res.clone(),
@@ -1721,6 +1737,7 @@ pub(super) fn compute_config_fingerprint_from_artifact(artifact: &Value) -> Stri
         map.remove("data_id");
         map.remove("dataId");
         map.remove("candidates");
+        map.remove("admission_provenance");
 
         if let Some(cross) = map.get_mut("cross_ticker").and_then(|v| v.as_object_mut()) {
             if let Some(ds) = cross.get_mut("datasets").and_then(|v| v.as_array_mut()) {
@@ -1849,6 +1866,7 @@ pub(super) fn update_artifact_tags_blocking(
 
 #[cfg(test)]
 mod tests {
+    use super::super::metric_surface::build_optimization_metric_surface_artifact_value;
     use super::{
         build_run_artifact_detail_response, build_workflow_artifacts_hydration_payload,
         canonical_json, compute_config_fingerprint_from_artifact, is_meta_artifact_file_name,
@@ -1888,6 +1906,19 @@ mod tests {
                     "data_id": "V1",
                     "dataId": "legacy_v1",
                     "candidates": [1, 2, 3],
+                    "admission_policy": "scalar_union",
+                    "admission_provenance": {
+                        "requested_policy": "scalar_union",
+                        "applied_policy": "scalar_union",
+                        "source_kind": "top_rows",
+                        "source_candidate_count": 3,
+                        "pre_dedupe_count": 3,
+                        "post_dedupe_count": 3,
+                        "post_cap_count": 3,
+                        "heads": [
+                            { "head": "primary", "objective": "Sharpe", "candidate_count": 3 }
+                        ]
+                    },
                     "cross_ticker": {
                         "datasets": [
                             { "csv_path": "b.csv", "label": "B" },
@@ -1911,6 +1942,19 @@ mod tests {
                     "data_id": "V2",
                     "dataId": "legacy_v2",
                     "candidates": [99, 100],
+                    "admission_policy": "scalar_union",
+                    "admission_provenance": {
+                        "requested_policy": "scalar_union",
+                        "applied_policy": "scalar_union",
+                        "source_kind": "best_params_fallback",
+                        "source_candidate_count": 2,
+                        "pre_dedupe_count": 2,
+                        "post_dedupe_count": 2,
+                        "post_cap_count": 2,
+                        "heads": [
+                            { "head": "primary", "objective": "Sharpe", "candidate_count": 2 }
+                        ]
+                    },
                     "cross_ticker": {
                         "datasets": [
                             { "csv_path": "a.csv", "label": "A2" },
@@ -2100,6 +2144,129 @@ mod tests {
     }
 
     #[test]
+    fn workflow_hydration_payload_threads_metric_surface_metadata() {
+        let mut artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeTrend",
+                    "metric_contract": null,
+                    "include_trade_metrics": false
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "route_diagnostics": ["gpu_kernel.metrics_count=17"],
+                    "best_metrics": {
+                        "pnl": 1.0,
+                        "sharpe": 0.5,
+                        "volatility": 0.25,
+                        "max_dd": 0.2,
+                        "trades": 8,
+                        "exposure": 0.6,
+                        "net_exposure": 0.2,
+                        "downside_deviation": 0.1,
+                        "ulcer_index": 0.08,
+                        "omega": 1.2,
+                        "downside_frequency": 0.15,
+                        "downside_severity": 0.04,
+                        "long_mean_return": 0.03,
+                        "short_mean_return": -0.02,
+                        "kappa_tau": 0.2,
+                        "underwater_fraction": 0.18,
+                        "max_underwater_duration_bars": 11
+                    },
+                    "top": []
+                }
+            }
+        });
+        let metric_surface =
+            build_optimization_metric_surface_artifact_value(&artifact).expect("metric surface");
+        if let Some(root) = artifact.as_object_mut() {
+            root.insert("optimization_metric_surface".to_string(), metric_surface);
+        }
+
+        let payload = build_workflow_artifacts_hydration_payload(
+            "C:/runs/vectorgrid_run_test.json",
+            &artifact,
+        )
+        .expect("hydration payload");
+        let encoded = serde_json::to_value(payload).expect("serialize");
+
+        assert_eq!(
+            encoded
+                .pointer("/currentRun/optimization_metric_surface/surface")
+                .and_then(|value| value.as_str()),
+            Some("core17")
+        );
+        assert_eq!(
+            encoded
+                .pointer("/currentRun/optimization_metric_surface/fields")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                }),
+            Some(
+                [
+                    "pnl",
+                    "trades",
+                    "max_dd",
+                    "mean",
+                    "std",
+                    "exposure",
+                    "net_exposure",
+                    "downside_deviation",
+                    "ulcer_index",
+                    "omega",
+                    "downside_frequency",
+                    "downside_severity",
+                    "long_mean_return",
+                    "short_mean_return",
+                    "kappa_tau",
+                    "underwater_fraction",
+                    "max_underwater_duration_bars",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+            )
+        );
+    }
+
+    #[test]
+    fn workflow_hydration_payload_keeps_metric_surface_absent_for_legacy_artifacts() {
+        let artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeMo"
+                },
+                "res": {
+                    "best_metrics": {
+                        "pnl": 1.0,
+                        "sharpe": 0.5
+                    },
+                    "top": []
+                }
+            }
+        });
+
+        let payload = build_workflow_artifacts_hydration_payload(
+            "C:/runs/vectorgrid_run_test.json",
+            &artifact,
+        )
+        .expect("hydration payload");
+        let encoded = serde_json::to_value(payload).expect("serialize");
+
+        assert!(encoded
+            .pointer("/currentRun/optimization_metric_surface")
+            .is_none());
+    }
+
+    #[test]
     fn run_artifact_detail_response_formats_ml_summaries() {
         let artifact = json!({
             "ts": "2026-04-02T12:00:00Z",
@@ -2196,5 +2363,138 @@ mod tests {
         );
         assert!(detail.params_text.contains("strategy: MlSignal"));
         assert!(detail.params_text.contains("policy t_long: 0.6"));
+    }
+
+    #[test]
+    fn run_artifact_detail_response_includes_metric_surface_metadata() {
+        let mut artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d"
+            },
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeTrend",
+                    "metric_contract": null,
+                    "include_trade_metrics": false
+                },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "route_diagnostics": ["gpu_kernel.metrics_count=17"],
+                    "best_metrics": {
+                        "pnl": 1.0,
+                        "sharpe": 0.5,
+                        "volatility": 0.25,
+                        "max_dd": 0.2,
+                        "trades": 8,
+                        "exposure": 0.6,
+                        "net_exposure": 0.2,
+                        "downside_deviation": 0.1,
+                        "ulcer_index": 0.08,
+                        "omega": 1.2,
+                        "downside_frequency": 0.15,
+                        "downside_severity": 0.04,
+                        "long_mean_return": 0.03,
+                        "short_mean_return": -0.02,
+                        "kappa_tau": 0.2,
+                        "underwater_fraction": 0.18,
+                        "max_underwater_duration_bars": 11
+                    },
+                    "top": []
+                }
+            }
+        });
+        let metric_surface =
+            build_optimization_metric_surface_artifact_value(&artifact).expect("metric surface");
+        if let Some(root) = artifact.as_object_mut() {
+            root.insert("optimization_metric_surface".to_string(), metric_surface);
+        }
+
+        let detail =
+            build_run_artifact_detail_response("C:/runs/vectorgrid_run_test.json", &artifact)
+                .expect("detail payload");
+
+        assert_eq!(
+            detail
+                .optimization_metric_surface
+                .as_ref()
+                .and_then(|value| value.get("surface"))
+                .and_then(|value| value.as_str()),
+            Some("core17")
+        );
+    }
+
+    #[test]
+    fn run_artifact_detail_response_includes_trade22_metric_surface_metadata() {
+        let mut artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d"
+            },
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "metric_contract": "trade_22",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "best_metrics": {
+                        "pnl": 1.0,
+                        "sharpe": 0.5,
+                        "volatility": 0.25,
+                        "max_dd": 0.2,
+                        "trades": 8,
+                        "exposure": 0.6,
+                        "net_exposure": 0.2,
+                        "downside_deviation": 0.1,
+                        "ulcer_index": 0.08,
+                        "omega": 1.2,
+                        "downside_frequency": 0.15,
+                        "downside_severity": 0.04,
+                        "long_mean_return": 0.03,
+                        "short_mean_return": -0.02,
+                        "kappa_tau": 0.2,
+                        "underwater_fraction": 0.18,
+                        "max_underwater_duration_bars": 11,
+                        "closed_trades": 7,
+                        "winning_trades": 5,
+                        "losing_trades": 2,
+                        "gross_profit": 2.1,
+                        "gross_loss": 0.9
+                    },
+                    "top": []
+                }
+            }
+        });
+        let metric_surface =
+            build_optimization_metric_surface_artifact_value(&artifact).expect("metric surface");
+        if let Some(root) = artifact.as_object_mut() {
+            root.insert("optimization_metric_surface".to_string(), metric_surface);
+        }
+
+        let detail =
+            build_run_artifact_detail_response("C:/runs/vectorgrid_run_test.json", &artifact)
+                .expect("detail payload");
+
+        assert_eq!(
+            detail
+                .optimization_metric_surface
+                .as_ref()
+                .and_then(|value| value.get("surface"))
+                .and_then(|value| value.as_str()),
+            Some("trade22")
+        );
+        assert_eq!(
+            detail
+                .optimization_metric_surface
+                .as_ref()
+                .and_then(|value| value.get("fields"))
+                .and_then(|value| value.as_array())
+                .map(|items| items.len()),
+            Some(22)
+        );
     }
 }

@@ -431,7 +431,9 @@ impl PipelineTimingProfile {
             .saturating_sub(self.final_shortlist_slice_replay_descriptor_upload);
         eprintln!(
             "        descriptor_prep{:>5.3} ms  ({})",
-            self.final_shortlist_slice_replay_descriptor_prep.as_secs_f64() * 1000.0,
+            self.final_shortlist_slice_replay_descriptor_prep
+                .as_secs_f64()
+                * 1000.0,
             Self::pct_str(
                 self.final_shortlist_slice_replay_descriptor_prep,
                 self.final_shortlist_slice_replay
@@ -439,7 +441,9 @@ impl PipelineTimingProfile {
         );
         eprintln!(
             "        descriptor_upload{:>3.3} ms  ({})",
-            self.final_shortlist_slice_replay_descriptor_upload.as_secs_f64() * 1000.0,
+            self.final_shortlist_slice_replay_descriptor_upload
+                .as_secs_f64()
+                * 1000.0,
             Self::pct_str(
                 self.final_shortlist_slice_replay_descriptor_upload,
                 self.final_shortlist_slice_replay
@@ -10098,9 +10102,8 @@ fn eval_double_ma_batch_gpu_kernel_impl(
             }
             if let Some(t0) = replay_descriptor_upload_t0 {
                 if let Some(timing) = shortlist_slice_timing.as_deref_mut() {
-                    timing.replay_descriptor_upload = timing
-                        .replay_descriptor_upload
-                        .saturating_add(t0.elapsed());
+                    timing.replay_descriptor_upload =
+                        timing.replay_descriptor_upload.saturating_add(t0.elapsed());
                 }
             }
             if let (Some(t0), Some(p)) = (pairmap_t0, replay_profile.as_mut()) {
@@ -16022,10 +16025,12 @@ fn optimize_double_ma_gpu_kernel_impl(
                 as u64,
             host_finalize_shortlist_slice_replay_descriptor_prep_ms: shortlist_slice_timing
                 .replay_descriptor_prep
-                .as_millis() as u64,
+                .as_millis()
+                as u64,
             host_finalize_shortlist_slice_replay_descriptor_upload_ms: shortlist_slice_timing
                 .replay_descriptor_upload
-                .as_millis() as u64,
+                .as_millis()
+                as u64,
             host_finalize_shortlist_slice_record_assembly_ms: shortlist_slice_timing
                 .record_assembly
                 .as_millis() as u64,

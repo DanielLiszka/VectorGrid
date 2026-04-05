@@ -1,6 +1,7 @@
 use super::{
-    build_meta_report_xlsx_bytes, quantile, run_artifacts, sanitize_filename_component,
-    TauriProgressSink,
+    build_meta_report_xlsx_bytes,
+    metric_surface::{summarize_artifact_metric_surfaces, ArtifactMetricSurfaceSummary},
+    quantile, run_artifacts, sanitize_filename_component, TauriProgressSink,
 };
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -1919,6 +1920,15 @@ pub struct RunMetaSelectionResponse {
     pub result: MetaSelectionResult,
 }
 
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+struct MetaOptimizationMetricSurfaceSummary {
+    pub train: ArtifactMetricSurfaceSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdout: Option<ArtifactMetricSurfaceSummary>,
+    pub mixed_train_surfaces: bool,
+    pub mixed_holdout_surfaces: bool,
+}
+
 #[tauri::command]
 pub async fn run_meta_selection(
     req: MetaSelectionRequest,
@@ -2112,6 +2122,9 @@ pub(super) fn run_meta_selection_blocking(
     if cancel.load(Ordering::Relaxed) {
         return Err("cancelled".to_string());
     }
+    for warning in build_metric_surface_meta_warnings(&train_artifacts, &holdout_artifacts) {
+        result.warnings.push(warning);
+    }
     if let Some(w) = auto_tf_warning {
         result.warnings.push(w);
     }
@@ -2268,6 +2281,9 @@ pub(super) fn run_meta_selection_blocking(
 
     let ts = chrono::Utc::now().to_rfc3339();
 
+    let metric_surface_summary =
+        build_metric_surface_meta_summary(&train_artifacts, &holdout_artifacts);
+
     ta_app_core::progress::emit_double_ma_progress(Some(&sink), 0, 1, "meta_export");
     let xlsx_bytes = build_meta_report_xlsx_bytes(&ts, &result)?;
     let report_path = suggest_meta_report_path(&ts, &app, "xlsx")?;
@@ -2281,6 +2297,7 @@ pub(super) fn run_meta_selection_blocking(
         "ts": ts,
         "report_xlsx_path": report_path.to_string_lossy().to_string(),
         "tags": [],
+        "optimization_metric_surface_summary": metric_surface_summary,
         "req": req,
         "res": result,
     });
@@ -2298,6 +2315,74 @@ pub(super) fn run_meta_selection_blocking(
         meta_json_path: meta_path.to_string_lossy().to_string(),
         meta_json_bytes: meta_bytes.len(),
         result,
+    })
+}
+
+fn build_metric_surface_meta_warnings(
+    train_artifacts: &[Value],
+    holdout_artifacts: &[Value],
+) -> Vec<String> {
+    let mut warnings: Vec<String> = Vec::new();
+    let train_summary = summarize_artifact_metric_surfaces(train_artifacts);
+    if train_summary.total() == 0 {
+        return warnings;
+    }
+
+    if train_summary.is_mixed() {
+        warnings.push(format!(
+            "Meta selection is mixing optimization metric surfaces across training artifacts ({}). Prefer a uniform Core17/Trade22 corpus for compare/meta/ML consistency.",
+            train_summary.describe_counts()
+        ));
+    }
+    if train_summary.missing_metadata > 0 {
+        warnings.push(format!(
+            "Meta selection inferred optimization metric surfaces for {} training artifact(s) with missing explicit metadata or stale schema metadata.",
+            train_summary.missing_metadata
+        ));
+    }
+
+    let holdout_summary = summarize_artifact_metric_surfaces(holdout_artifacts);
+    if holdout_summary.total() == 0 {
+        return warnings;
+    }
+
+    if holdout_summary.is_mixed() {
+        warnings.push(format!(
+            "Holdout artifact set mixes optimization metric surfaces ({}). Holdout diagnostics may be harder to compare cleanly across artifacts.",
+            holdout_summary.describe_counts()
+        ));
+    }
+    if holdout_summary.missing_metadata > 0 {
+        warnings.push(format!(
+            "Meta selection inferred optimization metric surfaces for {} holdout artifact(s) with missing explicit metadata or stale schema metadata.",
+            holdout_summary.missing_metadata
+        ));
+    }
+    if train_summary.describe_counts() != holdout_summary.describe_counts() {
+        warnings.push(format!(
+            "Training vs holdout metric-surface mix differs (train: {}; holdout: {}).",
+            train_summary.describe_counts(),
+            holdout_summary.describe_counts()
+        ));
+    }
+
+    warnings
+}
+
+fn build_metric_surface_meta_summary(
+    train_artifacts: &[Value],
+    holdout_artifacts: &[Value],
+) -> Option<MetaOptimizationMetricSurfaceSummary> {
+    let train = summarize_artifact_metric_surfaces(train_artifacts);
+    let holdout = summarize_artifact_metric_surfaces(holdout_artifacts);
+    if train.total() == 0 && holdout.total() == 0 {
+        return None;
+    }
+    Some(MetaOptimizationMetricSurfaceSummary {
+        mixed_train_surfaces: train.is_mixed(),
+        mixed_holdout_surfaces: holdout.is_mixed(),
+        train,
+        holdout: (holdout.total() > 0).then_some(holdout),
     })
 }
 
@@ -3024,7 +3109,8 @@ fn apply_holdout_evaluation(
 mod tests {
     use super::{
         apply_holdout_accumulators_to_result, artifact_matches_meta_req,
-        artifact_matches_meta_req_relaxed, build_ml_confidence_status,
+        artifact_matches_meta_req_relaxed, build_metric_surface_meta_summary,
+        build_metric_surface_meta_warnings, build_ml_confidence_status,
         evaluate_ml_confidence_policy_from_scoped_metas, evaluate_policy_candidates,
         group_holdout_label, group_rank_score, is_known_non_run_artifact_filename,
         ml_uncertainty_from_prob, normalize_ml_policy_evaluation_request, normalize_ml_scope,
@@ -3034,6 +3120,7 @@ mod tests {
         MlConfidenceModelState, MlConfidencePolicyArmMetrics, MlConfidencePolicyEvaluationRequest,
         MlConfidencePolicyEvaluationResult, MlMetaScopeSummary,
     };
+    use crate::commands::metric_surface::build_optimization_metric_surface_artifact_value;
     use serde_json::{json, Value};
     use std::path::PathBuf;
     use ta_app_core::ml_confidence::MlConfidenceModelMeta;
@@ -3423,6 +3510,181 @@ mod tests {
 
         assert!(artifact_matches_meta_req_relaxed(&artifact, &req));
         assert!(!artifact_matches_meta_req(&artifact, &req));
+    }
+
+    #[test]
+    fn metric_surface_meta_warnings_flag_mixed_train_artifacts_and_missing_metadata() {
+        let train_legacy = json!({
+            "run": {
+                "req": { "strategy_kind": "CompositeMo" },
+                "res": {
+                    "best_metrics": {},
+                    "top": []
+                }
+            }
+        });
+        let mut train_core17 = json!({
+            "run": {
+                "req": { "strategy_kind": "CompositeTrend" },
+                "res": {
+                    "backend_used": "Gpu",
+                    "backend_route": "GpuKernel",
+                    "route_diagnostics": ["gpu_kernel.metrics_count=17"],
+                    "best_metrics": {
+                        "pnl": 1.0,
+                        "sharpe": 0.5,
+                        "sortino": 0.6,
+                        "downside_deviation": 0.2,
+                        "downside_frequency": 0.1,
+                        "downside_severity": 0.05,
+                        "calmar": 0.9,
+                        "omega": 1.2,
+                        "kappa_tau": 0.4,
+                        "volatility": 0.3,
+                        "ulcer_index": 0.11,
+                        "martin_ratio": 0.7,
+                        "max_dd": 0.2,
+                        "trades": 10,
+                        "exposure": 0.5,
+                        "net_exposure": 0.1,
+                        "long_mean_return": 0.02,
+                        "short_mean_return": -0.01,
+                        "closed_trades": 8,
+                        "winning_trades": 5,
+                        "losing_trades": 3,
+                        "gross_profit": 2.0,
+                        "gross_loss": 1.0,
+                        "underwater_fraction": 0.15,
+                        "max_underwater_duration_bars": 12
+                    },
+                    "top": []
+                }
+            }
+        });
+        let train_core17_surface = build_optimization_metric_surface_artifact_value(&train_core17)
+            .expect("metric surface");
+        if let Some(root) = train_core17.as_object_mut() {
+            root.insert(
+                "optimization_metric_surface".to_string(),
+                train_core17_surface,
+            );
+        }
+
+        let warnings = build_metric_surface_meta_warnings(&[train_legacy, train_core17], &[]);
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("mixing optimization metric surfaces"));
+        assert!(warnings[0].contains("legacy=1, core17=1, trade22=0"));
+        assert!(warnings[1].contains("missing explicit metadata"));
+        assert!(warnings[1].contains("1 training artifact"));
+    }
+
+    #[test]
+    fn metric_surface_meta_warnings_flag_holdout_mix_difference() {
+        let mut train = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "best_metrics": {
+                        "pnl": 1.0,
+                        "sharpe": 0.5,
+                        "sortino": 0.6,
+                        "downside_deviation": 0.2,
+                        "downside_frequency": 0.1,
+                        "downside_severity": 0.05,
+                        "calmar": 0.9,
+                        "omega": 1.2,
+                        "kappa_tau": 0.4,
+                        "volatility": 0.3,
+                        "ulcer_index": 0.11,
+                        "martin_ratio": 0.7,
+                        "max_dd": 0.2,
+                        "trades": 10,
+                        "exposure": 0.5,
+                        "net_exposure": 0.1,
+                        "long_mean_return": 0.02,
+                        "short_mean_return": -0.01,
+                        "closed_trades": 8,
+                        "winning_trades": 5,
+                        "losing_trades": 3,
+                        "gross_profit": 2.0,
+                        "gross_loss": 1.0,
+                        "underwater_fraction": 0.15,
+                        "max_underwater_duration_bars": 12
+                    },
+                    "top": []
+                }
+            }
+        });
+        let mut holdout = json!({
+            "run": {
+                "req": { "strategy_kind": "CompositeMo" },
+                "res": {
+                    "best_metrics": {},
+                    "top": []
+                }
+            }
+        });
+        let train_surface =
+            build_optimization_metric_surface_artifact_value(&train).expect("train surface");
+        if let Some(root) = train.as_object_mut() {
+            root.insert("optimization_metric_surface".to_string(), train_surface);
+        }
+        let holdout_surface =
+            build_optimization_metric_surface_artifact_value(&holdout).expect("holdout surface");
+        if let Some(root) = holdout.as_object_mut() {
+            root.insert("optimization_metric_surface".to_string(), holdout_surface);
+        }
+
+        let warnings = build_metric_surface_meta_warnings(&[train], &[holdout]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Training vs holdout metric-surface mix differs"));
+        assert!(warnings[0].contains("train: legacy=0, core17=0, trade22=1"));
+        assert!(warnings[0].contains("holdout: legacy=1, core17=0, trade22=0"));
+    }
+
+    #[test]
+    fn metric_surface_meta_summary_persists_train_and_holdout_counts() {
+        let train = json!({
+            "optimization_metric_surface": {
+                "schema_version": 2,
+                "surface": "core17"
+            },
+            "run": {
+                "req": { "strategy_kind": "CompositeTrend" },
+                "res": {
+                    "backend_route": "GpuKernel",
+                    "best_metrics": {},
+                    "top": []
+                }
+            }
+        });
+        let holdout = json!({
+            "optimization_metric_surface": {
+                "schema_version": 2,
+                "surface": "trade22"
+            },
+            "run": {
+                "req": {
+                    "strategy_kind": "DoubleMa",
+                    "include_trade_metrics": true
+                },
+                "res": {
+                    "best_metrics": {},
+                    "top": []
+                }
+            }
+        });
+
+        let summary =
+            build_metric_surface_meta_summary(&[train], &[holdout]).expect("surface summary");
+        assert_eq!(summary.train.core17, 1);
+        assert_eq!(summary.train.trade22, 0);
+        assert!(!summary.mixed_train_surfaces);
+        assert_eq!(summary.holdout.as_ref().map(|value| value.trade22), Some(1));
+        assert!(!summary.mixed_holdout_surfaces);
     }
 
     #[test]

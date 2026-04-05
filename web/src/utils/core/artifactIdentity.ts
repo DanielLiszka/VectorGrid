@@ -108,6 +108,7 @@ function stripValidationReqForFingerprint(validationReq: unknown): Record<string
   delete record.data_id
   delete record.dataId
   delete record.candidates
+  delete record.admission_provenance
   const cross = (record.cross_ticker && typeof record.cross_ticker === 'object')
     ? record.cross_ticker as Record<string, unknown>
     : null

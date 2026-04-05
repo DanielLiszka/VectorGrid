@@ -567,6 +567,41 @@ describe("optimizeRequestBuilder", () => {
     expect((req as Record<string, unknown>).include_trade_metrics).toBe(true);
   });
 
+  it("allows include_trade_metrics for DynamicDoubleMa on the CpuOnly route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-trade-metrics-dynamic-cpu",
+        current_data_meta: { has_close: true },
+      },
+      backend: "CpuOnly",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      includeTradeMetrics: true,
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      dynamicStrategyIr: { profile: "double_ma" },
+    });
+
+    expect((req as Record<string, unknown>).include_trade_metrics).toBe(true);
+  });
+
   it("allows an explicit full_17 metric contract on the exact GpuKernel route", () => {
     const req = buildDoubleMaOptimizationRequest({
       context: {
@@ -596,6 +631,81 @@ describe("optimizeRequestBuilder", () => {
       spreadBps: "0",
       slippageBps: "0",
       epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      metric_contract: "full_17",
+      include_trade_metrics: false,
+    });
+  });
+
+  it("allows an explicit full_17 metric contract on the CpuOnly DoubleMa route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DoubleMa",
+        data_id: "data-metric-contract-full17-cpu",
+        current_data_meta: { has_close: true },
+      },
+      backend: "CpuOnly",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      metricContract: "full_17",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+    });
+
+    expect(req).toMatchObject({
+      metric_contract: "full_17",
+      include_trade_metrics: false,
+    });
+  });
+
+  it("allows an explicit full_17 metric contract for DynamicDoubleMa on the CpuOnly route", () => {
+    const req = buildDoubleMaOptimizationRequest({
+      context: {
+        strategy_kind: "DynamicDoubleMa",
+        data_id: "data-metric-contract-full17-dynamic-cpu",
+        current_data_meta: { has_close: true },
+      },
+      backend: "CpuOnly",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      maSource: "close",
+      objective: "Sharpe",
+      metricContract: "full_17",
+      mode: "Grid",
+      topK: "20",
+      includeAll: "false",
+      heatmapBins: "0",
+      startingEquity: "10000",
+      costPreset: "custom",
+      feeBps: "0",
+      spreadBps: "0",
+      slippageBps: "0",
+      epsRel: "0",
+      dynamicStrategyIr: { profile: "double_ma" },
     });
 
     expect(req).toMatchObject({
@@ -2660,13 +2770,23 @@ describe("optimizeRequestBuilder", () => {
         shortlistSliceMode: "Halves",
       }),
     ).toThrow(/supported only for the GPU kernel route/i);
+  });
 
-    expect(() =>
-      buildCompositeDoubleMaRequest("CompositeTrend", {
-        trendUseAdx: true,
-        includeTradeMetrics: true,
-      }),
-    ).toThrow(/exact GpuKernel backend route/i);
+  it("allows metric-contract requests on non-exact composite routes while keeping exact-only shortlist controls gated", () => {
+    const hybridReq = buildCompositeDoubleMaRequest("CompositeTrend", {
+      trendUseAdx: true,
+      includeTradeMetrics: true,
+      metricContract: "trade_22",
+    });
+    const cpuReq = buildCompositeDoubleMaRequest("RegimeHybrid", {
+      backend: "CpuOnly",
+      metricContract: "full_17",
+    });
+
+    expect((hybridReq as Record<string, unknown>).include_trade_metrics).toBe(true);
+    expect((hybridReq as Record<string, unknown>).metric_contract).toBe("trade_22");
+    expect((cpuReq as Record<string, unknown>).metric_contract).toBe("full_17");
+    expect((cpuReq as Record<string, unknown>).include_trade_metrics).toBe(false);
   });
 
   it("accepts canonicalized MA support keys without cloning the whole support map", () => {

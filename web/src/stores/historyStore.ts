@@ -232,6 +232,10 @@ interface HistoryState {
   savedRunDetailDataset: string;
   savedRunDetailTimeframe: string;
   savedRunDetailValidation: string;
+  savedRunDetailMetricSurface: string;
+  savedRunDetailMetricSurfaceDetail: string;
+  savedRunDetailAdmission: string;
+  savedRunDetailAdmissionDetail: string;
   savedRunDetailReport: string;
   savedRunDetailSize: string;
   savedRunDetailTags: string;
@@ -413,6 +417,10 @@ export const useHistoryStore = defineStore("history", {
     savedRunDetailDataset: "—",
     savedRunDetailTimeframe: "—",
     savedRunDetailValidation: "—",
+    savedRunDetailMetricSurface: "—",
+    savedRunDetailMetricSurfaceDetail: "—",
+    savedRunDetailAdmission: "—",
+    savedRunDetailAdmissionDetail: "—",
     savedRunDetailReport: "—",
     savedRunDetailSize: "—",
     savedRunDetailTags: "—",
@@ -576,6 +584,30 @@ export const useHistoryStore = defineStore("history", {
         String(
           snapshot.savedRunDetailValidation ??
             this.savedRunDetailValidation ??
+            "—",
+        ).trim() || "—";
+      this.savedRunDetailMetricSurface =
+        String(
+          snapshot.savedRunDetailMetricSurface ??
+            this.savedRunDetailMetricSurface ??
+            "—",
+        ).trim() || "—";
+      this.savedRunDetailMetricSurfaceDetail =
+        String(
+          snapshot.savedRunDetailMetricSurfaceDetail ??
+            this.savedRunDetailMetricSurfaceDetail ??
+            "—",
+        ).trim() || "—";
+      this.savedRunDetailAdmission =
+        String(
+          snapshot.savedRunDetailAdmission ??
+            this.savedRunDetailAdmission ??
+            "—",
+        ).trim() || "—";
+      this.savedRunDetailAdmissionDetail =
+        String(
+          snapshot.savedRunDetailAdmissionDetail ??
+            this.savedRunDetailAdmissionDetail ??
             "—",
         ).trim() || "—";
       this.savedRunDetailReport =
@@ -752,6 +784,10 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailDataset = "—";
         this.savedRunDetailTimeframe = "—";
         this.savedRunDetailValidation = "—";
+        this.savedRunDetailMetricSurface = "—";
+        this.savedRunDetailMetricSurfaceDetail = "—";
+        this.savedRunDetailAdmission = "—";
+        this.savedRunDetailAdmissionDetail = "—";
         this.savedRunDetailReport = "—";
         this.savedRunDetailSize = "—";
         this.savedRunDetailTags = "—";
@@ -811,6 +847,14 @@ export const useHistoryStore = defineStore("history", {
         this.savedRunDetailValidation = hasValidation
           ? "Available"
           : "Not saved";
+        this.savedRunDetailMetricSurface =
+          normalizeText(selectedDetail?.metricSurfaceSummary) || "—";
+        this.savedRunDetailMetricSurfaceDetail =
+          normalizeText(selectedDetail?.metricSurfaceDetail) || "—";
+        this.savedRunDetailAdmission =
+          normalizeText(selectedDetail?.validationAdmissionSummary) || "—";
+        this.savedRunDetailAdmissionDetail =
+          normalizeText(selectedDetail?.validationAdmissionDetail) || "—";
         this.savedRunDetailReport = reportPath
           ? "XLSX available"
           : "Not exported";
@@ -871,6 +915,18 @@ export const useHistoryStore = defineStore("history", {
             csvPath: normalizePath(detail?.csvPath || ""),
             reportPath: normalizePath(detail?.reportPath || ""),
             hasValidation: !!detail?.hasValidation,
+            metricSurfaceSummary: normalizeText(
+              detail?.metricSurfaceSummary || "",
+            ),
+            metricSurfaceDetail: normalizeText(
+              detail?.metricSurfaceDetail || "",
+            ),
+            validationAdmissionSummary: normalizeText(
+              detail?.validationAdmissionSummary || "",
+            ),
+            validationAdmissionDetail: normalizeText(
+              detail?.validationAdmissionDetail || "",
+            ),
             tags: normalizeTags(detail?.tags),
             mlBundleId: normalizeText(detail?.mlBundleId || ""),
             mlScoreCachePath: normalizePath(detail?.mlScoreCachePath || ""),

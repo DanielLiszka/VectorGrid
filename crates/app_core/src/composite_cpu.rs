@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use ta_optimizer::stream::StreamAggregator;
 use ta_optimizer::{ObjectiveKind, OptimizationMode, OptimizationResult};
 use ta_strategies::composite_cpu::CompositeSignalMode;
-use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig};
+use ta_strategies::double_ma::{DoubleMaCurves, DoubleMaParams, Metrics, StrategyConfig, TradeStats};
 #[cfg(feature = "cuda")]
 use vector_ta::utilities::enums::Kernel;
 
@@ -69,9 +69,9 @@ use crate::double_ma::{
     ma_matrix_cpu_f64, ma_matrix_with_backend_f64, resolve_alma_params_for_side,
     run_double_ma_optimization_blocking_with_candles, strategy_cfg_for_optimization,
     validate_ma_kind, validate_strategy_cfg_for_optimization, Backend, BackendOptimizationResult,
-    BackendUsed, DoubleMaParamsResolved, DoubleMaRequest, DoubleMaShortlistConfidenceMode,
-    DoubleMaShortlistUnionMode, HalfTrendRegimeFilter, LocalStabilityPoint, LocalStabilityResult,
-    LocalStabilitySummary, OptimizationModeResolved,
+    BackendUsed, DoubleMaMetricContract, DoubleMaParamsResolved, DoubleMaRequest,
+    DoubleMaShortlistConfidenceMode, DoubleMaShortlistUnionMode, HalfTrendRegimeFilter,
+    LocalStabilityPoint, LocalStabilityResult, LocalStabilitySummary, OptimizationModeResolved,
 };
 #[cfg(feature = "cuda")]
 use crate::dynamic_indicator_adapter::{
@@ -422,6 +422,10 @@ pub struct CompositeCpuRequest {
     pub top_k: Option<usize>,
     pub include_all: Option<bool>,
     pub heatmap_bins: Option<u16>,
+    #[serde(default)]
+    pub include_trade_metrics: bool,
+    #[serde(default)]
+    pub metric_contract: Option<DoubleMaMetricContract>,
 }
 
 fn default_ma_source() -> String {
@@ -561,6 +565,758 @@ fn objective_needs_return_stats(objective: ObjectiveKind) -> bool {
             | ObjectiveKind::Omega
             | ObjectiveKind::Volatility
     )
+}
+
+fn composite_trade22_requested(req: &CompositeCpuRequest) -> bool {
+    req.include_trade_metrics || matches!(req.metric_contract, Some(DoubleMaMetricContract::Trade22))
+}
+
+fn composite_metric_surface_kind(req: &CompositeCpuRequest) -> &'static str {
+    if composite_trade22_requested(req) {
+        "trade22"
+    } else {
+        "core17"
+    }
+}
+
+fn enrich_result_metrics<F>(
+    result: &mut OptimizationResult,
+    objective: ObjectiveKind,
+    mut eval: F,
+) -> Result<(), String>
+where
+    F: FnMut(&DoubleMaParams) -> Result<Metrics, String>,
+{
+    result.best_metrics = eval(&result.best_params)?;
+    result.best_score = Some(objective_score(&result.best_metrics, objective));
+
+    for (params, metrics) in result.top.iter_mut() {
+        *metrics = eval(params)?;
+    }
+    result.top_scores = Some(
+        result
+            .top
+            .iter()
+            .map(|(_, metrics)| objective_score(metrics, objective))
+            .collect(),
+    );
+
+    if let Some(rows) = result.all.as_mut() {
+        for (params, metrics) in rows.iter_mut() {
+            *metrics = eval(params)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn enrich_backend_result_metrics<F>(
+    result: &mut BackendOptimizationResult,
+    objective: ObjectiveKind,
+    mut eval: F,
+) -> Result<(), String>
+where
+    F: FnMut(&DoubleMaParamsResolved) -> Result<Metrics, String>,
+{
+    result.best_metrics = eval(&result.best_params)?;
+    result.best_score = Some(objective_score(&result.best_metrics, objective));
+
+    for (params, metrics) in result.top.iter_mut() {
+        *metrics = eval(params)?;
+    }
+    result.top_scores = Some(
+        result
+            .top
+            .iter()
+            .map(|(_, metrics)| objective_score(metrics, objective))
+            .collect(),
+    );
+
+    if let Some(rows) = result.all.as_mut() {
+        for (params, metrics) in rows.iter_mut() {
+            *metrics = eval(params)?;
+        }
+    }
+    result.all_scores = resolved_all_scores(&result.all, objective);
+    Ok(())
+}
+
+fn apply_trade_stats_to_metrics(metrics: &mut Metrics, trade_stats: Option<&TradeStats>) {
+    let Some(trade_stats) = trade_stats else {
+        return;
+    };
+    metrics.closed_trades = trade_stats.closed_trades as u32;
+    metrics.winning_trades = trade_stats.wins as u32;
+    metrics.losing_trades = trade_stats.losses as u32;
+    metrics.gross_profit = (trade_stats.avg_win * trade_stats.wins as f64).max(0.0);
+    metrics.gross_loss = ((-trade_stats.avg_loss) * trade_stats.losses as f64).max(0.0);
+}
+
+fn evaluate_asr_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let asr_cfg = req
+        .asr
+        .clone()
+        .ok_or_else(|| "ASR trade22 evaluation requires ASR config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let kaufman = compute_asr_kaufman_stops(candles, &strategy)?;
+    let periods = resolve_asr_periods(&asr_cfg, params.fast_len, params.slow_len);
+    let fast_signals = compute_asr_fast_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        &asr_cfg,
+        periods.squeeze,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let slow_signals = compute_asr_slow_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        &asr_cfg,
+        periods.trend,
+        periods.er,
+        periods.z,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let max_period =
+        usize::from(periods.squeeze.max(periods.trend).max(periods.er).max(periods.z)).max(1);
+    let start_t = compute_asr_start_t(
+        fv_close,
+        fv_ma,
+        fast_signals.first_valid,
+        slow_signals.first_valid,
+        kaufman.first_valid,
+        max_period,
+        strategy.trade_on_next_bar,
+    );
+    let desired = build_asr_desired_positions(
+        close,
+        &fast_signals,
+        &slow_signals,
+        &kaufman,
+        start_t,
+        &strategy,
+        &asr_cfg,
+    );
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_vcc_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let vcc_cfg = req
+        .vcc
+        .clone()
+        .ok_or_else(|| "VCC trade22 evaluation requires VCC config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_vcc_periods(&vcc_cfg, params.fast_len, params.slow_len);
+    let fast_signals = compute_vcc_fast_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        &vcc_cfg,
+        periods.squeeze,
+        periods.momentum,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let trend_signals = compute_vcc_trend_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods.trend,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let max_period =
+        usize::from(periods.squeeze.max(periods.momentum).max(periods.trend)).max(1);
+    let start_t = compute_vcc_start_t(
+        fv_close,
+        fv_ma,
+        fast_signals.first_valid,
+        trend_signals.first_valid,
+        max_period,
+        strategy.trade_on_next_bar,
+    );
+    let desired = build_vcc_desired_positions(
+        close,
+        &fast_signals,
+        &trend_signals,
+        start_t,
+        &strategy,
+        &vcc_cfg,
+    );
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_vemr_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let vemr_cfg = req
+        .vemr
+        .clone()
+        .ok_or_else(|| "VEMR trade22 evaluation requires VEMR config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_vemr_periods(&vemr_cfg, params.fast_len, params.slow_len);
+    let fast_signals = compute_vemr_fast_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        &vemr_cfg,
+        periods.z,
+        periods.bb,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let risk_signals = compute_vemr_risk_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods.atr,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let max_period = usize::from(periods.z.max(periods.bb).max(periods.atr)).max(1);
+    let start_t = compute_vemr_start_t(
+        fv_close,
+        fv_ma,
+        fast_signals.first_valid,
+        risk_signals.first_valid,
+        max_period,
+        strategy.trade_on_next_bar,
+    );
+    let desired = build_vemr_desired_positions(
+        close,
+        &fast_signals,
+        &risk_signals,
+        start_t,
+        &strategy,
+        &vemr_cfg,
+    );
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_rocb_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let rocb_cfg = req
+        .rocb
+        .clone()
+        .ok_or_else(|| "ROCB trade22 evaluation requires ROCB config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high =
+        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_rocb_periods(&rocb_cfg, params.fast_len, params.slow_len);
+    let breakout = compute_rocb_breakout_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods.channel,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let risk = compute_rocb_risk_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods.atr,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let start_t = compute_rocb_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        breakout.first_valid,
+        risk.first_valid,
+        strategy.trade_on_next_bar,
+    );
+    let mut desired = Vec::with_capacity(close.len());
+    build_rocb_desired_positions_into(
+        &mut desired,
+        close,
+        &breakout,
+        &risk,
+        start_t,
+        &strategy,
+        &rocb_cfg,
+    );
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_vcet_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let vcet_cfg = req
+        .vcet
+        .clone()
+        .ok_or_else(|| "VCET trade22 evaluation requires VCET config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high =
+        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_vcet_periods(&vcet_cfg, params.fast_len, params.slow_len);
+    let vidya = compute_vcet_vidya_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods,
+        vcet_cfg.vidya_alpha,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let chandelier = compute_vcet_chandelier_signals(
+        candles,
+        &Backend::CpuOnly,
+        periods.ce,
+        vcet_cfg.ce_mult,
+        vcet_cfg.ce_use_close,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let start_t = compute_vcet_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        vidya.first_valid,
+        chandelier.first_valid,
+        strategy.trade_on_next_bar,
+    );
+    let desired = build_vcet_desired_positions(
+        close,
+        &vidya,
+        &chandelier,
+        start_t,
+        &strategy,
+        &vcet_cfg,
+    );
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_mkcs_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let mkcs_cfg = req
+        .mkcs
+        .clone()
+        .ok_or_else(|| "MKCS trade22 evaluation requires MKCS config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let high = vector_ta::utilities::data_loader::source_type(candles, "high");
+    let low = vector_ta::utilities::data_loader::source_type(candles, "low");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_high =
+        first_finite_idx(high).ok_or_else(|| "high series all non-finite".to_string())?;
+    let fv_low = first_finite_idx(low).ok_or_else(|| "low series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_mkcs_periods(&mkcs_cfg, params.fast_len, params.slow_len);
+    let compression = compute_mkcs_compression_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods.stddev,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let breakout = compute_mkcs_breakout_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods.breakout,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let start_t = compute_mkcs_start_t(
+        fv_close,
+        fv_high,
+        fv_low,
+        compression.first_valid,
+        breakout.first_valid,
+        strategy.trade_on_next_bar,
+    );
+    let desired = build_mkcs_desired_positions(
+        close,
+        &compression,
+        &breakout,
+        start_t,
+        &strategy,
+        &mkcs_cfg,
+    );
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_kqsr_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kqsr_cfg = req
+        .kqsr
+        .clone()
+        .ok_or_else(|| "KQSR trade22 evaluation requires KQSR config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_kqsr_periods(&kqsr_cfg, params.fast_len, params.slow_len);
+    let signals = compute_kqsr_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods,
+        &kqsr_cfg,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let start_t = compute_kqsr_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    let desired = build_kqsr_desired_positions(close, &signals, start_t, &strategy, &kqsr_cfg);
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_carm_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let carm_cfg = req
+        .carm
+        .clone()
+        .ok_or_else(|| "CARM trade22 evaluation requires CARM config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_carm_periods(&carm_cfg, params.fast_len, params.slow_len);
+    let signals = compute_carm_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods,
+        &carm_cfg,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let start_t = compute_carm_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    let desired = build_carm_desired_positions(close, &signals, start_t, &strategy, &carm_cfg);
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_kvdf_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let kvdf_cfg = req
+        .kvdf
+        .clone()
+        .ok_or_else(|| "KVDF trade22 evaluation requires KVDF config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_kvdf_periods(&kvdf_cfg, params.fast_len, params.slow_len);
+    let signals = compute_kvdf_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods,
+        &kvdf_cfg,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let start_t = compute_kvdf_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    let desired = build_kvdf_desired_positions(close, &signals, start_t, &strategy, &kvdf_cfg);
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn evaluate_cdmc_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParamsResolved,
+) -> Result<Metrics, String> {
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let cdmc_cfg = req
+        .cdmc
+        .clone()
+        .ok_or_else(|| "CDMC trade22 evaluation requires CDMC config".to_string())?;
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let lr = compute_log_returns_f64(close);
+    let periods = resolve_cdmc_periods(&cdmc_cfg, params.fast_len, params.slow_len);
+    let signals = compute_cdmc_signals(
+        candles,
+        &req.ma_source,
+        &Backend::CpuOnly,
+        periods,
+        &cdmc_cfg,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let start_t = compute_cdmc_start_t(fv_close, signals.first_valid, strategy.trade_on_next_bar);
+    let desired = build_cdmc_desired_positions(close, &signals, start_t, &strategy, &cdmc_cfg);
+    Ok(eval_asr_metrics_from_desired(
+        candles, &lr, &desired, start_t, &strategy,
+    ))
+}
+
+fn maybe_enrich_trade22_backend_result(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    mut result: BackendOptimizationResult,
+) -> Result<BackendOptimizationResult, String> {
+    if !composite_trade22_requested(req) {
+        result.metric_surface_kind = Some(composite_metric_surface_kind(req).to_string());
+        return Ok(result);
+    }
+
+    if req.asr.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_asr_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.vcc.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_vcc_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.vemr.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_vemr_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.rocb.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_rocb_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.vcet.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_vcet_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.mkcs.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_mkcs_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.kqsr.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_kqsr_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.carm.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_carm_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.kvdf.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_kvdf_trade22_metrics(req, candles, params)
+        })?;
+    } else if req.cdmc.is_some() {
+        enrich_backend_result_metrics(&mut result, req.objective, |params| {
+            evaluate_cdmc_trade22_metrics(req, candles, params)
+        })?;
+    }
+
+    result.metric_surface_kind = Some("trade22".to_string());
+    Ok(result)
+}
+
+pub(crate) fn evaluate_composite_cpu_trade22_metrics(
+    req: &CompositeCpuRequest,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    params: &DoubleMaParams,
+) -> Result<Metrics, String> {
+    let n = candles.close.len();
+    if n < 2 {
+        return Err("not enough candles (need at least 2)".to_string());
+    }
+    if req.fast_ma_types.len() != 1 || req.slow_ma_types.len() != 1 {
+        return Err("Select exactly one fast MA and one slow MA.".to_string());
+    }
+
+    let fast_ma = req.fast_ma_types[0].trim().to_ascii_lowercase();
+    let slow_ma = req.slow_ma_types[0].trim().to_ascii_lowercase();
+    let strategy = strategy_cfg_for_optimization(req.strategy.clone());
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, &req.ma_source);
+    let fv_close =
+        first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma =
+        first_finite_idx(ma_prices).ok_or_else(|| "ma source series all non-finite".to_string())?;
+
+    let halftrend_trend = compute_halftrend_trend_with_backend(
+        candles,
+        &req.halftrend,
+        #[cfg(feature = "cuda")]
+        &Backend::CpuOnly,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let macz_hist = compute_macz_hist_with_backend(
+        candles,
+        &req.ma_source,
+        &req.macz,
+        #[cfg(feature = "cuda")]
+        &Backend::CpuOnly,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+    let ott_line = compute_ott_line_with_backend(
+        candles,
+        &req.ma_source,
+        &req.ott,
+        #[cfg(feature = "cuda")]
+        &Backend::CpuOnly,
+        #[cfg(feature = "cuda")]
+        None,
+    )?;
+
+    let fv_ht = first_finite_idx(&halftrend_trend)
+        .ok_or_else(|| "halftrend trend series all non-finite".to_string())?;
+    let fv_macz =
+        first_finite_idx(&macz_hist).ok_or_else(|| "macz series all non-finite".to_string())?;
+    let fv_ott =
+        first_finite_idx(&ott_line).ok_or_else(|| "ott series all non-finite".to_string())?;
+    let first_valid = fv_close.max(fv_ma).max(fv_ht).max(fv_macz).max(fv_ott);
+
+    let trade_offset = if strategy.trade_on_next_bar {
+        1usize
+    } else {
+        0usize
+    };
+    let max_p = usize::from(params.fast_len.max(params.slow_len)).max(1);
+    let start_t = first_valid
+        .saturating_add(max_p.saturating_sub(1))
+        .saturating_add(trade_offset);
+    if start_t >= n {
+        return Err("not enough candles after warmup for analysis".to_string());
+    }
+
+    let (fast_alma_offset, fast_alma_sigma) =
+        resolve_alma_params_for_side("fast", &fast_ma, req.fast_ma_params.as_ref())?;
+    let (slow_alma_offset, slow_alma_sigma) =
+        resolve_alma_params_for_side("slow", &slow_ma, req.slow_ma_params.as_ref())?;
+    let fast_periods = [params.fast_len];
+    let slow_periods = [params.slow_len];
+    let (fast_mat, cols) = ma_matrix_cpu_f64(
+        candles,
+        &fast_ma,
+        &req.ma_source,
+        &fast_periods,
+        req.fast_ma_params.as_ref(),
+        fast_alma_offset,
+        fast_alma_sigma,
+    )?;
+    let (slow_mat, cols2) = ma_matrix_cpu_f64(
+        candles,
+        &slow_ma,
+        &req.ma_source,
+        &slow_periods,
+        req.slow_ma_params.as_ref(),
+        slow_alma_offset,
+        slow_alma_sigma,
+    )?;
+    if cols != cols2 {
+        return Err("MA matrix column mismatch".to_string());
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let mut metrics =
+        ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+            &lr,
+            ma_prices,
+            &fast_mat,
+            &slow_mat,
+            &halftrend_trend,
+            &macz_hist,
+            &ott_line,
+            start_t,
+            &strategy,
+            req.signal_mode,
+        );
+    let curves =
+        ta_strategies::composite_cpu::eval_composite_curves_from_log_returns_and_mas_f64_with_mode(
+            &lr,
+            ma_prices,
+            &fast_mat,
+            &slow_mat,
+            &halftrend_trend,
+            &macz_hist,
+            &ott_line,
+            start_t,
+            &strategy,
+            1,
+            req.signal_mode,
+        );
+    apply_trade_stats_to_metrics(&mut metrics, curves.trade_stats.as_ref());
+    Ok(metrics)
 }
 
 fn resolved_all_scores(
@@ -1936,6 +2692,62 @@ fn run_asr_optimization_gpu(
         );
         Ok(n.saturating_sub(start_t).max(2))
     })?;
+    if composite_trade22_requested(&req) {
+        let lr = compute_log_returns_f64(close);
+        let kaufman_cpu = compute_asr_kaufman_stops(candles, &strategy)?;
+        enrich_result_metrics(&mut result, objective, |params| {
+            let periods = resolve_asr_periods(&asr_cfg, params.fast_len, params.slow_len);
+            let fast_signals = compute_asr_fast_signals(
+                candles,
+                &ma_source,
+                &Backend::CpuOnly,
+                &asr_cfg,
+                periods.squeeze,
+                #[cfg(feature = "cuda")]
+                None,
+            )?;
+            let slow_signals = compute_asr_slow_signals(
+                candles,
+                &ma_source,
+                &Backend::CpuOnly,
+                &asr_cfg,
+                periods.trend,
+                periods.er,
+                periods.z,
+                #[cfg(feature = "cuda")]
+                None,
+            )?;
+            let max_period = usize::from(
+                periods
+                    .squeeze
+                    .max(periods.trend)
+                    .max(periods.er)
+                    .max(periods.z),
+            )
+            .max(1);
+            let start_t = compute_asr_start_t(
+                fv_close,
+                fv_ma,
+                fast_signals.first_valid,
+                slow_signals.first_valid,
+                kaufman.first_valid,
+                max_period,
+                strategy.trade_on_next_bar,
+            );
+            let desired = build_asr_desired_positions(
+                close,
+                &fast_signals,
+                &slow_signals,
+                &kaufman_cpu,
+                start_t,
+                &strategy,
+                &asr_cfg,
+            );
+            Ok(eval_asr_metrics_from_desired(
+                candles, &lr, &desired, start_t, &strategy,
+            ))
+        })?;
+    }
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
@@ -2013,6 +2825,7 @@ fn run_asr_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -2241,6 +3054,46 @@ fn run_asr_optimization_cpu(
         );
         Ok(n.saturating_sub(start_t).max(2))
     })?;
+    if composite_trade22_requested(&req) {
+        enrich_result_metrics(&mut result, objective, |params| {
+            let periods = resolve_asr_periods(&asr_cfg, params.fast_len, params.slow_len);
+            let fast_signals = fast_cache
+                .get(&periods.squeeze)
+                .ok_or_else(|| "ASR fast signal cache miss".to_string())?;
+            let slow_signals = slow_cache
+                .get(&(periods.trend, periods.er, periods.z))
+                .ok_or_else(|| "ASR slow signal cache miss".to_string())?;
+            let max_period = usize::from(
+                periods
+                    .squeeze
+                    .max(periods.trend)
+                    .max(periods.er)
+                    .max(periods.z),
+            )
+            .max(1);
+            let start_t = compute_asr_start_t(
+                fv_close,
+                fv_ma,
+                fast_signals.first_valid,
+                slow_signals.first_valid,
+                kaufman.first_valid,
+                max_period,
+                strategy.trade_on_next_bar,
+            );
+            let desired = build_asr_desired_positions(
+                close,
+                fast_signals,
+                slow_signals,
+                &kaufman,
+                start_t,
+                &strategy,
+                &asr_cfg,
+            );
+            Ok(eval_asr_metrics_from_desired(
+                candles, &lr, &desired, start_t, &strategy,
+            ))
+        })?;
+    }
     let runtime_ms = start.elapsed().as_millis() as u64;
 
     let resolve_params = |p: &DoubleMaParams| -> DoubleMaParamsResolved {
@@ -2318,6 +3171,7 @@ fn run_asr_optimization_cpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -2799,6 +3653,7 @@ fn run_vcc_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -3071,6 +3926,7 @@ fn run_vcc_optimization_cpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -3700,6 +4556,7 @@ fn run_vemr_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -3995,6 +4852,7 @@ fn run_vemr_optimization_impl(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -5496,6 +6354,7 @@ fn run_rocb_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -5792,6 +6651,7 @@ fn run_rocb_optimization_impl(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -6216,6 +7076,7 @@ fn run_vcet_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -6507,6 +7368,7 @@ fn run_vcet_optimization_impl(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -6931,6 +7793,7 @@ fn run_mkcs_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -7380,6 +8243,7 @@ fn run_kqsr_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -7592,6 +8456,7 @@ fn run_kqsr_optimization_cpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -8044,6 +8909,7 @@ fn run_carm_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -8257,6 +9123,7 @@ fn run_carm_optimization_cpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -8754,6 +9621,7 @@ fn run_kvdf_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -8967,6 +9835,7 @@ fn run_kvdf_optimization_cpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -9455,6 +10324,7 @@ fn run_cdmc_optimization_gpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -9688,6 +10558,7 @@ fn run_cdmc_optimization_cpu(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -9996,6 +10867,7 @@ fn run_mkcs_optimization_impl(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -10022,34 +10894,74 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     }
     validate_standalone_easy_shortlist_request(&req)?;
     if req.asr.is_some() {
-        return run_asr_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_asr_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.vcc.is_some() {
-        return run_vcc_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_vcc_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.vemr.is_some() {
-        return run_vemr_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_vemr_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.rocb.is_some() {
-        return run_rocb_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_rocb_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.vcet.is_some() {
-        return run_vcet_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_vcet_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.mkcs.is_some() {
-        return run_mkcs_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_mkcs_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.kqsr.is_some() {
-        return run_kqsr_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_kqsr_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.carm.is_some() {
-        return run_carm_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_carm_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.kvdf.is_some() {
-        return run_kvdf_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_kvdf_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
     if req.cdmc.is_some() {
-        return run_cdmc_optimization(req, candles, cancel, progress);
+        return maybe_enrich_trade22_backend_result(
+            &req,
+            candles,
+            run_cdmc_optimization(req.clone(), candles, cancel, progress)?,
+        );
     }
 
     if cancel.load(Ordering::Relaxed) {
@@ -10506,7 +11418,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let mut base_gpu_kernel_fallback_reason = None::<String>;
 
-    let result = {
+    let mut result = {
         #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
         {
             if matches!(req.backend, Backend::GpuKernel { .. })
@@ -10561,6 +11473,12 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
             run_cpu_path()?
         }
     };
+
+    if composite_trade22_requested(&req) {
+        enrich_result_metrics(&mut result, objective, |params| {
+            evaluate_composite_cpu_trade22_metrics(&req, candles, params)
+        })?;
+    }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     if matches!(backend_used, BackendUsed::Cpu) {
@@ -10654,6 +11572,7 @@ pub fn run_composite_cpu_optimization_blocking_with_candles(
         followup_cache_key: None,
         shortlist_slice_diagnostics: None,
         score_observation_context: None,
+        metric_surface_kind: Some(composite_metric_surface_kind(&req).to_string()),
     })
 }
 
@@ -12249,6 +13168,48 @@ mod tests {
         }
     }
 
+    fn assert_trade22_metrics_match_trade_stats(
+        label: &str,
+        metrics: &Metrics,
+        trade_stats: &TradeStats,
+    ) {
+        let expected_gross_profit = (trade_stats.avg_win * trade_stats.wins as f64).max(0.0);
+        let expected_gross_loss = ((-trade_stats.avg_loss) * trade_stats.losses as f64).max(0.0);
+
+        assert_eq!(
+            metrics.closed_trades, trade_stats.closed_trades as u32,
+            "{label} closed_trades mismatch"
+        );
+        assert_eq!(
+            metrics.winning_trades, trade_stats.wins as u32,
+            "{label} winning_trades mismatch"
+        );
+        assert_eq!(
+            metrics.losing_trades, trade_stats.losses as u32,
+            "{label} losing_trades mismatch"
+        );
+        assert!(
+            (metrics.gross_profit - expected_gross_profit).abs() <= 1.0e-9,
+            "{label} gross_profit mismatch: actual={} expected={}",
+            metrics.gross_profit,
+            expected_gross_profit
+        );
+        assert!(
+            (metrics.gross_loss - expected_gross_loss).abs() <= 1.0e-9,
+            "{label} gross_loss mismatch: actual={} expected={}",
+            metrics.gross_loss,
+            expected_gross_loss
+        );
+    }
+
+    fn assert_trade22_metrics_are_zeroed(label: &str, metrics: &Metrics) {
+        assert_eq!(metrics.closed_trades, 0, "{label} closed_trades");
+        assert_eq!(metrics.winning_trades, 0, "{label} winning_trades");
+        assert_eq!(metrics.losing_trades, 0, "{label} losing_trades");
+        assert_eq!(metrics.gross_profit, 0.0, "{label} gross_profit");
+        assert_eq!(metrics.gross_loss, 0.0, "{label} gross_loss");
+    }
+
     fn make_base_composite_req() -> CompositeCpuRequest {
         CompositeCpuRequest {
             backend: crate::double_ma::Backend::CpuOnly,
@@ -12288,6 +13249,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
+            include_trade_metrics: false,
+            metric_contract: None,
         }
     }
 
@@ -12364,6 +13327,42 @@ mod tests {
             low.push(base.min(next) - 0.9);
             close.push(base);
             vol.push(1_000.0 + (i % 13) as f64 * 35.0);
+        }
+
+        vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
+    }
+
+    fn make_asr_wave_candles(len: usize) -> vector_ta::utilities::data_loader::Candles {
+        let len = len.max(96);
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol: Vec<f64> = Vec::with_capacity(len);
+        let mut price: f64 = 100.0;
+
+        for i in 0..len {
+            ts.push(i as i64);
+            let step = if i < len / 2 {
+                if i % 4 == 0 {
+                    -0.8
+                } else {
+                    1.1
+                }
+            } else if i % 4 == 0 {
+                0.7
+            } else {
+                -1.0
+            };
+            let o = price;
+            price += step;
+            let c = price.max(1.0);
+            open.push(o);
+            close.push(c);
+            high.push(o.max(c) + 0.6);
+            low.push(o.min(c) - 0.6);
+            vol.push(1_000.0 + i as f64);
         }
 
         vector_ta::utilities::data_loader::Candles::new(ts, open, high, low, close, vol)
@@ -12458,6 +13457,59 @@ mod tests {
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    fn make_cdmc_req(backend: Backend) -> CompositeCpuRequest {
+        let mut strategy = StrategyConfig::default();
+        strategy.long_only = false;
+        strategy.allow_flip = true;
+        strategy.hurdle_tau = Some(0.0003);
+
+        let mut cdmc = CdmcStrategyParams::default();
+        cdmc.phase_threshold = 5.5;
+
+        CompositeCpuRequest {
+            backend,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: Some(cdmc),
+            vcet: None,
+            data_id: "test".to_string(),
+            fast_range: (5, 8, 1),
+            slow_range: (12, 18, 2),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy,
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(16),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     fn make_mkcs_req(backend: Backend) -> CompositeCpuRequest {
         let mut strategy = StrategyConfig::default();
         strategy.long_only = true;
@@ -12505,6 +13557,8 @@ mod tests {
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         }
     }
 
@@ -12551,6 +13605,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -12563,11 +13619,159 @@ mod tests {
         assert!(res.heatmap.is_some());
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
         assert!(matches!(res.mode_used, OptimizationModeResolved::Grid));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
+    }
+
+    #[test]
+    fn composite_cpu_trade22_enrichment_is_opt_in_by_default() {
+        let candles = make_kqsr_oscillating_candles(600);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+        req.backend = Backend::CpuOnly;
+        req.fast_range = (5, 5, 1);
+        req.slow_range = (10, 10, 1);
+        req.top_k = Some(1);
+        req.include_all = Some(true);
+        req.heatmap_bins = Some(0);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("composite cpu core17 run");
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_trade22_metrics_are_zeroed("composite_cpu core17 best", &res.best_metrics);
+        assert_trade22_metrics_are_zeroed("composite_cpu core17 top", &res.top[0].1);
+        let all = res
+            .all
+            .as_ref()
+            .expect("composite cpu core17 include_all rows");
+        assert_eq!(all.len(), 1);
+        assert_trade22_metrics_are_zeroed("composite_cpu core17 all", &all[0].1);
+    }
+
+    #[test]
+    fn composite_cpu_trade22_enrichment_matches_drilldown_trade_stats() {
+        let candles = make_kqsr_oscillating_candles(600);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+        req.backend = Backend::CpuOnly;
+        req.data_id = "composite-cpu-trade22".to_string();
+        req.fast_range = (5, 5, 1);
+        req.slow_range = (10, 10, 1);
+        req.top_k = Some(1);
+        req.include_all = Some(true);
+        req.heatmap_bins = Some(0);
+        req.metric_contract = Some(DoubleMaMetricContract::Trade22);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req.clone(), &candles, &cancel, None)
+                .expect("composite cpu trade22 run");
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
+
+        let all = res
+            .all
+            .as_ref()
+            .expect("composite cpu trade22 include_all rows");
+        assert_eq!(all.len(), 1);
+        assert!(res.best_metrics.closed_trades > 0);
+        assert!(res.best_metrics.gross_profit > 0.0);
+        assert!(res.best_metrics.gross_loss >= 0.0);
+
+        let drill = compute_composite_cpu_drilldown_blocking_with_candles(
+            CompositeCpuDrilldownRequest {
+                backend: Backend::CpuOnly,
+                data_id: req.data_id.clone(),
+                params: DoubleMaParamsResolved {
+                    fast_len: res.best_params.fast_len,
+                    slow_len: res.best_params.slow_len,
+                    fast_ma_type: req.fast_ma_types[0].clone(),
+                    slow_ma_type: req.slow_ma_types[0].clone(),
+                    fast_ma_params: req.fast_ma_params.clone(),
+                    slow_ma_params: req.slow_ma_params.clone(),
+                },
+                ma_source: req.ma_source.clone(),
+                fast_ma_params: req.fast_ma_params.clone(),
+                slow_ma_params: req.slow_ma_params.clone(),
+                strategy: req.strategy.clone(),
+                halftrend: req.halftrend.clone(),
+                macz: req.macz.clone(),
+                ott: req.ott.clone(),
+                signal_mode: req.signal_mode,
+                asr: req.asr.clone(),
+                vcc: req.vcc.clone(),
+                vemr: req.vemr.clone(),
+                rocb: req.rocb.clone(),
+                vcet: req.vcet.clone(),
+                mkcs: req.mkcs.clone(),
+                kqsr: req.kqsr.clone(),
+                carm: req.carm.clone(),
+                kvdf: req.kvdf.clone(),
+                cdmc: req.cdmc.clone(),
+                bins: Some(128),
+            },
+            &candles,
+        )
+        .expect("composite cpu trade22 drilldown");
+        let trade_stats = drill
+            .curves
+            .trade_stats
+            .as_ref()
+            .expect("composite cpu trade22 drilldown trade stats");
+        assert!(trade_stats.closed_trades > 0);
+
+        assert_trade22_metrics_match_trade_stats(
+            "composite_cpu trade22 best",
+            &res.best_metrics,
+            trade_stats,
+        );
+        assert_trade22_metrics_match_trade_stats(
+            "composite_cpu trade22 top",
+            &res.top[0].1,
+            trade_stats,
+        );
+        assert_trade22_metrics_match_trade_stats(
+            "composite_cpu trade22 all",
+            &all[0].1,
+            trade_stats,
+        );
+    }
+
+    #[test]
+    fn composite_cpu_optimization_emits_non_placeholder_core17_fields() {
+        let candles = make_kqsr_oscillating_candles(600);
+        let cancel = AtomicBool::new(false);
+        let mut req = make_base_composite_req();
+        req.backend = Backend::CpuOnly;
+        req.fast_range = (5, 5, 1);
+        req.slow_range = (10, 10, 1);
+        req.top_k = Some(1);
+        req.include_all = Some(true);
+        req.heatmap_bins = Some(0);
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("composite cpu include_all run");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+
+        let all = res
+            .all
+            .expect("composite cpu include_all result should contain full combo rows");
+        assert_eq!(all.len(), 1);
+        let metrics = &all[0].1;
+        assert!(
+            metrics.downside_frequency > 0.0
+                || metrics.downside_severity > 0.0
+                || metrics.kappa_tau != 0.0
+                || metrics.long_mean_return != 0.0
+                || metrics.short_mean_return != 0.0
+                || metrics.underwater_fraction > 0.0
+                || metrics.max_underwater_duration_bars > 0,
+            "expected composite CPU optimization to emit non-placeholder Core17 fields"
+        );
     }
 
     #[test]
     fn base_composite_hard_gate_regime_encoding_matches_double_ma_cpu_eval() {
-        let candles = make_trending_candles(3000);
+        let candles = make_trending_candles(640);
         let req = make_base_composite_req();
         let strategy = strategy_cfg_for_optimization(req.strategy.clone());
         let close = vector_ta::utilities::data_loader::source_type(&candles, "close");
@@ -12722,7 +13926,7 @@ mod tests {
             return;
         }
 
-        let candles = make_trending_candles(3000);
+        let candles = make_trending_candles(640);
         let cancel = AtomicBool::new(false);
 
         let mut cpu_req = make_base_composite_req();
@@ -13047,6 +14251,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -13194,6 +14400,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let err =
@@ -13248,6 +14456,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -13310,6 +14520,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -13374,6 +14586,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -13589,6 +14803,7 @@ mod tests {
         );
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
         assert!(res.best_params.fast_len < res.best_params.slow_len);
     }
 
@@ -13651,6 +14866,183 @@ mod tests {
         }
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kvdf_optimization_gpu_kernel_sanity_matches_cpu_small_grid() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_kvdf_flow_candles(720);
+        let cancel = AtomicBool::new(false);
+
+        let cpu_req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: Some(KvdfStrategyParams::default()),
+            cdmc: None,
+            vcet: None,
+            data_id: "kvdf-core17".to_string(),
+            fast_range: (5, 9, 2),
+            slow_range: (14, 24, 5),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(128),
+            include_all: Some(true),
+            heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
+        };
+
+        let cpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            cpu_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("kvdf cpu optimization run");
+
+        let mut gpu_req = cpu_req;
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, &candles, &cancel, None)
+                .expect("kvdf gpu-kernel optimization run");
+
+        assert!(
+            matches!(gpu_res.backend_used, BackendUsed::Gpu),
+            "expected KVDF GPU backend, got {:?}",
+            gpu_res.backend_used
+        );
+        assert_eq!(cpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "kvdf cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "kvdf gpu");
+
+        let cpu_all = cpu_res
+            .all
+            .expect("cpu include_all result should contain full combo rows");
+        let gpu_all = gpu_res
+            .all
+            .expect("gpu include_all result should contain full combo rows");
+        assert_eq!(cpu_all.len(), gpu_all.len());
+
+        let mut cpu_map: std::collections::HashMap<(u16, u16), Metrics> =
+            std::collections::HashMap::with_capacity(cpu_all.len());
+        for (params, metrics) in cpu_all {
+            cpu_map.insert((params.fast_len, params.slow_len), metrics);
+        }
+
+        for (params, gpu_metrics) in gpu_all {
+            let key = (params.fast_len, params.slow_len);
+            let cpu_metrics = cpu_map
+                .get(&key)
+                .unwrap_or_else(|| panic!("cpu metrics missing for combo {:?}", key));
+            assert_metric_major_parity("kvdf_core17", "pnl", cpu_metrics.pnl, gpu_metrics.pnl);
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "max_dd",
+                cpu_metrics.max_dd,
+                gpu_metrics.max_dd,
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "exposure",
+                cpu_metrics.exposure,
+                gpu_metrics.exposure,
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "net_exposure",
+                cpu_metrics.net_exposure,
+                gpu_metrics.net_exposure,
+            );
+            assert!(
+                cpu_metrics.trades.abs_diff(gpu_metrics.trades) <= 2,
+                "trades mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.trades,
+                cpu_metrics.trades
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "downside_frequency",
+                cpu_metrics.downside_frequency,
+                gpu_metrics.downside_frequency,
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "downside_severity",
+                cpu_metrics.downside_severity,
+                gpu_metrics.downside_severity,
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "long_mean_return",
+                cpu_metrics.long_mean_return,
+                gpu_metrics.long_mean_return,
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "short_mean_return",
+                cpu_metrics.short_mean_return,
+                gpu_metrics.short_mean_return,
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "kappa_tau",
+                cpu_metrics.kappa_tau,
+                gpu_metrics.kappa_tau,
+            );
+            assert_metric_major_parity(
+                "kvdf_core17",
+                "underwater_fraction",
+                cpu_metrics.underwater_fraction,
+                gpu_metrics.underwater_fraction,
+            );
+            assert!(
+                gpu_metrics
+                    .max_underwater_duration_bars
+                    .abs_diff(cpu_metrics.max_underwater_duration_bars)
+                    <= 4,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -13666,8 +15058,8 @@ mod tests {
         let mut cpu_req = make_base_composite_req();
         cpu_req.backend = Backend::CpuOnly;
         cpu_req.vemr = Some(VemrStrategyParams::default());
-        cpu_req.fast_range = (5, 7, 1);
-        cpu_req.slow_range = (12, 16, 1);
+        cpu_req.fast_range = (5, 11, 2);
+        cpu_req.slow_range = (20, 36, 4);
         cpu_req.top_k = Some(128);
         cpu_req.include_all = Some(true);
 
@@ -13690,6 +15082,7 @@ mod tests {
             "expected VEMR GPU backend, got {:?}",
             gpu_res.backend_used
         );
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
         assert_eq!(cpu_res.best_score.is_some(), gpu_res.best_score.is_some());
         assert!(gpu_res.best_score.is_some());
@@ -13702,8 +15095,8 @@ mod tests {
             .as_ref()
             .is_some_and(|scores| !scores.is_empty()));
 
-        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "vcc cpu");
-        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "vcc gpu");
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "vemr cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "vemr gpu");
 
         let cpu_all = cpu_res
             .all
@@ -13760,6 +15153,56 @@ mod tests {
                 gpu_metrics.trades,
                 cpu_metrics.trades
             );
+            assert!(
+                (gpu_metrics.downside_frequency - cpu_metrics.downside_frequency).abs() <= tol,
+                "downside_frequency mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_frequency,
+                cpu_metrics.downside_frequency
+            );
+            assert!(
+                (gpu_metrics.downside_severity - cpu_metrics.downside_severity).abs() <= tol,
+                "downside_severity mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_severity,
+                cpu_metrics.downside_severity
+            );
+            assert!(
+                (gpu_metrics.long_mean_return - cpu_metrics.long_mean_return).abs() <= tol,
+                "long_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.long_mean_return,
+                cpu_metrics.long_mean_return
+            );
+            assert!(
+                (gpu_metrics.short_mean_return - cpu_metrics.short_mean_return).abs() <= tol,
+                "short_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.short_mean_return,
+                cpu_metrics.short_mean_return
+            );
+            assert!(
+                (gpu_metrics.kappa_tau - cpu_metrics.kappa_tau).abs() <= tol,
+                "kappa_tau mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.kappa_tau,
+                cpu_metrics.kappa_tau
+            );
+            assert!(
+                (gpu_metrics.underwater_fraction - cpu_metrics.underwater_fraction).abs() <= tol,
+                "underwater_fraction mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.underwater_fraction,
+                cpu_metrics.underwater_fraction
+            );
+            assert_eq!(
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
         }
     }
 
@@ -13776,8 +15219,8 @@ mod tests {
         let mut cpu_req = make_base_composite_req();
         cpu_req.backend = Backend::CpuOnly;
         cpu_req.vemr = Some(VemrStrategyParams::default());
-        cpu_req.fast_range = (5, 7, 1);
-        cpu_req.slow_range = (12, 16, 1);
+        cpu_req.fast_range = (5, 11, 2);
+        cpu_req.slow_range = (20, 36, 4);
         cpu_req.objective = ObjectiveKind::Omega;
         cpu_req.top_k = Some(4);
         cpu_req.include_all = Some(false);
@@ -13988,6 +15431,7 @@ mod tests {
             "expected VCC GPU backend, got {:?}",
             gpu_res.backend_used
         );
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
 
         let cpu_all = cpu_res
@@ -14044,6 +15488,56 @@ mod tests {
                 key,
                 gpu_metrics.trades,
                 cpu_metrics.trades
+            );
+            assert!(
+                (gpu_metrics.downside_frequency - cpu_metrics.downside_frequency).abs() <= tol,
+                "downside_frequency mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_frequency,
+                cpu_metrics.downside_frequency
+            );
+            assert!(
+                (gpu_metrics.downside_severity - cpu_metrics.downside_severity).abs() <= tol,
+                "downside_severity mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_severity,
+                cpu_metrics.downside_severity
+            );
+            assert!(
+                (gpu_metrics.long_mean_return - cpu_metrics.long_mean_return).abs() <= tol,
+                "long_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.long_mean_return,
+                cpu_metrics.long_mean_return
+            );
+            assert!(
+                (gpu_metrics.short_mean_return - cpu_metrics.short_mean_return).abs() <= tol,
+                "short_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.short_mean_return,
+                cpu_metrics.short_mean_return
+            );
+            assert!(
+                (gpu_metrics.kappa_tau - cpu_metrics.kappa_tau).abs() <= tol,
+                "kappa_tau mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.kappa_tau,
+                cpu_metrics.kappa_tau
+            );
+            assert!(
+                (gpu_metrics.underwater_fraction - cpu_metrics.underwater_fraction).abs() <= tol,
+                "underwater_fraction mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.underwater_fraction,
+                cpu_metrics.underwater_fraction
+            );
+            assert_eq!(
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
             );
         }
     }
@@ -14178,6 +15672,7 @@ mod tests {
         );
         assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
         assert!(
             gpu_res
                 .route_diagnostics
@@ -14241,7 +15736,171 @@ mod tests {
                 "trades mismatch for {:?}: gpu={} cpu={}",
                 key, gpu_metrics.trades, cpu_metrics.trades
             );
+            assert!(
+                (gpu_metrics.downside_frequency - cpu_metrics.downside_frequency).abs() <= tol,
+                "downside_frequency mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_frequency,
+                cpu_metrics.downside_frequency
+            );
+            assert!(
+                (gpu_metrics.downside_severity - cpu_metrics.downside_severity).abs() <= tol,
+                "downside_severity mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_severity,
+                cpu_metrics.downside_severity
+            );
+            assert!(
+                (gpu_metrics.long_mean_return - cpu_metrics.long_mean_return).abs() <= tol,
+                "long_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.long_mean_return,
+                cpu_metrics.long_mean_return
+            );
+            assert!(
+                (gpu_metrics.short_mean_return - cpu_metrics.short_mean_return).abs() <= tol,
+                "short_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.short_mean_return,
+                cpu_metrics.short_mean_return
+            );
+            assert!(
+                (gpu_metrics.kappa_tau - cpu_metrics.kappa_tau).abs() <= tol,
+                "kappa_tau mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.kappa_tau,
+                cpu_metrics.kappa_tau
+            );
+            assert!(
+                (gpu_metrics.underwater_fraction - cpu_metrics.underwater_fraction).abs() <= tol,
+                "underwater_fraction mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.underwater_fraction,
+                cpu_metrics.underwater_fraction
+            );
+            assert_eq!(
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
         }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn asr_trade22_gpu_kernel_enrichment_matches_cpu_trade_stats() {
+        let _guard = lock_env();
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_asr_wave_candles(96);
+        let cancel = AtomicBool::new(false);
+
+        let mut cpu_req = make_base_composite_req();
+        cpu_req.backend = Backend::CpuOnly;
+        let mut asr = AsrStrategyParams::default();
+        asr.z_ma_type = "ema".to_string();
+        cpu_req.asr = Some(asr);
+        cpu_req.fast_range = (5, 5, 1);
+        cpu_req.slow_range = (20, 20, 1);
+        cpu_req.top_k = Some(1);
+        cpu_req.include_all = Some(true);
+        cpu_req.heatmap_bins = Some(0);
+        cpu_req.metric_contract = Some(DoubleMaMetricContract::Trade22);
+
+        let cpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            cpu_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("asr cpu trade22 optimization run");
+
+        let mut gpu_req = cpu_req.clone();
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            gpu_req,
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("asr gpu trade22 optimization run");
+
+        assert!(matches!(gpu_res.backend_used, BackendUsed::Gpu));
+        assert_eq!(gpu_res.backend_route.as_deref(), Some("GpuKernel"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.metric_surface_kind.as_deref(), Some("trade22"));
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("trade22"));
+
+        let cpu_all = cpu_res.all.as_ref().expect("asr cpu trade22 all rows");
+        let gpu_all = gpu_res.all.as_ref().expect("asr gpu trade22 all rows");
+        assert_eq!(cpu_all.len(), 1);
+        assert_eq!(gpu_all.len(), 1);
+        assert!(cpu_res.best_metrics.closed_trades > 0);
+
+        let drill = compute_composite_cpu_drilldown_blocking_with_candles(
+            CompositeCpuDrilldownRequest {
+                backend: Backend::CpuOnly,
+                data_id: cpu_req.data_id.clone(),
+                params: DoubleMaParamsResolved {
+                    fast_len: cpu_res.best_params.fast_len,
+                    slow_len: cpu_res.best_params.slow_len,
+                    fast_ma_type: cpu_req.fast_ma_types[0].clone(),
+                    slow_ma_type: cpu_req.slow_ma_types[0].clone(),
+                    fast_ma_params: cpu_req.fast_ma_params.clone(),
+                    slow_ma_params: cpu_req.slow_ma_params.clone(),
+                },
+                ma_source: cpu_req.ma_source.clone(),
+                fast_ma_params: cpu_req.fast_ma_params.clone(),
+                slow_ma_params: cpu_req.slow_ma_params.clone(),
+                strategy: cpu_req.strategy.clone(),
+                halftrend: cpu_req.halftrend.clone(),
+                macz: cpu_req.macz.clone(),
+                ott: cpu_req.ott.clone(),
+                signal_mode: cpu_req.signal_mode,
+                asr: cpu_req.asr.clone(),
+                vcc: cpu_req.vcc.clone(),
+                vemr: cpu_req.vemr.clone(),
+                rocb: cpu_req.rocb.clone(),
+                vcet: cpu_req.vcet.clone(),
+                mkcs: cpu_req.mkcs.clone(),
+                kqsr: cpu_req.kqsr.clone(),
+                carm: cpu_req.carm.clone(),
+                kvdf: cpu_req.kvdf.clone(),
+                cdmc: cpu_req.cdmc.clone(),
+                bins: Some(128),
+            },
+            &candles,
+        )
+        .expect("asr trade22 drilldown");
+        let trade_stats = drill
+            .curves
+            .trade_stats
+            .as_ref()
+            .expect("asr trade22 drilldown trade stats");
+
+        assert_trade22_metrics_match_trade_stats("asr cpu trade22 best", &cpu_res.best_metrics, trade_stats);
+        assert_trade22_metrics_match_trade_stats("asr cpu trade22 top", &cpu_res.top[0].1, trade_stats);
+        assert_trade22_metrics_match_trade_stats("asr cpu trade22 all", &cpu_all[0].1, trade_stats);
+
+        assert_eq!(cpu_res.best_metrics.closed_trades, gpu_res.best_metrics.closed_trades);
+        assert_eq!(cpu_res.best_metrics.winning_trades, gpu_res.best_metrics.winning_trades);
+        assert_eq!(cpu_res.best_metrics.losing_trades, gpu_res.best_metrics.losing_trades);
+        assert!(
+            (cpu_res.best_metrics.gross_profit - gpu_res.best_metrics.gross_profit).abs() <= 1.0e-9
+        );
+        assert!(
+            (cpu_res.best_metrics.gross_loss - gpu_res.best_metrics.gross_loss).abs() <= 1.0e-9
+        );
+        assert_eq!(cpu_all[0].1.closed_trades, gpu_all[0].1.closed_trades);
+        assert_eq!(cpu_all[0].1.winning_trades, gpu_all[0].1.winning_trades);
+        assert_eq!(cpu_all[0].1.losing_trades, gpu_all[0].1.losing_trades);
+        assert!((cpu_all[0].1.gross_profit - gpu_all[0].1.gross_profit).abs() <= 1.0e-9);
+        assert!((cpu_all[0].1.gross_loss - gpu_all[0].1.gross_loss).abs() <= 1.0e-9);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -14625,6 +16284,7 @@ mod tests {
             "expected ROCB GPU backend, got {:?}",
             gpu_res.backend_used
         );
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
         assert!(gpu_res.backend_fallback_reason.is_none());
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
         assert!(gpu_res.best_score.is_some());
@@ -14690,6 +16350,56 @@ mod tests {
                 gpu_metrics.trades,
                 cpu_metrics.trades
             );
+            assert!(
+                (gpu_metrics.downside_frequency - cpu_metrics.downside_frequency).abs() <= tol,
+                "downside_frequency mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_frequency,
+                cpu_metrics.downside_frequency
+            );
+            assert!(
+                (gpu_metrics.downside_severity - cpu_metrics.downside_severity).abs() <= tol,
+                "downside_severity mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.downside_severity,
+                cpu_metrics.downside_severity
+            );
+            assert!(
+                (gpu_metrics.long_mean_return - cpu_metrics.long_mean_return).abs() <= tol,
+                "long_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.long_mean_return,
+                cpu_metrics.long_mean_return
+            );
+            assert!(
+                (gpu_metrics.short_mean_return - cpu_metrics.short_mean_return).abs() <= tol,
+                "short_mean_return mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.short_mean_return,
+                cpu_metrics.short_mean_return
+            );
+            assert!(
+                (gpu_metrics.kappa_tau - cpu_metrics.kappa_tau).abs() <= tol,
+                "kappa_tau mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.kappa_tau,
+                cpu_metrics.kappa_tau
+            );
+            assert!(
+                (gpu_metrics.underwater_fraction - cpu_metrics.underwater_fraction).abs() <= tol,
+                "underwater_fraction mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.underwater_fraction,
+                cpu_metrics.underwater_fraction
+            );
+            assert_eq!(
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
         }
     }
 
@@ -14736,6 +16446,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -14788,6 +16500,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -14796,6 +16510,78 @@ mod tests {
         assert!(res.num_combos > 0);
         assert!(!res.top.is_empty());
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
+    }
+
+    #[test]
+    fn asr_cpu_optimization_emits_non_placeholder_core17_fields() {
+        let candles = make_asr_wave_candles(96);
+        let cancel = AtomicBool::new(false);
+        let mut asr = AsrStrategyParams::default();
+        asr.z_ma_type = "ema".to_string();
+
+        let req = CompositeCpuRequest {
+            backend: Backend::CpuOnly,
+            asr: Some(asr),
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "asr-core17-cpu".to_string(),
+            fast_range: (5, 5, 1),
+            slow_range: (20, 20, 1),
+            fast_ma_types: vec!["ema".to_string()],
+            slow_ma_types: vec!["ema".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(12),
+            include_all: Some(true),
+            heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
+        };
+
+        let res =
+            run_composite_cpu_optimization_blocking_with_candles(req, &candles, &cancel, None)
+                .expect("asr optimization with include_all");
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+
+        let all = res
+            .all
+            .expect("asr include_all result should contain full combo rows");
+        assert!(
+            all.iter().any(|(_, metrics)| {
+                metrics.trades > 0
+                    && (metrics.downside_frequency > 0.0
+                        || metrics.downside_severity > 0.0
+                        || metrics.kappa_tau != 0.0
+                        || metrics.long_mean_return != 0.0
+                        || metrics.short_mean_return != 0.0
+                        || metrics.underwater_fraction > 0.0
+                        || metrics.max_underwater_duration_bars > 0)
+            }),
+            "expected at least one ASR CPU optimization row to emit non-placeholder Core17 fields"
+        );
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -14858,6 +16644,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -14922,6 +16710,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -14992,6 +16782,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15008,6 +16800,7 @@ mod tests {
         );
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -15054,9 +16847,154 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "kqsr");
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn kqsr_optimization_gpu_kernel_sanity_matches_cpu_small_grid() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_kqsr_oscillating_candles(600);
+        let cancel = AtomicBool::new(false);
+
+        let mut cpu_req = make_base_composite_req();
+        cpu_req.backend = Backend::CpuOnly;
+        cpu_req.kqsr = Some(KqsrStrategyParams::default());
+        cpu_req.fast_range = (5, 9, 2);
+        cpu_req.slow_range = (12, 20, 4);
+        cpu_req.top_k = Some(128);
+        cpu_req.include_all = Some(true);
+
+        let cpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            cpu_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("kqsr cpu optimization run");
+
+        let mut gpu_req = cpu_req;
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, &candles, &cancel, None)
+                .expect("kqsr gpu-kernel optimization run");
+
+        assert!(
+            matches!(gpu_res.backend_used, BackendUsed::Gpu),
+            "expected KQSR GPU backend, got {:?}",
+            gpu_res.backend_used
+        );
+        assert_eq!(cpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "kqsr cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "kqsr gpu");
+
+        let cpu_all = cpu_res
+            .all
+            .expect("cpu include_all result should contain full combo rows");
+        let gpu_all = gpu_res
+            .all
+            .expect("gpu include_all result should contain full combo rows");
+        assert_eq!(cpu_all.len(), gpu_all.len());
+
+        let mut cpu_map: std::collections::HashMap<(u16, u16), Metrics> =
+            std::collections::HashMap::with_capacity(cpu_all.len());
+        for (params, metrics) in cpu_all {
+            cpu_map.insert((params.fast_len, params.slow_len), metrics);
+        }
+
+        for (params, gpu_metrics) in gpu_all {
+            let key = (params.fast_len, params.slow_len);
+            let cpu_metrics = cpu_map
+                .get(&key)
+                .unwrap_or_else(|| panic!("cpu metrics missing for combo {:?}", key));
+            assert_metric_major_parity("kqsr_core17", "pnl", cpu_metrics.pnl, gpu_metrics.pnl);
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "max_dd",
+                cpu_metrics.max_dd,
+                gpu_metrics.max_dd,
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "exposure",
+                cpu_metrics.exposure,
+                gpu_metrics.exposure,
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "net_exposure",
+                cpu_metrics.net_exposure,
+                gpu_metrics.net_exposure,
+            );
+            assert!(
+                cpu_metrics.trades.abs_diff(gpu_metrics.trades) <= 2,
+                "trades mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.trades,
+                cpu_metrics.trades
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "downside_frequency",
+                cpu_metrics.downside_frequency,
+                gpu_metrics.downside_frequency,
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "downside_severity",
+                cpu_metrics.downside_severity,
+                gpu_metrics.downside_severity,
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "long_mean_return",
+                cpu_metrics.long_mean_return,
+                gpu_metrics.long_mean_return,
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "short_mean_return",
+                cpu_metrics.short_mean_return,
+                gpu_metrics.short_mean_return,
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "kappa_tau",
+                cpu_metrics.kappa_tau,
+                gpu_metrics.kappa_tau,
+            );
+            assert_metric_major_parity(
+                "kqsr_core17",
+                "underwater_fraction",
+                cpu_metrics.underwater_fraction,
+                gpu_metrics.underwater_fraction,
+            );
+            assert!(
+                gpu_metrics
+                    .max_underwater_duration_bars
+                    .abs_diff(cpu_metrics.max_underwater_duration_bars)
+                    <= 4,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
+        }
     }
 
     #[test]
@@ -15102,6 +17040,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15156,6 +17096,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15226,6 +17168,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15242,6 +17186,7 @@ mod tests {
         );
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -15288,9 +17233,154 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "carm");
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn carm_optimization_gpu_kernel_sanity_matches_cpu_small_grid() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_carm_momentum_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let mut cpu_req = make_base_composite_req();
+        cpu_req.backend = Backend::CpuOnly;
+        cpu_req.carm = Some(CarmStrategyParams::default());
+        cpu_req.fast_range = (5, 9, 2);
+        cpu_req.slow_range = (14, 24, 5);
+        cpu_req.top_k = Some(128);
+        cpu_req.include_all = Some(true);
+
+        let cpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            cpu_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("carm cpu optimization run");
+
+        let mut gpu_req = cpu_req;
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, &candles, &cancel, None)
+                .expect("carm gpu-kernel optimization run");
+
+        assert!(
+            matches!(gpu_res.backend_used, BackendUsed::Gpu),
+            "expected CARM GPU backend, got {:?}",
+            gpu_res.backend_used
+        );
+        assert_eq!(cpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "carm cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "carm gpu");
+
+        let cpu_all = cpu_res
+            .all
+            .expect("cpu include_all result should contain full combo rows");
+        let gpu_all = gpu_res
+            .all
+            .expect("gpu include_all result should contain full combo rows");
+        assert_eq!(cpu_all.len(), gpu_all.len());
+
+        let mut cpu_map: std::collections::HashMap<(u16, u16), Metrics> =
+            std::collections::HashMap::with_capacity(cpu_all.len());
+        for (params, metrics) in cpu_all {
+            cpu_map.insert((params.fast_len, params.slow_len), metrics);
+        }
+
+        for (params, gpu_metrics) in gpu_all {
+            let key = (params.fast_len, params.slow_len);
+            let cpu_metrics = cpu_map
+                .get(&key)
+                .unwrap_or_else(|| panic!("cpu metrics missing for combo {:?}", key));
+            assert_metric_major_parity("carm_core17", "pnl", cpu_metrics.pnl, gpu_metrics.pnl);
+            assert_metric_major_parity(
+                "carm_core17",
+                "max_dd",
+                cpu_metrics.max_dd,
+                gpu_metrics.max_dd,
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "exposure",
+                cpu_metrics.exposure,
+                gpu_metrics.exposure,
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "net_exposure",
+                cpu_metrics.net_exposure,
+                gpu_metrics.net_exposure,
+            );
+            assert!(
+                cpu_metrics.trades.abs_diff(gpu_metrics.trades) <= 2,
+                "trades mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.trades,
+                cpu_metrics.trades
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "downside_frequency",
+                cpu_metrics.downside_frequency,
+                gpu_metrics.downside_frequency,
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "downside_severity",
+                cpu_metrics.downside_severity,
+                gpu_metrics.downside_severity,
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "long_mean_return",
+                cpu_metrics.long_mean_return,
+                gpu_metrics.long_mean_return,
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "short_mean_return",
+                cpu_metrics.short_mean_return,
+                gpu_metrics.short_mean_return,
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "kappa_tau",
+                cpu_metrics.kappa_tau,
+                gpu_metrics.kappa_tau,
+            );
+            assert_metric_major_parity(
+                "carm_core17",
+                "underwater_fraction",
+                cpu_metrics.underwater_fraction,
+                gpu_metrics.underwater_fraction,
+            );
+            assert!(
+                gpu_metrics
+                    .max_underwater_duration_bars
+                    .abs_diff(cpu_metrics.max_underwater_duration_bars)
+                    <= 4,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -15337,6 +17427,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
         let cases = vec![
             (
@@ -15429,6 +17521,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15486,6 +17580,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15556,6 +17652,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15620,6 +17718,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15690,6 +17790,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15751,6 +17853,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "kvdf");
@@ -15803,6 +17907,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
         let cases = vec![
             (
@@ -15895,6 +18001,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15952,6 +18060,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -15960,6 +18070,7 @@ mod tests {
         assert!(res.num_combos > 0);
         assert!(!res.top.is_empty());
         assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
     }
 
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -16006,6 +18117,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16076,6 +18189,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16086,6 +18201,7 @@ mod tests {
         assert!(matches!(res.backend_used, BackendUsed::Gpu));
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -16132,9 +18248,157 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "cdmc");
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn cdmc_optimization_gpu_kernel_sanity_matches_cpu_small_grid() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_cdmc_cycle_candles(280);
+        let cancel = AtomicBool::new(false);
+
+        let mut cpu_req = make_cdmc_req(Backend::CpuOnly);
+        cpu_req.fast_range = (5, 7, 1);
+        cpu_req.slow_range = (12, 16, 2);
+        cpu_req.top_k = Some(64);
+        cpu_req.include_all = Some(true);
+
+        let cpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            cpu_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("cdmc cpu optimization run");
+
+        let mut gpu_req = cpu_req;
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, &candles, &cancel, None)
+                .expect("cdmc gpu-kernel optimization run");
+
+        assert!(
+            matches!(gpu_res.backend_used, BackendUsed::Gpu),
+            "expected CDMC GPU backend, got {:?}",
+            gpu_res.backend_used
+        );
+        assert_eq!(cpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert_eq!(cpu_res.best_score.is_some(), gpu_res.best_score.is_some());
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert!(gpu_res
+            .top_scores
+            .as_ref()
+            .is_some_and(|scores| !scores.is_empty()));
+
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "cdmc cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "cdmc gpu");
+
+        let cpu_all = cpu_res
+            .all
+            .expect("cpu include_all result should contain full combo rows");
+        let gpu_all = gpu_res
+            .all
+            .expect("gpu include_all result should contain full combo rows");
+        assert_eq!(cpu_all.len(), gpu_all.len());
+
+        let mut cpu_map: std::collections::HashMap<(u16, u16), Metrics> =
+            std::collections::HashMap::with_capacity(cpu_all.len());
+        for (params, metrics) in cpu_all {
+            cpu_map.insert((params.fast_len, params.slow_len), metrics);
+        }
+
+        for (params, gpu_metrics) in gpu_all {
+            let key = (params.fast_len, params.slow_len);
+            let cpu_metrics = cpu_map
+                .get(&key)
+                .unwrap_or_else(|| panic!("cpu metrics missing for combo {:?}", key));
+            assert_metric_major_parity("cdmc_core17", "pnl", cpu_metrics.pnl, gpu_metrics.pnl);
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "max_dd",
+                cpu_metrics.max_dd,
+                gpu_metrics.max_dd,
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "exposure",
+                cpu_metrics.exposure,
+                gpu_metrics.exposure,
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "net_exposure",
+                cpu_metrics.net_exposure,
+                gpu_metrics.net_exposure,
+            );
+            assert!(
+                (i64::from(gpu_metrics.trades) - i64::from(cpu_metrics.trades)).abs() <= 2,
+                "trades mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.trades,
+                cpu_metrics.trades
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "downside_frequency",
+                cpu_metrics.downside_frequency,
+                gpu_metrics.downside_frequency,
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "downside_severity",
+                cpu_metrics.downside_severity,
+                gpu_metrics.downside_severity,
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "long_mean_return",
+                cpu_metrics.long_mean_return,
+                gpu_metrics.long_mean_return,
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "short_mean_return",
+                cpu_metrics.short_mean_return,
+                gpu_metrics.short_mean_return,
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "kappa_tau",
+                cpu_metrics.kappa_tau,
+                gpu_metrics.kappa_tau,
+            );
+            assert_metric_major_parity(
+                "cdmc_core17",
+                "underwater_fraction",
+                cpu_metrics.underwater_fraction,
+                gpu_metrics.underwater_fraction,
+            );
+            assert!(
+                gpu_metrics
+                    .max_underwater_duration_bars
+                    .abs_diff(cpu_metrics.max_underwater_duration_bars)
+                    <= 4,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
+        }
     }
 
     #[test]
@@ -16180,6 +18444,8 @@ mod tests {
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16238,6 +18504,8 @@ mod tests {
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16253,6 +18521,149 @@ mod tests {
         }
         assert_eq!(res.backend_route.as_deref(), Some("GpuKernel"));
         assert!(res.backend_fallback_reason.is_none());
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn vcet_optimization_gpu_kernel_sanity_matches_cpu_small_grid() {
+        if !vector_ta::cuda::cuda_available() {
+            return;
+        }
+
+        let candles = make_trending_candles(640);
+        let cancel = AtomicBool::new(false);
+
+        let mut cpu_req = make_base_composite_req();
+        cpu_req.backend = Backend::CpuOnly;
+        cpu_req.vcet = Some(VcetStrategyParams::default());
+        cpu_req.fast_range = (5, 11, 2);
+        cpu_req.slow_range = (20, 36, 4);
+        cpu_req.top_k = Some(128);
+        cpu_req.include_all = Some(true);
+
+        let cpu_res = run_composite_cpu_optimization_blocking_with_candles(
+            cpu_req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("vcet cpu optimization run");
+
+        let mut gpu_req = cpu_req;
+        gpu_req.backend = Backend::GpuKernel { device_id: 0 };
+        let gpu_res =
+            run_composite_cpu_optimization_blocking_with_candles(gpu_req, &candles, &cancel, None)
+                .expect("vcet gpu-kernel optimization run");
+
+        assert!(
+            matches!(gpu_res.backend_used, BackendUsed::Gpu),
+            "expected VCET GPU backend, got {:?}",
+            gpu_res.backend_used
+        );
+        assert_eq!(cpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert!(gpu_res.backend_fallback_reason.is_none());
+        assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
+        assert!(gpu_res.best_score.is_some());
+        assert_eq!(
+            cpu_res.top_scores.as_ref().map(|scores| scores.len()),
+            gpu_res.top_scores.as_ref().map(|scores| scores.len())
+        );
+        assert_include_all_scores_match_rows(&cpu_res, ObjectiveKind::Sharpe, "vcet cpu");
+        assert_include_all_scores_match_rows(&gpu_res, ObjectiveKind::Sharpe, "vcet gpu");
+
+        let cpu_all = cpu_res
+            .all
+            .expect("cpu include_all result should contain full combo rows");
+        let gpu_all = gpu_res
+            .all
+            .expect("gpu include_all result should contain full combo rows");
+        assert_eq!(cpu_all.len(), gpu_all.len());
+
+        let mut cpu_map: std::collections::HashMap<(u16, u16), Metrics> =
+            std::collections::HashMap::with_capacity(cpu_all.len());
+        for (params, metrics) in cpu_all {
+            cpu_map.insert((params.fast_len, params.slow_len), metrics);
+        }
+
+        for (params, gpu_metrics) in gpu_all {
+            let key = (params.fast_len, params.slow_len);
+            let cpu_metrics = cpu_map
+                .get(&key)
+                .unwrap_or_else(|| panic!("cpu metrics missing for combo {:?}", key));
+            assert_metric_major_parity("vcet_core17", "pnl", cpu_metrics.pnl, gpu_metrics.pnl);
+            assert_metric_major_parity(
+                "vcet_core17",
+                "max_dd",
+                cpu_metrics.max_dd,
+                gpu_metrics.max_dd,
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "exposure",
+                cpu_metrics.exposure,
+                gpu_metrics.exposure,
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "net_exposure",
+                cpu_metrics.net_exposure,
+                gpu_metrics.net_exposure,
+            );
+            assert!(
+                cpu_metrics.trades.abs_diff(gpu_metrics.trades) <= 2,
+                "trades mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.trades,
+                cpu_metrics.trades
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "downside_frequency",
+                cpu_metrics.downside_frequency,
+                gpu_metrics.downside_frequency,
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "downside_severity",
+                cpu_metrics.downside_severity,
+                gpu_metrics.downside_severity,
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "long_mean_return",
+                cpu_metrics.long_mean_return,
+                gpu_metrics.long_mean_return,
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "short_mean_return",
+                cpu_metrics.short_mean_return,
+                gpu_metrics.short_mean_return,
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "kappa_tau",
+                cpu_metrics.kappa_tau,
+                gpu_metrics.kappa_tau,
+            );
+            assert_metric_major_parity(
+                "vcet_core17",
+                "underwater_fraction",
+                cpu_metrics.underwater_fraction,
+                gpu_metrics.underwater_fraction,
+            );
+            assert!(
+                gpu_metrics
+                    .max_underwater_duration_bars
+                    .abs_diff(cpu_metrics.max_underwater_duration_bars)
+                    <= 4,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
+            );
+        }
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -16314,6 +18725,8 @@ mod tests {
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16384,6 +18797,8 @@ mod tests {
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16442,6 +18857,8 @@ mod tests {
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         assert_composite_gpu_kernel_major_parity(req, &candles, &cancel, "vcet");
@@ -16494,6 +18911,8 @@ mod tests {
             top_k: Some(8),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
         let cases = vec![
             (
@@ -16584,6 +19003,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(16),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16653,6 +19074,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let res =
@@ -16702,6 +19125,8 @@ mod tests {
             "expected MKCS GPU backend, got {:?}",
             gpu_res.backend_used
         );
+        assert_eq!(cpu_res.metric_surface_kind.as_deref(), Some("core17"));
+        assert_eq!(gpu_res.metric_surface_kind.as_deref(), Some("core17"));
         assert_eq!(cpu_res.num_combos, gpu_res.num_combos);
         assert_eq!(cpu_res.best_score.is_some(), gpu_res.best_score.is_some());
         assert!(gpu_res.best_score.is_some());
@@ -16728,39 +19153,29 @@ mod tests {
             cpu_map.insert((params.fast_len, params.slow_len), metrics);
         }
 
-        let tol = 1.0e-2;
         for (params, gpu_metrics) in gpu_all {
             let key = (params.fast_len, params.slow_len);
             let cpu_metrics = cpu_map
                 .get(&key)
                 .unwrap_or_else(|| panic!("cpu metrics missing for combo {:?}", key));
-            assert!(
-                (gpu_metrics.pnl - cpu_metrics.pnl).abs() <= tol,
-                "pnl mismatch for {:?}: gpu={} cpu={}",
-                key,
-                gpu_metrics.pnl,
-                cpu_metrics.pnl
-            );
-            assert!(
-                (gpu_metrics.max_dd - cpu_metrics.max_dd).abs() <= tol,
-                "max_dd mismatch for {:?}: gpu={} cpu={}",
-                key,
+            assert_metric_major_parity("mkcs_core17", "pnl", cpu_metrics.pnl, gpu_metrics.pnl);
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "max_dd",
+                cpu_metrics.max_dd,
                 gpu_metrics.max_dd,
-                cpu_metrics.max_dd
             );
-            assert!(
-                (gpu_metrics.exposure - cpu_metrics.exposure).abs() <= tol,
-                "exposure mismatch for {:?}: gpu={} cpu={}",
-                key,
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "exposure",
+                cpu_metrics.exposure,
                 gpu_metrics.exposure,
-                cpu_metrics.exposure
             );
-            assert!(
-                (gpu_metrics.net_exposure - cpu_metrics.net_exposure).abs() <= tol,
-                "net_exposure mismatch for {:?}: gpu={} cpu={}",
-                key,
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "net_exposure",
+                cpu_metrics.net_exposure,
                 gpu_metrics.net_exposure,
-                cpu_metrics.net_exposure
             );
             assert!(
                 (i64::from(gpu_metrics.trades) - i64::from(cpu_metrics.trades)).abs() <= 1,
@@ -16768,6 +19183,52 @@ mod tests {
                 key,
                 gpu_metrics.trades,
                 cpu_metrics.trades
+            );
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "downside_frequency",
+                cpu_metrics.downside_frequency,
+                gpu_metrics.downside_frequency,
+            );
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "downside_severity",
+                cpu_metrics.downside_severity,
+                gpu_metrics.downside_severity,
+            );
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "long_mean_return",
+                cpu_metrics.long_mean_return,
+                gpu_metrics.long_mean_return,
+            );
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "short_mean_return",
+                cpu_metrics.short_mean_return,
+                gpu_metrics.short_mean_return,
+            );
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "kappa_tau",
+                cpu_metrics.kappa_tau,
+                gpu_metrics.kappa_tau,
+            );
+            assert_metric_major_parity(
+                "mkcs_core17",
+                "underwater_fraction",
+                cpu_metrics.underwater_fraction,
+                gpu_metrics.underwater_fraction,
+            );
+            assert!(
+                gpu_metrics
+                    .max_underwater_duration_bars
+                    .abs_diff(cpu_metrics.max_underwater_duration_bars)
+                    <= 4,
+                "max_underwater_duration_bars mismatch for {:?}: gpu={} cpu={}",
+                key,
+                gpu_metrics.max_underwater_duration_bars,
+                cpu_metrics.max_underwater_duration_bars
             );
         }
     }

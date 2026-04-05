@@ -2,7 +2,7 @@
 
 use crate::asr::AsrStrategyParams;
 use crate::composite_gpu_metric_decode::{
-    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE,
 };
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
@@ -61,7 +61,7 @@ pub struct AsrGpuComboBatch<'a> {
     pub end_t: &'a [i32],
 }
 
-const ASR_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
+const ASR_METRICS_STRIDE: usize = NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE;
 
 #[derive(Default)]
 struct AsrKernelScratch {
@@ -767,6 +767,7 @@ pub fn eval_asr_metrics_gpu_kernel(
         let mut mom_fade_bars_i = i32::from(asr.mom_fade_bars);
         let mut max_trade_bars_i = i32::from(asr.max_trade_bars);
         let mut max_mr_trade_bars_i = i32::from(asr.max_mr_trade_bars);
+        let mut hurdle_tau_f = strategy.hurdle_tau.unwrap_or(0.0) as f32;
         let mut out_stride_i = checked_i32("ASR GPU metrics stride", out_stride)?;
 
         unsafe {
@@ -803,6 +804,7 @@ pub fn eval_asr_metrics_gpu_kernel(
                 &mut mom_fade_bars_i as *mut _ as *mut c_void,
                 &mut max_trade_bars_i as *mut _ as *mut c_void,
                 &mut max_mr_trade_bars_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_f as *mut _ as *mut c_void,
                 &mut out_stride_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];
@@ -1288,6 +1290,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
         let mut mom_fade_bars_i = i32::from(asr.mom_fade_bars);
         let mut max_trade_bars_i = i32::from(asr.max_trade_bars);
         let mut max_mr_trade_bars_i = i32::from(asr.max_mr_trade_bars);
+        let mut hurdle_tau_f = strategy.hurdle_tau.unwrap_or(0.0) as f32;
         let mut out_stride_i = checked_i32("ASR GPU metrics stride", out_stride)?;
 
         unsafe {
@@ -1324,6 +1327,7 @@ pub fn eval_asr_metrics_gpu_kernel_device_rows(
                 &mut mom_fade_bars_i as *mut _ as *mut c_void,
                 &mut max_trade_bars_i as *mut _ as *mut c_void,
                 &mut max_mr_trade_bars_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_f as *mut _ as *mut c_void,
                 &mut out_stride_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
             ];

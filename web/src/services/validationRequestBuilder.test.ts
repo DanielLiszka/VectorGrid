@@ -150,6 +150,203 @@ describe('validationRequestBuilder', () => {
     })
   })
 
+  it('defaults validation admission to legacy_topk and records provenance', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-admission-default',
+        objective: 'Sharpe',
+        ma_source: 'close',
+        fast_ma_types: ['sma'],
+        slow_ma_types: ['ema'],
+        strategy: { fee_bps: 1.5 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'sma',
+            slow_ma_type: 'ema',
+            fast_len: 10,
+            slow_len: 30,
+          },
+          metrics: {
+            pnl: 0.12,
+            sharpe: 1.1,
+            calmar: 0.9,
+            omega: 1.05,
+            max_dd: 0.18,
+          },
+        },
+      ],
+      candidates: '8',
+    })
+
+    expect(req.admission_policy).toBe('legacy_topk')
+    expect(req.admission_provenance).toMatchObject({
+      requested_policy: 'legacy_topk',
+      applied_policy: 'legacy_topk',
+      source_kind: 'top_rows',
+      source_candidate_count: 1,
+      post_cap_count: 1,
+    })
+  })
+
+  it('builds a diversified scalar-union shortlist without changing the legacy default', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'DoubleMa',
+        data_id: 'data-scalar-union',
+        objective: 'Sharpe',
+        ma_source: 'close',
+        fast_ma_types: ['sma'],
+        slow_ma_types: ['ema'],
+        strategy: { fee_bps: 1.5 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 10, slow_len: 40 },
+          metrics: { pnl: 0.15, sharpe: 1.8, calmar: 0.7, omega: 1.02, max_dd: 0.32 },
+        },
+        {
+          params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 12, slow_len: 48 },
+          metrics: { pnl: 0.13, sharpe: 1.4, calmar: 0.85, omega: 1.08, max_dd: 0.24 },
+        },
+        {
+          params: { fast_ma_type: 'sma', slow_ma_type: 'ema', fast_len: 8, slow_len: 26 },
+          metrics: { pnl: 0.1, sharpe: 0.9, calmar: 1.6, omega: 1.35, max_dd: 0.06 },
+        },
+      ],
+      candidates: '2',
+      admissionPolicy: 'scalar_union',
+    })
+
+    expect(req.admission_policy).toBe('scalar_union')
+    expect(req.candidates).toHaveLength(2)
+    expect(req.candidates[0]).toMatchObject({ fast_len: 10, slow_len: 40 })
+    expect(req.candidates[1]).toMatchObject({ fast_len: 8, slow_len: 26 })
+    expect(req.admission_provenance).toMatchObject({
+      requested_policy: 'scalar_union',
+      applied_policy: 'scalar_union',
+      post_cap_count: 2,
+    })
+    expect(req.admission_provenance.heads.some((head) => head.objective === 'MaxDrawdown')).toBe(true)
+  })
+
+  it('uses pareto-frontier admission automatically for CompositeMo artifacts', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeMo',
+        data_id: 'data-composite-mo',
+        ma_source: 'hlc3',
+        objectives: { maximize: 'Sharpe', minimize: 'MaxDrawdown' },
+        strategy: { fee_bps: 1.0 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 9,
+            slow_len: 30,
+            halftrend: { amplitude: 2 },
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'soft_vote',
+            strategy: { fee_bps: 2 },
+          },
+          metrics: { pnl: 0.12, sharpe: 1.1, max_dd: 0.12 },
+          mo: { maximize_value: 1.1, minimize_value: 0.12, violation: 0 },
+          source_kind: 'pareto_frontier',
+        },
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 7,
+            slow_len: 25,
+            halftrend: { amplitude: 3 },
+            macz: { fast_length: 10 },
+            ott: { period: 3 },
+            signal_mode: 'hard_gate',
+            strategy: { fee_bps: 2 },
+          },
+          metrics: { pnl: 0.1, sharpe: 1.0, max_dd: 0.08 },
+          mo: { maximize_value: 1.0, minimize_value: 0.08, violation: 0 },
+          source_kind: 'pareto_frontier',
+        },
+      ],
+      candidates: '4',
+      admissionPolicy: 'auto',
+    })
+
+    expect(req.admission_policy).toBe('pareto_frontier')
+    expect(req.admission_provenance).toMatchObject({
+      requested_policy: 'auto',
+      applied_policy: 'pareto_frontier',
+      source_kind: 'pareto_frontier',
+      post_cap_count: 2,
+    })
+    expect(req.candidates).toHaveLength(2)
+  })
+
+  it('diversity-trims dense CompositeMo frontiers when the cap is smaller than the frontier', () => {
+    const buildParetoRow = (fastLen: number, maximize: number, minimize: number) => ({
+      params: {
+        fast_ma_type: 'ema',
+        slow_ma_type: 'sma',
+        fast_len: fastLen,
+        slow_len: 40 + fastLen,
+        halftrend: { amplitude: 2 },
+        macz: { fast_length: 12 },
+        ott: { period: 2 },
+        signal_mode: 'soft_vote',
+        strategy: { fee_bps: 2 },
+      },
+      metrics: {
+        pnl: 0.1 + fastLen / 1000,
+        sharpe: maximize,
+        max_dd: minimize,
+      },
+      mo: { maximize_value: maximize, minimize_value: minimize, violation: 0 },
+      source_kind: 'pareto_frontier',
+    })
+
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeMo',
+        data_id: 'data-composite-mo-dense-frontier',
+        ma_source: 'hlc3',
+        objectives: { maximize: 'Sharpe', minimize: 'MaxDrawdown' },
+        strategy: { fee_bps: 1.0 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        buildParetoRow(10, 1.5, 0.12),
+        buildParetoRow(11, 1.4, 0.11),
+        buildParetoRow(12, 1.3, 0.1),
+        buildParetoRow(13, 1.2, 0.09),
+        buildParetoRow(14, 1.1, 0.08),
+      ],
+      candidates: '3',
+      admissionPolicy: 'auto',
+    })
+
+    expect(req.admission_policy).toBe('pareto_frontier')
+    expect(req.candidates).toHaveLength(3)
+    expect(req.candidates.map((row) => row.fast_len)).toEqual([10, 12, 14])
+    expect(req.admission_provenance).toMatchObject({
+      requested_policy: 'auto',
+      applied_policy: 'pareto_frontier',
+      post_dedupe_count: 5,
+      post_cap_count: 3,
+      note: 'pareto_diversity_trim',
+    })
+    expect(req.admission_provenance.heads[0]?.note).toBe('pareto_diversity_trim')
+  })
+
   it('dedupes normalized validation candidates before applying the max candidate limit', () => {
     const req = buildValidationRequest({
       currentRunReq: {

@@ -113,7 +113,7 @@ const extraShortlistKindSupported = computed(
   () => strategyCapabilities.value.supportsExtraShortlistObjectives,
 )
 const metricContractKindSupported = computed(
-  () => strategyCapabilities.value.supportsAdvancedExactKernelControls,
+  () => strategyCapabilities.value.supportsMetricContract,
 )
 const shortlistConfidenceKindSupported = computed(
   () => strategyCapabilities.value.supportsShortlistConfidenceMode,
@@ -187,8 +187,8 @@ const metricContractStateNote = computed(() => {
   const hasExplicitValue = current !== 'auto'
   if (!metricContractKindSupported.value) {
     return hasExplicitValue
-      ? 'The current route does not support explicit metric contracts. Clear this or switch to the exact GpuKernel route.'
-      : 'Available on the exact Double MA GPU-kernel route only. DynamicDoubleMa can request this only on exact-compatible GpuKernel(dynamic_strategy_v1) shapes.'
+      ? 'The current route does not support explicit metric contracts. Clear this or switch to a route that advertises metric-contract support.'
+      : 'Available only on routes that advertise metric-contract support. DynamicDoubleMa still limits this to exact-compatible GpuKernel(dynamic_strategy_v1) shapes or audited plain CPU fallback surfaces.'
   }
   if (String(strategyCapabilities.value.kind || '').trim() === 'DynamicDoubleMa') {
     if (current === 'full_17') {
@@ -203,9 +203,9 @@ const metricContractStateNote = computed(() => {
     return 'Forces the full 17-metric contract without trade-summary rows.'
   }
   if (current === 'trade_22') {
-    return 'Forces the 22-metric trade-summary contract on the exact GpuKernel route.'
+    return 'Forces the 22-metric trade-summary contract on the current audited route.'
   }
-  return 'Auto preserves the current default contract. Use 17 or 22 only when you want an explicit exact-kernel metric width.'
+  return 'Auto preserves the current default contract. Use 17 or 22 only when you want an explicit canonical metric surface.'
 })
 const shortlistConfidenceModeStateNote = computed(() => {
   const hasValue = shortlistConfidenceModeDraft.value.trim().length > 0

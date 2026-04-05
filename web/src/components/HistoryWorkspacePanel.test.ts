@@ -37,6 +37,12 @@ describe("HistoryWorkspacePanel", () => {
     history.savedRunDetailDataset = "spy.csv";
     history.savedRunDetailTimeframe = "1d";
     history.savedRunDetailValidation = "Available";
+    history.savedRunDetailMetricSurface = "Core17 • 17 metrics";
+    history.savedRunDetailMetricSurfaceDetail =
+      "fields=pnl, trades, max_dd, mean, std, exposure +11 more";
+    history.savedRunDetailAdmission = "scalar_union • kept 16/20";
+    history.savedRunDetailAdmissionDetail =
+      "src=top_rows • heads=Sharpe/MaxDrawdown";
     history.savedRunDetailReport = "Not exported";
     history.savedRunDetailSize = "12 KiB";
     history.savedRunDetailTags = "ml, research";
@@ -63,6 +69,16 @@ describe("HistoryWorkspacePanel", () => {
     const bodyText = document.body.textContent || "";
     expect(bodyText).toContain("Verdict");
     expect(bodyText).toContain("approved=1 | survived=1 | considered=27");
+    expect(bodyText).toContain("Admission");
+    expect(bodyText).toContain("scalar_union • kept 16/20");
+    expect(bodyText).toContain("Metric Surface");
+    expect(bodyText).toContain("Core17 • 17 metrics");
+    expect(bodyText).toContain("Metric Detail");
+    expect(bodyText).toContain(
+      "fields=pnl, trades, max_dd, mean, std, exposure +11 more",
+    );
+    expect(bodyText).toContain("Admission Detail");
+    expect(bodyText).toContain("src=top_rows • heads=Sharpe/MaxDrawdown");
     expect(bodyText).toContain("Top Candidates");
     expect(bodyText).toContain(
       "best_sweep | robust=1.44 | psr=0.72 | dsr=0.68",

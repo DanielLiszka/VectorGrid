@@ -9,6 +9,7 @@ export interface WorkflowRunArtifact {
   csvPath: string;
   datasetMeta: Record<string, unknown> | null;
   mlSignal: WorkflowMlSignalArtifact | null;
+  optimizationMetricSurface: Record<string, unknown> | null;
   tags: string[];
   req: unknown;
   res: unknown;
@@ -107,6 +108,7 @@ function workflowRunSignature(run: WorkflowRunArtifact | null): string {
     csvPath: run.csvPath,
     datasetMeta: run.datasetMeta,
     mlSignal: run.mlSignal,
+    optimizationMetricSurface: run.optimizationMetricSurface,
     tags: run.tags,
     req: run.req,
     res: run.res,
@@ -289,6 +291,8 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     datasetMeta?: unknown;
     ml_signal?: unknown;
     mlSignal?: unknown;
+    optimization_metric_surface?: unknown;
+    optimizationMetricSurface?: unknown;
     tags?: unknown;
     req?: unknown;
     res?: unknown;
@@ -299,6 +303,14 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
       : row.datasetMeta && typeof row.datasetMeta === "object"
         ? (row.datasetMeta as Record<string, unknown>)
         : null;
+  const optimizationMetricSurface =
+    row.optimization_metric_surface &&
+    typeof row.optimization_metric_surface === "object"
+      ? (row.optimization_metric_surface as Record<string, unknown>)
+      : row.optimizationMetricSurface &&
+          typeof row.optimizationMetricSurface === "object"
+        ? (row.optimizationMetricSurface as Record<string, unknown>)
+        : null;
   return markRaw({
     ts: normalizeText(row.ts),
     artifactPath: normalizeText(row.artifact_path ?? row.artifactPath),
@@ -306,6 +318,7 @@ function normalizeRunArtifact(value: unknown): WorkflowRunArtifact | null {
     csvPath: normalizeText(row.csv_path ?? row.csvPath),
     datasetMeta: markRawUnknown(datasetMeta),
     mlSignal: normalizeMlSignalArtifact(row.ml_signal ?? row.mlSignal),
+    optimizationMetricSurface: markRawUnknown(optimizationMetricSurface),
     tags: markRaw(normalizeTags(row.tags)),
     req: markRawUnknown(row.req ?? null),
     res: markRawUnknown(row.res ?? null),

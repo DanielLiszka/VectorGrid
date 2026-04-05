@@ -10,6 +10,29 @@ The goal is not to replace validation scoring. The goal is to stop feeding valid
 
 This plan is intentionally separate from the campaign runner plan. The campaign runner is orchestration work. Shortlist admission is candidate-selection policy.
 
+## Progress Tracking
+
+- Phase 0: completed
+- Phase 1: completed
+- Phase 2: completed
+- Phase 3: completed
+- Phase 4: completed
+
+Current implementation status:
+
+- The validation workspace now exposes an explicit admission-policy selector with `legacy_topk`, `scalar_union`, `pareto_frontier`, and `auto`.
+- `legacy_topk` remains the default compatibility path.
+- Scalar-union shortlist admission is implemented for standard validation request shaping.
+- `CompositeMo` validation admission now reads saved `pareto` rows directly and `auto` resolves to `pareto_frontier` for that artifact shape.
+- Campaign validation now carries `validation_config.admission_policy` and applies the same policy family on the backend before building validation requests.
+- Validation request artifacts now persist `admission_policy` plus `admission_provenance`.
+- Artifact config fingerprints now ignore derived `admission_provenance` so skip/reuse logic does not drift on derived shortlist metadata.
+- Applying a saved run artifact now restores the saved validation admission policy back into the validation form.
+- The validation workspace now previews the current shortlist policy against `legacy_topk` on the same source artifact before execution.
+- Saved-run history detail now surfaces admission summary and admission provenance detail for validation artifacts.
+- Product defaults remain `legacy_topk` for compatibility; recommended opt-in defaults are `scalar_union` for scalar routes and `auto` for `CompositeMo`.
+- Dense `CompositeMo` Pareto frontiers now use deterministic diversity trimming when the frontier exceeds the validation candidate cap.
+
 ## Executive Summary
 
 Today validation admission is still mostly:
@@ -182,10 +205,10 @@ Always keep a `legacy_topk` mode so debugging, regression testing, and apples-to
 
 ### Phase 0: policy definition
 
-- [ ] Freeze the initial admission-policy names and semantics.
-- [ ] Freeze the default `auto` behavior.
-- [ ] Define the first scalar union heads and tie-break rules.
-- [ ] Define validation artifact provenance fields for admission.
+- [x] Freeze the initial admission-policy names and semantics.
+- [x] Freeze the default `auto` behavior.
+- [x] Define the first scalar union heads and tie-break rules.
+- [x] Define validation artifact provenance fields for admission.
 
 Exit criteria:
 
@@ -194,10 +217,10 @@ Exit criteria:
 
 ### Phase 1: request and artifact plumbing
 
-- [ ] Add admission-policy support to validation request shaping.
-- [ ] Keep `legacy_topk` as the default compatibility path unless explicitly enabled elsewhere.
-- [ ] Add artifact provenance fields for admission policy and shortlist construction.
-- [ ] Ensure campaign templates can carry the policy without embedding the logic themselves.
+- [x] Add admission-policy support to validation request shaping.
+- [x] Keep `legacy_topk` as the default compatibility path unless explicitly enabled elsewhere.
+- [x] Add artifact provenance fields for admission policy and shortlist construction.
+- [x] Ensure campaign templates can carry the policy without embedding the logic themselves.
 
 Exit criteria:
 
@@ -208,10 +231,10 @@ Exit criteria:
 
 The safest first slice is a no-UI backend-compatible legacy-preserving path:
 
-- [ ] Add admission-policy plumbing with `legacy_topk` default.
-- [ ] Add scalar union support behind an explicit opt-in policy.
-- [ ] Record shortlist provenance in validation artifacts.
-- [ ] Add a compare/debug surface that can show legacy vs scalar-union selection on the same source artifact.
+- [x] Add admission-policy plumbing with `legacy_topk` default.
+- [x] Add scalar union support behind an explicit opt-in policy.
+- [x] Record shortlist provenance in validation artifacts.
+- [x] Add a compare/debug surface that can show legacy vs scalar-union selection on the same source artifact.
 
 Exit criteria:
 
@@ -220,10 +243,10 @@ Exit criteria:
 
 ### Phase 2: scalar union shortlist
 
-- [ ] Build reusable shortlist-head extraction helpers from optimization rows and metrics.
-- [ ] Implement bounded union, dedupe, and cap logic.
-- [ ] Handle missing metrics gracefully so weaker routes fall back rather than erroring.
-- [ ] Add tests for determinism, dedupe, and cap behavior.
+- [x] Build reusable shortlist-head extraction helpers from optimization rows and metrics.
+- [x] Implement bounded union, dedupe, and cap logic.
+- [x] Handle missing metrics gracefully so weaker routes fall back rather than erroring.
+- [x] Add tests for determinism, dedupe, and cap behavior.
 
 Exit criteria:
 
@@ -231,10 +254,10 @@ Exit criteria:
 
 ### Phase 3: `CompositeMo` Pareto admission
 
-- [ ] Teach validation admission to consume `pareto` rows when present.
-- [ ] Define a bounded ordering rule for feasible and infeasible frontier points.
-- [ ] Add optional diversity trimming for dense frontiers.
-- [ ] Keep best-params fallback for legacy or incomplete artifacts.
+- [x] Teach validation admission to consume `pareto` rows when present.
+- [x] Define a bounded ordering rule for feasible and infeasible frontier points.
+- [x] Add optional diversity trimming for dense frontiers.
+- [x] Keep best-params fallback for legacy or incomplete artifacts.
 
 Exit criteria:
 
@@ -242,10 +265,10 @@ Exit criteria:
 
 ### Phase 4: UI and campaign adoption
 
-- [ ] Surface admission policy and provenance in validation and saved-artifact views.
-- [ ] Add compare tooling to contrast legacy and improved admission on the same artifact.
-- [ ] Decide when campaign-runner defaults should switch from legacy admission to `auto`.
-- [ ] Document recommended per-strategy defaults if they differ.
+- [x] Surface admission policy in the validation UI and persist provenance into saved validation requests.
+- [x] Add compare tooling to contrast legacy and improved admission on the same artifact.
+- [x] Decide when campaign-runner defaults should switch from legacy admission to `auto`.
+- [x] Document recommended per-strategy defaults if they differ.
 
 Exit criteria:
 
@@ -254,12 +277,12 @@ Exit criteria:
 
 ## Testing Checklist
 
-- [ ] Add unit tests for scalar union head extraction and dedupe.
-- [ ] Add unit tests for cap behavior when the union exceeds `max_candidates`.
-- [ ] Add `CompositeMo` tests for Pareto admission ordering and fallback.
-- [ ] Add artifact round-trip tests for admission provenance fields.
-- [ ] Add regression tests ensuring `legacy_topk` behavior remains unchanged.
-- [ ] Add parity tests proving `legacy_topk` and opt-in improved admission can coexist on the same source artifact.
+- [x] Add unit tests for scalar union head extraction and dedupe.
+- [x] Add unit tests for cap behavior when the union exceeds `max_candidates`.
+- [x] Add `CompositeMo` tests for Pareto admission ordering and fallback.
+- [x] Add artifact round-trip tests for admission provenance fields.
+- [x] Add regression tests ensuring `legacy_topk` behavior remains unchanged.
+- [x] Add parity tests proving `legacy_topk` and opt-in improved admission can coexist on the same source artifact.
 
 ## Dependencies and Interactions
 
@@ -276,10 +299,15 @@ Exit criteria:
 
 ## Open Questions
 
-- Should `auto` remain opt-in first, or become the default for all new validations once tests pass?
-- Which scalar heads should be present in the first rollout for non-Double-MA routes?
-- Should admission provenance be shown in the UI by default, or only in saved-artifact detail views?
-- Do we want a campaign-level option to force `legacy_topk` for reproducibility studies?
+- Which additional scalar heads become worthwhile once broader `Core17` metric availability lands?
+- Do we want a campaign-level option to force `legacy_topk` for reproducibility studies even after improved policies are more widely adopted?
+
+## Current Default Decision
+
+- Keep `legacy_topk` as the shipped default for validation and campaign workflows in the current release cycle.
+- Recommend `scalar_union` as the opt-in research default for scalar routes when users want broader candidate coverage before validation.
+- Recommend `auto` as the opt-in research default for `CompositeMo`, where it resolves to `pareto_frontier` when frontier data is present.
+- Revisit default-policy changes only after metric-contract unification improves cross-strategy metric coverage and artifact comparability.
 
 ## Recommendation
 

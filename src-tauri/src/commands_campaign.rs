@@ -16,8 +16,7 @@ use crate::data_cache::{self, LoadOutcome};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -25,6 +24,7 @@ use ta_app_core::{
     progress::{DoubleMaCampaignVramPrefetchFeedback, DoubleMaProgressPayload, ProgressSink},
     Backend, BackendUsed, CrossTickerConfig, CscvPboConfig, PerturbConfig,
     ReoptWalkForwardConfigOptional, SpaConfigOptional, TradeBootstrapConfig,
+    ValidationAdmissionHeadProvenance, ValidationAdmissionPolicy, ValidationAdmissionProvenance,
     ValidationArtifactContext, WalkForwardConfigOptional,
 };
 use tauri::{Emitter, Manager};
@@ -79,6 +79,8 @@ pub struct ResearchCampaignValidationConfig {
     pub max_candidates: usize,
     #[serde(default = "default_validation_seed")]
     pub seed: u64,
+    #[serde(default = "default_validation_admission_policy")]
+    pub admission_policy: ValidationAdmissionPolicy,
     #[serde(default)]
     pub walk_forward: Option<WalkForwardConfigOptional>,
     #[serde(default)]
@@ -111,6 +113,10 @@ fn default_validation_max_candidates() -> usize {
 
 fn default_validation_seed() -> u64 {
     1
+}
+
+fn default_validation_admission_policy() -> ValidationAdmissionPolicy {
+    ValidationAdmissionPolicy::LegacyTopk
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,6 +261,47 @@ enum CampaignOptimizationResult {
     Backend(BackendOptimizationResult),
     CompositeMo(CompositeMoResult),
     CompositeMoArtifact(Value),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CampaignValidationObjective {
+    Pnl,
+    Sharpe,
+    Sortino,
+    Calmar,
+    Omega,
+    Volatility,
+    MaxDrawdown,
+}
+
+impl CampaignValidationObjective {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pnl => "Pnl",
+            Self::Sharpe => "Sharpe",
+            Self::Sortino => "Sortino",
+            Self::Calmar => "Calmar",
+            Self::Omega => "Omega",
+            Self::Volatility => "Volatility",
+            Self::MaxDrawdown => "MaxDrawdown",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CampaignValidationAdmissionRow {
+    params_value: Value,
+    metrics: Option<ta_strategies::double_ma::Metrics>,
+    maximize_value: Option<f64>,
+    minimize_value: Option<f64>,
+    violation: Option<f64>,
+    input_index: usize,
+    source_kind: &'static str,
+}
+
+struct CampaignValidationAdmissionSelection {
+    rows: Vec<CampaignValidationAdmissionRow>,
+    provenance: ValidationAdmissionProvenance,
 }
 
 struct PreparedCampaignDataset {
@@ -1070,6 +1117,7 @@ fn normalize_backend_value(raw: Option<&Value>, strategy_kind: &str) -> Value {
     }
 }
 
+#[cfg(test)]
 fn candidate_values_from_optimization(
     strategy_kind: &str,
     family: CampaignOptimizationFamily,
@@ -1077,85 +1125,123 @@ fn candidate_values_from_optimization(
     run_res: &CampaignOptimizationResult,
     max_candidates: usize,
 ) -> Result<Vec<Value>, String> {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
+    let validation_cfg = ResearchCampaignValidationConfig {
+        max_candidates,
+        ..ResearchCampaignValidationConfig::default()
+    };
+    let (candidates, _) = candidate_selection_from_optimization(
+        strategy_kind,
+        family,
+        run_req,
+        run_res,
+        &validation_cfg,
+    )?;
+    Ok(candidates)
+}
+
+fn parse_validation_objective(value: Option<&str>) -> Option<CampaignValidationObjective> {
+    let normalized = value?.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+    match normalized.as_str() {
+        "pnl" => Some(CampaignValidationObjective::Pnl),
+        "sharpe" => Some(CampaignValidationObjective::Sharpe),
+        "sortino" => Some(CampaignValidationObjective::Sortino),
+        "calmar" => Some(CampaignValidationObjective::Calmar),
+        "omega" => Some(CampaignValidationObjective::Omega),
+        "volatility" | "vol" => Some(CampaignValidationObjective::Volatility),
+        "maxdrawdown" | "max_drawdown" | "drawdown" | "dd" => {
+            Some(CampaignValidationObjective::MaxDrawdown)
+        }
+        _ => None,
+    }
+}
+
+fn objective_from_run_req(run_req: &Value) -> CampaignValidationObjective {
+    parse_validation_objective(run_req.get("objective").and_then(Value::as_str))
+        .or_else(|| {
+            run_req
+                .get("objectives")
+                .and_then(Value::as_object)
+                .and_then(|row| row.get("maximize"))
+                .and_then(Value::as_str)
+                .and_then(|value| parse_validation_objective(Some(value)))
+        })
+        .unwrap_or(CampaignValidationObjective::Sharpe)
+}
+
+fn collect_scalar_union_objectives(run_req: &Value) -> Vec<CampaignValidationObjective> {
+    let primary = objective_from_run_req(run_req);
+    let mut out = vec![primary];
+    for candidate in [
+        CampaignValidationObjective::MaxDrawdown,
+        CampaignValidationObjective::Omega,
+        CampaignValidationObjective::Calmar,
+    ] {
+        if !out.contains(&candidate) {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+fn score_metrics_for_validation_objective(
+    metrics: &ta_strategies::double_ma::Metrics,
+    objective: CampaignValidationObjective,
+) -> f64 {
+    match objective {
+        CampaignValidationObjective::Pnl => metrics.pnl,
+        CampaignValidationObjective::Sharpe => metrics.sharpe,
+        CampaignValidationObjective::Sortino => metrics.sortino,
+        CampaignValidationObjective::Calmar => metrics.calmar,
+        CampaignValidationObjective::Omega => metrics.omega,
+        CampaignValidationObjective::Volatility => -metrics.volatility,
+        CampaignValidationObjective::MaxDrawdown => -metrics.max_dd,
+    }
+}
+
+fn build_validation_admission_rows(
+    family: CampaignOptimizationFamily,
+    run_res: &CampaignOptimizationResult,
+) -> Result<Vec<CampaignValidationAdmissionRow>, String> {
+    let mut rows = Vec::new();
     match (family, run_res) {
         (CampaignOptimizationFamily::DoubleLike, CampaignOptimizationResult::Backend(res))
         | (CampaignOptimizationFamily::CompositeCpu, CampaignOptimizationResult::Backend(res)) => {
-            let top_values: Vec<Value> = if !res.top.is_empty() {
-                res.top
-                    .iter()
-                    .map(|(params, _)| serde_json::to_value(params).map_err(|e| e.to_string()))
-                    .collect::<Result<Vec<_>, _>>()?
+            if !res.top.is_empty() {
+                for (index, (params, metrics)) in res.top.iter().enumerate() {
+                    rows.push(CampaignValidationAdmissionRow {
+                        params_value: serde_json::to_value(params).map_err(|e| e.to_string())?,
+                        metrics: Some(metrics.clone()),
+                        maximize_value: None,
+                        minimize_value: None,
+                        violation: None,
+                        input_index: index,
+                        source_kind: "top_rows",
+                    });
+                }
             } else {
-                vec![serde_json::to_value(&res.best_params).map_err(|e| e.to_string())?]
-            };
-            for params_value in top_values {
-                let Some(p) = params_value.as_object() else {
-                    continue;
-                };
-                let fast_ma_type = p
-                    .get("fast_ma_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let slow_ma_type = p
-                    .get("slow_ma_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let fast_len = p.get("fast_len").and_then(Value::as_u64).unwrap_or(0);
-                let slow_len = p.get("slow_len").and_then(Value::as_u64).unwrap_or(0);
-                if fast_ma_type.is_empty()
-                    || slow_ma_type.is_empty()
-                    || fast_len == 0
-                    || slow_len == 0
-                {
-                    continue;
-                }
-
-                let candidate = if is_double_like_kind(strategy_kind) {
-                    json!({
-                        "fast_ma_type": fast_ma_type,
-                        "slow_ma_type": slow_ma_type,
-                        "fast_len": fast_len,
-                        "slow_len": slow_len,
-                        "fast_ma_params": p.get("fast_ma_params").cloned().unwrap_or(Value::Null),
-                        "slow_ma_params": p.get("slow_ma_params").cloned().unwrap_or(Value::Null),
-                        "strategy": run_req.get("strategy").cloned().or_else(|| run_req.get("base_strategy").cloned()).unwrap_or_else(|| json!({})),
-                        "halftrend_filter": run_req.get("halftrend_filter").cloned().or_else(|| run_req.get("halftrendFilter").cloned()).unwrap_or(Value::Null),
-                    })
-                } else {
-                    build_composite_candidate_value(
-                        strategy_kind,
-                        run_req,
-                        p,
-                        fast_ma_type,
-                        slow_ma_type,
-                        fast_len,
-                        slow_len,
-                    )
-                };
-
-                let key = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
-                if seen.insert(key) {
-                    out.push(candidate);
-                    if out.len() >= max_candidates {
-                        break;
-                    }
-                }
+                rows.push(CampaignValidationAdmissionRow {
+                    params_value: serde_json::to_value(&res.best_params)
+                        .map_err(|e| e.to_string())?,
+                    metrics: Some(res.best_metrics.clone()),
+                    maximize_value: None,
+                    minimize_value: None,
+                    violation: None,
+                    input_index: 0,
+                    source_kind: "best_params_fallback",
+                });
             }
         }
         (CampaignOptimizationFamily::CompositeMo, CampaignOptimizationResult::CompositeMo(res)) => {
-            for point in &res.pareto {
-                let params = serde_json::to_value(&point.params).map_err(|e| e.to_string())?;
-                let key = serde_json::to_string(&params).map_err(|e| e.to_string())?;
-                if seen.insert(key) {
-                    out.push(params);
-                    if out.len() >= max_candidates {
-                        break;
-                    }
-                }
+            for (index, point) in res.pareto.iter().enumerate() {
+                rows.push(CampaignValidationAdmissionRow {
+                    params_value: serde_json::to_value(&point.params).map_err(|e| e.to_string())?,
+                    metrics: Some(point.metrics.clone()),
+                    maximize_value: Some(point.maximize_value),
+                    minimize_value: Some(point.minimize_value),
+                    violation: Some(point.violation),
+                    input_index: index,
+                    source_kind: "pareto_frontier",
+                });
             }
         }
         (
@@ -1169,29 +1255,419 @@ fn candidate_values_from_optimization(
                     "campaign validation could not read pareto candidates from the saved CompositeMo optimization artifact"
                         .to_string()
                 })?;
-            for point in pareto {
+            for (index, point) in pareto.iter().enumerate() {
                 let Some(params) = point.get("params").cloned() else {
                     continue;
                 };
-                let key = serde_json::to_string(&params).map_err(|e| e.to_string())?;
-                if seen.insert(key) {
-                    out.push(params);
-                    if out.len() >= max_candidates {
-                        break;
-                    }
-                }
+                rows.push(CampaignValidationAdmissionRow {
+                    params_value: params,
+                    metrics: point
+                        .get("metrics")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok()),
+                    maximize_value: point.get("maximize_value").and_then(Value::as_f64),
+                    minimize_value: point.get("minimize_value").and_then(Value::as_f64),
+                    violation: point.get("violation").and_then(Value::as_f64),
+                    input_index: index,
+                    source_kind: "pareto_frontier",
+                });
             }
         }
         _ => return Err("campaign optimization result family mismatch".to_string()),
     }
 
-    if out.is_empty() {
+    if family == CampaignOptimizationFamily::CompositeMo {
+        rows.sort_by(|left, right| {
+            let left_feasible = left.violation.unwrap_or(0.0) <= 0.0;
+            let right_feasible = right.violation.unwrap_or(0.0) <= 0.0;
+            if left_feasible != right_feasible {
+                return if left_feasible {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+            match (
+                left.maximize_value.unwrap_or(f64::NEG_INFINITY),
+                right.maximize_value.unwrap_or(f64::NEG_INFINITY),
+            ) {
+                (a, b) if a != b => b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal),
+                _ => match (
+                    left.minimize_value.unwrap_or(f64::INFINITY),
+                    right.minimize_value.unwrap_or(f64::INFINITY),
+                ) {
+                    (a, b) if a != b => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
+                    _ => left.input_index.cmp(&right.input_index),
+                },
+            }
+        });
+    }
+
+    Ok(rows)
+}
+
+fn dedupe_validation_admission_rows(
+    rows: &[CampaignValidationAdmissionRow],
+) -> Result<Vec<CampaignValidationAdmissionRow>, String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for row in rows {
+        let key = serde_json::to_string(&row.params_value).map_err(|e| e.to_string())?;
+        if seen.insert(key) {
+            out.push(row.clone());
+        }
+    }
+    Ok(out)
+}
+
+fn build_legacy_validation_admission_selection(
+    rows: &[CampaignValidationAdmissionRow],
+    source_kind: &str,
+    requested_policy: ValidationAdmissionPolicy,
+    max_candidates: usize,
+    note: Option<&str>,
+) -> Result<CampaignValidationAdmissionSelection, String> {
+    let deduped = dedupe_validation_admission_rows(rows)?;
+    Ok(CampaignValidationAdmissionSelection {
+        rows: deduped.iter().take(max_candidates).cloned().collect(),
+        provenance: ValidationAdmissionProvenance {
+            requested_policy,
+            applied_policy: ValidationAdmissionPolicy::LegacyTopk,
+            source_kind: source_kind.to_string(),
+            source_candidate_count: rows.len(),
+            pre_dedupe_count: rows.len(),
+            post_dedupe_count: deduped.len(),
+            post_cap_count: deduped.len().min(max_candidates),
+            heads: vec![ValidationAdmissionHeadProvenance {
+                head: "legacy_topk".to_string(),
+                objective: None,
+                candidate_count: rows.len(),
+                note: note.map(str::to_string),
+            }],
+            note: note.map(str::to_string),
+        },
+    })
+}
+
+fn build_scalar_union_validation_admission_selection(
+    rows: &[CampaignValidationAdmissionRow],
+    run_req: &Value,
+    source_kind: &str,
+    requested_policy: ValidationAdmissionPolicy,
+    max_candidates: usize,
+) -> Result<CampaignValidationAdmissionSelection, String> {
+    let objectives = collect_scalar_union_objectives(run_req);
+    let mut ordered_heads: Vec<Vec<CampaignValidationAdmissionRow>> = Vec::new();
+    let mut heads = Vec::new();
+    for (index, objective) in objectives.iter().copied().enumerate() {
+        let mut ranked = rows.to_vec();
+        ranked.sort_by(|left, right| {
+            let left_score = left
+                .metrics
+                .as_ref()
+                .map(|metrics| score_metrics_for_validation_objective(metrics, objective))
+                .unwrap_or(f64::NAN);
+            let right_score = right
+                .metrics
+                .as_ref()
+                .map(|metrics| score_metrics_for_validation_objective(metrics, objective))
+                .unwrap_or(f64::NAN);
+            let left_finite = left_score.is_finite();
+            let right_finite = right_score.is_finite();
+            match (left_finite, right_finite) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (true, true) if left_score != right_score => right_score
+                    .partial_cmp(&left_score)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+                _ => left.input_index.cmp(&right.input_index),
+            }
+        });
+        ranked.retain(|row| {
+            row.metrics
+                .as_ref()
+                .map(|metrics| {
+                    score_metrics_for_validation_objective(metrics, objective).is_finite()
+                })
+                .unwrap_or(false)
+        });
+        if ranked.is_empty() {
+            heads.push(ValidationAdmissionHeadProvenance {
+                head: if index == 0 { "primary" } else { "secondary" }.to_string(),
+                objective: Some(objective.as_str().to_string()),
+                candidate_count: 0,
+                note: Some("no_finite_metrics".to_string()),
+            });
+            continue;
+        }
+        heads.push(ValidationAdmissionHeadProvenance {
+            head: if index == 0 { "primary" } else { "secondary" }.to_string(),
+            objective: Some(objective.as_str().to_string()),
+            candidate_count: ranked.len(),
+            note: None,
+        });
+        ordered_heads.push(ranked);
+    }
+
+    if ordered_heads.is_empty() {
+        return build_legacy_validation_admission_selection(
+            rows,
+            source_kind,
+            requested_policy,
+            max_candidates,
+            Some("scalar_union_fallback_missing_metrics"),
+        );
+    }
+
+    let longest_head = ordered_heads.iter().map(Vec::len).max().unwrap_or(0);
+    let mut concatenated = Vec::new();
+    for rank in 0..longest_head {
+        for head_rows in &ordered_heads {
+            if let Some(next) = head_rows.get(rank) {
+                concatenated.push(next.clone());
+            }
+        }
+    }
+    let deduped = dedupe_validation_admission_rows(&concatenated)?;
+    Ok(CampaignValidationAdmissionSelection {
+        rows: deduped.iter().take(max_candidates).cloned().collect(),
+        provenance: ValidationAdmissionProvenance {
+            requested_policy,
+            applied_policy: ValidationAdmissionPolicy::ScalarUnion,
+            source_kind: source_kind.to_string(),
+            source_candidate_count: rows.len(),
+            pre_dedupe_count: concatenated.len(),
+            post_dedupe_count: deduped.len(),
+            post_cap_count: deduped.len().min(max_candidates),
+            heads,
+            note: None,
+        },
+    })
+}
+
+fn build_pareto_frontier_validation_admission_selection(
+    rows: &[CampaignValidationAdmissionRow],
+    source_kind: &str,
+    requested_policy: ValidationAdmissionPolicy,
+    max_candidates: usize,
+) -> Result<CampaignValidationAdmissionSelection, String> {
+    if !rows.iter().any(|row| row.maximize_value.is_some()) {
+        return build_legacy_validation_admission_selection(
+            rows,
+            source_kind,
+            requested_policy,
+            max_candidates,
+            Some("pareto_frontier_fallback_missing_frontier"),
+        );
+    }
+    let deduped = dedupe_validation_admission_rows(rows)?;
+    let select_evenly_spaced_rows = |source_rows: &[CampaignValidationAdmissionRow],
+                                     keep_count: usize|
+     -> Vec<CampaignValidationAdmissionRow> {
+        if source_rows.len() <= keep_count {
+            return source_rows.to_vec();
+        }
+        if keep_count <= 1 {
+            return source_rows.iter().take(1).cloned().collect();
+        }
+        let mut indices = BTreeSet::new();
+        for slot in 0..keep_count {
+            let raw_index = (slot as f64 * (source_rows.len().saturating_sub(1) as f64))
+                / ((keep_count - 1) as f64);
+            indices.insert(raw_index.round() as usize);
+        }
+        for index in 0..source_rows.len() {
+            if indices.len() >= keep_count {
+                break;
+            }
+            indices.insert(index);
+        }
+        indices
+            .into_iter()
+            .take(keep_count)
+            .filter_map(|index| source_rows.get(index).cloned())
+            .collect()
+    };
+    let feasible: Vec<CampaignValidationAdmissionRow> = deduped
+        .iter()
+        .filter(|row| row.violation.unwrap_or(0.0) <= 0.0)
+        .cloned()
+        .collect();
+    let infeasible: Vec<CampaignValidationAdmissionRow> = deduped
+        .iter()
+        .filter(|row| row.violation.unwrap_or(0.0) > 0.0)
+        .cloned()
+        .collect();
+    let trimmed_rows = if deduped.len() > max_candidates {
+        if feasible.len() >= max_candidates {
+            select_evenly_spaced_rows(&feasible, max_candidates)
+        } else {
+            let mut selected = feasible;
+            selected.extend(select_evenly_spaced_rows(
+                &infeasible,
+                max_candidates.saturating_sub(selected.len()),
+            ));
+            selected
+        }
+    } else {
+        deduped.iter().take(max_candidates).cloned().collect()
+    };
+    let trim_note = if deduped.len() > max_candidates {
+        Some("pareto_diversity_trim".to_string())
+    } else {
+        None
+    };
+    Ok(CampaignValidationAdmissionSelection {
+        rows: trimmed_rows.clone(),
+        provenance: ValidationAdmissionProvenance {
+            requested_policy,
+            applied_policy: ValidationAdmissionPolicy::ParetoFrontier,
+            source_kind: source_kind.to_string(),
+            source_candidate_count: rows.len(),
+            pre_dedupe_count: rows.len(),
+            post_dedupe_count: deduped.len(),
+            post_cap_count: trimmed_rows.len(),
+            heads: vec![ValidationAdmissionHeadProvenance {
+                head: "pareto_frontier".to_string(),
+                objective: None,
+                candidate_count: rows.len(),
+                note: trim_note.clone(),
+            }],
+            note: trim_note,
+        },
+    })
+}
+
+fn select_validation_admission_policy(
+    requested_policy: ValidationAdmissionPolicy,
+    strategy_kind: &str,
+    rows: &[CampaignValidationAdmissionRow],
+) -> ValidationAdmissionPolicy {
+    if requested_policy == ValidationAdmissionPolicy::Auto {
+        return if normalize_strategy_kind(strategy_kind) == "CompositeMo"
+            && rows.iter().any(|row| row.maximize_value.is_some())
+        {
+            ValidationAdmissionPolicy::ParetoFrontier
+        } else {
+            ValidationAdmissionPolicy::ScalarUnion
+        };
+    }
+    requested_policy
+}
+
+fn build_candidate_value_from_params(
+    strategy_kind: &str,
+    family: CampaignOptimizationFamily,
+    run_req: &Value,
+    params_value: &Value,
+) -> Option<Value> {
+    if family == CampaignOptimizationFamily::CompositeMo {
+        return Some(params_value.clone());
+    }
+    let p = params_value.as_object()?;
+    let fast_ma_type = p.get("fast_ma_type").and_then(Value::as_str)?.to_string();
+    let slow_ma_type = p.get("slow_ma_type").and_then(Value::as_str)?.to_string();
+    let fast_len = p.get("fast_len").and_then(Value::as_u64)?;
+    let slow_len = p.get("slow_len").and_then(Value::as_u64)?;
+    if fast_ma_type.is_empty() || slow_ma_type.is_empty() || fast_len == 0 || slow_len == 0 {
+        return None;
+    }
+    Some(if is_double_like_kind(strategy_kind) {
+        json!({
+            "fast_ma_type": fast_ma_type,
+            "slow_ma_type": slow_ma_type,
+            "fast_len": fast_len,
+            "slow_len": slow_len,
+            "fast_ma_params": p.get("fast_ma_params").cloned().unwrap_or(Value::Null),
+            "slow_ma_params": p.get("slow_ma_params").cloned().unwrap_or(Value::Null),
+            "strategy": run_req.get("strategy").cloned().or_else(|| run_req.get("base_strategy").cloned()).unwrap_or_else(|| json!({})),
+            "halftrend_filter": run_req.get("halftrend_filter").cloned().or_else(|| run_req.get("halftrendFilter").cloned()).unwrap_or(Value::Null),
+        })
+    } else {
+        build_composite_candidate_value(
+            strategy_kind,
+            run_req,
+            p,
+            fast_ma_type,
+            slow_ma_type,
+            fast_len,
+            slow_len,
+        )
+    })
+}
+
+fn candidate_selection_from_optimization(
+    strategy_kind: &str,
+    family: CampaignOptimizationFamily,
+    run_req: &Value,
+    run_res: &CampaignOptimizationResult,
+    validation_cfg: &ResearchCampaignValidationConfig,
+) -> Result<(Vec<Value>, ValidationAdmissionProvenance), String> {
+    let rows = build_validation_admission_rows(family, run_res)?;
+    if rows.is_empty() {
         return Err(
             "campaign validation could not derive any candidates from optimization output"
                 .to_string(),
         );
     }
-    Ok(out)
+    let source_kind = rows
+        .first()
+        .map(|row| row.source_kind)
+        .unwrap_or("top_rows");
+    let requested_policy = validation_cfg.admission_policy;
+    let applied_policy = select_validation_admission_policy(requested_policy, strategy_kind, &rows);
+    let mut selection = match applied_policy {
+        ValidationAdmissionPolicy::ScalarUnion => {
+            build_scalar_union_validation_admission_selection(
+                &rows,
+                run_req,
+                source_kind,
+                requested_policy,
+                validation_cfg.max_candidates.max(1),
+            )?
+        }
+        ValidationAdmissionPolicy::ParetoFrontier => {
+            build_pareto_frontier_validation_admission_selection(
+                &rows,
+                source_kind,
+                requested_policy,
+                validation_cfg.max_candidates.max(1),
+            )?
+        }
+        ValidationAdmissionPolicy::Auto => unreachable!("auto should resolve before selection"),
+        ValidationAdmissionPolicy::LegacyTopk => build_legacy_validation_admission_selection(
+            &rows,
+            source_kind,
+            requested_policy,
+            validation_cfg.max_candidates.max(1),
+            None,
+        )?,
+    };
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for row in &selection.rows {
+        let Some(candidate) =
+            build_candidate_value_from_params(strategy_kind, family, run_req, &row.params_value)
+        else {
+            continue;
+        };
+        let key = serde_json::to_string(&candidate).map_err(|e| e.to_string())?;
+        if seen.insert(key) {
+            candidates.push(candidate);
+            if candidates.len() >= validation_cfg.max_candidates.max(1) {
+                break;
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return Err(
+            "campaign validation could not derive any candidates from optimization output"
+                .to_string(),
+        );
+    }
+    selection.provenance.post_cap_count = candidates.len();
+    Ok((candidates, selection.provenance))
 }
 
 fn build_composite_candidate_value(
@@ -1283,12 +1759,12 @@ fn build_validation_request_value(
     validation_cfg: &ResearchCampaignValidationConfig,
     family: CampaignOptimizationFamily,
 ) -> Result<Value, String> {
-    let candidates = candidate_values_from_optimization(
+    let (candidates, admission_provenance) = candidate_selection_from_optimization(
         strategy_kind,
         family,
         run_req,
         run_res,
-        validation_cfg.max_candidates.max(1),
+        validation_cfg,
     )?;
     let dataset = dataset_meta.as_object();
     let csv_path = dataset
@@ -1325,6 +1801,8 @@ fn build_validation_request_value(
         "cscv_pbo": cscv_pbo_to_value(validation_cfg.cscv_pbo.as_ref()),
         "seed": validation_cfg.seed,
         "max_candidates": validation_cfg.max_candidates.max(1),
+        "admission_policy": admission_provenance.applied_policy,
+        "admission_provenance": admission_provenance,
         "min_psr": validation_cfg.min_psr,
         "min_dsr": validation_cfg.min_dsr,
         "min_cscv_oos_rank_frac": validation_cfg.min_cscv_oos_rank_frac,
@@ -1376,6 +1854,7 @@ fn build_request_summary_value(
         "validation_config": {
             "max_candidates": req.validation_config.max_candidates,
             "seed": req.validation_config.seed,
+            "admission_policy": req.validation_config.admission_policy,
             "walk_forward": req.validation_config.walk_forward,
             "reopt_walk_forward": req.validation_config.reopt_walk_forward,
             "spa": req.validation_config.spa,
@@ -3280,18 +3759,20 @@ pub async fn run_research_campaign(
 mod tests {
     use super::{
         build_composite_candidate_value, build_doublema_vram_prefetch_config,
-        can_reuse_optimization_artifact_for_validation, candidate_values_from_optimization,
-        is_double_like_kind, normalize_backend_value, optimization_family_for_kind,
-        optimization_result_from_artifact_value, push_unique_warning, requested_gpu_device_id,
-        resolve_campaign_strategy_kind, Backend, CampaignDoubleMaVramPrefetchConfig,
-        CampaignOptimizationFamily, CampaignOptimizationResult, DatasetPreloadJob, DoubleMaRequest,
+        can_reuse_optimization_artifact_for_validation, candidate_selection_from_optimization,
+        candidate_values_from_optimization, is_double_like_kind, normalize_backend_value,
+        optimization_family_for_kind, optimization_result_from_artifact_value, push_unique_warning,
+        requested_gpu_device_id, resolve_campaign_strategy_kind, Backend,
+        CampaignDoubleMaVramPrefetchConfig, CampaignOptimizationFamily, CampaignOptimizationResult,
+        DatasetPreloadJob, DoubleMaRequest, ResearchCampaignValidationConfig,
     };
     use serde_json::{json, Value};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
     use ta_app_core::double_ma::GpuExecutionPolicy;
+    use ta_app_core::ValidationAdmissionPolicy;
     use ta_optimizer::{ObjectiveKind, OptimizationMode};
-    use ta_strategies::double_ma::StrategyConfig;
+    use ta_strategies::double_ma::{Metrics, StrategyConfig};
 
     const SUPPORTED_CAMPAIGN_STRATEGIES: &[&str] = &[
         "DoubleMa",
@@ -3604,6 +4085,68 @@ mod tests {
         }
     }
 
+    fn sample_params(fast_len: u16, slow_len: u16) -> ta_app_core::DoubleMaParamsResolved {
+        ta_app_core::DoubleMaParamsResolved {
+            fast_len,
+            slow_len,
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "ema".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+        }
+    }
+
+    fn sample_metrics(sharpe: f64, calmar: f64, omega: f64, max_dd: f64) -> Metrics {
+        Metrics {
+            pnl: sharpe * 10.0,
+            sharpe,
+            sortino: sharpe,
+            calmar,
+            omega,
+            max_dd,
+            ..Metrics::default()
+        }
+    }
+
+    fn sample_backend_result(
+        top: Vec<(ta_app_core::DoubleMaParamsResolved, Metrics)>,
+    ) -> ta_app_core::BackendOptimizationResult {
+        let (best_params, best_metrics) = top
+            .first()
+            .cloned()
+            .unwrap_or_else(|| (sample_params(5, 20), Metrics::default()));
+        ta_app_core::BackendOptimizationResult {
+            best_params,
+            best_metrics,
+            best_score: None,
+            mode_used: ta_app_core::OptimizationModeResolved::Grid,
+            backend_used: ta_app_core::BackendUsed::Cpu,
+            matrix_index: None,
+            best_col: None,
+            top_cols: None,
+            num_combos: top.len(),
+            num_candles: 1000,
+            runtime_ms: 10,
+            top,
+            top_scores: None,
+            all: None,
+            all_scores: None,
+            heatmap: None,
+            vdps: None,
+            hybrid_timing_ms: None,
+            gpu_kernel_timing_ms: None,
+            backend_route: None,
+            backend_fallback_reason: None,
+            route_diagnostics: None,
+            indicator_route_plan: None,
+            residency: None,
+            followup_cache_key: None,
+            shortlist_slice_diagnostics: None,
+            score_observation_context: None,
+            metric_surface_kind: None,
+        }
+    }
+
     #[test]
     fn doublema_vram_prefetch_config_accepts_exact_kernel_and_learned_auto() {
         let exact = make_plain_doublema_request(Backend::GpuKernel { device_id: 7 });
@@ -3742,6 +4285,247 @@ mod tests {
         assert_eq!(
             composite_cpu_candidate.get("signal_mode"),
             Some(&Value::String("soft_vote".to_string()))
+        );
+    }
+
+    #[test]
+    fn campaign_scalar_union_admission_diversifies_shortlist() {
+        let run_req = json!({
+            "strategy_kind": "DoubleMa",
+            "strategy": {},
+            "objective": "Sharpe"
+        });
+        let optimization = CampaignOptimizationResult::Backend(sample_backend_result(vec![
+            (sample_params(5, 20), sample_metrics(3.0, 1.0, 1.0, 30.0)),
+            (sample_params(8, 30), sample_metrics(2.0, 4.0, 4.0, 10.0)),
+            (sample_params(12, 48), sample_metrics(1.5, 3.0, 3.0, 8.0)),
+        ]));
+        let validation_cfg = ResearchCampaignValidationConfig {
+            max_candidates: 2,
+            admission_policy: ValidationAdmissionPolicy::ScalarUnion,
+            ..ResearchCampaignValidationConfig::default()
+        };
+
+        let (candidates, provenance) = candidate_selection_from_optimization(
+            "DoubleMa",
+            CampaignOptimizationFamily::DoubleLike,
+            &run_req,
+            &optimization,
+            &validation_cfg,
+        )
+        .expect("scalar-union candidates");
+
+        assert_eq!(
+            provenance.applied_policy,
+            ValidationAdmissionPolicy::ScalarUnion
+        );
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[0].get("fast_len").and_then(Value::as_u64),
+            Some(5)
+        );
+        assert_eq!(
+            candidates[1].get("fast_len").and_then(Value::as_u64),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn campaign_composite_mo_auto_uses_pareto_frontier_ordering() {
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeMo",
+                    "strategy": { "fee_bps": 1.5 }
+                },
+                "res": {
+                    "data_id": "campaign_1",
+                    "pareto": [
+                        {
+                            "params": {
+                                "fast_ma_type": "alma",
+                                "slow_ma_type": "alma",
+                                "fast_len": 10,
+                                "slow_len": 30,
+                                "strategy": { "fee_bps": 1.5 }
+                            },
+                            "metrics": { "pnl": 10.0, "sharpe": 1.0, "max_dd": 6.0 },
+                            "maximize_value": 5.0,
+                            "minimize_value": 1.0,
+                            "violation": 1.0
+                        },
+                        {
+                            "params": {
+                                "fast_ma_type": "alma",
+                                "slow_ma_type": "alma",
+                                "fast_len": 12,
+                                "slow_len": 48,
+                                "strategy": { "fee_bps": 1.5 }
+                            },
+                            "metrics": { "pnl": 9.0, "sharpe": 0.9, "max_dd": 4.0 },
+                            "maximize_value": 4.0,
+                            "minimize_value": 2.0,
+                            "violation": 0.0
+                        }
+                    ],
+                    "total_evaluations": 2,
+                    "runtime_ms": 10,
+                    "telemetry": {
+                        "prescan": null,
+                        "search": {
+                            "sampler": "ExactGrid",
+                            "requested_evaluations": 2,
+                            "actual_evaluations": 2,
+                            "unique_evaluations": 2,
+                            "duplicate_evaluations_avoided": 0,
+                            "feasible_points": 1,
+                            "rejected_decode_or_order": 0,
+                            "rejected_prescan_pair": 0,
+                            "rejected_other_constraints": 0,
+                            "exact_grid_used": true,
+                            "exact_grid_total_combinations": 2
+                        }
+                    }
+                }
+            }
+        });
+        let run_req = artifact.pointer("/run/req").cloned().expect("run.req");
+        let optimization = optimization_result_from_artifact_value(
+            CampaignOptimizationFamily::CompositeMo,
+            &artifact,
+        )
+        .expect("decode CompositeMo artifact");
+        let validation_cfg = ResearchCampaignValidationConfig {
+            max_candidates: 2,
+            admission_policy: ValidationAdmissionPolicy::Auto,
+            ..ResearchCampaignValidationConfig::default()
+        };
+
+        let (candidates, provenance) = candidate_selection_from_optimization(
+            "CompositeMo",
+            CampaignOptimizationFamily::CompositeMo,
+            &run_req,
+            &optimization,
+            &validation_cfg,
+        )
+        .expect("pareto admission candidates");
+
+        assert_eq!(
+            provenance.applied_policy,
+            ValidationAdmissionPolicy::ParetoFrontier
+        );
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[0].get("fast_len").and_then(Value::as_u64),
+            Some(12)
+        );
+        assert_eq!(
+            candidates[1].get("fast_len").and_then(Value::as_u64),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn campaign_composite_mo_dense_frontier_uses_diversity_trim() {
+        let pareto = (10_u64..=14_u64)
+            .enumerate()
+            .map(|(index, fast_len)| {
+                json!({
+                    "params": {
+                        "fast_ma_type": "alma",
+                        "slow_ma_type": "alma",
+                        "fast_len": fast_len,
+                        "slow_len": fast_len + 20,
+                        "strategy": { "fee_bps": 1.5 }
+                    },
+                    "metrics": {
+                        "pnl": 10.0 - index as f64,
+                        "sharpe": 1.5 - (index as f64 * 0.1),
+                        "max_dd": 0.08 + (index as f64 * 0.01)
+                    },
+                    "maximize_value": 5.0 - index as f64,
+                    "minimize_value": 1.0 + index as f64,
+                    "violation": 0.0
+                })
+            })
+            .collect::<Vec<_>>();
+        let artifact = json!({
+            "run": {
+                "req": {
+                    "strategy_kind": "CompositeMo",
+                    "strategy": { "fee_bps": 1.5 }
+                },
+                "res": {
+                    "data_id": "campaign_dense_frontier",
+                    "pareto": pareto,
+                    "total_evaluations": 5,
+                    "runtime_ms": 10,
+                    "telemetry": {
+                        "prescan": null,
+                        "search": {
+                            "sampler": "ExactGrid",
+                            "requested_evaluations": 5,
+                            "actual_evaluations": 5,
+                            "unique_evaluations": 5,
+                            "duplicate_evaluations_avoided": 0,
+                            "feasible_points": 5,
+                            "rejected_decode_or_order": 0,
+                            "rejected_prescan_pair": 0,
+                            "rejected_other_constraints": 0,
+                            "exact_grid_used": true,
+                            "exact_grid_total_combinations": 5
+                        }
+                    }
+                }
+            }
+        });
+        let run_req = artifact.pointer("/run/req").cloned().expect("run.req");
+        let optimization = optimization_result_from_artifact_value(
+            CampaignOptimizationFamily::CompositeMo,
+            &artifact,
+        )
+        .expect("decode CompositeMo artifact");
+        let validation_cfg = ResearchCampaignValidationConfig {
+            max_candidates: 3,
+            admission_policy: ValidationAdmissionPolicy::Auto,
+            ..ResearchCampaignValidationConfig::default()
+        };
+
+        let (candidates, provenance) = candidate_selection_from_optimization(
+            "CompositeMo",
+            CampaignOptimizationFamily::CompositeMo,
+            &run_req,
+            &optimization,
+            &validation_cfg,
+        )
+        .expect("dense pareto admission candidates");
+
+        assert_eq!(
+            provenance.applied_policy,
+            ValidationAdmissionPolicy::ParetoFrontier
+        );
+        assert_eq!(provenance.post_dedupe_count, 5);
+        assert_eq!(provenance.post_cap_count, 3);
+        assert_eq!(provenance.note.as_deref(), Some("pareto_diversity_trim"));
+        assert_eq!(
+            provenance
+                .heads
+                .first()
+                .and_then(|head| head.note.as_deref()),
+            Some("pareto_diversity_trim")
+        );
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(
+            candidates[0].get("fast_len").and_then(Value::as_u64),
+            Some(10)
+        );
+        assert_eq!(
+            candidates[1].get("fast_len").and_then(Value::as_u64),
+            Some(12)
+        );
+        assert_eq!(
+            candidates[2].get("fast_len").and_then(Value::as_u64),
+            Some(14)
         );
     }
 

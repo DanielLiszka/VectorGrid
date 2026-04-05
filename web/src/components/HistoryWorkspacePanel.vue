@@ -35,6 +35,10 @@ const {
   savedRunDetailDataset,
   savedRunDetailTimeframe,
   savedRunDetailValidation,
+  savedRunDetailMetricSurface,
+  savedRunDetailMetricSurfaceDetail,
+  savedRunDetailAdmission,
+  savedRunDetailAdmissionDetail,
   savedRunDetailReport,
   savedRunDetailSize,
   savedRunDetailTags,
@@ -683,6 +687,14 @@ onBeforeUnmount(() => {
             ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailValidation }}</span>
           </div>
           <div>
+            <span class="panelMetricKey">Metric Surface</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailMetricSurface }}</span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Admission</span
+            ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailAdmission }}</span>
+          </div>
+          <div>
             <span class="panelMetricKey">Report</span
             ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailReport }}</span>
           </div>
@@ -725,6 +737,24 @@ onBeforeUnmount(() => {
           <div class="full">
             <span class="panelMetricKey">Tags</span
             ><span class="panelMetricValue mono panelNumeric">{{ savedRunDetailTags }}</span>
+          </div>
+          <div
+            v-if="savedRunDetailMetricSurfaceDetail !== '—'"
+            class="full"
+          >
+            <span class="panelMetricKey">Metric Detail</span
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailMetricSurfaceDetail
+            }}</span>
+          </div>
+          <div
+            v-if="savedRunDetailAdmissionDetail !== '—'"
+            class="full"
+          >
+            <span class="panelMetricKey">Admission Detail</span
+            ><span class="panelMetricValue mono panelNumeric">{{
+              savedRunDetailAdmissionDetail
+            }}</span>
           </div>
         </div>
         <details class="panelDetails">

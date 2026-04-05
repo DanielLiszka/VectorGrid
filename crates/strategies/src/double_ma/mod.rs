@@ -139,7 +139,7 @@ impl Default for Metrics {
 }
 
 #[allow(clippy::type_complexity)]
-fn finalize_risk_metrics(
+pub(crate) fn finalize_risk_metrics(
     compute_return_stats: bool,
     compute_drawdown_risk: bool,
     count: u64,

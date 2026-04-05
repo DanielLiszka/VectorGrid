@@ -923,7 +923,7 @@ onBeforeUnmount(() => {
           </label>
         </div>
         <div class="panelMuted">
-          Host preload is the default campaign path. The VRAM staging mode is experimental and only applies to the plain DoubleMa exact GpuKernel route; other paths fall back to host preload. `Optimize only` skips meta and Stage 5, while `Validate only` reuses existing optimization artifacts instead of rerunning search.
+          Host preload is the default campaign path. The VRAM staging mode is experimental and only applies to the plain DoubleMa exact GpuKernel route; other paths fall back to host preload. `Optimize only` skips meta and Stage 5, while `Validate only` reuses existing optimization artifacts instead of rerunning search. Validation shortlist admission follows the current Validation workspace policy.
         </div>
 
         <div class="actions">

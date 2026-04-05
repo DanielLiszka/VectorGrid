@@ -448,6 +448,13 @@ describe("historyService", () => {
         fast_ma_types: ["sma"],
         slow_ma_types: ["alma"],
       },
+      validationReq: {
+        max_candidates: 12,
+        seed: 7,
+        min_psr: 0.55,
+        min_dsr: 0.4,
+        admission_policy: "scalar_union",
+      },
     });
 
     await applySavedRun(" C:/runs/run1.json ");
@@ -455,6 +462,7 @@ describe("historyService", () => {
     const optimize = useOptimizeStore(pinia);
     const advanced = useAdvancedStore(pinia);
     const data = useDataStore(pinia);
+    const validation = useValidationStore(pinia);
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
@@ -465,6 +473,11 @@ describe("historyService", () => {
     expect(advanced.maSource).toBe("close");
     expect(data.csvPath).toBe("C:/data/msft.csv");
     expect(data.dataTimeframe).toBe("5m");
+    expect(validation.candidates).toBe("12");
+    expect(validation.seed).toBe("7");
+    expect(validation.minPsr).toBe("0.55");
+    expect(validation.minDsr).toBe("0.4");
+    expect(validation.admissionPolicy).toBe("scalar_union");
   });
 
   it("applies MlSignal saved run request into Vue optimize/data stores", async () => {
@@ -677,6 +690,30 @@ describe("historyService", () => {
       csvPath: "C:/data/msft.csv",
       reportPath: "C:/runs/report.xlsx",
       hasValidation: true,
+      optimization_metric_surface: {
+        surface: "core17",
+        fields: [
+          "pnl",
+          "trades",
+          "max_dd",
+          "mean",
+          "std",
+          "exposure",
+          "net_exposure",
+        ],
+      },
+      validationReq: {
+        admission_policy: "scalar_union",
+        admission_provenance: {
+          source_kind: "top_rows",
+          post_cap_count: 16,
+          post_dedupe_count: 20,
+          heads: [
+            { objective: "Sharpe" },
+            { objective: "MaxDrawdown" },
+          ],
+        },
+      },
       tags: ["tag1", " tag2 "],
       paramsText: [
         "strategy: CompositeMo",
@@ -702,6 +739,11 @@ describe("historyService", () => {
       csvPath: "C:/data/msft.csv",
       reportPath: "C:/runs/report.xlsx",
       hasValidation: true,
+      metricSurfaceSummary: "Core17 • 7 metrics",
+      metricSurfaceDetail:
+        "fields=pnl, trades, max_dd, mean, std, exposure +1 more",
+      validationAdmissionSummary: "scalar_union • kept 16/20",
+      validationAdmissionDetail: "src=top_rows • heads=Sharpe/MaxDrawdown",
       tags: ["tag1", "tag2"],
       mlBundleId: "",
       mlScoreCachePath: "",

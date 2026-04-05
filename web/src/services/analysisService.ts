@@ -97,6 +97,8 @@ interface WorkflowRunState {
   ts?: unknown;
   artifactPath?: unknown;
   artifact_path?: unknown;
+  optimizationMetricSurface?: unknown;
+  optimization_metric_surface?: unknown;
   req?: unknown;
   res?: unknown;
 }
@@ -145,6 +147,7 @@ interface RunArtifactPayload {
 interface BaselineRun {
   source: "disk" | "hist";
   ts: string;
+  optimizationMetricSurface?: Record<string, unknown> | null;
   req: Record<string, unknown>;
   res: Record<string, unknown>;
 }
@@ -3616,6 +3619,15 @@ function diffParams(
   return out;
 }
 
+function metricSurfaceLabel(value: unknown): string {
+  const row = asRecord(value);
+  const surface = text(row?.surface).toLowerCase();
+  if (surface === "trade22") return "Trade22";
+  if (surface === "core17") return "Core17";
+  if (surface === "legacy") return "Legacy";
+  return "";
+}
+
 async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
   const normalizedPath = text(path);
   if (!normalizedPath) return null;
@@ -3637,6 +3649,9 @@ async function loadBaselineFromDisk(path: string): Promise<BaselineRun | null> {
       return {
         source: "disk" as const,
         ts: text(row.ts) || text(run.ts),
+        optimizationMetricSurface: asRecord(
+          row.optimization_metric_surface ?? row.optimizationMetricSurface,
+        ),
         req,
         res,
       };
@@ -3672,6 +3687,9 @@ async function resolveBaselineSelection(
     return {
       source: "hist",
       ts: baselineTs,
+      optimizationMetricSurface: asRecord(
+        current.optimization_metric_surface ?? current.optimizationMetricSurface,
+      ),
       req: currentReq,
       res: currentRes,
     };
@@ -3698,10 +3716,16 @@ function buildCompareSummary(
   baseline: BaselineRun,
 ): string {
   const currentTs = text(currentRun.ts);
+  const currentMetricSurface = metricSurfaceLabel(
+    currentRun.optimization_metric_surface ?? currentRun.optimizationMetricSurface,
+  );
   const cReq = asRecord(currentRun.req);
   const cRes = asRecord(currentRun.res);
   const bReq = baseline.req;
   const bRes = baseline.res;
+  const baselineMetricSurface = metricSurfaceLabel(
+    baseline.optimizationMetricSurface,
+  );
   const cBest = pickBest(cRes, cReq);
   const bBest = pickBest(bRes, bReq);
   const cm = cBest.metrics || {};
@@ -3737,6 +3761,11 @@ function buildCompareSummary(
   lines.push(
     `current:          ${currentTs || "-"} | strategy=${kindFromReq(cReq)} | combos=${combosOf(cRes)} | runtime_ms=${cRt || 0}${ratio ? ` | speedup=${ratio.toFixed(2)}x` : ""}`,
   );
+  if (baselineMetricSurface || currentMetricSurface) {
+    lines.push(
+      `metric surface: baseline=${baselineMetricSurface || "-"} | current=${currentMetricSurface || "-"}`,
+    );
+  }
   if (kindFromReq(bReq) !== kindFromReq(cReq)) {
     lines.push(
       `note: strategies differ (baseline=${kindFromReq(bReq)}, current=${kindFromReq(cReq)})`,

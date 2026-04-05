@@ -356,12 +356,6 @@ fn resolve_dynamic_double_ma_strategy_ir_preview(
     top_k: usize,
     include_all: bool,
 ) -> Result<ResolvedDynamicDoubleMaPreview, String> {
-    if ir.profile != StrategyProfileKind::DoubleMa {
-        return Err(
-            "dynamic strategy preview currently supports only profile=DoubleMa".to_string(),
-        );
-    }
-
     validate_strategy_cfg(&ir.execution.strategy)?;
     enforce_dynamic_double_ma_product_caps(ir)?;
 
@@ -1646,7 +1640,24 @@ pub fn eval_dynamic_plan_metrics_cpu_with_candles(
                 Ok(fast_metrics)
             }
         }
-        _ => eval_dynamic_plan_metrics_cpu(plan, context, fast, slow, start_t, compute_sharpe),
+        _ => {
+            let mut base =
+                eval_dynamic_plan_metrics_cpu(plan, context, fast, slow, start_t, compute_sharpe)?;
+            let enriched = eval_dynamic_double_ma_metrics_cpu_generic(
+                plan,
+                context,
+                fast,
+                slow,
+                start_t,
+                compute_sharpe,
+            )?;
+            base.closed_trades = enriched.closed_trades;
+            base.winning_trades = enriched.winning_trades;
+            base.losing_trades = enriched.losing_trades;
+            base.gross_profit = enriched.gross_profit;
+            base.gross_loss = enriched.gross_loss;
+            Ok(base)
+        }
     }
 }
 
@@ -1862,6 +1873,26 @@ fn eval_dynamic_group_for_double_ma(
     aggregate
 }
 
+#[inline]
+fn record_dynamic_closed_trade_stats(
+    trade_log_return: f64,
+    closed_trades: &mut u32,
+    winning_trades: &mut u32,
+    losing_trades: &mut u32,
+    gross_profit: &mut f64,
+    gross_loss: &mut f64,
+) {
+    *closed_trades = closed_trades.saturating_add(1);
+    let realized_return = trade_log_return.exp_m1();
+    if realized_return > 0.0 {
+        *winning_trades = winning_trades.saturating_add(1);
+        *gross_profit += realized_return;
+    } else if realized_return < 0.0 {
+        *losing_trades = losing_trades.saturating_add(1);
+        *gross_loss += -realized_return;
+    }
+}
+
 fn eval_dynamic_double_ma_metrics_cpu_generic(
     plan: &CompiledStrategyPlan,
     context: &PreparedDynamicCpuContext,
@@ -1911,10 +1942,25 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
     let mut mean = 0.0_f64;
     let mut m2 = 0.0_f64;
     let mut sum_neg_sq = 0.0_f64;
+    let mut sum_neg_cu = 0.0_f64;
+    let mut count_neg: u64 = 0;
     let mut sum_pos_r = 0.0_f64;
     let mut sum_neg_abs_r = 0.0_f64;
+    let mut long_obs: u64 = 0;
+    let mut short_obs: u64 = 0;
+    let mut long_sum_r = 0.0_f64;
+    let mut short_sum_r = 0.0_f64;
     let mut sum_abs_pos: i64 = 0;
     let mut sum_pos: i64 = 0;
+    let mut total_underwater_bars: u64 = 0;
+    let mut underwater_bars: u64 = 0;
+    let mut max_underwater_duration_bars: u64 = 0;
+    let mut closed_trades: u32 = 0;
+    let mut winning_trades: u32 = 0;
+    let mut losing_trades: u32 = 0;
+    let mut gross_profit = 0.0_f64;
+    let mut gross_loss = 0.0_f64;
+    let hurdle_tau = cfg.hurdle_tau.unwrap_or(0.0);
 
     for t in start_t..n_total {
         let sig_t = t.saturating_sub(trade_offset);
@@ -1997,6 +2043,21 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
 
         if desired != pos {
             if pos == 0 || desired == 0 {
+                if pos != 0 {
+                    let realized_log_return = if log_cost != 0.0 {
+                        trade_log_ret + log_cost
+                    } else {
+                        trade_log_ret
+                    };
+                    record_dynamic_closed_trade_stats(
+                        realized_log_return,
+                        &mut closed_trades,
+                        &mut winning_trades,
+                        &mut losing_trades,
+                        &mut gross_profit,
+                        &mut gross_loss,
+                    );
+                }
                 if log_cost != 0.0 {
                     log_eq += log_cost;
                 }
@@ -2008,6 +2069,19 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
                     0.0
                 };
             } else if !cfg.allow_flip {
+                let realized_log_return = if log_cost != 0.0 {
+                    trade_log_ret + log_cost
+                } else {
+                    trade_log_ret
+                };
+                record_dynamic_closed_trade_stats(
+                    realized_log_return,
+                    &mut closed_trades,
+                    &mut winning_trades,
+                    &mut losing_trades,
+                    &mut gross_profit,
+                    &mut gross_loss,
+                );
                 if log_cost != 0.0 {
                     log_eq += log_cost;
                 }
@@ -2015,6 +2089,19 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
                 pos = 0;
                 trade_log_ret = 0.0;
             } else {
+                let realized_log_return = if log_cost != 0.0 {
+                    trade_log_ret + log_cost
+                } else {
+                    trade_log_ret
+                };
+                record_dynamic_closed_trade_stats(
+                    realized_log_return,
+                    &mut closed_trades,
+                    &mut winning_trades,
+                    &mut losing_trades,
+                    &mut gross_profit,
+                    &mut gross_loss,
+                );
                 if log_cost != 0.0 {
                     log_eq += 2.0 * log_cost;
                 }
@@ -2034,6 +2121,19 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
             let hit_stop = stop_log.is_some_and(|th| trade_log_ret <= th);
             let hit_take = take_log.is_some_and(|th| trade_log_ret >= th);
             if hit_stop || hit_take {
+                let realized_log_return = if log_cost != 0.0 {
+                    trade_log_ret + log_cost
+                } else {
+                    trade_log_ret
+                };
+                record_dynamic_closed_trade_stats(
+                    realized_log_return,
+                    &mut closed_trades,
+                    &mut winning_trades,
+                    &mut losing_trades,
+                    &mut gross_profit,
+                    &mut gross_loss,
+                );
                 if log_cost != 0.0 {
                     log_eq += log_cost;
                 }
@@ -2049,6 +2149,15 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         let dd_log = log_peak - log_eq;
         if dd_log > max_log_dd {
             max_log_dd = dd_log;
+        }
+        if dd_log > 0.0 {
+            total_underwater_bars = total_underwater_bars.saturating_add(1);
+            underwater_bars = underwater_bars.saturating_add(1);
+            if underwater_bars > max_underwater_duration_bars {
+                max_underwater_duration_bars = underwater_bars;
+            }
+        } else {
+            underwater_bars = 0;
         }
         let dd = if dd_log > 0.0 {
             -(-dd_log).exp_m1()
@@ -2069,11 +2178,22 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
             mean += delta / n_obs as f64;
             let delta2 = step_r - mean;
             m2 += delta * delta2;
-            if step_r < 0.0 {
-                sum_neg_sq += step_r * step_r;
-                sum_neg_abs_r += -step_r;
+            let excess_r = step_r - hurdle_tau;
+            if excess_r < 0.0 {
+                count_neg = count_neg.saturating_add(1);
+                sum_neg_sq += excess_r * excess_r;
+                let neg_mag = -excess_r;
+                sum_neg_cu += neg_mag * neg_mag * neg_mag;
+                sum_neg_abs_r += neg_mag;
             } else {
-                sum_pos_r += step_r;
+                sum_pos_r += excess_r;
+            }
+            if pos_bar > 0 {
+                long_obs = long_obs.saturating_add(1);
+                long_sum_r += step_r;
+            } else if pos_bar < 0 {
+                short_obs = short_obs.saturating_add(1);
+                short_sum_r += step_r;
             }
         } else {
             n_obs = n_obs.saturating_add(1);
@@ -2092,6 +2212,11 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
     let denom = n_obs.max(1) as f64;
     let exposure = sum_abs_pos as f64 / denom;
     let net_exposure = sum_pos as f64 / denom;
+    let underwater_fraction = if n_obs > 0 {
+        total_underwater_bars as f64 / n_obs as f64
+    } else {
+        0.0
+    };
 
     if !compute_sharpe {
         let calmar = if max_dd > 1.0e-12 {
@@ -2132,13 +2257,13 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
             net_exposure,
             long_mean_return: 0.0,
             short_mean_return: 0.0,
-            closed_trades: 0,
-            winning_trades: 0,
-            losing_trades: 0,
-            gross_profit: 0.0,
-            gross_loss: 0.0,
-            underwater_fraction: 0.0,
-            max_underwater_duration_bars: 0,
+            closed_trades,
+            winning_trades,
+            losing_trades,
+            gross_profit,
+            gross_loss,
+            underwater_fraction,
+            max_underwater_duration_bars: max_underwater_duration_bars.min(u32::MAX as u64) as u32,
         });
     }
 
@@ -2171,6 +2296,33 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
     } else {
         0.0
     };
+    let kappa_denom = (sum_neg_cu / denom).cbrt();
+    let mean_excess = mean - hurdle_tau;
+    let kappa_tau = if kappa_denom > 0.0 {
+        (mean_excess / kappa_denom).clamp(-1.0e6, 1.0e6)
+    } else if mean_excess > 0.0 {
+        1.0e6
+    } else if mean_excess < 0.0 {
+        -1.0e6
+    } else {
+        0.0
+    };
+    let downside_frequency = count_neg as f64 / denom.max(1.0);
+    let downside_severity = if count_neg > 0 {
+        sum_neg_abs_r / count_neg as f64
+    } else {
+        0.0
+    };
+    let long_mean_return = if long_obs > 0 {
+        long_sum_r / long_obs as f64
+    } else {
+        0.0
+    };
+    let short_mean_return = if short_obs > 0 {
+        short_sum_r / short_obs as f64
+    } else {
+        0.0
+    };
     let calmar = if max_dd > 1.0e-12 {
         pnl / max_dd
     } else if pnl > 0.0 {
@@ -2196,11 +2348,11 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         sharpe,
         sortino,
         downside_deviation: downside_dev,
-        downside_frequency: 0.0,
-        downside_severity: 0.0,
+        downside_frequency,
+        downside_severity,
         calmar,
         omega,
-        kappa_tau: 0.0,
+        kappa_tau,
         volatility,
         ulcer_index,
         martin_ratio,
@@ -2208,15 +2360,15 @@ fn eval_dynamic_double_ma_metrics_cpu_generic(
         trades,
         exposure,
         net_exposure,
-        long_mean_return: 0.0,
-        short_mean_return: 0.0,
-        closed_trades: 0,
-        winning_trades: 0,
-        losing_trades: 0,
-        gross_profit: 0.0,
-        gross_loss: 0.0,
-        underwater_fraction: 0.0,
-        max_underwater_duration_bars: 0,
+        long_mean_return,
+        short_mean_return,
+        closed_trades,
+        winning_trades,
+        losing_trades,
+        gross_profit,
+        gross_loss,
+        underwater_fraction,
+        max_underwater_duration_bars: max_underwater_duration_bars.min(u32::MAX as u64) as u32,
     })
 }
 
@@ -2511,6 +2663,36 @@ mod tests {
         assert!(approx_eq(static_metrics.pnl, dynamic_metrics.pnl));
         assert!(approx_eq(static_metrics.max_dd, dynamic_metrics.max_dd));
         assert_eq!(static_metrics.trades, dynamic_metrics.trades);
+        assert!(approx_eq(
+            static_metrics.downside_frequency,
+            dynamic_metrics.downside_frequency
+        ));
+        assert!(approx_eq(
+            static_metrics.downside_severity,
+            dynamic_metrics.downside_severity
+        ));
+        assert!(approx_eq(static_metrics.kappa_tau, dynamic_metrics.kappa_tau));
+        assert!(approx_eq(
+            static_metrics.long_mean_return,
+            dynamic_metrics.long_mean_return
+        ));
+        assert!(approx_eq(
+            static_metrics.short_mean_return,
+            dynamic_metrics.short_mean_return
+        ));
+        assert!(approx_eq(
+            static_metrics.underwater_fraction,
+            dynamic_metrics.underwater_fraction
+        ));
+        assert_eq!(
+            static_metrics.max_underwater_duration_bars,
+            dynamic_metrics.max_underwater_duration_bars
+        );
+        assert_eq!(static_metrics.closed_trades, dynamic_metrics.closed_trades);
+        assert_eq!(static_metrics.winning_trades, dynamic_metrics.winning_trades);
+        assert_eq!(static_metrics.losing_trades, dynamic_metrics.losing_trades);
+        assert!(approx_eq(static_metrics.gross_profit, dynamic_metrics.gross_profit));
+        assert!(approx_eq(static_metrics.gross_loss, dynamic_metrics.gross_loss));
     }
 
     #[test]
@@ -2659,6 +2841,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let plan = compile_dynamic_plan_for_composite_cpu_config(
@@ -2718,6 +2902,123 @@ mod tests {
         assert!(approx_eq(static_metrics.pnl, dynamic_metrics.pnl));
         assert!(approx_eq(static_metrics.max_dd, dynamic_metrics.max_dd));
         assert_eq!(static_metrics.trades, dynamic_metrics.trades);
+    }
+
+    #[test]
+    fn dynamic_composite_cpu_metrics_with_candles_match_static_eval_and_populate_trade_tail() {
+        let candles = make_trending_candles(4096);
+        let req = CompositeCpuRequest {
+            backend: crate::double_ma::Backend::CpuOnly,
+            asr: None,
+            vcc: None,
+            vemr: None,
+            rocb: None,
+            mkcs: None,
+            kqsr: None,
+            carm: None,
+            kvdf: None,
+            cdmc: None,
+            vcet: None,
+            data_id: "test".to_string(),
+            fast_range: (10, 10, 1),
+            slow_range: (30, 30, 1),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            strategy: StrategyConfig::default(),
+            halftrend: HalfTrendRegimeFilter {
+                amplitude: 2,
+                channel_deviation: 2.0,
+                atr_period: 100,
+            },
+            macz: MaczGateParams::default(),
+            ott: OttGateParams::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            objective: ObjectiveKind::Sharpe,
+            mode: OptimizationMode::Grid,
+            gpu_prescan: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            include_trade_metrics: true,
+            metric_contract: None,
+        };
+
+        let plan = compile_dynamic_plan_for_composite_cpu_config(
+            &req.ma_source,
+            "sma",
+            "sma",
+            req.fast_ma_params.as_ref(),
+            req.slow_ma_params.as_ref(),
+            &req.strategy,
+            &req.halftrend,
+            &req.macz,
+            &req.ott,
+            req.signal_mode,
+            StrategyPlanBackend::Cpu,
+        )
+        .expect("plan should compile");
+        let context =
+            prepare_dynamic_cpu_context(&plan, &candles, "close").expect("context should prepare");
+
+        let periods_fast = [10_u16];
+        let periods_slow = [30_u16];
+        let (fast_mat, cols_fast) =
+            ma_matrix_cpu_f64(&candles, "sma", "close", &periods_fast, None, 0.85, 6.0)
+                .expect("fast matrix");
+        let (slow_mat, cols_slow) =
+            ma_matrix_cpu_f64(&candles, "sma", "close", &periods_slow, None, 0.85, 6.0)
+                .expect("slow matrix");
+        assert_eq!(cols_fast, cols_slow);
+
+        let n = cols_fast;
+        let fast = &fast_mat[..n];
+        let slow = &slow_mat[..n];
+        let start_t = 128;
+
+        let static_metrics =
+            ta_strategies::composite_cpu::eval_composite_metrics_from_log_returns_and_mas_f64_with_mode(
+                &context.lr,
+                &context.ma_source_prices,
+                fast,
+                slow,
+                context
+                    .composite_halftrend
+                    .as_deref()
+                    .expect("halftrend should exist"),
+                context.macz_hist.as_deref().expect("macz should exist"),
+                context.ott_line.as_deref().expect("ott should exist"),
+                start_t,
+                &strategy_cfg_for_optimization(req.strategy.clone()),
+                req.signal_mode,
+            );
+
+        let dynamic_metrics = eval_dynamic_plan_metrics_cpu_with_candles(
+            &plan,
+            &candles,
+            &context,
+            fast,
+            slow,
+            start_t,
+            true,
+        )
+        .expect("dynamic eval with candles should succeed");
+
+        assert!(approx_eq(static_metrics.sharpe, dynamic_metrics.sharpe));
+        assert!(approx_eq(static_metrics.pnl, dynamic_metrics.pnl));
+        assert!(approx_eq(static_metrics.max_dd, dynamic_metrics.max_dd));
+        assert_eq!(static_metrics.trades, dynamic_metrics.trades);
+        assert!(
+            dynamic_metrics.closed_trades
+                >= dynamic_metrics.winning_trades + dynamic_metrics.losing_trades
+        );
+        assert!(dynamic_metrics.gross_profit >= 0.0);
+        assert!(dynamic_metrics.gross_loss >= 0.0);
     }
 
     #[test]
@@ -2955,6 +3256,8 @@ mod tests {
             top_k: Some(5),
             include_all: Some(false),
             heatmap_bins: Some(0),
+            include_trade_metrics: false,
+            metric_contract: None,
         };
 
         let plan = compile_dynamic_plan_for_composite_cpu_config(

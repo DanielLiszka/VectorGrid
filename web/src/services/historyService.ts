@@ -280,6 +280,10 @@ export interface HistorySavedRunDetail {
   csvPath: string;
   reportPath: string;
   hasValidation: boolean;
+  metricSurfaceSummary?: string;
+  metricSurfaceDetail?: string;
+  validationAdmissionSummary?: string;
+  validationAdmissionDetail?: string;
   tags: string[];
   mlBundleId?: string;
   mlScoreCachePath?: string;
@@ -301,6 +305,7 @@ interface RunArtifactHydrationResponse {
 interface RunArtifactDetailResponse extends HistorySavedRunDetail {
   runReq?: unknown;
   validationReq?: unknown;
+  optimization_metric_surface?: unknown;
   mlSignalStage?: unknown;
 }
 
@@ -371,6 +376,89 @@ function asNumber(value: unknown): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return Number.NaN;
   return parsed;
+}
+
+function buildValidationAdmissionSummary(
+  validationReq: Record<string, unknown> | null,
+): { summary: string; detail: string } {
+  if (!validationReq) return { summary: "", detail: "" };
+  const admissionPolicy = normalizeText(
+    validationReq.admission_policy ?? validationReq.admissionPolicy,
+  );
+  if (!admissionPolicy) return { summary: "", detail: "" };
+  const provenance = asRecord(
+    validationReq.admission_provenance ?? validationReq.admissionProvenance,
+  );
+  const requested = normalizeText(
+    provenance?.requested_policy ?? provenance?.requestedPolicy,
+  );
+  const sourceKind = normalizeText(
+    provenance?.source_kind ?? provenance?.sourceKind,
+  );
+  const postCap = asNumber(
+    provenance?.post_cap_count ?? provenance?.postCapCount,
+  );
+  const postDedupe = asNumber(
+    provenance?.post_dedupe_count ?? provenance?.postDedupeCount,
+  );
+  const heads = Array.isArray(provenance?.heads)
+    ? (provenance?.heads as unknown[])
+        .map((entry) => asRecord(entry))
+        .map((entry) => normalizeText(entry?.objective ?? entry?.head))
+        .filter(
+          (value, index, values) =>
+            value.length > 0 && values.indexOf(value) === index,
+        )
+    : [];
+
+  const summaryParts = [admissionPolicy];
+  if (
+    Number.isFinite(postCap) &&
+    postCap > 0 &&
+    Number.isFinite(postDedupe) &&
+    postDedupe > 0
+  ) {
+    summaryParts.push(`kept ${Math.floor(postCap)}/${Math.floor(postDedupe)}`);
+  }
+
+  const detailParts: string[] = [];
+  if (requested && requested !== admissionPolicy) detailParts.push(`req=${requested}`);
+  if (sourceKind) detailParts.push(`src=${sourceKind}`);
+  if (heads.length > 0) detailParts.push(`heads=${heads.slice(0, 4).join("/")}`);
+
+  return {
+    summary: summaryParts.join(" • "),
+    detail: detailParts.join(" • "),
+  };
+}
+
+function buildMetricSurfaceSummary(
+  metricSurface: Record<string, unknown> | null,
+): { summary: string; detail: string } {
+  if (!metricSurface) return { summary: "", detail: "" };
+  const surface = normalizeText(metricSurface.surface).toLowerCase();
+  const fields = Array.isArray(metricSurface.fields)
+    ? (metricSurface.fields as unknown[])
+        .map((entry) => normalizeText(entry))
+        .filter((entry) => entry.length > 0)
+    : [];
+  const summary =
+    surface === "trade22"
+      ? `Trade22 • ${fields.length || 22} metrics`
+      : surface === "core17"
+        ? `Core17 • ${fields.length || 17} metrics`
+        : surface === "legacy"
+          ? "Legacy / route-specific"
+          : "";
+  if (!summary) return { summary: "", detail: "" };
+  if (!fields.length) return { summary, detail: "" };
+  const preview = fields.slice(0, 6).join(", ");
+  const suffix =
+    fields.length > 6 ? ` +${fields.length - 6} more` : "";
+  return {
+    summary,
+    detail: `fields=${preview}${suffix}`,
+  };
 }
 
 function firstBooleanFromList(value: unknown): boolean | null {
@@ -454,6 +542,7 @@ function updateStoresFromRunRequest(
   const strategyStore = useStrategyStore(pinia);
   const settingsStore = useSettingsStore(pinia);
   const executionStore = useExecutionStore(pinia);
+  const validationStore = useValidationStore(pinia);
 
   const strategyKind = normalizeText(req.strategy_kind ?? req.strategyKind);
   const objective = normalizeText(req.objective);
@@ -663,6 +752,30 @@ function updateStoresFromRunRequest(
 
   if (csvPath) dataStore.csvPath = csvPath;
   dataStore.dataTimeframe = timeframe;
+
+  if (validationReq) {
+    const maxCandidates = asNumber(
+      validationReq.max_candidates ?? validationReq.maxCandidates,
+    );
+    const seed = asNumber(validationReq.seed);
+    const minPsr = asNumber(validationReq.min_psr ?? validationReq.minPsr);
+    const minDsr = asNumber(validationReq.min_dsr ?? validationReq.minDsr);
+    const admissionPolicy = normalizeText(
+      validationReq.admission_policy ?? validationReq.admissionPolicy,
+    );
+
+    if (Number.isFinite(maxCandidates) && maxCandidates > 0) {
+      validationStore.candidates = String(Math.floor(maxCandidates));
+    }
+    if (Number.isFinite(seed) && seed >= 0) {
+      validationStore.seed = String(Math.floor(seed));
+    }
+    if (Number.isFinite(minPsr)) validationStore.minPsr = String(minPsr);
+    if (Number.isFinite(minDsr)) validationStore.minDsr = String(minDsr);
+    if (admissionPolicy) validationStore.admissionPolicy = admissionPolicy;
+    validationStore.source = "vue";
+    validationStore.updatedAtUnixMs = Date.now();
+  }
 
   optimizeStore.statusLine = "Applied saved run settings to form.";
   advancedStore.statusLine = "Applied saved run settings.";
@@ -1001,12 +1114,30 @@ export async function loadSavedRunDetail(
 ): Promise<HistorySavedRunDetail> {
   const loaded = await loadRunArtifactDetailRecord(path);
   const detail = loaded.detail;
+  const validationReq = asRecord(detail.validationReq);
+  const admission = buildValidationAdmissionSummary(validationReq);
+  const metricSurface = buildMetricSurfaceSummary(
+    asRecord(
+      detail.optimization_metric_surface ??
+        (detail as unknown as Record<string, unknown>).optimizationMetricSurface,
+    ),
+  );
   return {
     strategyKind: normalizeText(detail.strategyKind),
     timeframe: normalizeText(detail.timeframe),
     csvPath: normalizeText(detail.csvPath),
     reportPath: normalizeText(detail.reportPath),
     hasValidation: !!detail.hasValidation,
+    ...(metricSurface.summary
+      ? { metricSurfaceSummary: metricSurface.summary }
+      : {}),
+    ...(metricSurface.detail ? { metricSurfaceDetail: metricSurface.detail } : {}),
+    ...(admission.summary
+      ? { validationAdmissionSummary: admission.summary }
+      : {}),
+    ...(admission.detail
+      ? { validationAdmissionDetail: admission.detail }
+      : {}),
     tags: normalizeStringList(detail.tags),
     mlBundleId: normalizeText(detail.mlBundleId),
     mlScoreCachePath: normalizeText(detail.mlScoreCachePath),

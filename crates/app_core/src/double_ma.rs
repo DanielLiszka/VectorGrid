@@ -332,6 +332,71 @@ fn default_ma_source() -> String {
     "close".to_string()
 }
 
+fn route_is_exact_gpu_kernel_surface(
+    resolved_backend: &Backend,
+    backend_used: &BackendUsed,
+    backend_route: Option<&str>,
+) -> bool {
+    if !matches!(backend_used, BackendUsed::Gpu) {
+        return false;
+    }
+    if !matches!(resolved_backend, Backend::GpuKernel { .. }) {
+        return false;
+    }
+
+    let route = backend_route.unwrap_or_default();
+    !route.contains("GpuHybridKernel") && !route.contains("CpuOnly") && !route.contains("GpuOnly")
+}
+
+fn resolved_metric_surface_kind_for_result(
+    _strategy: &StrategyConfig,
+    resolved_backend: &Backend,
+    backend_used: &BackendUsed,
+    backend_route: Option<&str>,
+    requested_trade_metrics: bool,
+    requested_metric_contract: Option<DoubleMaMetricContract>,
+    dynamic_runtime_plan_present: bool,
+    dynamic_exact_gpu_kernel_route: bool,
+    dynamic_runtime_plan_supports_nonexact_metric_surface: bool,
+) -> Option<String> {
+    let exact_gpu_kernel_route = if dynamic_runtime_plan_present {
+        dynamic_exact_gpu_kernel_route
+    } else {
+        route_is_exact_gpu_kernel_surface(resolved_backend, backend_used, backend_route)
+    };
+
+    if dynamic_runtime_plan_present {
+        if !exact_gpu_kernel_route && !dynamic_runtime_plan_supports_nonexact_metric_surface {
+            return None;
+        }
+        return match requested_metric_contract {
+            Some(DoubleMaMetricContract::Trade22) => Some("trade22".to_string()),
+            Some(DoubleMaMetricContract::Full17) => Some("core17".to_string()),
+            None if requested_trade_metrics => Some("trade22".to_string()),
+            None if exact_gpu_kernel_route => None,
+            None => None,
+        };
+    }
+
+    if exact_gpu_kernel_route {
+        return match requested_metric_contract {
+            Some(DoubleMaMetricContract::Trade22) => Some("trade22".to_string()),
+            Some(DoubleMaMetricContract::Full17) => Some("core17".to_string()),
+            None if requested_trade_metrics => Some("trade22".to_string()),
+            None => None,
+        };
+    }
+
+    Some(
+        if requested_trade_metrics {
+            "trade22"
+        } else {
+            "core17"
+        }
+        .to_string(),
+    )
+}
+
 const DRILL_INDICATOR_MAX_POINTS: usize = 8_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -568,6 +633,8 @@ pub struct BackendOptimizationResult {
     pub shortlist_slice_diagnostics: Option<ShortlistSliceDiagnosticsResolved>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_observation_context: Option<PairObservationScoreContextResolved>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metric_surface_kind: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2844,6 +2911,196 @@ fn build_trade_stats(trades: &[Trade]) -> Option<TradeStats> {
     })
 }
 
+fn apply_trade_stats_to_metrics(metrics: &mut Metrics, trade_stats: Option<&TradeStats>) {
+    let Some(trade_stats) = trade_stats else {
+        return;
+    };
+    metrics.closed_trades = trade_stats.closed_trades as u32;
+    metrics.winning_trades = trade_stats.wins as u32;
+    metrics.losing_trades = trade_stats.losses as u32;
+    metrics.gross_profit = (trade_stats.avg_win * trade_stats.wins as f64).max(0.0);
+    metrics.gross_loss = ((-trade_stats.avg_loss) * trade_stats.losses as f64).max(0.0);
+}
+
+fn enrich_optimization_result_metrics<F>(
+    result: &mut OptimizationResult,
+    cancel: &AtomicBool,
+    mut eval: F,
+) -> Result<(), String>
+where
+    F: FnMut(&DoubleMaParams) -> Result<Metrics, String>,
+{
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
+    result.best_metrics = eval(&result.best_params)?;
+    for (params, metrics) in result.top.iter_mut() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+        *metrics = eval(params)?;
+    }
+    if let Some(rows) = result.all.as_mut() {
+        for (params, metrics) in rows.iter_mut() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
+            }
+            *metrics = eval(params)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_enrich_nonexact_trade22_result(
+    result: &mut OptimizationResult,
+    candles: &vector_ta::utilities::data_loader::Candles,
+    fast_ma_type: &str,
+    slow_ma_type: &str,
+    ma_source: &str,
+    fast_param_variants: &[Option<HashMap<String, f64>>],
+    slow_param_variants: &[Option<HashMap<String, f64>>],
+    strategy: &StrategyConfig,
+    halftrend_filter: Option<&HalfTrendRegimeFilter>,
+    requested_trade_metrics: bool,
+    resolved_backend: &Backend,
+    backend_used: &BackendUsed,
+    backend_route: Option<&str>,
+    dynamic_runtime_plan_present: bool,
+    dynamic_exact_gpu_kernel_route: bool,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    if !requested_trade_metrics || dynamic_runtime_plan_present {
+        return Ok(());
+    }
+
+    let exact_gpu_kernel_route = if dynamic_runtime_plan_present {
+        dynamic_exact_gpu_kernel_route
+    } else {
+        route_is_exact_gpu_kernel_surface(resolved_backend, backend_used, backend_route)
+    };
+    if exact_gpu_kernel_route {
+        return Ok(());
+    }
+
+    let n = candles.close.len();
+    if n < 2 {
+        return Ok(());
+    }
+
+    let close = vector_ta::utilities::data_loader::source_type(candles, "close");
+    let ma_prices = vector_ta::utilities::data_loader::source_type(candles, ma_source);
+    let fv_close = first_finite_idx(close).ok_or_else(|| "close series all non-finite".to_string())?;
+    let fv_ma = first_finite_idx(ma_prices)
+        .ok_or_else(|| "ma source series all non-finite".to_string())?;
+    let mut first_valid = fv_close.max(fv_ma);
+
+    let regime_filter = compute_combined_regime_filter(candles, ma_source, strategy, halftrend_filter)?;
+    if let Some(trend) = regime_filter.as_ref() {
+        let fv_regime = first_finite_idx(trend)
+            .ok_or_else(|| "regime trend series all non-finite".to_string())?;
+        first_valid = first_valid.max(fv_regime);
+    }
+
+    let kaufman_stops = compute_kaufman_stop_series(candles, strategy)?;
+    if let Some(stops) = kaufman_stops.as_ref() {
+        let fv_k_long = first_finite_idx(&stops.long)
+            .ok_or_else(|| "kaufman-stop long series all non-finite".to_string())?;
+        let fv_k_short = first_finite_idx(&stops.short)
+            .ok_or_else(|| "kaufman-stop short series all non-finite".to_string())?;
+        first_valid = first_valid.max(fv_k_long.max(fv_k_short));
+    }
+
+    let lr = compute_log_returns_f64(close);
+    let trade_offset = if strategy.trade_on_next_bar { 1usize } else { 0usize };
+    let mut fast_cache: HashMap<(u16, u16), Vec<f64>> = HashMap::new();
+    let mut slow_cache: HashMap<(u16, u16), Vec<f64>> = HashMap::new();
+
+    let cache_ma = |cache: &mut HashMap<(u16, u16), Vec<f64>>,
+                    period: u16,
+                    variant_id: u16,
+                    ma_type: &str,
+                    param_variants: &[Option<HashMap<String, f64>>],
+                    side: &'static str|
+     -> Result<(), String> {
+        let key = (period, variant_id);
+        if cache.contains_key(&key) {
+            return Ok(());
+        }
+        let params = param_variants
+            .get(variant_id as usize)
+            .and_then(|value| value.as_ref());
+        let (alma_offset, alma_sigma) = resolve_alma_params_for_side(side, ma_type, params)?;
+        let periods = [period];
+        let (values, _) = ma_matrix_cpu_f64(
+            candles,
+            ma_type,
+            ma_source,
+            &periods,
+            params,
+            alma_offset,
+            alma_sigma,
+        )?;
+        cache.insert(key, values);
+        Ok(())
+    };
+
+    enrich_optimization_result_metrics(result, cancel, |params| {
+        cache_ma(
+            &mut fast_cache,
+            params.fast_len,
+            params.fast_ma_id,
+            fast_ma_type,
+            fast_param_variants,
+            "fast",
+        )?;
+        cache_ma(
+            &mut slow_cache,
+            params.slow_len,
+            params.slow_ma_id,
+            slow_ma_type,
+            slow_param_variants,
+            "slow",
+        )?;
+
+        let fast = fast_cache
+            .get(&(params.fast_len, params.fast_ma_id))
+            .ok_or_else(|| "fast MA cache miss".to_string())?;
+        let slow = slow_cache
+            .get(&(params.slow_len, params.slow_ma_id))
+            .ok_or_else(|| "slow MA cache miss".to_string())?;
+        let max_p = (params.fast_len as usize).max(params.slow_len as usize).max(1);
+        let start_t = first_valid
+            .saturating_add(max_p.saturating_sub(1))
+            .saturating_add(trade_offset);
+
+        let mut metrics = eval_metrics_f64_with_exit_mode(
+            &lr,
+            close,
+            fast,
+            slow,
+            regime_filter.as_deref(),
+            start_t,
+            strategy,
+            kaufman_stops.as_ref(),
+            true,
+        );
+        let curves = eval_curves_f64_with_exit_mode(
+            &lr,
+            close,
+            fast,
+            slow,
+            regime_filter.as_deref(),
+            start_t,
+            strategy,
+            1,
+            kaufman_stops.as_ref(),
+        );
+        apply_trade_stats_to_metrics(&mut metrics, curves.trade_stats.as_ref());
+        Ok(metrics)
+    })
+}
+
 fn eval_double_ma_metrics_kaufman_impl<const COMPUTE_SHARPE: bool, FastAt, SlowAt>(
     lr: &[f64],
     close: &[f64],
@@ -4750,9 +5007,6 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
     let constraints = sanitize_double_ma_constraints(req.constraints)?;
     let heatmap_bins = normalize_heatmap_bins(req.heatmap_bins, 512)?;
     if let Some(ir) = dynamic_strategy_ir.as_ref() {
-        if ir.profile != crate::strategy_ir::StrategyProfileKind::DoubleMa {
-            return Err("dynamic_strategy_ir currently supports only profile=DoubleMa".to_string());
-        }
         ma_source = ir.ma_source.trim().to_string();
         fast_ma_types = vec![ir.fast_ma.ma_type.trim().to_string()];
         slow_ma_types = vec![ir.slow_ma.ma_type.trim().to_string()];
@@ -4760,7 +5014,14 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
         slow_ma_params = (!ir.slow_ma.params.is_empty()).then_some(ir.slow_ma.params.clone());
         strategy = ir.execution.strategy.clone();
         strategy.hurdle_tau = req.hurdle_tau;
-        halftrend_filter = ir.execution.halftrend_filter.clone();
+        halftrend_filter = if ir.profile == crate::strategy_ir::StrategyProfileKind::DoubleMa {
+            ir.execution
+                .halftrend_filter
+                .clone()
+                .or_else(|| ir.execution.halftrend.clone())
+        } else {
+            None
+        };
     }
 
     if let Some(hurdle_tau) = strategy.hurdle_tau {
@@ -5332,6 +5593,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                     None,
                     top_k,
                     include_all,
+                    requested_trade_metrics,
+                    requested_metric_contract,
                     fast_alma_offset,
                     fast_alma_sigma,
                     slow_alma_offset,
@@ -5779,6 +6042,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                     score_mode,
                     top_k,
                     include_all,
+                    requested_trade_metrics,
+                    requested_metric_contract,
                     fast_alma_offset,
                     fast_alma_sigma,
                     slow_alma_offset,
@@ -5821,6 +6086,8 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                         score_mode,
                         top_k,
                         include_all,
+                        requested_trade_metrics,
+                        requested_metric_contract,
                         fast_alma_offset,
                         fast_alma_sigma,
                         slow_alma_offset,
@@ -6872,6 +7139,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                 == crate::strategy_plan::StrategyPlanBackend::GpuUnified
             && plan.gpu_handle.is_some()
     });
+    let dynamic_runtime_plan_supports_nonexact_metric_surface = dynamic_runtime_plan.is_some();
     if score_mode_needs_pair_observation_context(score_mode)
         && !matches!(backend, Backend::GpuKernel { .. })
     {
@@ -7011,25 +7279,23 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
             "shortlist_neighborhood_radius requires shortlist_slice_mode to be set".to_string(),
         );
     }
-    if requested_trade_metrics && dynamic_runtime_plan.is_some() && !dynamic_exact_gpu_kernel_route
+    if requested_trade_metrics
+        && dynamic_runtime_plan.is_some()
+        && !dynamic_exact_gpu_kernel_route
+        && !dynamic_runtime_plan_supports_nonexact_metric_surface
     {
         return Err(
-            "include_trade_metrics currently require an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
+            "include_trade_metrics currently requires either an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route or an audited dynamic CPU fallback surface"
                 .to_string(),
         );
     }
     if requested_metric_contract.is_some()
         && dynamic_runtime_plan.is_some()
-        && !dynamic_exact_gpu_kernel_route
+        && !matches!(backend, Backend::GpuKernel { .. })
+        && !dynamic_runtime_plan_supports_nonexact_metric_surface
     {
         return Err(
-            "metric_contract currently requires an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
-                .to_string(),
-        );
-    }
-    if requested_metric_contract.is_some() && !matches!(backend, Backend::GpuKernel { .. }) {
-        return Err(
-            "metric_contract currently requires the exact GpuKernel backend route".to_string(),
+            "metric_contract currently requires either the exact GpuKernel backend route or an audited dynamic CPU fallback surface".to_string(),
         );
     }
     let mut run_idx: usize = 0;
@@ -7212,7 +7478,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
             .map(|(_, metrics)| effective_score(metrics, objective, score_mode))
             .collect()
     });
-    let result = OptimizationResult {
+    let mut result = OptimizationResult {
         best_params: best_params_raw,
         best_metrics,
         best_score,
@@ -7331,6 +7597,37 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let score_observation_context: Option<PairObservationScoreContextResolved> = None;
 
+    maybe_enrich_nonexact_trade22_result(
+        &mut result,
+        candles,
+        &fast_ma,
+        &slow_ma,
+        &ma_source,
+        &fast_param_variants,
+        &slow_param_variants,
+        &strategy,
+        halftrend_filter.as_ref(),
+        requested_trade_metrics,
+        &backend,
+        &backend_used,
+        merged_backend_route.as_deref(),
+        dynamic_runtime_plan.is_some(),
+        dynamic_exact_gpu_kernel_route,
+        cancel,
+    )?;
+
+    let metric_surface_kind = resolved_metric_surface_kind_for_result(
+        &strategy,
+        &backend,
+        &backend_used,
+        merged_backend_route.as_deref(),
+        requested_trade_metrics,
+        requested_metric_contract,
+        dynamic_runtime_plan.is_some(),
+        dynamic_exact_gpu_kernel_route,
+        dynamic_runtime_plan_supports_nonexact_metric_surface,
+    );
+
     if let (Some(cfg), Some(diag)) = (
         shortlist_neighborhood_cfg,
         shortlist_slice_diagnostics.as_mut(),
@@ -7391,6 +7688,7 @@ pub fn run_double_ma_optimization_blocking_with_candles_and_eval_range(
                 followup_cache_key,
                 shortlist_slice_diagnostics,
                 score_observation_context,
+                metric_surface_kind,
             },
         )
     };
@@ -10735,6 +11033,8 @@ fn optimize_double_ma_cpu_tiled(
     score_mode: Option<DoubleMaScoreMode>,
     top_k: usize,
     include_all: bool,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
     fast_alma_offset: f64,
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
@@ -10984,7 +11284,9 @@ fn optimize_double_ma_cpu_tiled(
                 }
             } else {
                 let compute_sharpe = objective_needs_return_stats(objective)
-                    || score_mode_needs_rich_metrics(score_mode);
+                    || score_mode_needs_rich_metrics(score_mode)
+                    || include_trade_metrics
+                    || matches!(metric_contract, Some(DoubleMaMetricContract::Full17));
 
                 let init = || {
                     let mut local = StreamAggregator::new(objective, top_k, false, n);
@@ -11488,6 +11790,8 @@ fn optimize_double_ma_gpu_sweep_tiled(
     _shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
     _top_k: usize,
     _include_all: bool,
+    _include_trade_metrics: bool,
+    _metric_contract: Option<DoubleMaMetricContract>,
     _fast_alma_offset: f64,
     _fast_alma_sigma: f64,
     _slow_alma_offset: f64,
@@ -11637,6 +11941,8 @@ fn optimize_double_ma_gpu_sweep_tiled(
     _shortlist_slice_benchmark: Option<SpaBenchmarkKind>,
     top_k: usize,
     include_all: bool,
+    include_trade_metrics: bool,
+    metric_contract: Option<DoubleMaMetricContract>,
     fast_alma_offset: f64,
     fast_alma_sigma: f64,
     slow_alma_offset: f64,
@@ -11805,7 +12111,9 @@ fn optimize_double_ma_gpu_sweep_tiled(
                 }
             } else {
                 let compute_sharpe = objective_needs_return_stats(objective)
-                    || score_mode_needs_rich_metrics(score_mode);
+                    || score_mode_needs_rich_metrics(score_mode)
+                    || include_trade_metrics
+                    || matches!(metric_contract, Some(DoubleMaMetricContract::Full17));
 
                 let init = || {
                     let mut local = StreamAggregator::new(objective, top_k, false, n);
@@ -12531,6 +12839,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
             None,
             top_k,
             include_all,
+            false,
+            None,
             fast_alma_offset,
             fast_alma_sigma,
             slow_alma_offset,
@@ -12575,6 +12885,8 @@ pub(crate) fn optimize_double_ma_gpu_hybrid_kernel_phase1(
             score_mode,
             top_k,
             include_all,
+            false,
+            None,
             fast_alma_offset,
             fast_alma_sigma,
             slow_alma_offset,
@@ -14172,6 +14484,37 @@ mod tests {
         }
     }
 
+    fn assert_trade22_metrics_match_trade_stats(
+        label: &str,
+        metrics: &Metrics,
+        trade_stats: &TradeStats,
+    ) {
+        let expected_gross_profit = (trade_stats.avg_win * trade_stats.wins as f64).max(0.0);
+        let expected_gross_loss = ((-trade_stats.avg_loss) * trade_stats.losses as f64).max(0.0);
+        assert_eq!(
+            metrics.closed_trades, trade_stats.closed_trades as u32,
+            "{label}: closed_trades mismatch",
+        );
+        assert_eq!(
+            metrics.winning_trades, trade_stats.wins as u32,
+            "{label}: winning_trades mismatch",
+        );
+        assert_eq!(
+            metrics.losing_trades, trade_stats.losses as u32,
+            "{label}: losing_trades mismatch",
+        );
+        assert!(
+            (metrics.gross_profit - expected_gross_profit).abs() <= 1e-9,
+            "{label}: gross_profit mismatch expected={expected_gross_profit} got={}",
+            metrics.gross_profit
+        );
+        assert!(
+            (metrics.gross_loss - expected_gross_loss).abs() <= 1e-9,
+            "{label}: gross_loss mismatch expected={expected_gross_loss} got={}",
+            metrics.gross_loss
+        );
+    }
+
     fn commission_event_count_from_curves(curves: &DoubleMaCurves) -> u32 {
         let closed = curves.trades.iter().filter(|trade| !trade.open).count() as u32;
         curves.trades.len() as u32 + closed
@@ -14296,6 +14639,33 @@ mod tests {
             metric_contract: None,
             hurdle_tau: None,
         }
+    }
+
+    fn make_dynamic_composite_ir(
+        profile: StrategyProfileKind,
+        strategy: StrategyConfig,
+    ) -> StrategyIr {
+        build_static_strategy_ir(
+            profile,
+            StaticStrategyIrInput {
+                ma_source: "close".to_string(),
+                fast_ma_type: "sma".to_string(),
+                slow_ma_type: "sma".to_string(),
+                fast_ma_params: None,
+                slow_ma_params: None,
+                strategy,
+                halftrend_filter: None,
+                halftrend: Some(HalfTrendRegimeFilter {
+                    amplitude: 2,
+                    channel_deviation: 2.0,
+                    atr_period: 100,
+                }),
+                macz: Some(crate::composite_cpu::MaczGateParams::default()),
+                ott: Some(crate::composite_cpu::OttGateParams::default()),
+                signal_mode: Some(crate::CompositeSignalMode::HardGate),
+            },
+        )
+        .expect("static composite ir should build")
     }
 
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -15575,6 +15945,133 @@ mod tests {
     }
 
     #[test]
+    fn cpu_plain_trade22_metric_contract_matches_drilldown_trade_stats() {
+        let candles = make_choppy_candles(5_000);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "plain-trade22".to_string(),
+            fast_range: (9, 9, 0),
+            slow_range: (21, 21, 0),
+            fast_ma_types: vec!["sma".to_string()],
+            slow_ma_types: vec!["sma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: StrategyConfig::default(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(1),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: true,
+            metric_contract: Some(DoubleMaMetricContract::Trade22),
+            hurdle_tau: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("plain cpu trade22 run");
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
+        assert_eq!(res.top.len(), 1);
+
+        let drill = compute_double_ma_drilldown_blocking_with_candles(
+            build_single_pair_drilldown_request(StrategyConfig::default()),
+            &candles,
+        )
+        .expect("plain trade22 drilldown");
+        let trade_stats = drill.trade_stats.expect("plain trade22 drilldown trade stats");
+        assert!(trade_stats.closed_trades > 0);
+
+        assert_trade22_metrics_match_trade_stats(
+            "plain trade22 best",
+            &res.best_metrics,
+            &trade_stats,
+        );
+        assert_trade22_metrics_match_trade_stats(
+            "plain trade22 top",
+            &res.top[0].1,
+            &trade_stats,
+        );
+    }
+
+    #[test]
+    fn cpu_regime_hybrid_trade22_metric_contract_is_supported_on_nonexact_route() {
+        let candles = make_trending_candles(4_096);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::CpuOnly,
+            data_id: "regime-hybrid-trade22".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (20, 24, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: regime_hybrid_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: true,
+            metric_contract: Some(DoubleMaMetricContract::Trade22),
+            hurdle_tau: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("cpu regime_hybrid trade22 run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
+        assert!(
+            res.best_metrics.closed_trades
+                >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
+            "expected coherent non-exact regime_hybrid trade tail metrics",
+        );
+        assert!(
+            res.best_metrics.closed_trades > 0 || res.best_metrics.trades > 0,
+            "expected a populated trade surface on non-exact regime_hybrid route",
+        );
+        assert!(res.best_metrics.gross_profit >= 0.0);
+        assert!(res.best_metrics.gross_loss >= 0.0);
+    }
+
+    #[test]
     fn cpu_dynamic_strategy_env_path_matches_legacy_results() {
         let candles = make_trending_candles(5000);
         let cancel = AtomicBool::new(false);
@@ -16021,20 +16518,86 @@ mod tests {
     }
 
     #[test]
-    fn request_dynamic_strategy_ir_rejects_non_double_ma_profile() {
-        let candles = make_trending_candles(512);
+    fn request_dynamic_strategy_ir_cpu_composite_profiles_accept_trade_metrics() {
+        let candles = make_trending_candles(8_000);
         let cancel = AtomicBool::new(false);
-        let mut ir = make_dynamic_constant_close_ir();
-        ir.profile = StrategyProfileKind::CompositeCpu;
-        let req = make_dynamic_request(Backend::CpuOnly, Some(ir));
+        let cases = [
+            (
+                "composite_cpu",
+                StrategyProfileKind::CompositeCpu,
+                StrategyConfig::default(),
+            ),
+            (
+                "composite_trend",
+                StrategyProfileKind::CompositeTrend,
+                trend_quality_strategy_for_kernel(),
+            ),
+            (
+                "regime_hybrid",
+                StrategyProfileKind::RegimeHybrid,
+                regime_hybrid_strategy_for_kernel(),
+            ),
+            (
+                "breakout_momentum",
+                StrategyProfileKind::BreakoutMomentum,
+                breakout_strategy_for_kernel(),
+            ),
+        ];
 
-        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
-            .expect_err("non-DoubleMa profile should be rejected");
+        for (label, profile, strategy) in cases {
+            let ir = make_dynamic_composite_ir(profile, strategy);
+            let mut req = make_dynamic_request(Backend::CpuOnly, Some(ir));
+            req.data_id = format!("dynamic-{label}-trade22");
+            req.include_trade_metrics = true;
 
-        assert_eq!(
-            err,
-            "dynamic_strategy_ir currently supports only profile=DoubleMa"
+            let res = run_double_ma_optimization_blocking_with_candles(
+                req,
+                &candles,
+                &cancel,
+                None,
+            )
+            .unwrap_or_else(|err| panic!("{label} dynamic cpu trade22 run failed: {err}"));
+
+            assert!(matches!(res.backend_used, BackendUsed::Cpu));
+            assert_eq!(
+                res.metric_surface_kind.as_deref(),
+                Some("trade22"),
+                "{label} should self-declare Trade22",
+            );
+            assert!(
+                res.best_metrics.closed_trades
+                    >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
+                "{label} should expose coherent trade-tail metrics",
+            );
+            assert!(
+                res.best_metrics.closed_trades > 0 || res.best_metrics.trades > 0,
+                "{label} should expose non-trivial trade activity",
+            );
+            assert!(res.best_metrics.gross_profit >= 0.0, "{label} gross_profit");
+            assert!(res.best_metrics.gross_loss >= 0.0, "{label} gross_loss");
+        }
+    }
+
+    #[test]
+    fn request_dynamic_strategy_ir_cpu_composite_cpu_accepts_full17_metric_contract() {
+        let candles = make_trending_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = make_dynamic_composite_ir(
+            StrategyProfileKind::CompositeCpu,
+            StrategyConfig::default(),
         );
+        let mut req = make_dynamic_request(Backend::CpuOnly, Some(ir));
+        req.metric_contract = Some(DoubleMaMetricContract::Full17);
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("dynamic composite cpu full17 run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
+        assert!(res.best_metrics.downside_frequency.is_finite());
+        assert!(res.best_metrics.downside_severity.is_finite());
+        assert!(res.best_metrics.kappa_tau.is_finite());
+        assert!(res.best_metrics.underwater_fraction.is_finite());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -16074,6 +16637,7 @@ mod tests {
             res.backend_route
         );
         assert!(res.backend_fallback_reason.is_none());
+        assert_eq!(res.metric_surface_kind, None);
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -16482,6 +17046,7 @@ mod tests {
             "expected dynamic gpu route note, got {:?}",
             res.backend_route
         );
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
         assert!(
             res.best_metrics.closed_trades
                 >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
@@ -16491,6 +17056,123 @@ mod tests {
             res.best_metrics.closed_trades > 0 || res.best_metrics.trades > 0,
             "expected dynamic trade-metrics run to produce non-trivial trade activity"
         );
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn request_dynamic_strategy_ir_gpu_supported_shape_accepts_full17_metric_contract() {
+        if !cuda_available() {
+            return;
+        }
+
+        let candles = make_choppy_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
+        req.metric_contract = Some(DoubleMaMetricContract::Full17);
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("dynamic full17 gpu run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert!(
+            res.backend_route
+                .as_deref()
+                .unwrap_or_default()
+                .contains("dynamic_strategy_v1"),
+            "expected dynamic gpu route note, got {:?}",
+            res.backend_route
+        );
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
+        assert!(
+            res.best_metrics.downside_frequency.is_finite(),
+            "expected populated Core17 downside_frequency"
+        );
+        assert!(
+            res.best_metrics.underwater_fraction.is_finite(),
+            "expected populated Core17 underwater_fraction field"
+        );
+    }
+
+    #[test]
+    fn request_dynamic_strategy_ir_cpu_route_accepts_trade_metrics() {
+        let candles = make_choppy_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let mut req = make_dynamic_request(Backend::CpuOnly, Some(ir));
+        req.include_trade_metrics = true;
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("dynamic trade-metrics cpu run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
+        assert!(
+            res.best_metrics.closed_trades
+                >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
+            "trade metrics should be populated coherently"
+        );
+        assert!(
+            res.best_metrics.closed_trades > 0 || res.best_metrics.trades > 0,
+            "expected dynamic trade-metrics cpu run to produce non-trivial trade activity"
+        );
+        assert!(res.best_metrics.gross_profit >= 0.0);
+        assert!(res.best_metrics.gross_loss >= 0.0);
+    }
+
+    #[test]
+    fn request_dynamic_strategy_ir_cpu_route_accepts_full17_metric_contract() {
+        let candles = make_choppy_candles(8_000);
+        let cancel = AtomicBool::new(false);
+        let ir = build_static_strategy_ir(
+            StrategyProfileKind::DoubleMa,
+            StaticStrategyIrInput::from_double_ma(
+                "close".to_string(),
+                "sma".to_string(),
+                "sma".to_string(),
+                None,
+                None,
+                StrategyConfig::default(),
+                None,
+            ),
+        )
+        .expect("static ir should build");
+        let mut req = make_dynamic_request(Backend::CpuOnly, Some(ir));
+        req.metric_contract = Some(DoubleMaMetricContract::Full17);
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("dynamic full17 cpu run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
+        assert!(res.best_metrics.downside_frequency.is_finite());
+        assert!(res.best_metrics.downside_severity.is_finite());
+        assert!(res.best_metrics.kappa_tau.is_finite());
+        assert!(res.best_metrics.underwater_fraction.is_finite());
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -16750,7 +17432,7 @@ mod tests {
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
-    fn request_dynamic_strategy_ir_gpu_unsupported_shape_rejects_trade_metrics() {
+    fn request_dynamic_strategy_ir_gpu_unsupported_shape_falls_back_to_cpu_for_trade_metrics() {
         if !cuda_available() {
             return;
         }
@@ -16777,14 +17459,23 @@ mod tests {
         let mut req = make_dynamic_request(Backend::GpuKernel { device_id: 0 }, Some(ir));
         req.include_trade_metrics = true;
 
-        let err = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
-            .expect_err("unsupported dynamic shape should reject trade metrics");
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("unsupported gpu dynamic shape should fall back to cpu for trade metrics");
 
+        assert!(matches!(res.backend_used, BackendUsed::Cpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
         assert!(
-            err.contains(
-                "include_trade_metrics currently require an exact-compatible DynamicDoubleMa GpuKernel(dynamic_strategy_v1) route"
-            ),
-            "unexpected error: {err}"
+            res.backend_fallback_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("fell back to CpuOnly"),
+            "expected explicit dynamic cpu fallback reason, got {:?}",
+            res.backend_fallback_reason,
+        );
+        assert!(
+            res.best_metrics.closed_trades
+                >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
+            "trade metrics should be populated coherently after cpu fallback"
         );
     }
 
@@ -16997,6 +17688,7 @@ mod tests {
             route.starts_with("Auto->"),
             "expected Auto route note, got '{route}'"
         );
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
     }
 
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -17056,6 +17748,7 @@ mod tests {
         assert!(res.best_params.fast_len > 0);
         assert!(res.best_params.slow_len > 0);
         assert_eq!(res.backend_route.as_deref(), Some("Auto->GpuKernel"));
+        assert_eq!(res.metric_surface_kind, None);
     }
 
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -18910,6 +19603,7 @@ mod tests {
             .expect("gpu regime_hybrid trade22 run");
 
         assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
         assert!(
             res.best_metrics.trades > 0,
             "expected at least one trade on regime_hybrid trade22 surface"
@@ -18925,6 +19619,77 @@ mod tests {
         assert!(
             res.best_metrics.gross_profit != 0.0 || res.best_metrics.gross_loss != 0.0,
             "expected non-zero trade22 gross profit/loss fields"
+        );
+
+        match prev_env {
+            Some(v) => std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", v),
+            None => std::env::remove_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn gpu_kernel_regime_hybrid_full17_marks_core17_surface() {
+        if !cuda_available() {
+            return;
+        }
+
+        let _guard = lock_env();
+        let prev_env = std::env::var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL").ok();
+        std::env::set_var("VECTORBT_ENABLE_GPU_HYBRID_KERNEL", "1");
+
+        let candles = make_trending_candles(4_096);
+        let cancel = AtomicBool::new(false);
+        let req = DoubleMaRequest {
+            backend: Backend::GpuKernel { device_id: 0 },
+            data_id: "test".to_string(),
+            fast_range: (5, 7, 1),
+            slow_range: (20, 24, 1),
+            fast_ma_types: vec!["alma".to_string()],
+            slow_ma_types: vec!["alma".to_string()],
+            ma_source: "close".to_string(),
+            export_all_csv_path: None,
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_ma_param_sweeps: None,
+            slow_ma_param_sweeps: None,
+            strategy: regime_hybrid_strategy_for_kernel(),
+            halftrend_filter: None,
+            objective: ObjectiveKind::Sharpe,
+            score_mode: None,
+            extra_shortlist_objectives: None,
+            shortlist_confidence_mode: None,
+            shortlist_union_mode: None,
+            shortlist_slice_mode: None,
+            shortlist_slice_benchmark: None,
+            shortlist_neighborhood_radius: None,
+            shortlist_neighborhood_step: None,
+            mode: OptimizationMode::Grid,
+            top_k: Some(5),
+            include_all: Some(false),
+            heatmap_bins: Some(0),
+            constraints: None,
+            vdps: None,
+            dynamic_strategy_ir: None,
+            gpu_execution: GpuExecutionPolicy::BestEffort,
+            persist_followup_cache: false,
+            include_trade_metrics: false,
+            metric_contract: Some(DoubleMaMetricContract::Full17),
+            hurdle_tau: None,
+        };
+
+        let res = run_double_ma_optimization_blocking_with_candles(req, &candles, &cancel, None)
+            .expect("gpu regime_hybrid full17 run");
+
+        assert!(matches!(res.backend_used, BackendUsed::Gpu));
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("core17"));
+        assert!(
+            res.best_metrics.downside_frequency.is_finite(),
+            "expected populated Core17 downside_frequency"
+        );
+        assert!(
+            res.best_metrics.underwater_fraction.is_finite(),
+            "expected populated Core17 underwater_fraction field"
         );
 
         match prev_env {
@@ -22620,6 +23385,7 @@ mod tests {
                     >= res.best_metrics.winning_trades + res.best_metrics.losing_trades,
                 "trade metrics should be populated coherently for {label}"
             );
+            assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
         };
 
         run_case(

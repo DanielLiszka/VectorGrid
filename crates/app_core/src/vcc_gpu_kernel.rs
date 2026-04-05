@@ -2,7 +2,7 @@
 
 use crate::alloc_policy::{alloc_f64_with_prefix_uninit_tail, resize_uninit_f64};
 use crate::composite_gpu_metric_decode::{
-    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_METRICS_STRIDE,
+    decode_non_double_ma_gpu_metrics_row, NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE,
 };
 use crate::gpu_backtest_kernel::{
     choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
@@ -486,7 +486,7 @@ fn eval_vcc_metrics_gpu_kernel_device_rows_impl(
         );
     }
 
-    let out_stride = NON_DOUBLE_MA_GPU_METRICS_STRIDE;
+    let out_stride = NON_DOUBLE_MA_GPU_CORE17_EXTENDED_METRICS_STRIDE;
     let out_len = combo_count
         .checked_mul(out_stride)
         .ok_or_else(|| "VCC GPU metrics buffer overflow".to_string())?;
@@ -844,6 +844,7 @@ fn eval_vcc_metrics_gpu_kernel_device_rows_impl(
         let mut require_mom_accel_i = i32::from(vcc.require_momentum_accel);
         let mut confirm_bars_i = i32::from(vcc.confirm_bars);
         let mut max_trade_bars_i = i32::from(vcc.max_trade_bars);
+        let mut hurdle_tau_f = strategy.hurdle_tau.unwrap_or(0.0) as f32;
         let mut out_stride_i = checked_i32("VCC GPU metrics stride", out_stride)?;
 
         unsafe {
@@ -870,6 +871,7 @@ fn eval_vcc_metrics_gpu_kernel_device_rows_impl(
                 &mut require_mom_accel_i as *mut _ as *mut c_void,
                 &mut confirm_bars_i as *mut _ as *mut c_void,
                 &mut max_trade_bars_i as *mut _ as *mut c_void,
+                &mut hurdle_tau_f as *mut _ as *mut c_void,
                 &mut out_stride_i as *mut _ as *mut c_void,
                 &mut out_ptr as *mut _ as *mut c_void,
                 &mut slice_out_ptr as *mut _ as *mut c_void,

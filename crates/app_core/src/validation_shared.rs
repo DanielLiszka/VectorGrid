@@ -13,6 +13,50 @@ pub struct ValidationArtifactContext {
     pub label: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationAdmissionPolicy {
+    #[default]
+    LegacyTopk,
+    ScalarUnion,
+    ParetoFrontier,
+    Auto,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ValidationAdmissionHeadProvenance {
+    #[serde(default)]
+    pub head: String,
+    #[serde(default)]
+    pub objective: Option<String>,
+    #[serde(default)]
+    pub candidate_count: usize,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ValidationAdmissionProvenance {
+    #[serde(default)]
+    pub requested_policy: ValidationAdmissionPolicy,
+    #[serde(default)]
+    pub applied_policy: ValidationAdmissionPolicy,
+    #[serde(default)]
+    pub source_kind: String,
+    #[serde(default)]
+    pub source_candidate_count: usize,
+    #[serde(default)]
+    pub pre_dedupe_count: usize,
+    #[serde(default)]
+    pub post_dedupe_count: usize,
+    #[serde(default)]
+    pub post_cap_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub heads: Vec<ValidationAdmissionHeadProvenance>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WalkForwardConfig {
     pub window_bars: usize,

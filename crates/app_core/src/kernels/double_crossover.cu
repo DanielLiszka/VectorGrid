@@ -1086,6 +1086,7 @@ void rocb_backtest_metrics_f32(
     float commission,
     float atr_stop_mult,
     int max_trade_bars,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -1115,6 +1116,19 @@ void rocb_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -1137,10 +1151,19 @@ void rocb_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -1246,6 +1269,15 @@ void rocb_backtest_metrics_f32(
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
         const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (log_peak > log_eq) {
+            underwater_bars += 1;
+            underwater_run += 1;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         const float step_r = expm1f(step_log);
         ++n_obs;
@@ -1253,11 +1285,23 @@ void rocb_backtest_metrics_f32(
         mean += delta / (float)n_obs;
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            count_neg += 1;
+            sum_neg_sq += excess_r * excess_r;
+            sum_neg_abs_r += neg_mag;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
+        }
+
+        if (pos_prev > 0) {
+            long_obs += 1;
+            long_sum_r += step_r;
+        } else if (pos_prev < 0) {
+            short_obs += 1;
+            short_sum_r += step_r;
         }
 
         sum_abs_pos += abs(pos_prev);
@@ -1276,12 +1320,13 @@ void rocb_backtest_metrics_f32(
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
+    const float mean_excess = mean - hurdle_tau;
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -1304,8 +1349,27 @@ void rocb_backtest_metrics_f32(
     }
     calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
 
+    float kappa_tau = 0.0f;
+    const float kappa_denom = cbrtf(fmaxf(sum_neg_cu / denom, 0.0f));
+    if (kappa_denom > 0.0f) {
+        kappa_tau = mean_excess / kappa_denom;
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -1321,6 +1385,15 @@ void rocb_backtest_metrics_f32(
         if (out_stride >= 12) {
             out_metrics[base + 10] = downside_dev;
             out_metrics[base + 11] = ulcer_index;
+        }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = downside_frequency;
+            out_metrics[base + 13] = downside_severity;
+            out_metrics[base + 14] = long_mean_return;
+            out_metrics[base + 15] = short_mean_return;
+            out_metrics[base + 16] = kappa_tau;
+            out_metrics[base + 17] = underwater_fraction;
+            out_metrics[base + 18] = (float)max_underwater_duration_bars;
         }
     }
 }
@@ -1344,6 +1417,7 @@ void vcet_backtest_metrics_f32(
     float commission,
     int require_vidya_slope,
     int max_trade_bars,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -1379,6 +1453,15 @@ void vcet_backtest_metrics_f32(
             out_metrics[base + 10] = 0.0f;
             out_metrics[base + 11] = 0.0f;
         }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -1402,6 +1485,15 @@ void vcet_backtest_metrics_f32(
             out_metrics[base + 10] = 0.0f;
             out_metrics[base + 11] = 0.0f;
         }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -1418,10 +1510,19 @@ void vcet_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -1499,40 +1600,65 @@ void vcet_backtest_metrics_f32(
 
         const int desired_exec = pos_signal;
         const int pos_prev = pos_exec;
+        const int pos_bar = desired_exec;
         int trade_delta = 0;
         if (desired_exec != pos_prev) {
             if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
-            else trade_delta = no_flip ? 2 : 1;
+            else trade_delta = no_flip ? 1 : 2;
             trades += trade_delta;
         }
 
+        if (trade_delta > 0) {
+            log_eq += log_cost * (float)trade_delta;
+        }
+
+        float step_log = 0.0f;
         float step_r = 0.0f;
         if (t > 0 && t < T) {
-            step_r += (float)pos_prev * lr[t];
+            step_log += (float)pos_bar * lr[t];
+            step_r += (pos_bar == 0) ? 0.0f : ((float)pos_bar * expm1f(lr[t]));
         }
-        if (trade_delta > 0) {
-            step_r += log_cost * (float)trade_delta;
-        }
-        log_eq += step_r;
+        log_eq += step_log;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
         const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (log_peak > log_eq) {
+            underwater_bars += 1;
+            underwater_run += 1;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         ++n_obs;
         const float delta = step_r - mean;
         mean += delta / (float)n_obs;
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            count_neg += 1;
+            sum_neg_sq += excess_r * excess_r;
+            sum_neg_abs_r += neg_mag;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
         }
 
-        sum_abs_pos += abs(pos_prev);
-        sum_pos += pos_prev;
+        if (pos_bar > 0) {
+            long_obs += 1;
+            long_sum_r += step_r;
+        } else if (pos_bar < 0) {
+            short_obs += 1;
+            short_sum_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
         pos_exec = desired_exec;
     }
 
@@ -1543,6 +1669,7 @@ void vcet_backtest_metrics_f32(
     const float eps_denom = 1.0e-12f;
     const float clamp_max = 1.0e6f;
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / fmaxf((float)n_obs, 1.0f), 0.0f));
+    const float mean_excess = mean - hurdle_tau;
 
     float sharpe = 0.0f;
     if (volatility > eps_denom) {
@@ -1557,10 +1684,10 @@ void vcet_backtest_metrics_f32(
     const float downside = sqrtf(sum_neg_sq / fmaxf((float)n_obs, 1.0f));
     float sortino = 0.0f;
     if (downside > eps_denom) {
-        sortino = mean / downside;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -1585,6 +1712,31 @@ void vcet_backtest_metrics_f32(
 
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    float kappa_tau = 0.0f;
+    if (count_neg > 0) {
+        const float downside_lpm3 = sum_neg_cu / fmaxf((float)n_obs, 1.0f);
+        const float denom = cbrtf(fmaxf(downside_lpm3, 0.0f));
+        if (denom > eps_denom) {
+            kappa_tau = mean_excess / denom;
+        } else if (mean_excess > 0.0f) {
+            kappa_tau = clamp_max;
+        } else if (mean_excess < 0.0f) {
+            kappa_tau = -clamp_max;
+        }
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -1601,6 +1753,15 @@ void vcet_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }
 
@@ -1625,6 +1786,7 @@ void mkcs_backtest_metrics_f32(
     float commission,
     float compression_threshold,
     float reexpansion_threshold,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -1656,6 +1818,19 @@ void mkcs_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -1668,16 +1843,26 @@ void mkcs_backtest_metrics_f32(
     float log_eq = 0.0f;
     float log_peak = 0.0f;
     float max_log_dd = 0.0f;
+    float ulcer_sum_sq = 0.0f;
     int trades = 0;
 
     int n_obs = 0;
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -1745,38 +1930,63 @@ void mkcs_backtest_metrics_f32(
 
         const int desired_exec = pos_signal;
         const int pos_prev = pos_exec;
+        const int pos_bar = desired_exec;
         int trade_delta = 0;
         if (desired_exec != pos_prev) {
             if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
-            else trade_delta = no_flip ? 2 : 1;
-            if (desired_exec != 0) ++trades;
+            else trade_delta = no_flip ? 1 : 2;
+            trades += trade_delta;
         }
 
+        if (trade_delta > 0) {
+            log_eq += log_cost * (float)trade_delta;
+        }
+        float step_log = 0.0f;
         float step_r = 0.0f;
         if (t > 0 && t < T) {
-            step_r += (float)pos_prev * lr[t];
+            step_log += (float)pos_bar * lr[t];
+            step_r += (pos_bar == 0) ? 0.0f : ((float)pos_bar * expm1f(lr[t]));
         }
-        if (trade_delta > 0) {
-            step_r += log_cost * (float)trade_delta;
-        }
-        log_eq += step_r;
+        log_eq += step_log;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
+        const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
+        ulcer_sum_sq += dd * dd;
+        if (dd > 0.0f) {
+            ++underwater_bars;
+            ++underwater_run;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         ++n_obs;
         const float delta = step_r - mean;
         mean += delta / (float)n_obs;
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            sum_neg_sq += excess_r * excess_r;
+            ++count_neg;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
+            sum_neg_abs_r += neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
+        }
+        if (pos_bar > 0) {
+            ++long_obs;
+            long_sum_r += step_r;
+        } else if (pos_bar < 0) {
+            ++short_obs;
+            short_sum_r += step_r;
         }
 
-        sum_abs_pos += abs(pos_prev);
-        sum_pos += pos_prev;
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
         pos_exec = desired_exec;
     }
 
@@ -1785,17 +1995,19 @@ void mkcs_backtest_metrics_f32(
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
     const float pnl = expf(log_eq) - 1.0f;
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+    const float mean_excess = mean - hurdle_tau;
 
     const float clamp_max = 1.0e6f;
     const float eps_denom = 1.0e-12f;
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
+    const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -1820,6 +2032,28 @@ void mkcs_backtest_metrics_f32(
 
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    const float downside_frequency = (n_obs > 0) ? ((float)count_neg / (float)n_obs) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    float kappa_tau = 0.0f;
+    if (count_neg > 0) {
+        const float lpm3 = -sum_neg_cu / denom;
+        if (lpm3 > eps_denom) {
+            kappa_tau = mean_excess / cbrtf(lpm3);
+        } else if (mean_excess > 0.0f) {
+            kappa_tau = clamp_max;
+        } else if (mean_excess < 0.0f) {
+            kappa_tau = -clamp_max;
+        }
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+    const float underwater_fraction = (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -1832,6 +2066,19 @@ void mkcs_backtest_metrics_f32(
         out_metrics[base + 7] = (float)trades;
         out_metrics[base + 8] = exposure;
         out_metrics[base + 9] = (flags & STRAT_SIGNED_EXPOSURE) ? net_exposure : 0.0f;
+    }
+    if (out_stride >= 12) {
+        out_metrics[base + 10] = downside_dev;
+        out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }
 
@@ -1861,6 +2108,7 @@ void cdmc_backtest_metrics_f32(
     unsigned int flags,
     float commission,
     float phase_threshold,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -1899,6 +2147,15 @@ void cdmc_backtest_metrics_f32(
             out_metrics[base + 10] = 0.0f;
             out_metrics[base + 11] = 0.0f;
         }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -1919,10 +2176,19 @@ void cdmc_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -2001,40 +2267,63 @@ void cdmc_backtest_metrics_f32(
 
         const int desired_exec = pos_signal;
         const int pos_prev = pos_exec;
+        const int pos_bar = desired_exec;
         int trade_delta = 0;
         if (desired_exec != pos_prev) {
             if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
-            else trade_delta = no_flip ? 2 : 1;
-            if (desired_exec != 0) ++trades;
+            else trade_delta = no_flip ? 1 : 2;
+            trades += trade_delta;
         }
 
+        if (trade_delta > 0) {
+            log_eq += log_cost * (float)trade_delta;
+        }
+        float step_log = 0.0f;
         float step_r = 0.0f;
         if (t > 0 && t < T) {
-            step_r += (float)pos_prev * lr[t];
+            step_log += (float)pos_bar * lr[t];
+            step_r += (pos_bar == 0) ? 0.0f : ((float)pos_bar * expm1f(lr[t]));
         }
-        if (trade_delta > 0) {
-            step_r += log_cost * (float)trade_delta;
-        }
-        log_eq += step_r;
+        log_eq += step_log;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
         const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (dd > 0.0f) {
+            ++underwater_bars;
+            ++underwater_run;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         ++n_obs;
         const float delta = step_r - mean;
         mean += delta / (float)n_obs;
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            sum_neg_sq += excess_r * excess_r;
+            ++count_neg;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
+            sum_neg_abs_r += neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
+        }
+        if (pos_bar > 0) {
+            ++long_obs;
+            long_sum_r += step_r;
+        } else if (pos_bar < 0) {
+            ++short_obs;
+            short_sum_r += step_r;
         }
 
-        sum_abs_pos += abs(pos_prev);
-        sum_pos += pos_prev;
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
         pos_exec = desired_exec;
     }
 
@@ -2043,6 +2332,7 @@ void cdmc_backtest_metrics_f32(
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
     const float pnl = expf(log_eq) - 1.0f;
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+    const float mean_excess = mean - hurdle_tau;
 
     const float clamp_max = 1.0e6f;
     const float eps_denom = 1.0e-12f;
@@ -2051,10 +2341,10 @@ void cdmc_backtest_metrics_f32(
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -2079,6 +2369,31 @@ void cdmc_backtest_metrics_f32(
 
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    float kappa_tau = 0.0f;
+    if (count_neg > 0) {
+        const float downside_lpm3 = sum_neg_cu / fmaxf((float)n_obs, 1.0f);
+        const float denom_kappa = cbrtf(fmaxf(downside_lpm3, 0.0f));
+        if (denom_kappa > eps_denom) {
+            kappa_tau = mean_excess / denom_kappa;
+        } else if (mean_excess > 0.0f) {
+            kappa_tau = clamp_max;
+        } else if (mean_excess < 0.0f) {
+            kappa_tau = -clamp_max;
+        }
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -2095,6 +2410,15 @@ void cdmc_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside_dev;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }
 
@@ -2125,6 +2449,7 @@ void kqsr_backtest_metrics_f32(
     float oversold,
     float overbought,
     float prb_threshold,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -2156,6 +2481,19 @@ void kqsr_backtest_metrics_f32(
             out_metrics[base + 8] = 0.0f;
             out_metrics[base + 9] = 0.0f;
         }
+        if (out_stride >= 12) {
+            out_metrics[base + 10] = 0.0f;
+            out_metrics[base + 11] = 0.0f;
+        }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -2180,10 +2518,19 @@ void kqsr_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -2272,11 +2619,12 @@ void kqsr_backtest_metrics_f32(
 
         const int desired_exec = pos_signal;
         const int pos_prev = pos_exec;
+        const int pos_bar = desired_exec;
         int trade_delta = 0;
         if (desired_exec != pos_prev) {
             if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
-            else trade_delta = no_flip ? 2 : 1;
-            if (desired_exec != 0) ++trades;
+            else trade_delta = no_flip ? 1 : 2;
+            trades += trade_delta;
         }
 
         float step_r = 0.0f;
@@ -2291,21 +2639,42 @@ void kqsr_backtest_metrics_f32(
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
         const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (log_peak > log_eq) {
+            underwater_bars += 1;
+            underwater_run += 1;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         ++n_obs;
         const float delta = step_r - mean;
         mean += delta / (float)n_obs;
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            count_neg += 1;
+            sum_neg_sq += excess_r * excess_r;
+            sum_neg_abs_r += neg_mag;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
         }
 
-        sum_abs_pos += abs(pos_prev);
-        sum_pos += pos_prev;
+        if (pos_bar > 0) {
+            long_obs += 1;
+            long_sum_r += step_r;
+        } else if (pos_bar < 0) {
+            short_obs += 1;
+            short_sum_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
         pos_exec = desired_exec;
     }
 
@@ -2320,12 +2689,13 @@ void kqsr_backtest_metrics_f32(
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
+    const float mean_excess = mean - hurdle_tau;
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -2350,6 +2720,31 @@ void kqsr_backtest_metrics_f32(
 
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    float kappa_tau = 0.0f;
+    if (count_neg > 0) {
+        const float downside_lpm3 = sum_neg_cu / fmaxf((float)n_obs, 1.0f);
+        const float denom_kappa = cbrtf(fmaxf(downside_lpm3, 0.0f));
+        if (denom_kappa > eps_denom) {
+            kappa_tau = mean_excess / denom_kappa;
+        } else if (mean_excess > 0.0f) {
+            kappa_tau = clamp_max;
+        } else if (mean_excess < 0.0f) {
+            kappa_tau = -clamp_max;
+        }
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -2366,6 +2761,15 @@ void kqsr_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside_dev;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }
 
@@ -2394,6 +2798,7 @@ void carm_backtest_metrics_f32(
     unsigned int flags,
     float commission,
     float otto_threshold,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -2431,6 +2836,15 @@ void carm_backtest_metrics_f32(
             out_metrics[base + 10] = 0.0f;
             out_metrics[base + 11] = 0.0f;
         }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -2456,10 +2870,19 @@ void carm_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -2546,11 +2969,12 @@ void carm_backtest_metrics_f32(
 
         const int desired_exec = pos_signal;
         const int pos_prev = pos_exec;
+        const int pos_bar = desired_exec;
         int trade_delta = 0;
         if (desired_exec != pos_prev) {
             if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
-            else trade_delta = no_flip ? 2 : 1;
-            if (desired_exec != 0) ++trades;
+            else trade_delta = no_flip ? 1 : 2;
+            trades += trade_delta;
         }
 
         float step_r = 0.0f;
@@ -2565,21 +2989,42 @@ void carm_backtest_metrics_f32(
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
         const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (log_peak > log_eq) {
+            underwater_bars += 1;
+            underwater_run += 1;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         ++n_obs;
         const float delta = step_r - mean;
         mean += delta / (float)n_obs;
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            count_neg += 1;
+            sum_neg_sq += excess_r * excess_r;
+            sum_neg_abs_r += neg_mag;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
         }
 
-        sum_abs_pos += abs(pos_prev);
-        sum_pos += pos_prev;
+        if (pos_bar > 0) {
+            long_obs += 1;
+            long_sum_r += step_r;
+        } else if (pos_bar < 0) {
+            short_obs += 1;
+            short_sum_r += step_r;
+        }
+
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
         pos_exec = desired_exec;
     }
 
@@ -2594,12 +3039,13 @@ void carm_backtest_metrics_f32(
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
+    const float mean_excess = mean - hurdle_tau;
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -2624,6 +3070,31 @@ void carm_backtest_metrics_f32(
 
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    float kappa_tau = 0.0f;
+    if (count_neg > 0) {
+        const float downside_lpm3 = sum_neg_cu / fmaxf((float)n_obs, 1.0f);
+        const float denom_kappa = cbrtf(fmaxf(downside_lpm3, 0.0f));
+        if (denom_kappa > eps_denom) {
+            kappa_tau = mean_excess / denom_kappa;
+        } else if (mean_excess > 0.0f) {
+            kappa_tau = clamp_max;
+        } else if (mean_excess < 0.0f) {
+            kappa_tau = -clamp_max;
+        }
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -2640,6 +3111,15 @@ void carm_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside_dev;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }
 
@@ -2672,6 +3152,7 @@ void kvdf_backtest_metrics_f32(
     unsigned int flags,
     float commission,
     float dti_threshold,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -2709,6 +3190,15 @@ void kvdf_backtest_metrics_f32(
             out_metrics[base + 10] = 0.0f;
             out_metrics[base + 11] = 0.0f;
         }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -2741,10 +3231,19 @@ void kvdf_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -2828,40 +3327,63 @@ void kvdf_backtest_metrics_f32(
 
         const int desired_exec = pos_signal;
         const int pos_prev = pos_exec;
+        const int pos_bar = desired_exec;
         int trade_delta = 0;
         if (desired_exec != pos_prev) {
             if (pos_prev == 0 || desired_exec == 0) trade_delta = 1;
-            else trade_delta = no_flip ? 2 : 1;
-            if (desired_exec != 0) ++trades;
+            else trade_delta = no_flip ? 1 : 2;
+            trades += trade_delta;
         }
 
+        if (trade_delta > 0) {
+            log_eq += log_cost * (float)trade_delta;
+        }
+        float step_log = 0.0f;
         float step_r = 0.0f;
         if (t > 0 && t < T) {
-            step_r += (float)pos_prev * lr[t];
+            step_log += (float)pos_bar * lr[t];
+            step_r += (pos_bar == 0) ? 0.0f : ((float)pos_bar * expm1f(lr[t]));
         }
-        if (trade_delta > 0) {
-            step_r += log_cost * (float)trade_delta;
-        }
-        log_eq += step_r;
+        log_eq += step_log;
         log_peak = fmaxf(log_peak, log_eq);
         max_log_dd = fmaxf(max_log_dd, log_peak - log_eq);
         const float dd = (log_peak > log_eq) ? -expm1f(log_eq - log_peak) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (dd > 0.0f) {
+            ++underwater_bars;
+            ++underwater_run;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         ++n_obs;
         const float delta = step_r - mean;
         mean += delta / (float)n_obs;
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            sum_neg_sq += excess_r * excess_r;
+            ++count_neg;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
+            sum_neg_abs_r += neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
+        }
+        if (pos_bar > 0) {
+            ++long_obs;
+            long_sum_r += step_r;
+        } else if (pos_bar < 0) {
+            ++short_obs;
+            short_sum_r += step_r;
         }
 
-        sum_abs_pos += abs(pos_prev);
-        sum_pos += pos_prev;
+        sum_abs_pos += abs(pos_bar);
+        sum_pos += pos_bar;
         pos_exec = desired_exec;
     }
 
@@ -2870,6 +3392,7 @@ void kvdf_backtest_metrics_f32(
     const float sharpe = (volatility > 0.0f) ? (mean / volatility) : 0.0f;
     const float pnl = expf(log_eq) - 1.0f;
     const float max_dd = (max_log_dd > 0.0f) ? -expm1f(-max_log_dd) : 0.0f;
+    const float mean_excess = mean - hurdle_tau;
 
     const float clamp_max = 1.0e6f;
     const float eps_denom = 1.0e-12f;
@@ -2878,10 +3401,10 @@ void kvdf_backtest_metrics_f32(
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -2906,6 +3429,31 @@ void kvdf_backtest_metrics_f32(
 
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    float kappa_tau = 0.0f;
+    if (count_neg > 0) {
+        const float downside_lpm3 = sum_neg_cu / fmaxf((float)n_obs, 1.0f);
+        const float denom_kappa = cbrtf(fmaxf(downside_lpm3, 0.0f));
+        if (denom_kappa > eps_denom) {
+            kappa_tau = mean_excess / denom_kappa;
+        } else if (mean_excess > 0.0f) {
+            kappa_tau = clamp_max;
+        } else if (mean_excess < 0.0f) {
+            kappa_tau = -clamp_max;
+        }
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -2922,6 +3470,15 @@ void kvdf_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside_dev;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }
 
@@ -10038,6 +10595,7 @@ void asr_backtest_metrics_f32(
     int mom_fade_bars,
     int max_trade_bars,
     int max_mr_trade_bars,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -10070,6 +10628,15 @@ void asr_backtest_metrics_f32(
         out_metrics[base + 10] = 0.0f; // downside_deviation
         out_metrics[base + 11] = 0.0f; // ulcer_index
     }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = 0.0f; // downside_frequency
+        out_metrics[base + 13] = 0.0f; // downside_severity
+        out_metrics[base + 14] = 0.0f; // long_mean_return
+        out_metrics[base + 15] = 0.0f; // short_mean_return
+        out_metrics[base + 16] = 0.0f; // kappa_tau
+        out_metrics[base + 17] = 0.0f; // underwater_fraction
+        out_metrics[base + 18] = 0.0f; // max_underwater_duration_bars
+    }
     if (fast_row < 0 || fast_row >= fast_rows || slow_row < 0 || slow_row >= slow_rows) return;
     if (start_t < 0 || start_t >= T || end_t <= start_t || end_t > T) return;
 
@@ -10096,10 +10663,19 @@ void asr_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -10266,6 +10842,15 @@ void asr_backtest_metrics_f32(
         }
         const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (dd_log > 0.0f) {
+            underwater_bars += 1;
+            underwater_run += 1;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         const float step_r = expf(step_log) - 1.0f;
         n_obs += 1;
@@ -10274,11 +10859,23 @@ void asr_backtest_metrics_f32(
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
 
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            count_neg += 1;
+            sum_neg_sq += excess_r * excess_r;
+            sum_neg_abs_r += neg_mag;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
+        }
+
+        if (pos_exec > 0) {
+            long_obs += 1;
+            long_sum_r += step_r;
+        } else if (pos_exec < 0) {
+            short_obs += 1;
+            short_sum_r += step_r;
         }
 
         sum_abs_pos += abs(pos_exec);
@@ -10296,12 +10893,13 @@ void asr_backtest_metrics_f32(
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
+    const float mean_excess = mean - hurdle_tau;
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -10324,8 +10922,27 @@ void asr_backtest_metrics_f32(
     }
     calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
 
+    float kappa_tau = 0.0f;
+    const float kappa_denom = cbrtf(fmaxf(sum_neg_cu / denom, 0.0f));
+    if (kappa_denom > 0.0f) {
+        kappa_tau = mean_excess / kappa_denom;
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -10342,6 +10959,15 @@ void asr_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside_dev;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }
 
@@ -10369,6 +10995,7 @@ void vcc_backtest_metrics_f32(
     int require_momentum_accel,
     int confirm_bars,
     int max_trade_bars,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics,
     double* __restrict__ out_slice_stats
@@ -10404,6 +11031,15 @@ void vcc_backtest_metrics_f32(
         out_metrics[base + 10] = 0.0f; // downside_deviation
         out_metrics[base + 11] = 0.0f; // ulcer_index
     }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = 0.0f; // downside_frequency
+        out_metrics[base + 13] = 0.0f; // downside_severity
+        out_metrics[base + 14] = 0.0f; // long_mean_return
+        out_metrics[base + 15] = 0.0f; // short_mean_return
+        out_metrics[base + 16] = 0.0f; // kappa_tau
+        out_metrics[base + 17] = 0.0f; // underwater_fraction
+        out_metrics[base + 18] = 0.0f; // max_underwater_duration_bars
+    }
     if (out_slice_stats != nullptr) {
         out_slice_stats[slice_base + 0] = 0.0;
         out_slice_stats[slice_base + 1] = 0.0;
@@ -10433,10 +11069,19 @@ void vcc_backtest_metrics_f32(
     double sum_step_r = 0.0;
     double sumsq_step_r = 0.0;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -10525,10 +11170,19 @@ void vcc_backtest_metrics_f32(
     sum_step_r = 0.0f;
     sumsq_step_r = 0.0f;
     sum_neg_sq = 0.0f;
+    count_neg = 0;
+    sum_neg_cu = 0.0f;
     sum_pos_r = 0.0f;
     sum_neg_abs_r = 0.0f;
     sum_abs_pos = 0;
     sum_pos = 0;
+    long_obs = 0;
+    short_obs = 0;
+    long_sum_r = 0.0f;
+    short_sum_r = 0.0f;
+    underwater_bars = 0;
+    underwater_run = 0;
+    max_underwater_duration_bars = 0;
 
     for (int t = metric_start_t; t < end_t; ++t) {
         const int sig_t = max(0, t - trade_on_next_bar);
@@ -10636,6 +11290,15 @@ void vcc_backtest_metrics_f32(
         }
         const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (dd_log > 0.0f) {
+            underwater_bars += 1;
+            underwater_run += 1;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         const float step_r = expf(step_log) - 1.0f;
         n_obs += 1;
@@ -10644,11 +11307,23 @@ void vcc_backtest_metrics_f32(
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
 
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            count_neg += 1;
+            sum_neg_sq += excess_r * excess_r;
+            sum_neg_abs_r += neg_mag;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
+        }
+
+        if (pos_exec > 0) {
+            long_obs += 1;
+            long_sum_r += step_r;
+        } else if (pos_exec < 0) {
+            short_obs += 1;
+            short_sum_r += step_r;
         }
 
         sum_abs_pos += abs(pos_exec);
@@ -10666,12 +11341,13 @@ void vcc_backtest_metrics_f32(
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
+    const float mean_excess = mean - hurdle_tau;
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -10694,8 +11370,27 @@ void vcc_backtest_metrics_f32(
     }
     calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
 
+    float kappa_tau = 0.0f;
+    const float kappa_denom = cbrtf(fmaxf(sum_neg_cu / denom, 0.0f));
+    if (kappa_denom > 0.0f) {
+        kappa_tau = mean_excess / kappa_denom;
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -10712,6 +11407,15 @@ void vcc_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside_dev;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
     if (out_slice_stats != nullptr) {
         out_slice_stats[slice_base + 0] = sum_step_r;
@@ -10749,6 +11453,7 @@ void vemr_backtest_metrics_f32(
     int require_band_touch,
     int confirm_bars,
     int max_trade_bars,
+    float hurdle_tau,
     int out_stride,
     float* __restrict__ out_metrics
 ) {
@@ -10783,6 +11488,15 @@ void vemr_backtest_metrics_f32(
             out_metrics[base + 10] = 0.0f;
             out_metrics[base + 11] = 0.0f;
         }
+        if (out_stride >= 19) {
+            out_metrics[base + 12] = 0.0f;
+            out_metrics[base + 13] = 0.0f;
+            out_metrics[base + 14] = 0.0f;
+            out_metrics[base + 15] = 0.0f;
+            out_metrics[base + 16] = 0.0f;
+            out_metrics[base + 17] = 0.0f;
+            out_metrics[base + 18] = 0.0f;
+        }
         return;
     }
 
@@ -10809,10 +11523,19 @@ void vemr_backtest_metrics_f32(
     float mean = 0.0f;
     float m2 = 0.0f;
     float sum_neg_sq = 0.0f;
+    int count_neg = 0;
+    float sum_neg_cu = 0.0f;
     float sum_pos_r = 0.0f;
     float sum_neg_abs_r = 0.0f;
     int sum_abs_pos = 0;
     int sum_pos = 0;
+    int long_obs = 0;
+    int short_obs = 0;
+    float long_sum_r = 0.0f;
+    float short_sum_r = 0.0f;
+    int underwater_bars = 0;
+    int underwater_run = 0;
+    int max_underwater_duration_bars = 0;
 
     const float c = fminf(fmaxf(commission, 0.0f), 0.95f);
     const float log_cost = (c > 0.0f) ? logf(fmaxf(1.0e-12f, 1.0f - c)) : 0.0f;
@@ -11006,6 +11729,15 @@ void vemr_backtest_metrics_f32(
         }
         const float dd = (dd_log > 0.0f) ? -expm1f(-dd_log) : 0.0f;
         ulcer_sum_sq += dd * dd;
+        if (dd_log > 0.0f) {
+            underwater_bars += 1;
+            underwater_run += 1;
+            if (underwater_run > max_underwater_duration_bars) {
+                max_underwater_duration_bars = underwater_run;
+            }
+        } else {
+            underwater_run = 0;
+        }
 
         const float step_r = expf(step_log) - 1.0f;
         n_obs += 1;
@@ -11014,11 +11746,23 @@ void vemr_backtest_metrics_f32(
         const float delta2 = step_r - mean;
         m2 += delta * delta2;
 
-        if (step_r < 0.0f) {
-            sum_neg_sq += step_r * step_r;
-            sum_neg_abs_r += -step_r;
+        const float excess_r = step_r - hurdle_tau;
+        if (excess_r < 0.0f) {
+            const float neg_mag = -excess_r;
+            count_neg += 1;
+            sum_neg_sq += excess_r * excess_r;
+            sum_neg_abs_r += neg_mag;
+            sum_neg_cu += neg_mag * neg_mag * neg_mag;
         } else {
-            sum_pos_r += step_r;
+            sum_pos_r += excess_r;
+        }
+
+        if (pos_exec > 0) {
+            long_obs += 1;
+            long_sum_r += step_r;
+        } else if (pos_exec < 0) {
+            short_obs += 1;
+            short_sum_r += step_r;
         }
 
         sum_abs_pos += abs(pos_exec);
@@ -11036,12 +11780,13 @@ void vemr_backtest_metrics_f32(
     const float denom = (float)max(n_obs, 1);
     const float downside_dev = sqrtf(fmaxf(sum_neg_sq / denom, 0.0f));
     const float ulcer_index = sqrtf(fmaxf(ulcer_sum_sq / denom, 0.0f));
+    const float mean_excess = mean - hurdle_tau;
     float sortino = 0.0f;
     if (downside_dev > 0.0f) {
-        sortino = mean / downside_dev;
-    } else if (mean > 0.0f) {
+        sortino = mean_excess / downside_dev;
+    } else if (mean_excess > 0.0f) {
         sortino = clamp_max;
-    } else if (mean < 0.0f) {
+    } else if (mean_excess < 0.0f) {
         sortino = -clamp_max;
     }
     sortino = fminf(clamp_max, fmaxf(-clamp_max, sortino));
@@ -11064,8 +11809,27 @@ void vemr_backtest_metrics_f32(
     }
     calmar = fminf(clamp_max, fmaxf(-clamp_max, calmar));
 
+    float kappa_tau = 0.0f;
+    const float kappa_denom = cbrtf(fmaxf(sum_neg_cu / denom, 0.0f));
+    if (kappa_denom > 0.0f) {
+        kappa_tau = mean_excess / kappa_denom;
+    } else if (mean_excess > 0.0f) {
+        kappa_tau = clamp_max;
+    } else if (mean_excess < 0.0f) {
+        kappa_tau = -clamp_max;
+    }
+    kappa_tau = fminf(clamp_max, fmaxf(-clamp_max, kappa_tau));
+
     const float exposure = (n_obs > 0) ? ((float)sum_abs_pos / (float)n_obs) : 0.0f;
     const float net_exposure = (n_obs > 0) ? ((float)sum_pos / (float)n_obs) : 0.0f;
+    const float downside_frequency =
+        (n_obs > 0) ? fminf(1.0f, fmaxf(0.0f, (float)count_neg / (float)n_obs)) : 0.0f;
+    const float downside_severity =
+        (count_neg > 0) ? (sum_neg_abs_r / (float)count_neg) : 0.0f;
+    const float long_mean_return = (long_obs > 0) ? (long_sum_r / (float)long_obs) : 0.0f;
+    const float short_mean_return = (short_obs > 0) ? (short_sum_r / (float)short_obs) : 0.0f;
+    const float underwater_fraction =
+        (n_obs > 0) ? ((float)underwater_bars / (float)n_obs) : 0.0f;
 
     if (out_stride >= 10) {
         out_metrics[base + 0] = pnl;
@@ -11082,5 +11846,14 @@ void vemr_backtest_metrics_f32(
     if (out_stride >= 12) {
         out_metrics[base + 10] = downside_dev;
         out_metrics[base + 11] = ulcer_index;
+    }
+    if (out_stride >= 19) {
+        out_metrics[base + 12] = downside_frequency;
+        out_metrics[base + 13] = downside_severity;
+        out_metrics[base + 14] = long_mean_return;
+        out_metrics[base + 15] = short_mean_return;
+        out_metrics[base + 16] = kappa_tau;
+        out_metrics[base + 17] = underwater_fraction;
+        out_metrics[base + 18] = (float)max_underwater_duration_bars;
     }
 }

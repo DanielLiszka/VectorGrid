@@ -1,10 +1,12 @@
-use crate::composite_cpu::{MaczGateParams, OttGateParams};
+use crate::composite_cpu::{
+    evaluate_composite_cpu_trade22_metrics, CompositeCpuRequest, MaczGateParams, OttGateParams,
+};
 use crate::double_ma::{
     compute_halftrend_trend, compute_log_returns_f64, first_finite_idx, ma_matrix_cpu_f64,
     resolve_alma_params_for_side, run_double_ma_optimization_blocking_with_candles,
     strategy_cfg_for_optimization, validate_ma_kind, validate_strategy_cfg,
-    validate_strategy_cfg_for_optimization, Backend, BackendUsed, DoubleMaRequest,
-    HalfTrendRegimeFilter,
+    validate_strategy_cfg_for_optimization, Backend, BackendUsed, DoubleMaMetricContract,
+    DoubleMaRequest, HalfTrendRegimeFilter,
 };
 use crate::prescan_predictive::{predictive_prescan_seed_pairs, PredictivePrescanParams};
 use crate::progress::ProgressSink;
@@ -21,7 +23,7 @@ use ta_optimizer::mo::{
 };
 use ta_optimizer::{ObjectiveKind, OptimizationMode};
 use ta_strategies::composite_cpu::CompositeSignalMode;
-use ta_strategies::double_ma::{Metrics, StrategyConfig};
+use ta_strategies::double_ma::{DoubleMaParams, Metrics, StrategyConfig};
 
 fn emit_progress(
     progress: Option<&dyn ProgressSink>,
@@ -456,9 +458,71 @@ pub struct CompositeMoTelemetry {
 pub struct CompositeMoResult {
     pub data_id: String,
     pub pareto: Vec<CompositeMoPoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_surface_kind: Option<String>,
     pub total_evaluations: usize,
     pub runtime_ms: u64,
     pub telemetry: CompositeMoTelemetry,
+}
+
+fn composite_mo_trade22_request(
+    req: &CompositeMoRequest,
+    params: &CompositeMoParams,
+) -> CompositeCpuRequest {
+    CompositeCpuRequest {
+        backend: Backend::CpuOnly,
+        data_id: req.data_id.clone(),
+        fast_range: (
+            params.fast_len as u32,
+            params.fast_len as u32,
+            1,
+        ),
+        slow_range: (
+            params.slow_len as u32,
+            params.slow_len as u32,
+            1,
+        ),
+        fast_ma_types: vec![params.fast_ma_type.clone()],
+        slow_ma_types: vec![params.slow_ma_type.clone()],
+        ma_source: req.ma_source.clone(),
+        fast_ma_params: req.fast_ma_params.clone(),
+        slow_ma_params: req.slow_ma_params.clone(),
+        strategy: params.strategy.clone(),
+        halftrend: params.halftrend.clone(),
+        macz: params.macz.clone(),
+        ott: params.ott.clone(),
+        signal_mode: params.signal_mode,
+        asr: None,
+        vcc: None,
+        vemr: None,
+        rocb: None,
+        vcet: None,
+        mkcs: None,
+        kqsr: None,
+        carm: None,
+        kvdf: None,
+        cdmc: None,
+        objective: req.objectives.maximize,
+        mode: OptimizationMode::Grid,
+        gpu_prescan: None,
+        extra_shortlist_objectives: None,
+        shortlist_confidence_mode: None,
+        shortlist_union_mode: None,
+        top_k: Some(1),
+        include_all: Some(false),
+        heatmap_bins: None,
+        include_trade_metrics: true,
+        metric_contract: Some(DoubleMaMetricContract::Trade22),
+    }
+}
+
+fn composite_mo_trade22_params(params: &CompositeMoParams) -> DoubleMaParams {
+    DoubleMaParams {
+        fast_len: params.fast_len,
+        slow_len: params.slow_len,
+        fast_ma_id: 0,
+        slow_ma_id: 0,
+    }
 }
 
 struct ParamIdx {
@@ -2958,7 +3022,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
 
     emit_progress(progress, progress_total, progress_total, progress_phase);
 
-    let pareto = pareto_points
+    let mut pareto = pareto_points
         .into_iter()
         .map(|p| {
             let (metrics, params, max_v, min_v) = p.payload;
@@ -2971,6 +3035,16 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
             }
         })
         .collect::<Vec<_>>();
+
+    for point in pareto.iter_mut() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("cancelled".to_string());
+        }
+        let trade22_req = composite_mo_trade22_request(&req, &point.params);
+        let trade22_params = composite_mo_trade22_params(&point.params);
+        point.metrics =
+            evaluate_composite_cpu_trade22_metrics(&trade22_req, candles, &trade22_params)?;
+    }
 
     let runtime_ms = start.elapsed().as_millis() as u64;
     let actual_evaluations = done_counter.load(Ordering::Relaxed);
@@ -3028,6 +3102,7 @@ pub fn run_composite_mo_optimization_blocking_with_candles(
     Ok(CompositeMoResult {
         data_id: req.data_id,
         pareto,
+        metric_surface_kind: Some("trade22".to_string()),
         total_evaluations: actual_evaluations,
         runtime_ms,
         telemetry,
@@ -3210,6 +3285,91 @@ mod tests {
             .pareto
             .iter()
             .any(|p| p.params.fast_len < p.params.slow_len));
+    }
+
+    #[test]
+    fn composite_mo_fast_objectives_emit_trade22_metric_surface() {
+        let candles = make_trending_candles(2000);
+        let cancel = AtomicBool::new(false);
+
+        let req = CompositeMoRequest {
+            data_id: "test".to_string(),
+            fast_ma_type: "sma".to_string(),
+            slow_ma_type: "sma".to_string(),
+            ma_source: "close".to_string(),
+            fast_ma_params: None,
+            slow_ma_params: None,
+            base_strategy: StrategyConfig::default(),
+            signal_mode: CompositeSignalMode::HardGate,
+            search_space: SearchSpace {
+                params: vec![
+                    ta_optimizer::mo::ParamDef {
+                        name: "fast_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 5,
+                            high: 7,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "slow_len".to_string(),
+                        domain: ParamDomain::IntRange {
+                            low: 10,
+                            high: 12,
+                            step: 1,
+                            log: false,
+                        },
+                    },
+                    ta_optimizer::mo::ParamDef {
+                        name: "ott_ma_type".to_string(),
+                        domain: ParamDomain::Categorical {
+                            choices: vec!["sma".to_string()],
+                        },
+                    },
+                ],
+            },
+            objectives: CompositeMoObjectives {
+                maximize: ObjectiveKind::Pnl,
+                minimize: ObjectiveKind::MaxDrawdown,
+            },
+            sampler: CompositeMoSampler::Random {
+                config: RandomMoConfig {
+                    seed: 321,
+                    trials: 50,
+                },
+            },
+            constraints: None,
+            gpu_prescan: None,
+            mode: None,
+        };
+
+        let res = run_composite_mo_optimization_blocking_with_candles(
+            req.clone(),
+            &candles,
+            &cancel,
+            None,
+        )
+        .expect("composite mo trade22 run");
+
+        assert_eq!(res.metric_surface_kind.as_deref(), Some("trade22"));
+        let point = res.pareto.first().expect("pareto point");
+        let expected = evaluate_composite_cpu_trade22_metrics(
+            &composite_mo_trade22_request(&req, &point.params),
+            &candles,
+            &composite_mo_trade22_params(&point.params),
+        )
+        .expect("expected trade22 metrics");
+
+        assert!(point.metrics.downside_frequency.is_finite());
+        assert!(point.metrics.underwater_fraction.is_finite());
+        assert!(point.metrics.gross_profit >= 0.0);
+        assert!(point.metrics.gross_loss >= 0.0);
+        assert_eq!(point.metrics.closed_trades, expected.closed_trades);
+        assert_eq!(point.metrics.winning_trades, expected.winning_trades);
+        assert_eq!(point.metrics.losing_trades, expected.losing_trades);
+        assert!((point.metrics.gross_profit - expected.gross_profit).abs() <= 1.0e-9);
+        assert!((point.metrics.gross_loss - expected.gross_loss).abs() <= 1.0e-9);
     }
 
     #[test]

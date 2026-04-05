@@ -200,7 +200,7 @@ describe('AdvancedWorkspacePanel', () => {
     wrapper.unmount()
   })
 
-  it('hides exact-kernel-only controls for CompositeTrend when ADX promotes the route to hybrid', async () => {
+  it('keeps metric-contract controls visible but hides exact shortlist controls for CompositeTrend when ADX promotes the route to hybrid', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflow = useWorkflowStore(pinia)
@@ -218,12 +218,13 @@ describe('AdvancedWorkspacePanel', () => {
     })
     await flushPanelTimers()
 
-    expect(document.querySelector('#vueMetricContract')).toBeNull()
+    expect(document.querySelector('#vueMetricContract')).not.toBeNull()
     expect(document.querySelector('#vueExtraShortlistObjectives')).toBeNull()
     expect(document.querySelector('#vueShortlistConfidenceMode')).toBeNull()
     expect(document.querySelector('#vueShortlistUnionMode')).toBeNull()
     expect(document.querySelector('#vueShortlistSliceMode')).toBeNull()
-    expect(document.body.textContent || '').toContain('advanced exact-kernel shortlist/score/metric-contract controls are disabled')
+    expect(document.body.textContent || '').toContain('Explicit Full17 and Trade22 metric-contract requests are available')
+    expect(document.body.textContent || '').toContain('advanced exact-kernel shortlist/score controls remain disabled')
 
     wrapper.unmount()
   })
@@ -322,6 +323,30 @@ describe('AdvancedWorkspacePanel', () => {
     expect(select).not.toBeNull()
     expect(select?.value).toBe('full_17')
     expect(document.body.textContent || '').toContain('Full 17-row metrics')
+
+    wrapper.unmount()
+  })
+
+  it('shows the explicit metric contract control for CompositeCpu on its fixed route', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'CompositeCpu'
+    advanced.metricContract = 'trade_22'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    const select = document.querySelector('#vueMetricContract') as HTMLSelectElement | null
+    expect(select).not.toBeNull()
+    expect(select?.value).toBe('trade_22')
+    expect(document.body.textContent || '').toContain('Forces the 22-metric trade-summary contract on the current audited route')
 
     wrapper.unmount()
   })

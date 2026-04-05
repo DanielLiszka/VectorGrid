@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import ValidationWorkspacePanel from './ValidationWorkspacePanel.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
+import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useValidationStore } from '../stores/validationStore'
+import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { VALIDATION_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
 
@@ -31,6 +33,7 @@ describe('ValidationWorkspacePanel', () => {
   it('keeps the primary validation action inline in the panel', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     const workflow = useWorkflowStore(pinia)
     workflow.selectResultsTab('validate', { persist: false })
 
@@ -41,6 +44,7 @@ describe('ValidationWorkspacePanel', () => {
     await flushPanel()
 
     expect(document.body.textContent || '').toContain('Run validation')
+    expect(document.querySelector('#vueValAdmissionPolicy')).not.toBeNull()
     const runButtons = Array.from(document.querySelectorAll('button')).filter(
       (button) => button.textContent?.trim() === 'Run validation',
     )
@@ -49,9 +53,112 @@ describe('ValidationWorkspacePanel', () => {
     wrapper.unmount()
   })
 
+  it('shows a legacy-vs-current admission preview when policy differs from legacy', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const validationStore = useValidationStore(pinia)
+    const artifactsStore = useWorkflowArtifactsStore(pinia)
+
+    workflow.selectResultsTab('validate', { persist: false })
+    dataStore.csvPath = 'C:/data/aapl.csv'
+    dataStore.dataTimeframe = '1m'
+    validationStore.candidates = '2'
+    validationStore.admissionPolicy = 'scalar_union'
+    artifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T10:00:00Z',
+        csv_path: 'C:/data/aapl.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/aapl.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-validation-preview',
+          objective: 'Sharpe',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+              metrics: {
+                pnl: 0.15,
+                sharpe: 1.8,
+                calmar: 0.7,
+                omega: 1.02,
+                max_dd: 0.32,
+              },
+            },
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 12,
+                slow_len: 48,
+              },
+              metrics: {
+                pnl: 0.13,
+                sharpe: 1.4,
+                calmar: 0.85,
+                omega: 1.08,
+                max_dd: 0.24,
+              },
+            },
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 8,
+                slow_len: 26,
+              },
+              metrics: {
+                pnl: 0.1,
+                sharpe: 0.9,
+                calmar: 1.6,
+                omega: 1.35,
+                max_dd: 0.06,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const wrapper = mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const bodyText = document.body.textContent || ''
+    expect(bodyText).toContain('Admission Compare')
+    expect(bodyText).toContain(
+      'scalar_union vs legacy • overlap=1 • current-only=1 • legacy-only=1',
+    )
+    expect(bodyText).toContain('Admission Delta')
+    expect(bodyText).toContain('heads=Sharpe/MaxDrawdown/Omega/Calmar')
+
+    wrapper.unmount()
+  })
+
   it('persists visible validation result columns and restores defaults', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
+    bindRuntimePinia(pinia)
     const workflow = useWorkflowStore(pinia)
     const dataStore = useDataStore(pinia)
     const analysisStore = useAnalysisStore(pinia)
