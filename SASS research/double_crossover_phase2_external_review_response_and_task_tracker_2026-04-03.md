@@ -257,7 +257,7 @@ Only start this lane if Stage B resolves to `compact_exact_search_stage`.
 Only start this lane if Stage B resolves to `measurement_extension`.
 
 - [ ] Decide which unresolved ambiguity remains after the new `xlarge` bundle.
-- [ ] If the ambiguity is dynamic hotspot composition, consider CUPTI or a tighter Nsight Compute slice rather than guessing from static SASS.
+- [x] If the ambiguity is dynamic hotspot composition, a branch-local CUPTI follow-up was executed on 2026-04-05; inventory and NVIDIA's sample control succeeded, the initial repo-local `FlushData` failure was traced to a helper-side ABI bug, and the corrected helper now captures both large exact lockstep surfaces.
 - [ ] If the ambiguity is workload sensitivity, add exactly one bounded specialization study rather than reopening many branches in parallel.
 - [ ] If the ambiguity is route-state gating, capture one focused diagnostic pass against the relevant `gpu_backtest_kernel.rs` blockers before proposing code changes.
 
@@ -423,7 +423,7 @@ Determine whether `double_crossover` still exposes a residual performance proble
 - [ ] Confirm Nsight Compute is available for targeted kernel confirmation.
 - [ ] Install or surface Nsight Systems CLI if whole-process post-change correlation is still needed.
 - [ ] If native cubin editing is going to be explored, install and validate one supported SASS assembler or cubin editing path before proposing experiments.
-- [ ] Confirm CUPTI SASS-metrics capability is available if dynamic instruction-region attribution is part of the feasibility study.
+- [x] Confirm CUPTI SASS-metrics capability is available if dynamic instruction-region attribution is part of the feasibility study.
 
 Current local readiness snapshot:
 
@@ -434,7 +434,7 @@ Current local readiness snapshot:
    - `nvdisasm`
    - `ncu`
    - `python`
-   - CUDA `13.0` CUPTI header `cupti_sass_metrics.h`
+   - CUDA `13.2` CUPTI header `cupti_sass_metrics.h`
 2. installed but not currently on `PATH`:
    - `nsys` under `C:\Program Files\NVIDIA Corporation\Nsight Systems 2026.2.1\Target-Windows-x64\nsys.exe`
 3. not currently installed or surfaced:
@@ -444,6 +444,12 @@ Current local readiness snapshot:
    - the available `CuAssembler` project documents support for `Pascal/Volta/Turing/Ampere` and is unofficial, so Ada `SM89` use should be treated as feasibility-risky until proven on this machine
 5. present Python dependency for that path:
    - `pyelftools`
+6. 2026-04-05 CUPTI follow-up result:
+  - inventory support confirmed on `RTX 4090` / `AD102`
+  - NVIDIA's bundled `sass_metrics` sample succeeds locally
+  - the initial repo-local `cuptiSassMetricsFlushData` failure was caused by a helper-side `struct_size` mismatch
+  - after correcting that bug, the helper captures both retained large exact lockstep surfaces successfully
+  - the interpreted large exact result tightens the `full17` / `trade22` intra-symbol story but does not promote a new product-facing optimization branch
 
 #### E. Feasibility Experiment Design
 

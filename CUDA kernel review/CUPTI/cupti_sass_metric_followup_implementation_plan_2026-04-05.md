@@ -2,6 +2,24 @@
 
 Date: 2026-04-05
 
+## Completion Status
+
+Status: feasibility, large-surface capture, and first interpreted region summary complete
+
+Final classification:
+- `useful but only for research/tooling`
+
+Durable repo result:
+- [cupti_sass_metric_followup_findings_2026-04-05.md](C:/Rust%20Projects/ta_desktop_demo/CUDA%20kernel%20review/CUPTI/cupti_sass_metric_followup_findings_2026-04-05.md)
+
+Primary generated artifacts:
+- [inventory JSON](C:/Rust%20Projects/ta_desktop_demo/target/cupti_sass_probe/cupti_metric_inventory.json)
+- [large/full17 capture](C:/Rust%20Projects/ta_desktop_demo/target/cupti_sass_probe/large_full17_none_region_metrics.json)
+- [large/trade22 capture](C:/Rust%20Projects/ta_desktop_demo/target/cupti_sass_probe/large_trade22_none_region_metrics.json)
+- [large lockstep region summary](C:/Rust%20Projects/ta_desktop_demo/target/cupti_sass_probe/large_lockstep_region_summary_2026-04-05.md)
+- [sample inventory](C:/Rust%20Projects/ta_desktop_demo/target/cupti_sass_probe/sample/sample_inventory.txt)
+- [sample capture](C:/Rust%20Projects/ta_desktop_demo/target/cupti_sass_probe/sample/sample_capture.txt)
+
 ## Purpose
 
 This document turns the optional CUPTI branch from the Phase 2 `double_crossover` work into a standalone implementation plan.
@@ -36,7 +54,7 @@ Treat the following as the current authoritative baseline:
 2. the retained lockstep-body and replay-batching changes are already in place
 3. the cache-fit probe was measured and rejected as a product-facing branch
 4. the bounded `vwma/vwma` TM-native pilot was retained, but did not justify broader TM-native expansion
-5. there is no first-class CUPTI helper script or binary in the repo today
+5. there is now a branch-local CUPTI helper/script, and the feasibility barrier is cleared for the large exact route
 
 Primary baseline docs:
 
@@ -225,21 +243,21 @@ Non-goals for the helper:
 
 ## Phase 0: Preflight
 
-- [ ] Confirm no benchmark, profiler, or Nsight process is still running.
+- [x] Confirm no benchmark, profiler, or Nsight process is still running.
 - [ ] Record branch and commit.
-- [ ] Record GPU, driver, CUDA version, and CUPTI header path used.
-- [ ] Record whether the PowerShell session is elevated.
-- [ ] Keep the retained code state fixed while the tooling spike runs.
+- [x] Record GPU, driver, CUDA version, and CUPTI header path used.
+- [x] Record whether the PowerShell session is elevated.
+- [x] Keep the retained code state fixed while the tooling spike runs.
 
 ## Phase 1: Static Region Map
 
 Goal: define the exact region taxonomy before any runtime CUPTI capture.
 
-- [ ] Choose the first large-surface lockstep symbol for `full17`.
-- [ ] Choose the first large-surface lockstep symbol for `trade22`.
-- [ ] Use the current SASS dump or symbol-scoped excerpt to mark instruction regions for each target kernel.
-- [ ] Produce one short static region map per target kernel.
-- [ ] Keep the region classes stable so later captures can be compared apples-to-apples.
+- [x] Choose the first large-surface lockstep symbol for `full17`.
+- [x] Choose the first large-surface lockstep symbol for `trade22`.
+- [x] Use the current SASS dump or symbol-scoped excerpt to mark instruction regions for each target kernel.
+- [x] Produce one short static region map per target kernel.
+- [x] Keep the region classes stable so later captures can be compared apples-to-apples.
 
 Minimum output:
 
@@ -266,11 +284,11 @@ Classification rule:
 
 Goal: prove the workstation and helper path can query CUPTI SASS metrics at all.
 
-- [ ] Build a minimal standalone helper rather than wiring CUPTI into the main runtime.
-- [ ] Start from a single process that launches one already-supported runner surface.
-- [ ] Add just enough CUPTI setup to enumerate or query the available SASS-metric capabilities on this workstation.
-- [ ] Save the inventory to `target/cupti_sass_probe/cupti_metric_inventory.txt`.
-- [ ] Record any architecture or permission limitations immediately.
+- [x] Build a minimal standalone helper rather than wiring CUPTI into the main runtime.
+- [x] Start from a single process that launches one already-supported runner surface.
+- [x] Add just enough CUPTI setup to enumerate or query the available SASS-metric capabilities on this workstation.
+- [x] Save the inventory to `target/cupti_sass_probe/cupti_metric_inventory.json`.
+- [x] Record any architecture or permission limitations immediately.
 
 Inventory output should capture:
 
@@ -293,17 +311,17 @@ Phase-2 failure threshold:
 
 Stop rule for Phase 2:
 
-- [ ] Stop the branch without further implementation if the local CUPTI SASS-metric surface is unavailable, incompatible, or too fragile to use repeatably.
+- [x] Stop rule evaluated: the inventory surface was available, so the branch continued to first capture.
 
 ## Phase 3: First Large-Surface Capture
 
 Goal: collect one useful region-level runtime attribution result on the large exact route.
 
-- [ ] Reuse the existing large `full17` runner surface.
-- [ ] Reuse the existing large `trade22` runner surface.
-- [ ] Capture only one kernel family at a time.
-- [ ] Save machine-readable output under `target/cupti_sass_probe/`.
-- [ ] Correlate the CUPTI output with the static region map created in Phase 1.
+- [x] Reuse the existing large `full17` runner surface.
+- [x] Reuse the existing large `trade22` runner surface.
+- [x] Capture only one kernel family at a time.
+- [x] Save machine-readable output under `target/cupti_sass_probe/`.
+- [x] Correlate the CUPTI output with the static region map created in Phase 1.
 
 Required interpretation questions:
 
@@ -321,6 +339,10 @@ Preferred first-pass artifact pair:
 1. one `full17` lockstep capture
 2. one `trade22` lockstep capture
 
+Phase 3 completion note:
+
+- The first `large/full17` repo-local capture attempt failed with `CUPTI_ERROR_INVALID_PARAMETER`, but the root cause was later traced to a helper-side `CUpti_SassMetricsFlushData_Params.struct_size` mismatch. After correcting that ABI bug, both `large/full17` and `large/trade22` repo-local captures succeeded.
+
 ## Phase 4: Optional Replay Capture
 
 Only start this phase if the large exact capture remains ambiguous or if replay-specific ambiguity still matters.
@@ -330,20 +352,32 @@ Only start this phase if the large exact capture remains ambiguous or if replay-
 - [ ] Target only the retained replay kernel family, not the whole route.
 - [ ] Save a separate replay note rather than mixing replay and lockstep conclusions in one artifact.
 
+Phase 4 completion note:
+
+- Not started. Large exact capture is now working, so replay follow-up remains optional rather than blocked.
+
 ## Phase 5: Findings Note
 
 Goal: close the branch with a repo-owned note that answers whether CUPTI materially helped.
 
-- [ ] Write `target/cupti_sass_probe/cupti_sass_followup_findings_2026-04-05.md`.
-- [ ] State clearly what CUPTI added beyond existing Nsight evidence.
-- [ ] State clearly what remained ambiguous even after CUPTI.
-- [ ] State whether the branch changes any product-facing optimization priority.
+- [x] Write `target/cupti_sass_probe/cupti_sass_followup_findings_2026-04-05.md`.
+- [x] State clearly what CUPTI added beyond existing Nsight evidence.
+- [x] State clearly what remained ambiguous even after CUPTI.
+- [x] State whether the branch changes any product-facing optimization priority.
 
 Required final classifications:
 
 1. `useful and changes the next decision`
 2. `useful but only for research/tooling`
 3. `not useful enough to justify maintaining the tooling`
+
+Phase 5 completion note:
+
+- the branch classifies as `useful but only for research/tooling`
+- the retained large exact interpretation now says:
+  - `large/trade22` remains dominated by the expected `m22_r3` main-loop region
+  - `large/full17` is dominated by a later `m17` control-heavy numeric/call cluster rather than by entry/setup or writeback
+- that is enough to justify keeping the branch as a tooling/attribution artifact, but not enough to promote a new product-facing optimization branch
 
 Required findings-note sections:
 
@@ -355,11 +389,11 @@ Required findings-note sections:
 
 ## Verification Checklist
 
-- [ ] `cargo check -p ta_app_core`
-- [ ] keep all benchmark and profiling runs serialized
-- [ ] save exact commands used
-- [ ] save all generated artifacts under `target/cupti_sass_probe/`
-- [ ] confirm the helper branch does not change product runtime behavior
+- [x] `cargo check -p ta_app_core`
+- [x] keep all benchmark and profiling runs serialized
+- [x] save exact commands used
+- [x] save all generated artifacts under `target/cupti_sass_probe/`
+- [x] confirm the helper branch does not change product runtime behavior
 
 ## Success Criteria
 

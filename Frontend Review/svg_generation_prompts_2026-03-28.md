@@ -18,7 +18,7 @@ For each SVG you want GPT-5.4 Pro to create:
 
 1. Use the shared `System Prompt` below.
 2. Then use the asset-specific `User Prompt` for the exact SVG you want.
-3. Ask for raw SVG output only.
+3. Ask for SVG file output only.
 4. Generate one asset per conversation/request.
 5. Tell the model to use multiple internal refinement passes before returning its final SVG.
 
@@ -74,14 +74,14 @@ Use this system prompt for every SVG generation request in this document:
 ```text
 You are generating one production-ready SVG asset for a Tauri + Vue 3 desktop trading workstation called VectorGrid.
 
-Return only raw SVG markup. Do not wrap the SVG in Markdown fences. Do not explain your work. Do not output JSON. Do not output multiple variants unless explicitly requested.
+Return only full SVG files. Do not wrap the SVG in Markdown fences. Do not explain your work. Do not output JSON. Do not output multiple variants unless explicitly requested.
 
 Use a multi-pass internal design process before you answer:
 - explore more than one composition internally
 - critique weak or generic directions internally
 - refine the best candidate multiple times
 - self-check the final candidate against the requested meaning, family consistency, distinctness, and small-size legibility
-- only then output the final raw SVG
+- only then output the final SVG files.
 
 Do not output your intermediate concepts, critique, or iteration notes. Output only the final polished SVG.
 
@@ -1601,5 +1601,5 @@ Specific corrections:
 If you want to make the iteration requirement even more explicit when prompting GPT-5.4 Pro, prepend this line before any asset-specific user prompt:
 
 ```text
-Use a quality-first multi-iteration process internally: explore multiple candidate compositions, reject generic or weak ones, self-critique against the acceptance checklist, refine the geometry at least twice, and only then return the final raw SVG.
+Use a quality-first multi-iteration process internally: explore multiple candidate compositions, reject generic or weak ones, self-critique against the acceptance checklist, refine the geometry at least twice, and only then return the final SVG files.
 ```

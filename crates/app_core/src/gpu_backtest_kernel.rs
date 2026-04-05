@@ -1904,6 +1904,20 @@ pub(crate) fn load_double_crossover_module(device: Device) -> Result<Module, Str
     }
 }
 
+pub fn prepare_cuda_kernel_runtime_for_probe(device_id: u32) -> Result<usize, String> {
+    CUDA_KERNEL_RUNTIME.with(|cell| -> Result<usize, String> {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(&device_id) {
+            map.insert(device_id, CudaKernelRuntime::new(device_id)?);
+        }
+        let rt = map
+            .get_mut(&device_id)
+            .ok_or_else(|| format!("missing CUDA kernel runtime for device {device_id}"))?;
+        rt.set_current()?;
+        Ok(rt.context.as_raw() as usize)
+    })
+}
+
 #[inline]
 fn period_slice_signature(periods: &[u16]) -> Option<PeriodSliceSignature> {
     let first = *periods.first()?;

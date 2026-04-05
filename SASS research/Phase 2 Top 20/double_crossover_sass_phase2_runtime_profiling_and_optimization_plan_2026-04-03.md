@@ -94,7 +94,7 @@ This phase covers:
   - direct-runner JSON timing
   - Nsight Systems
   - Nsight Compute
-  - optional CUPTI SASS metrics follow-up if the first two profiler layers leave unresolved attribution gaps
+  - optional CUPTI SASS metrics follow-up if the first two profiler layers leave unresolved attribution gaps, later completed on 2026-04-05 as a viable helper-and-attribution branch that refined the large exact lockstep story without changing product priority
 
 This phase does not authorize:
 
@@ -196,7 +196,7 @@ Machine-specific notes already captured by the repo:
 1. `scripts/profile_gpu_backtest_nsys.ps1` already handles native-safe path conversion, temp-dir creation, and whole-process fallback when bounded capture fails.
 2. Newer local Nsight Systems installs on this machine may fail unelevated with an access-denied create-agent/session-manager startup error.
 3. The repo helper already sets `NSYS_NVTX_PROFILER_REGISTER_ONLY=0` when bounded NVTX capture is requested.
-4. Current profiling support is Nsight-based; there is no existing first-class CUPTI helper script in the repo today.
+4. Current profiling support is still primarily Nsight-based; a branch-local CUPTI helper now exists under [cupti_sass_probe.rs](C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/bin/cupti_sass_probe.rs) and [run_cupti_sass_probe.ps1](C:/Rust%20Projects/ta_desktop_demo/scripts/run_cupti_sass_probe.ps1). The 2026-04-05 branch initially failed, but the root cause was a helper-side `FlushData` ABI bug and the large exact captures now succeed in [cupti_sass_metric_followup_findings_2026-04-05.md](C:/Rust%20Projects/ta_desktop_demo/CUDA%20kernel%20review/CUPTI/cupti_sass_metric_followup_findings_2026-04-05.md).
 
 ## Primary Truth Surfaces
 
@@ -535,7 +535,19 @@ Exit condition:
 
 Objective: only if Nsight Systems and Nsight Compute still leave ambiguous attribution inside control-heavy kernels, add a more research-oriented static+dynamic attribution layer.
 
-This is optional because the repo does not yet appear to have a CUPTI SASS-metrics integration surface.
+Feasibility and first large-surface capture completed 2026-04-05.
+
+Outcome:
+
+1. A branch-local helper and wrapper script were implemented:
+   - [cupti_sass_probe.rs](C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/bin/cupti_sass_probe.rs)
+   - [run_cupti_sass_probe.ps1](C:/Rust%20Projects/ta_desktop_demo/scripts/run_cupti_sass_probe.ps1)
+2. Local inventory succeeded on `RTX 4090` / `AD102`.
+3. NVIDIA's bundled `sass_metrics` sample succeeded locally.
+4. The first repo-local helper attempt failed at `cuptiSassMetricsFlushData`, but the root cause was a helper-side `CUpti_SassMetricsFlushData_Params.struct_size` mismatch.
+5. After correcting that bug, repo-local captures succeeded on the retained `large/full17` and `large/trade22` exact routes in [cupti_sass_metric_followup_findings_2026-04-05.md](C:/Rust%20Projects/ta_desktop_demo/CUDA%20kernel%20review/CUPTI/cupti_sass_metric_followup_findings_2026-04-05.md).
+6. Region aggregation against refreshed static maps shows that `large/trade22` remains dominated by the expected `m22_r3` main-loop region, while `large/full17` collapses into a later `m17` control-heavy numeric/call cluster (`0x3770-0x61a0`) rather than into entry/setup or writeback.
+7. The branch is now viable for research/tooling attribution work, but it still does not change any product optimization priority.
 
 Candidate follow-up:
 
@@ -557,6 +569,10 @@ Exit condition:
 - either:
   - the repo has a useful static+dynamic attribution note, or
   - there is enough evidence that CUPTI would not materially change the next product decisions
+
+Recorded result:
+
+- the branch no longer fails at feasibility, and the interpreted large exact result refines the intra-symbol `full17` / `trade22` story without promoting a new product-facing branch
 
 ## Phase 6: Verification and Closure
 
