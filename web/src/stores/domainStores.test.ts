@@ -551,7 +551,7 @@ describe('domain stores', () => {
     expect(store.manualFastLen).toBe('10')
     expect(store.orderCount).toBe(9)
     expect(store.orderRows[0]?.cells?.[1]).toBe('buy')
-    expect(store.canRunOnce).toBe(false)
+    expect(store.canRunOnce).toBe(true)
     expect(store.canClearKeys).toBe(false)
     expect(store.liveStatusHint).toContain('AAPL')
   })

@@ -247,6 +247,67 @@ describe('execution store actions', () => {
     expect(store.canStartRunner).toBe(true)
   })
 
+  it('derives operator-facing blocked reasons for runOnce, live feed, and runner start', () => {
+    const store = useExecutionStore()
+
+    expect(store.canRunOnce).toBe(false)
+    expect(store.runOnceBlockedReasons).toContain('Enter a symbol before manual execution.')
+    expect(store.startLiveBlockedReasons).toContain('Enter a symbol before starting live candles.')
+    expect(store.startRunnerBlockedReasons).toContain('Enter a symbol before starting the auto-runner.')
+
+    store.setInputField('execSymbol', 'AAPL')
+    store.setCheckboxField('execDryRun', false)
+
+    expect(store.canRunOnce).toBe(false)
+    expect(store.runOnceBlockedReasons).toContain('API key + secret are required for broker-armed execution.')
+    expect(store.canStartLive).toBe(true)
+    expect(store.startLiveBlockedReasons).toHaveLength(0)
+    expect(store.startRunnerBlockedReasons).toContain(
+      'Start live candles first. The auto-runner only reacts to active live bars.',
+    )
+    expect(store.startRunnerBlockedReasons).toContain(
+      'API key + secret are required for broker-armed auto-runner start.',
+    )
+
+    store.setInputField('execApiKey', 'key_1')
+    store.setInputField('execApiSecret', 'secret_1')
+    expect(store.canRunOnce).toBe(true)
+
+    store.applyPolygonLiveStatusEvent({
+      active: true,
+      symbol: 'TSLA',
+      delayed: true,
+      hint: 'Live candles active for TSLA [delayed].',
+      status: 'started',
+      message: 'tsla live',
+    })
+
+    expect(store.startRunnerBlockedReasons).toContain('Live candles are active for TSLA, not AAPL.')
+  })
+
+  it('tracks key state across missing, session-only, persisted, and pending-persist cases', () => {
+    const store = useExecutionStore()
+
+    expect(store.keyStateLabel).toBe('Missing')
+
+    store.setInputField('execApiKey', 'key_1')
+    expect(store.keyStateLabel).toBe('Incomplete')
+
+    store.setInputField('execApiSecret', 'secret_1')
+    expect(store.keyStateLabel).toBe('Session only')
+
+    store.setCheckboxField('execRememberKeys', true)
+    expect(store.keyStateLabel).toBe('Will persist next action')
+
+    store.persistedApiKey = 'key_1'
+    store.persistedApiSecret = 'secret_1'
+    expect(store.keyStateLabel).toBe('Persisted')
+
+    store.setInputField('execApiKey', 'key_2')
+    store.setInputField('execApiSecret', 'secret_2')
+    expect(store.keyStateLabel).toBe('Will update persisted')
+  })
+
   it('reconciles runtime events into live and runner state with optimistic rows', async () => {
     const store = useExecutionStore()
 

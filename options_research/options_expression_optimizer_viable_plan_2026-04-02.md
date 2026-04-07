@@ -3,6 +3,10 @@
 Date: 2026-04-02
 Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice, CUDA scorer path, current History follow-up reporting/drilldown slice, broadened double-like parent-artifact support, quote-aware CSV import support, and the first bounded fixed-geometry two-leg expansion now landed in the repo while broader non-double-like parent coverage remains future work.
 
+Future expansion work is tracked separately in:
+
+- [options_expression_future_scope_roadmap_2026-04-07.md](/C:/Rust%20Projects/ta_desktop_demo/options_research/options_expression_future_scope_roadmap_2026-04-07.md)
+
 ## Executive Verdict
 
 The original plan is directionally strong.

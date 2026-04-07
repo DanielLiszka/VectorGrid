@@ -47,6 +47,20 @@ const {
   canStartRunner,
   canStopRunner,
   canClearKeys,
+  brokerModeLabel,
+  submissionModeLabel,
+  feedStateLabel,
+  runnerStateLabel,
+  requestedSymbolLabel,
+  liveSymbolMatchesRequested,
+  hasExecutionCredentials,
+  keyStateLabel,
+  keyStateDetail,
+  runOnceActionLabel,
+  runOnceActionDetail,
+  runOnceBlockedReasons,
+  startLiveBlockedReasons,
+  startRunnerBlockedReasons,
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(execStore)
@@ -57,7 +71,7 @@ const { mountReady } = useShellMount('#executionVueShellMount', {
   paneDatasetKey: 'vueExecution',
 })
 
-type PendingExecutionAction = 'clearKeys' | 'startLive' | 'startRunner'
+type PendingExecutionAction = 'clearKeys' | 'runOnce' | 'startLive' | 'startRunner'
 
 interface ExecutionOrderColumn {
   label: string
@@ -72,6 +86,12 @@ interface ExecutionOrderCell {
 
 interface ExecutionOrderTableRow {
   cells: ExecutionOrderCell[]
+}
+
+interface ExecutionPostureItem {
+  label: string
+  value: string
+  tone: 'neutral' | 'info' | 'warn' | 'danger' | 'success'
 }
 
 const symbolDraft = ref('')
@@ -118,22 +138,83 @@ const {
   topSpacerPx: orderTableTopSpacerPx,
   bottomSpacerPx: orderTableBottomSpacerPx,
 } = useVirtualTableRows(executionOrderRowModelRows, { rowHeightPx: 30, overscan: 8 })
-const modeBadgeLabel = computed(() => liveModeArmed.value ? 'Live mode armed' : 'Paper mode')
-const executionSummaryChips = computed(() => [
-  modeBadgeLabel.value,
-  `Source ${String(sourceDraft.value || 'selected').trim() || 'selected'}`,
-  dryRun.value ? 'Dry run on' : 'Dry run off',
-  liveUseDelayed.value ? 'Delayed feed' : 'Realtime feed',
-  `Orders ${orderCount.value}`,
+const modeBadgeLabel = computed(() => liveModeArmed.value ? 'Live broker' : 'Paper broker')
+const executionPostureItems = computed<ExecutionPostureItem[]>(() => [
+  {
+    label: 'Broker mode',
+    value: brokerModeLabel.value,
+    tone: liveModeArmed.value ? 'warn' : 'info',
+  },
+  {
+    label: 'Submission',
+    value: submissionModeLabel.value,
+    tone: dryRun.value ? 'info' : 'danger',
+  },
+  {
+    label: 'Feed',
+    value: feedStateLabel.value,
+    tone: !String(feedStateLabel.value || '').trim() || feedStateLabel.value === 'Off'
+      ? 'neutral'
+      : liveSymbolMatchesRequested.value
+        ? 'success'
+        : 'warn',
+  },
+  {
+    label: 'Runner',
+    value: runnerStateLabel.value,
+    tone: runnerStateLabel.value === 'Active'
+      ? (dryRun.value ? 'info' : 'warn')
+      : 'neutral',
+  },
+  {
+    label: 'Key state',
+    value: keyStateLabel.value,
+    tone: keyStateLabel.value === 'Persisted'
+      ? 'success'
+      : keyStateLabel.value === 'Session only'
+        ? 'info'
+        : keyStateLabel.value === 'Will persist next action' || keyStateLabel.value === 'Will update persisted'
+          ? 'warn'
+          : 'danger',
+  },
 ])
 const safetyModeLabel = computed(() => {
+  if (dryRun.value) {
+    return 'Dry-run is on. Manual execution and auto-runner actions stay in simulation until broker submission is armed.'
+  }
   const nextMode = String(mode.value || modeDraft.value || 'paper').trim() || 'paper'
   return nextMode === 'live'
-    ? 'Live mode is armed. Confirm before starting live data or the auto-runner.'
-    : 'Paper mode is active. Live data and runner controls still require confirmation.'
+    ? 'Broker submission is armed in live mode. Review symbol, key state, and confirmation prompts before sending any live order.'
+    : 'Broker submission is armed in paper mode. Manual execution and auto-runner actions can place paper orders once confirmed.'
+})
+const accountReviewNote = computed(() => {
+  if (!hasExecutionCredentials.value) {
+    return 'API key + secret are required before testing the selected broker account.'
+  }
+  return 'Use account test and order refresh to verify broker connectivity before higher-risk actions.'
+})
+const manualExecutionNotes = computed(() => {
+  if (runOnceBlockedReasons.value.length > 0) return runOnceBlockedReasons.value
+  return [runOnceActionDetail.value]
+})
+const liveAutomationNotes = computed(() => {
+  const notes = [
+    ...startLiveBlockedReasons.value.map((reason) => `Feed: ${reason}`),
+    ...startRunnerBlockedReasons.value.map((reason) => `Runner: ${reason}`),
+  ]
+  if (notes.length > 0) return Array.from(new Set(notes))
+  return [
+    `Feed: Ready to start for ${requestedSymbolLabel.value}.`,
+    dryRun.value
+      ? 'Runner: Ready to start in dry-run mode once live candles are active for the selected symbol.'
+      : 'Runner: Ready to start broker-armed once confirmed.',
+  ]
 })
 const confirmationTitle = computed(() => {
   if (pendingAction.value === 'clearKeys') return 'Clear stored execution credentials?'
+  if (pendingAction.value === 'runOnce') {
+    return dryRun.value ? 'Run one dry-run execution?' : `Confirm ${runOnceActionLabel.value.toLowerCase()}?`
+  }
   if (pendingAction.value === 'startLive') return 'Start live candle feed?'
   if (pendingAction.value === 'startRunner') return 'Start the auto-runner?'
   return ''
@@ -141,6 +222,9 @@ const confirmationTitle = computed(() => {
 const confirmationBody = computed(() => {
   if (pendingAction.value === 'clearKeys') {
     return 'This removes the current API key and secret from the frontend state and clears persisted execution keys.'
+  }
+  if (pendingAction.value === 'runOnce') {
+    return `${runOnceActionDetail.value} Review ${requestedSymbolLabel.value}, ${brokerModeLabel.value.toLowerCase()} mode, and ${keyStateLabel.value.toLowerCase()} credentials before continuing.`
   }
   if (pendingAction.value === 'startLive') {
     return 'The app will begin consuming live candle updates for the current symbol. Review symbol, mode, and delayed-feed settings first.'
@@ -152,12 +236,14 @@ const confirmationBody = computed(() => {
 })
 const confirmationConfirmLabel = computed(() => {
   if (pendingAction.value === 'clearKeys') return 'Clear keys'
+  if (pendingAction.value === 'runOnce') return runOnceActionLabel.value
   if (pendingAction.value === 'startLive') return 'Start live feed'
   if (pendingAction.value === 'startRunner') return 'Start runner'
   return 'Confirm'
 })
 const canConfirmPendingAction = computed(() => {
   if (pendingAction.value === 'clearKeys') return !!canClearKeys.value
+  if (pendingAction.value === 'runOnce') return !!canRunOnce.value
   if (pendingAction.value === 'startLive') return !!canStartLive.value
   if (pendingAction.value === 'startRunner') return !!canStartRunner.value
   return false
@@ -241,6 +327,15 @@ function runOnceAction(): void {
   execStore.runOnce()
 }
 
+function queueRunOnceAction(): void {
+  flushQueuedInputValuesNow()
+  if (dryRun.value) {
+    runOnceAction()
+    return
+  }
+  pendingAction.value = 'runOnce'
+}
+
 function refreshOrdersAction(): void {
   flushQueuedInputValuesNow()
   execStore.refreshOrders()
@@ -283,6 +378,10 @@ function confirmPendingAction(): void {
     clearKeysAction()
     return
   }
+  if (nextAction === 'runOnce') {
+    runOnceAction()
+    return
+  }
   if (nextAction === 'startLive') {
     startLiveAction()
     return
@@ -310,7 +409,7 @@ watch(visible, (isVisible) => {
           <div class="panelEyebrow">Broker</div>
           <h2 class="panelTitle">Paper/Live Execution</h2>
           <div class="panelSubtitle">
-            Review account inputs, live-mode guardrails, and the current order surface before starting any broker-facing workflow.
+            Review broker posture, live automation guardrails, and the current order surface before starting any broker-facing workflow.
           </div>
         </div>
         <div class="headMeta">
@@ -318,10 +417,16 @@ watch(visible, (isVisible) => {
           <div class="panelMeta mono panelNumeric">{{ orderCount }} orders · {{ stamp }}</div>
         </div>
       </header>
-      <div class="panelSummaryChips" aria-label="Execution summary">
-        <span v-for="chip in executionSummaryChips" :key="`execution_summary_${chip}`" class="panelSummaryChip mono">
-          {{ chip }}
-        </span>
+      <div class="executionPostureGrid" aria-label="Execution posture summary">
+        <div
+          v-for="item in executionPostureItems"
+          :key="`execution_posture_${item.label}`"
+          class="executionPostureCard"
+          :class="item.tone"
+        >
+          <div class="executionPostureLabel">{{ item.label }}</div>
+          <div class="executionPostureValue mono">{{ item.value }}</div>
+        </div>
       </div>
 
       <section class="pane panelProminentPane">
@@ -332,15 +437,15 @@ watch(visible, (isVisible) => {
           </div>
           <ContextHelpTip
             title="Execution modes"
-            summary="Keep paper and live actions grouped here; high-stakes broker-facing actions still require confirmation."
-            detail="Use this surface to review account inputs, source selection, and automation state together before starting anything live. The confirm step protects Start live, Start runner, and Clear keys without removing access to the underlying execution capabilities."
+            summary="Keep broker posture, one-shot execution, and automation state grouped here; broker-armed actions still require deliberate review."
+            detail="Use this surface to review account inputs, source selection, live feed state, runner state, and key posture together. Dry-run one-shot execution stays direct, while broker-armed one-shot execution, live feed start, runner start, and key clearing retain explicit confirmation."
             aria-label="Execution mode help"
           />
         </div>
 
         <div class="grid">
           <div>
-            <label for="vueExecMode">Mode</label>
+            <label for="vueExecMode">Broker mode</label>
             <select id="vueExecMode" :value="modeDraft" @change="modeDraft = String(($event.target as HTMLSelectElement).value || 'paper'); setSelectValue('execMode', modeDraft)">
               <option value="paper">paper</option>
               <option value="live">live</option>
@@ -475,6 +580,13 @@ watch(visible, (isVisible) => {
             Use delayed feed
           </label>
         </div>
+        <div class="credentialStateCard" role="status" aria-live="polite">
+          <div class="credentialStateLabel">Credential state</div>
+          <div class="credentialStateValue mono">{{ keyStateLabel }}</div>
+          <div class="panelMuted">
+            {{ keyStateDetail }}
+          </div>
+        </div>
 
         <div class="actionGroups">
           <section class="actionGroup">
@@ -483,12 +595,20 @@ watch(visible, (isVisible) => {
               <button type="button" :disabled="!canTestConnection" @click="testConnectionAction">Test account</button>
               <button type="button" :disabled="!canRefreshOrders" @click="refreshOrdersAction">Refresh orders</button>
             </div>
+            <div class="actionHelp panelMuted">{{ accountReviewNote }}</div>
           </section>
 
           <section class="actionGroup">
-            <div class="actionGroupLabel">Paper and manual actions</div>
+            <div class="actionGroupLabel">Manual execution</div>
             <div class="actions">
-              <button type="button" :disabled="!canRunOnce" @click="runOnceAction">Execute once</button>
+              <button type="button" :disabled="!canRunOnce" @click="queueRunOnceAction">{{ runOnceActionLabel }}</button>
+            </div>
+            <div class="actionHelp panelMuted">{{ runOnceActionDetail }}</div>
+            <div class="preflightBlock" role="status" aria-live="polite">
+              <div class="preflightLabel">Preflight</div>
+              <ul class="preflightList">
+                <li v-for="note in manualExecutionNotes" :key="`manual_preflight_${note}`">{{ note }}</li>
+              </ul>
             </div>
           </section>
 
@@ -499,6 +619,12 @@ watch(visible, (isVisible) => {
               <button type="button" :disabled="!canStopLive" @click="stopLiveAction">Stop live</button>
               <button type="button" :disabled="!canStartRunner" @click="queueConfirmation('startRunner')">Start runner</button>
               <button type="button" :disabled="!canStopRunner" @click="stopRunnerAction">Stop runner</button>
+            </div>
+            <div class="preflightBlock" role="status" aria-live="polite">
+              <div class="preflightLabel">Preflight</div>
+              <ul class="preflightList">
+                <li v-for="note in liveAutomationNotes" :key="`automation_preflight_${note}`">{{ note }}</li>
+              </ul>
             </div>
           </section>
 
@@ -644,6 +770,58 @@ watch(visible, (isVisible) => {
   gap: 0.35rem;
 }
 
+.executionPostureGrid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.executionPostureCard {
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface) 94%, var(--panel));
+  padding: 0.62rem 0.68rem;
+  min-width: 0;
+}
+
+.executionPostureCard.info {
+  border-color: color-mix(in oklab, var(--accent) 28%, var(--border));
+  background: color-mix(in oklab, var(--selection-fill) 78%, var(--surface-inline));
+}
+
+.executionPostureCard.success {
+  border-color: color-mix(in oklab, var(--ok) 30%, var(--border));
+  background: color-mix(in oklab, var(--surface-success) 88%, var(--surface-inline));
+}
+
+.executionPostureCard.warn {
+  border-color: color-mix(in oklab, var(--warning) 34%, var(--border));
+  background: color-mix(in oklab, var(--surface-warning) 90%, var(--surface-inline));
+}
+
+.executionPostureCard.danger {
+  border-color: color-mix(in oklab, var(--danger) 34%, var(--border));
+  background: color-mix(in oklab, var(--surface-danger) 90%, var(--surface-inline));
+}
+
+.executionPostureLabel,
+.credentialStateLabel,
+.preflightLabel {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.executionPostureValue,
+.credentialStateValue {
+  margin-top: 0.24rem;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .paneTopBar {
   display: flex;
   justify-content: space-between;
@@ -713,6 +891,14 @@ watch(visible, (isVisible) => {
   gap: 0.85rem;
 }
 
+.credentialStateCard {
+  margin-top: 0.7rem;
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 92%, var(--panel));
+  padding: 0.7rem 0.75rem;
+}
+
 .actions {
   margin-top: 0.65rem;
   display: flex;
@@ -740,6 +926,27 @@ watch(visible, (isVisible) => {
 
 .actionGroupDanger {
   border-color: color-mix(in oklab, var(--danger) 34%, var(--border));
+}
+
+.actionHelp {
+  margin-top: 0.52rem;
+  font-size: 0.78rem;
+}
+
+.preflightBlock {
+  margin-top: 0.58rem;
+  display: grid;
+  gap: 0.28rem;
+}
+
+.preflightList {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.22rem;
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
 .executionSubsection {
@@ -826,12 +1033,20 @@ watch(visible, (isVisible) => {
 }
 
 @media (max-width: 1180px) {
+  .executionPostureGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 760px) {
+  .executionPostureGrid {
+    grid-template-columns: 1fr;
+  }
+
   .grid {
     grid-template-columns: 1fr;
   }

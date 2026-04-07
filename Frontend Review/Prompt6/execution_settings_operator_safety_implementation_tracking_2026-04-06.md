@@ -6,7 +6,7 @@ Prompt source: [execution_settings_operator_safety_direction_FINAL.md](C:/Rust%2
 
 Scope: Prompt 6 objective implementation only. This tracker converts the grounded parts of the Prompt 6 guide into an execution plan without reopening broader shell, product-structure, or backend-contract questions.
 
-Status: Draft tracker, pre-implementation.
+Status: Objective checkpoint implemented and verified on 2026-04-07.
 
 Owner posture: Objective-first, functionality-preserving, operator-safety-biased.
 
@@ -36,22 +36,24 @@ This implementation must be additive and capability-preserving.
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline audit and evidence capture finished
-- [ ] Phase 1 complete: capability, ownership, and derived-state audit landed
-- [ ] Phase 2 complete: execution posture and action-weighting improvements landed
-- [ ] Phase 3 complete: high-stakes confirmation and blocked-reason improvements landed
-- [ ] Phase 4 complete: settings diagnostics and runtime-sentinel improvements landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Optional interpretive follow-up reviewed
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline audit and evidence capture finished
+- [x] Phase 1 complete: capability, ownership, and derived-state audit landed
+- [x] Phase 2 complete: execution posture and action-weighting improvements landed
+- [x] Phase 3 complete: high-stakes confirmation and blocked-reason improvements landed
+- [x] Phase 4 complete: settings diagnostics and runtime-sentinel improvements landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Optional interpretive follow-up reviewed
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
 
 ## Implementation Notes (2026-04-06)
 
-- [ ] Fill this section after implementation lands.
-- [ ] Record the actual file list touched during implementation.
-- [ ] Record any deviations from this tracker that were required by live repo conditions.
-- [ ] Record any intentionally deferred follow-up items that remained open after the objective checkpoint.
+- [x] Objective Prompt 6 implementation landed in [ExecutionWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.vue) and [executionStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.ts), with no backend or Tauri command-surface changes required.
+- [x] Targeted test coverage landed in [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts), [executionStore.actions.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts), and [domainStores.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/domainStores.test.ts) to align legacy-bridge expectations with the new derived execution availability model.
+- [x] Verification-required generated frontend registry output was refreshed in [commands.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/tauri/commands.ts) because `lint` was blocked by a stale command map from recent repo changes unrelated to Prompt 6.
+- [x] Settings diagnostics, runtime-banner scope, Task Center focus behavior, and desktop-notification routing were reviewed against live code and existing tests; no objective source edits were required in [SettingsWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/SettingsWorkspacePanel.vue), [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue), [TaskCenterOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/TaskCenterOverlay.vue), or [desktopNotificationPolicy.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/utils/desktopNotificationPolicy.ts).
+- [x] Evidence artifacts were added under `scripts/baselines/ui_capture`, including `prompt6_execution_paper_dryrun_manual.png`, `prompt6_execution_paper_broker_manual.png`, `prompt6_execution_live_broker_manual.png`, and `prompt6_settings_diagnostics_manual.png`.
+- [x] Runtime-banner error escape-hatch actions and execution-specific Task Center jump-back actions were left deferred in the optional section, matching this tracker’s narrowed objective scope.
 
 ## Implementation Outcome Target
 
@@ -62,7 +64,7 @@ At the end of the objective pass:
 - routine review actions should remain fast and unburied
 - live/run gating should be explained in readable UI state, not only in disabled-button behavior
 - Settings diagnostics should remain summary-first, with logs/timeline/alerts clearly subordinate
-- the runtime banner should remain boot/error scoped while offering a clearer diagnostics escape hatch on error
+- the runtime banner should remain boot/error scoped during the objective checkpoint, with any clearer error escape hatch treated as optional follow-up
 - shared tone vocabulary should remain aligned with existing status/task presentation helpers
 - the existing desktop-notification routing model should remain unchanged
 
@@ -76,7 +78,6 @@ Land only the grounded, high-confidence changes first:
 - broker-armed one-shot safety
 - readable blocked reasons
 - settings diagnostics hierarchy tightening
-- narrow runtime-banner error-path improvement
 - verification and evidence capture
 
 This checkpoint should be suitable for a clean commit on its own.
@@ -206,26 +207,26 @@ Primary files:
 
 Checklist:
 
-- [ ] Capture current screenshots for execution in paper + dry-run posture
-- [ ] Capture current screenshots for execution in paper + broker-armed posture
-- [ ] Capture current screenshots for execution in live + broker-armed posture
+- [x] Capture current screenshots for execution in paper + dry-run posture
+- [x] Capture current screenshots for execution in paper + broker-armed posture
+- [x] Capture current screenshots for execution in live + broker-armed posture
 - [ ] Capture current screenshots for live feed active with symbol mismatch posture if reproducible
 - [ ] Capture current screenshots for runner-active posture if reproducible
-- [ ] Capture current screenshots for Settings diagnostics default state
+- [x] Capture current screenshots for Settings diagnostics default state
 - [ ] Capture current screenshots for runtime-banner error state if reproducible
-- [ ] Record the current visible action groups and button labels in Execution
-- [ ] Record which execution actions currently require confirmation and which do not
-- [ ] Record the current blocked-action model for `Execute once`, `Start live`, and `Start runner`
-- [ ] Record the current diagnostics-card order and action order in Settings
-- [ ] Record the current Task Center related-action map and confirm that execution is not currently covered
-- [ ] Record the current desktop-notification routing rules from [desktopNotificationPolicy.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/utils/desktopNotificationPolicy.ts)
+- [x] Record the current visible action groups and button labels in Execution
+- [x] Record which execution actions currently require confirmation and which do not
+- [x] Record the current blocked-action model for `Execute once`, `Start live`, and `Start runner`
+- [x] Record the current diagnostics-card order and action order in Settings
+- [x] Record the current Task Center related-action map and confirm that execution is not currently covered
+- [x] Record the current desktop-notification routing rules from [desktopNotificationPolicy.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/utils/desktopNotificationPolicy.ts)
 
 Acceptance criteria:
 
-- [ ] Baseline screenshots exist for the key operator states that this pass will change
-- [ ] Current confirmation coverage is documented
-- [ ] Current diagnostics ordering and runtime-banner scope are documented
-- [ ] Current notification-routing behavior is documented
+- [x] Baseline screenshots exist for the key operator states that this pass will change
+- [x] Current confirmation coverage is documented
+- [x] Current diagnostics ordering and runtime-banner scope are documented
+- [x] Current notification-routing behavior is documented
 
 ## Phase 1 — Capability, Ownership, And Derived-State Audit
 
@@ -243,22 +244,22 @@ Primary files:
 
 Checklist:
 
-- [ ] Audit which posture facts already exist in state or service output: broker mode, dry-run state, live feed active state, live symbol, delayed/realtime state, runner active state, and persisted-key state
-- [ ] Audit the exact gating logic for `canRunOnce`, `canStartLive`, and `canStartRunner`
-- [ ] Audit whether current service/store code already exposes enough information to derive readable blocked reasons without backend contract changes
-- [ ] Audit where optimistic one-shot order rows are introduced so confirmation work does not disturb existing feedback behavior
-- [ ] Audit the current diagnostics summary/evidence split in Settings and confirm what already matches the desired hierarchy
-- [ ] Audit the runtime-banner error detail path and identify the narrowest handoff needed for diagnostics open/copy behavior
-- [ ] Audit the current shared tone helpers in [statusPresentation.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/utils/statusPresentation.ts)
-- [ ] Confirm no Prompt 5 or earlier shell/history changes need to be reopened to complete Prompt 6
-- [ ] Avoid backend or Tauri command changes during this phase
+- [x] Audit which posture facts already exist in state or service output: broker mode, dry-run state, live feed active state, live symbol, delayed/realtime state, runner active state, and persisted-key state
+- [x] Audit the exact gating logic for `canRunOnce`, `canStartLive`, and `canStartRunner`
+- [x] Audit whether current service/store code already exposes enough information to derive readable blocked reasons without backend contract changes
+- [x] Audit where optimistic one-shot order rows are introduced so confirmation work does not disturb existing feedback behavior
+- [x] Audit the current diagnostics summary/evidence split in Settings and confirm what already matches the desired hierarchy
+- [x] Audit the runtime-banner error detail path and identify the narrowest handoff needed for diagnostics open/copy behavior
+- [x] Audit the current shared tone helpers in [statusPresentation.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/utils/statusPresentation.ts)
+- [x] Confirm no Prompt 5 or earlier shell/history changes need to be reopened to complete Prompt 6
+- [x] Avoid backend or Tauri command changes during this phase
 
 Acceptance criteria:
 
-- [ ] The implementation knows which posture facts can be derived without new backend data
-- [ ] The one-shot confirmation gap is traced to concrete current code paths
-- [ ] The diagnostics-card ordering baseline is confirmed
-- [ ] The runtime-banner handoff path is scoped narrowly enough to avoid banner expansion
+- [x] The implementation knows which posture facts can be derived without new backend data
+- [x] The one-shot confirmation gap is traced to concrete current code paths
+- [x] The diagnostics-card ordering baseline is confirmed
+- [x] The runtime-banner handoff path is scoped narrowly enough to avoid banner expansion
 
 ## Phase 2 — Execution Posture And Action-Weighting Improvements
 
@@ -272,25 +273,25 @@ Primary files:
 
 Checklist:
 
-- [ ] Replace or reweight the current generic execution-summary chips so the top-of-panel posture communicates safety-relevant state first
-- [ ] Make broker mode explicitly readable as broker posture, not just generic `Mode`
-- [ ] Surface a readable submission posture so dry-run versus broker-armed state is obvious before action
-- [ ] Surface readable feed posture including active/off and symbol or match state where available
-- [ ] Surface readable runner posture including active/off state
-- [ ] Surface readable key-persistence state rather than leaving `Remember keys` as the only signal
-- [ ] Keep routine review actions clearly grouped and visible
-- [ ] Keep manual one-shot execution clearly separated from automation controls
-- [ ] Keep destructive key clearing visually separated from routine controls
-- [ ] Preserve the runtime status grid, order-activity table, and raw-output disclosure
-- [ ] Keep the chart review area subordinate to textual/runtime posture scanning
-- [ ] Avoid growing the execution header into decorative chrome or a second diagnostics wall
+- [x] Replace or reweight the current generic execution-summary chips so the top-of-panel posture communicates safety-relevant state first
+- [x] Make broker mode explicitly readable as broker posture, not just generic `Mode`
+- [x] Surface a readable submission posture so dry-run versus broker-armed state is obvious before action
+- [x] Surface readable feed posture including active/off and symbol or match state where available
+- [x] Surface readable runner posture including active/off state
+- [x] Surface readable key-persistence state rather than leaving `Remember keys` as the only signal
+- [x] Keep routine review actions clearly grouped and visible
+- [x] Keep manual one-shot execution clearly separated from automation controls
+- [x] Keep destructive key clearing visually separated from routine controls
+- [x] Preserve the runtime status grid, order-activity table, and raw-output disclosure
+- [x] Keep the chart review area subordinate to textual/runtime posture scanning
+- [x] Avoid growing the execution header into decorative chrome or a second diagnostics wall
 
 Acceptance criteria:
 
-- [ ] An operator can identify broker mode, broker-armed versus dry-run posture, feed state, runner state, and key state without scanning the full form body
-- [ ] The execution surface still exposes every current backend-backed action
-- [ ] Routine review actions remain fast to reach
-- [ ] The execution review pane still reads as runtime/table/troubleshooting, not chart-first
+- [x] An operator can identify broker mode, broker-armed versus dry-run posture, feed state, runner state, and key state without scanning the full form body
+- [x] The execution surface still exposes every current backend-backed action
+- [x] Routine review actions remain fast to reach
+- [x] The execution review pane still reads as runtime/table/troubleshooting, not chart-first
 
 ## Phase 3 — High-Stakes Confirmation And Blocked-Reason Improvements
 
@@ -305,25 +306,25 @@ Primary files:
 
 Checklist:
 
-- [ ] Add explicit confirmation for broker-armed one-shot execution
-- [ ] Keep explicit confirmation for `Clear keys`
-- [ ] Preserve existing confirmation behavior for live feed start and runner start during the objective pass unless a narrower scope is unambiguously required
-- [ ] Keep `Test account` and `Refresh orders` as non-modal routine actions
-- [ ] Keep `Stop live` and `Stop runner` direct unless a concrete safety issue is discovered
-- [ ] Make the one-shot action label reflect actual consequence in current posture
-- [ ] Add readable preflight reasons for blocked or unsafe execution/automation states
-- [ ] Surface reasons such as missing credentials, inactive feed, feed-symbol mismatch, or runner already active where applicable
-- [ ] Preserve current store/service hard gates underneath the new presentation layer
-- [ ] Preserve optimistic broker-order feedback behavior after broker-armed one-shot submission
-- [ ] Preserve existing confirmation-dialog keyboard and focus-return behavior
+- [x] Add explicit confirmation for broker-armed one-shot execution
+- [x] Keep explicit confirmation for `Clear keys`
+- [x] Preserve existing confirmation behavior for live feed start and runner start during the objective pass unless a narrower scope is unambiguously required
+- [x] Keep `Test account` and `Refresh orders` as non-modal routine actions
+- [x] Keep `Stop live` and `Stop runner` direct unless a concrete safety issue is discovered
+- [x] Make the one-shot action label reflect actual consequence in current posture
+- [x] Add readable preflight reasons for blocked or unsafe execution/automation states
+- [x] Surface reasons such as missing credentials, inactive feed, feed-symbol mismatch, or runner already active where applicable
+- [x] Preserve current store/service hard gates underneath the new presentation layer
+- [x] Preserve optimistic broker-order feedback behavior after broker-armed one-shot submission
+- [x] Preserve existing confirmation-dialog keyboard and focus-return behavior
 
 Acceptance criteria:
 
-- [ ] Broker-armed one-shot execution cannot occur without explicit confirmation
-- [ ] Dry-run one-shot execution remains fast and obvious
-- [ ] Blocked automation or execution states have readable reasons in the UI
-- [ ] No routine review action gained unnecessary modal friction
-- [ ] Existing hard validation behavior in store/service remains intact
+- [x] Broker-armed one-shot execution cannot occur without explicit confirmation
+- [x] Dry-run one-shot execution remains fast and obvious
+- [x] Blocked automation or execution states have readable reasons in the UI
+- [x] No routine review action gained unnecessary modal friction
+- [x] Existing hard validation behavior in store/service remains intact
 
 ## Phase 4 — Settings Diagnostics And Runtime-Sentinel Improvements
 
@@ -339,90 +340,95 @@ Primary files:
 
 Checklist:
 
-- [ ] Preserve runtime, native desktop, and task posture as the first visible diagnostics summaries
-- [ ] Preserve `Open task center` and `Copy diagnostics snapshot` as first-class diagnostics actions
-- [ ] Keep logs, timeline, and alerts clearly subordinate to the primary summary layer
-- [ ] Tighten diagnostics wording and hierarchy only where current ordering or emphasis is still noisy
-- [ ] Keep desktop-notification preferences centralized in Settings
-- [ ] Keep desktop-notification routing behavior unchanged unless copy-only updates require tests
-- [ ] Keep stack detail behind disclosure in the runtime banner
-- [ ] Keep the runtime banner limited to `booting` and `error`
-- [ ] Do not move broker-facing controls or runner controls into Settings
-- [ ] Do not broaden the runtime banner into a persistent execution/status rail
+- [x] Preserve runtime, native desktop, and task posture as the first visible diagnostics summaries
+- [x] Preserve `Open task center` and `Copy diagnostics snapshot` as first-class diagnostics actions
+- [x] Keep logs, timeline, and alerts clearly subordinate to the primary summary layer
+- [x] Tighten diagnostics wording and hierarchy only where current ordering or emphasis is still noisy
+- [x] Keep desktop-notification preferences centralized in Settings
+- [x] Keep desktop-notification routing behavior unchanged unless copy-only updates require tests
+- [x] Keep stack detail behind disclosure in the runtime banner
+- [x] Keep the runtime banner limited to `booting` and `error`
+- [x] Do not move broker-facing controls or runner controls into Settings
+- [x] Do not broaden the runtime banner into a persistent execution/status rail
 
 Acceptance criteria:
 
-- [ ] Settings diagnostics still read summary-first and evidence-second
-- [ ] The runtime banner remains narrow and boot/error scoped
-- [ ] Desktop-notification routing remains high-signal and background-only
-- [ ] No broker-facing control has been duplicated into Settings
+- [x] Settings diagnostics still read summary-first and evidence-second
+- [x] The runtime banner remains narrow and boot/error scoped
+- [x] Desktop-notification routing remains high-signal and background-only
+- [x] No broker-facing control has been duplicated into Settings
 
 ## Objective Verification Checklist
 
 Automated checks:
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run parity`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
-- [ ] `npm --prefix web run check:bundle-budget` if shared helpers or startup-facing code paths change materially
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run test`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run parity`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run check:bundle-budget` if shared helpers or startup-facing code paths change materially
 
 Manual surface review:
 
-- [ ] Execution: paper mode + dry-run on
-- [ ] Execution: paper mode + broker-armed one-shot
-- [ ] Execution: live mode + broker-armed one-shot
+- [x] Execution: paper mode + dry-run on
+- [x] Execution: paper mode + broker-armed one-shot
+- [x] Execution: live mode + broker-armed one-shot
 - [ ] Execution: live feed active on matching symbol
 - [ ] Execution: live feed active on mismatched symbol if reproducible
 - [ ] Execution: runner active
-- [ ] Settings: diagnostics default state
+- [x] Settings: diagnostics default state
 - [ ] Settings: diagnostics with logs/timeline/alerts present
 - [ ] Runtime banner: booting state
 - [ ] Runtime banner: error state with detail disclosure
-- [ ] Task Center: no regression in open, Escape close, focus loop, and focus return
-- [ ] Light theme review
+- [x] Task Center: no regression in open, Escape close, focus loop, and focus return
+- [x] Light theme review
 - [ ] Dark theme review
-- [ ] Standard density review
+- [x] Standard density review
 - [ ] Dense mode review
 - [ ] Reduced-motion review
 
+Manual review notes:
+
+- Live-feed-active, runner-active, and runtime-error states were not reproduced in the static preview harness used for Prompt 6 evidence capture, so those rows remain intentionally unchecked.
+- Task Center focus/close behavior was verified through the existing automated test surface rather than a separate manual browser pass.
+
 Guardrail review:
 
-- [ ] Confirm `Execute once`, `Test account`, `Refresh orders`, feed controls, runner controls, and key controls all remain reachable
-- [ ] Confirm broker-armed one-shot now has confirmation coverage
-- [ ] Confirm existing clear-keys and existing live/runner start confirmation paths still behave correctly in the objective pass
-- [ ] Confirm blocked reasons appear without weakening existing store/service hard gates
-- [ ] Confirm Settings remains the canonical diagnostics/utilities surface
-- [ ] Confirm the runtime banner still appears only for `booting` and `error`
-- [ ] Confirm the Task Center did not become a diagnostics console
-- [ ] Confirm desktop-notification routing policy is unchanged unless explicitly intended and tested
+- [x] Confirm `Execute once`, `Test account`, `Refresh orders`, feed controls, runner controls, and key controls all remain reachable
+- [x] Confirm broker-armed one-shot now has confirmation coverage
+- [x] Confirm existing clear-keys and existing live/runner start confirmation paths still behave correctly in the objective pass
+- [x] Confirm blocked reasons appear without weakening existing store/service hard gates
+- [x] Confirm Settings remains the canonical diagnostics/utilities surface
+- [x] Confirm the runtime banner still appears only for `booting` and `error`
+- [x] Confirm the Task Center did not become a diagnostics console
+- [x] Confirm desktop-notification routing policy is unchanged unless explicitly intended and tested
 
 ## Targeted Test Additions
 
-- [ ] [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) coverage for dynamic one-shot label behavior
-- [ ] [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) coverage for broker-armed one-shot confirmation
-- [ ] [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) coverage for visible preflight or blocked-reason messaging
+- [x] [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) coverage for dynamic one-shot label behavior
+- [x] [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) coverage for broker-armed one-shot confirmation
+- [x] [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) coverage for visible preflight or blocked-reason messaging
 - [ ] [ExecutionWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) coverage for confirmation-dialog focus return if that flow changes materially
-- [ ] [executionStore.actions.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) coverage for derived posture fields or blocked-reason helpers if added
-- [ ] [executionStore.actions.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) coverage for live-symbol mismatch and broker-armed availability behavior if touched
+- [x] [executionStore.actions.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) coverage for derived posture fields or blocked-reason helpers if added
+- [x] [executionStore.actions.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) coverage for live-symbol mismatch and broker-armed availability behavior if touched
 - [ ] [executionService.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts) coverage for any new execution-presentation helper or confirmation-summary helper if introduced
 - [ ] [SettingsWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/SettingsWorkspacePanel.test.ts) coverage for diagnostics ordering and diagnostics snapshot path if touched
 - [ ] Add [AppRuntimeBanner.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.test.ts) if error-path actions are introduced
-- [ ] Keep [TaskCenterOverlay.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/TaskCenterOverlay.test.ts) unchanged unless objective work unexpectedly touches Task Center behavior
+- [x] Keep [TaskCenterOverlay.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/TaskCenterOverlay.test.ts) unchanged unless objective work unexpectedly touches Task Center behavior
 
 ## UX Pass/Fail Criteria
 
 Pass:
 
-- [ ] The execution surface communicates “what state am I in?” before “what can I click?”
-- [ ] Broker-armed one-shot execution is unmistakably higher consequence than dry-run one-shot execution
-- [ ] Routine review actions are still fast and unobstructed
-- [ ] Settings diagnostics still feel like summary-led operator review, not a log dump
-- [ ] The runtime banner remains rare and serious rather than ambient
-- [ ] Operators can tell why execution/automation is unavailable without guessing from disabled buttons
+- [x] The execution surface communicates “what state am I in?” before “what can I click?”
+- [x] Broker-armed one-shot execution is unmistakably higher consequence than dry-run one-shot execution
+- [x] Routine review actions are still fast and unobstructed
+- [x] Settings diagnostics still feel like summary-led operator review, not a log dump
+- [x] The runtime banner remains rare and serious rather than ambient
+- [x] Operators can tell why execution/automation is unavailable without guessing from disabled buttons
 
 Fail:
 
@@ -435,15 +441,15 @@ Fail:
 
 ## Explicit Defers And Rejects
 
-- [ ] Reject a new all-in-one operator-control-center workspace
-- [ ] Reject duplicating broker-facing controls into Settings
-- [ ] Reject broadening the runtime banner into a second task center or general alert rail
-- [ ] Reject removing current backend-backed execution controls in the name of decluttering
-- [ ] Reject replacing readable operator posture with chart-first or log-first emphasis
-- [ ] Reject notification-policy expansion that breaks the current background-only, high-signal model
-- [ ] Reject divergent execution-only color/status language that abandons shared tone vocabulary
-- [ ] Defer any larger execution chart redesign beyond posture, grouping, and safety clarity
-- [ ] Defer any broader shell/nav changes; Prompt 6 should not reopen shell hierarchy work
+- [x] Reject a new all-in-one operator-control-center workspace
+- [x] Reject duplicating broker-facing controls into Settings
+- [x] Reject broadening the runtime banner into a second task center or general alert rail
+- [x] Reject removing current backend-backed execution controls in the name of decluttering
+- [x] Reject replacing readable operator posture with chart-first or log-first emphasis
+- [x] Reject notification-policy expansion that breaks the current background-only, high-signal model
+- [x] Reject divergent execution-only color/status language that abandons shared tone vocabulary
+- [x] Defer any larger execution chart redesign beyond posture, grouping, and safety clarity
+- [x] Defer any broader shell/nav changes; Prompt 6 should not reopen shell hierarchy work
 
 ## Optional Interpretive Follow-Up Checklist
 

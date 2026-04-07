@@ -119,6 +119,21 @@ function createPendingState(): ExecutionPendingState {
   }
 }
 
+interface CredentialPresence {
+  key: string
+  secret: string
+  any: boolean
+  both: boolean
+}
+
+type ExecutionKeyStateKind =
+  | 'missing'
+  | 'incomplete'
+  | 'session'
+  | 'persisted'
+  | 'will-persist'
+  | 'will-update-persisted'
+
 interface ExecutionStoreRuntimeHost {
   _runtimeSubscriptionsPromise?: Promise<void> | null
   _runtimeSubscriptionsTeardown?: (() => void) | null
@@ -188,11 +203,164 @@ function markVue(state: ExecutionState): void {
   state.updatedAtUnixMs = Date.now()
 }
 
+function currentCredentialPresence(state: ExecutionState): CredentialPresence {
+  const key = String(state.apiKey || '').trim()
+  const secret = String(state.apiSecret || '').trim()
+  return {
+    key,
+    secret,
+    any: !!key || !!secret,
+    both: !!key && !!secret,
+  }
+}
+
+function persistedCredentialPresence(state: ExecutionState): CredentialPresence {
+  const key = String(state.persistedApiKey || '').trim()
+  const secret = String(state.persistedApiSecret || '').trim()
+  return {
+    key,
+    secret,
+    any: !!key || !!secret,
+    both: !!key && !!secret,
+  }
+}
+
+function hasRequestedSymbol(state: ExecutionState): boolean {
+  return canonicalSymbol(state.symbol).length > 0
+}
+
+function hasValidQty(state: ExecutionState): boolean {
+  const qty = Number(state.qty)
+  return Number.isFinite(qty) && qty > 0
+}
+
+function hasEffectiveCredentials(state: ExecutionState): boolean {
+  const current = currentCredentialPresence(state)
+  if (current.any) return current.both
+  return persistedCredentialPresence(state).both
+}
+
+function executionKeyStateKind(state: ExecutionState): ExecutionKeyStateKind {
+  const current = currentCredentialPresence(state)
+  const persisted = persistedCredentialPresence(state)
+  if (current.any && !current.both) return 'incomplete'
+  if (current.both && !state.rememberKeys) return 'session'
+  if (current.both && state.rememberKeys) {
+    if (persisted.both && current.key === persisted.key && current.secret === persisted.secret) {
+      return 'persisted'
+    }
+    return persisted.both ? 'will-update-persisted' : 'will-persist'
+  }
+  if (persisted.both) return 'persisted'
+  return 'missing'
+}
+
+function keyStateLabel(state: ExecutionState): string {
+  const kind = executionKeyStateKind(state)
+  if (kind === 'incomplete') return 'Incomplete'
+  if (kind === 'session') return 'Session only'
+  if (kind === 'persisted') return 'Persisted'
+  if (kind === 'will-update-persisted') return 'Will update persisted'
+  if (kind === 'will-persist') return 'Will persist next action'
+  return 'Missing'
+}
+
+function keyStateDetail(state: ExecutionState): string {
+  const kind = executionKeyStateKind(state)
+  if (kind === 'incomplete') {
+    return 'Complete both API key and secret before testing the account or enabling broker-armed actions.'
+  }
+  if (kind === 'session') {
+    return 'Entered keys are available for this session only. Turn on Remember keys to persist them on the next successful broker-facing action.'
+  }
+  if (kind === 'persisted') {
+    return 'Stored execution keys are available in this session.'
+  }
+  if (kind === 'will-update-persisted') {
+    return 'Remember keys is enabled. The stored key pair will update after the next successful account test or execution action.'
+  }
+  if (kind === 'will-persist') {
+    return 'Remember keys is enabled. The current key pair will persist after the next successful account test or execution action.'
+  }
+  return 'No stored or session credentials are available.'
+}
+
+function primaryBusyReason(state: ExecutionState): string | null {
+  if (state.pending.testConnection) return 'Account test already in progress.'
+  if (state.pending.runOnce) return 'Manual execution already in progress.'
+  if (state.pending.refreshOrders) return 'Order refresh already in progress.'
+  if (state.pending.startLive) return 'Live feed start already in progress.'
+  if (state.pending.stopLive) return 'Live feed stop already in progress.'
+  if (state.pending.startRunner) return 'Auto-runner start already in progress.'
+  if (state.pending.stopRunner) return 'Auto-runner stop already in progress.'
+  if (state.pending.clearKeys) return 'Credential clearing already in progress.'
+  return null
+}
+
+function dedupeReasons(reasons: string[]): string[] {
+  return Array.from(new Set(reasons.map((value) => String(value || '').trim()).filter((value) => value.length > 0)))
+}
+
+function runOnceBlockedReasons(state: ExecutionState): string[] {
+  const reasons: string[] = []
+  const busy = primaryBusyReason(state)
+  if (busy) reasons.push(busy)
+  if (!hasRequestedSymbol(state)) reasons.push('Enter a symbol before manual execution.')
+  if (!hasValidQty(state)) reasons.push('Enter a quantity greater than zero before manual execution.')
+  if (!state.dryRun && !hasEffectiveCredentials(state)) {
+    reasons.push('API key + secret are required for broker-armed execution.')
+  }
+  return dedupeReasons(reasons)
+}
+
+function startLiveBlockedReasons(state: ExecutionState): string[] {
+  const reasons: string[] = []
+  const busy = primaryBusyReason(state)
+  if (busy) reasons.push(busy)
+  if (state.liveActive) {
+    const liveSymbol = canonicalSymbol(state.liveSymbol)
+    reasons.push(liveSymbol ? `Live candles are already active for ${liveSymbol}.` : 'Live candles are already active.')
+  }
+  if (!hasRequestedSymbol(state)) reasons.push('Enter a symbol before starting live candles.')
+  return dedupeReasons(reasons)
+}
+
+function startRunnerBlockedReasons(state: ExecutionState): string[] {
+  const reasons: string[] = []
+  const busy = primaryBusyReason(state)
+  if (busy) reasons.push(busy)
+  if (!hasRequestedSymbol(state)) reasons.push('Enter a symbol before starting the auto-runner.')
+  if (!state.liveActive) {
+    reasons.push('Start live candles first. The auto-runner only reacts to active live bars.')
+  }
+  const requestedSymbol = canonicalSymbol(state.symbol)
+  const liveSymbol = canonicalSymbol(state.liveSymbol)
+  if (state.liveActive && requestedSymbol && liveSymbol && liveSymbol !== requestedSymbol) {
+    reasons.push(`Live candles are active for ${liveSymbol}, not ${requestedSymbol}.`)
+  }
+  if (state.runnerActive) reasons.push('The auto-runner is already active.')
+  if (!state.dryRun && !hasEffectiveCredentials(state)) {
+    reasons.push('API key + secret are required for broker-armed auto-runner start.')
+  }
+  return dedupeReasons(reasons)
+}
+
+function syncPersistedKeyMirror(state: ExecutionState): void {
+  const persisted = loadPersistedExecutionKeys()
+  state.persistedApiKey = persisted.apiKey
+  state.persistedApiSecret = persisted.apiSecret
+}
+
 function setAvailability(state: ExecutionState): void {
   state.isBusy = Object.values(state.pending).some(Boolean)
   const liveSymbol = canonicalSymbol(state.liveSymbol)
   const requestedSymbol = canonicalSymbol(state.symbol)
   const liveMatchesRequested = !!liveSymbol && liveSymbol === requestedSymbol
+  const currentCredentials = currentCredentialPresence(state)
+  const persistedCredentials = persistedCredentialPresence(state)
+  const effectiveCredentials = hasEffectiveCredentials(state)
+  const requestedSymbolReady = !!requestedSymbol
+  const qtyReady = hasValidQty(state)
   const primaryBusy =
     state.pending.testConnection ||
     state.pending.runOnce ||
@@ -201,10 +369,10 @@ function setAvailability(state: ExecutionState): void {
     state.pending.startRunner ||
     state.pending.clearKeys
 
-  state.canTestConnection = !primaryBusy
-  state.canRunOnce = !primaryBusy
+  state.canTestConnection = !primaryBusy && effectiveCredentials
+  state.canRunOnce = !primaryBusy && requestedSymbolReady && qtyReady && (state.dryRun || effectiveCredentials)
   state.canRefreshOrders = !primaryBusy
-  state.canStartLive = !primaryBusy && !state.liveActive && !state.pending.stopLive
+  state.canStartLive = !primaryBusy && !state.liveActive && !state.pending.stopLive && requestedSymbolReady
   state.canStopLive = state.liveActive && !state.pending.stopLive
   state.canStartRunner =
     !primaryBusy &&
@@ -212,9 +380,11 @@ function setAvailability(state: ExecutionState): void {
     !state.pending.stopRunner &&
     !state.runnerActive &&
     state.liveActive &&
-    liveMatchesRequested
+    liveMatchesRequested &&
+    requestedSymbolReady &&
+    (state.dryRun || effectiveCredentials)
   state.canStopRunner = state.runnerActive && !state.pending.stopRunner
-  state.canClearKeys = !primaryBusy
+  state.canClearKeys = !primaryBusy && (currentCredentials.any || persistedCredentials.any)
 }
 
 function applyActionResult(state: ExecutionState, result: ExecutionActionResult): void {
@@ -277,6 +447,8 @@ interface ExecutionState {
   manualSlowLen: string
   apiKey: string
   apiSecret: string
+  persistedApiKey: string
+  persistedApiSecret: string
   dryRun: boolean
   rememberKeys: boolean
   liveUseDelayed: boolean
@@ -311,7 +483,7 @@ export const useExecutionStore = defineStore('execution', {
   state: (): ExecutionState => {
     const persisted = loadPersistedExecutionKeys()
     const hasPersistedKeys = !!(persisted.apiKey || persisted.apiSecret)
-    return {
+    const initialState: ExecutionState = {
       mode: 'paper',
       symbol: '',
       qty: '1',
@@ -322,6 +494,8 @@ export const useExecutionStore = defineStore('execution', {
       manualSlowLen: '',
       apiKey: persisted.apiKey,
       apiSecret: persisted.apiSecret,
+      persistedApiKey: persisted.apiKey,
+      persistedApiSecret: persisted.apiSecret,
       dryRun: true,
       rememberKeys: hasPersistedKeys,
       liveUseDelayed: true,
@@ -351,6 +525,51 @@ export const useExecutionStore = defineStore('execution', {
       source: 'unknown',
       updatedAtUnixMs: 0,
     }
+    setAvailability(initialState)
+    return initialState
+  },
+
+  getters: {
+    brokerModeLabel: (state): string => (String(state.mode || 'paper').trim() === 'live' ? 'Live' : 'Paper'),
+    submissionModeLabel: (state): string => {
+      if (state.dryRun) return 'Simulation'
+      return String(state.mode || 'paper').trim() === 'live' ? 'Live order' : 'Paper order'
+    },
+    feedStateLabel: (state): string => {
+      if (!state.liveActive) return 'Off'
+      const liveSymbol = canonicalSymbol(state.liveSymbol) || canonicalSymbol(state.symbol) || '-'
+      const feedMode = state.liveDelayed ? 'Delayed' : 'Realtime'
+      const requestedSymbol = canonicalSymbol(state.symbol)
+      const mismatchSuffix =
+        requestedSymbol && liveSymbol && requestedSymbol !== liveSymbol ? ` (mismatch: ${requestedSymbol})` : ''
+      return `${feedMode} · ${liveSymbol}${mismatchSuffix}`
+    },
+    runnerStateLabel: (state): string => (state.runnerActive ? 'Active' : 'Off'),
+    requestedSymbolLabel: (state): string => canonicalSymbol(state.symbol) || 'No symbol',
+    liveSymbolMatchesRequested: (state): boolean => {
+      const requestedSymbol = canonicalSymbol(state.symbol)
+      const liveSymbol = canonicalSymbol(state.liveSymbol)
+      return !!requestedSymbol && !!liveSymbol && requestedSymbol === liveSymbol
+    },
+    hasExecutionCredentials: (state): boolean => hasEffectiveCredentials(state),
+    keyStateLabel: (state): string => keyStateLabel(state),
+    keyStateDetail: (state): string => keyStateDetail(state),
+    runOnceActionLabel: (state): string => {
+      if (state.dryRun) return 'Simulate once'
+      return String(state.mode || 'paper').trim() === 'live' ? 'Submit live order once' : 'Submit paper order once'
+    },
+    runOnceActionDetail: (state): string => {
+      const symbol = canonicalSymbol(state.symbol) || 'the selected symbol'
+      if (state.dryRun) {
+        return `Runs the current strategy against ${symbol} without sending a broker order.`
+      }
+      return String(state.mode || 'paper').trim() === 'live'
+        ? `Can submit a live broker order for ${symbol}.`
+        : `Can submit a paper broker order for ${symbol}.`
+    },
+    runOnceBlockedReasons: (state): string[] => runOnceBlockedReasons(state),
+    startLiveBlockedReasons: (state): string[] => startLiveBlockedReasons(state),
+    startRunnerBlockedReasons: (state): string[] => startRunnerBlockedReasons(state),
   },
 
   actions: {
@@ -390,6 +609,8 @@ export const useExecutionStore = defineStore('execution', {
       this.canStopRunner = Boolean(snapshot.canStopRunner ?? this.canStopRunner)
       this.canClearKeys = Boolean(snapshot.canClearKeys ?? this.canClearKeys)
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
+      syncPersistedKeyMirror(this)
+      setAvailability(this)
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
     },
@@ -437,6 +658,12 @@ export const useExecutionStore = defineStore('execution', {
         apiSecret: this.apiSecret,
         liveUseDelayed: this.liveUseDelayed,
       }
+    },
+
+    syncPersistedKeyMirror(): void {
+      syncPersistedKeyMirror(this)
+      setAvailability(this)
+      markVue(this)
     },
 
     async ensureRuntimeSubscriptions(): Promise<void> {
@@ -570,7 +797,10 @@ export const useExecutionStore = defineStore('execution', {
       if (!this.canTestConnection) return
       this.beginAction('testConnection', 'Testing account...')
       void testConnectionAction(this.buildActionOptions())
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncPersistedKeyMirror(this)
+        })
         .catch((error) => this.failAction('Connection test failed', error))
         .finally(() => this.finishAction('testConnection'))
     },
@@ -580,7 +810,10 @@ export const useExecutionStore = defineStore('execution', {
       void this.ensureRuntimeSubscriptions().catch(() => {})
       this.beginAction('runOnce', 'Executing signal...')
       void runOnceAction(this.buildActionOptions())
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncPersistedKeyMirror(this)
+        })
         .catch((error) => this.failAction('Execution failed', error))
         .finally(() => this.finishAction('runOnce'))
     },
@@ -589,7 +822,10 @@ export const useExecutionStore = defineStore('execution', {
       if (!this.canRefreshOrders) return
       this.beginAction('refreshOrders', 'Refreshing broker orders...')
       void refreshOrdersAction(this.buildActionOptions())
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncPersistedKeyMirror(this)
+        })
         .catch((error) => this.failAction('Order refresh failed', error))
         .finally(() => this.finishAction('refreshOrders'))
     },
@@ -619,7 +855,10 @@ export const useExecutionStore = defineStore('execution', {
       void this.ensureRuntimeSubscriptions().catch(() => {})
       this.beginAction('startRunner', 'Starting auto-runner...')
       void startRunnerAction(this.buildActionOptions())
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncPersistedKeyMirror(this)
+        })
         .catch((error) => this.failAction('Auto-runner start failed', error))
         .finally(() => this.finishAction('startRunner'))
     },
@@ -639,8 +878,13 @@ export const useExecutionStore = defineStore('execution', {
       this.beginAction('clearKeys', 'Clearing execution keys...')
       this.apiKey = ''
       this.apiSecret = ''
+      this.persistedApiKey = ''
+      this.persistedApiSecret = ''
       void clearKeysAction()
-        .then((result) => this.applyActionResult(result))
+        .then((result) => {
+          this.applyActionResult(result)
+          syncPersistedKeyMirror(this)
+        })
         .catch((error) => this.failAction('Clear keys failed', error))
         .finally(() => this.finishAction('clearKeys'))
     },

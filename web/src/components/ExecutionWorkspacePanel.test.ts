@@ -18,6 +18,12 @@ vi.mock('../composables/useVirtualTableRows', () => ({
 }))
 
 describe('ExecutionWorkspacePanel', () => {
+  function findButton(label: string): HTMLButtonElement | undefined {
+    return Array.from(document.querySelectorAll('button')).find((button) =>
+      String(button.textContent || '').trim() === label,
+    ) as HTMLButtonElement | undefined
+  }
+
   beforeEach(() => {
     localStorage.clear()
     document.body.innerHTML = `
@@ -78,5 +84,113 @@ describe('ExecutionWorkspacePanel', () => {
     expect(tableText).toContain('Time (UTC)')
     expect(tableText).toContain('BUY')
     expect(tableText).toContain('order-1')
+  })
+
+  it('runs dry-run one-shot directly with dynamic simulate copy', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    const executionStore = useExecutionStore(pinia)
+    workflowStore.selectWorkspace('settings')
+    executionStore.setInputField('execSymbol', 'AAPL')
+    executionStore.setCheckboxField('execDryRun', true)
+    const runOnceSpy = vi.spyOn(executionStore, 'runOnce').mockImplementation(() => {})
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const simulateButton = findButton('Simulate once')
+    expect(simulateButton).toBeTruthy()
+    simulateButton?.click()
+    await nextTick()
+
+    expect(runOnceSpy).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent || '').not.toContain('Confirm submit')
+  })
+
+  it('requires confirmation before broker-armed one-shot execution', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    const executionStore = useExecutionStore(pinia)
+    workflowStore.selectWorkspace('settings')
+    executionStore.setInputField('execSymbol', 'AAPL')
+    executionStore.setCheckboxField('execDryRun', false)
+    executionStore.setInputField('execApiKey', 'key_1')
+    executionStore.setInputField('execApiSecret', 'secret_1')
+    const runOnceSpy = vi.spyOn(executionStore, 'runOnce').mockImplementation(() => {})
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const brokerButton = findButton('Submit paper order once')
+    expect(brokerButton).toBeTruthy()
+    brokerButton?.click()
+    await nextTick()
+
+    expect(runOnceSpy).not.toHaveBeenCalled()
+    expect(document.body.textContent || '').toContain('Confirm submit paper order once?')
+
+    const confirmButton = document.querySelector(
+      '.confirmationDialogActions button:last-child',
+    ) as HTMLButtonElement | null
+    expect(confirmButton).toBeTruthy()
+    confirmButton?.click()
+    await nextTick()
+
+    expect(runOnceSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows broker-armed blocked reasons when credentials are missing', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    const executionStore = useExecutionStore(pinia)
+    workflowStore.selectWorkspace('settings')
+    executionStore.setInputField('execSymbol', 'AAPL')
+    executionStore.setCheckboxField('execDryRun', false)
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Credential state')
+    expect(text).toContain('Missing')
+    expect(text).toContain('API key + secret are required for broker-armed execution.')
+
+    const brokerButton = findButton('Submit paper order once')
+    expect(brokerButton).toBeTruthy()
+    expect(brokerButton?.disabled).toBe(true)
+  })
+
+  it('surfaces feed and runner preflight reasons before automation is available', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+
+    mount(ExecutionWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Feed: Enter a symbol before starting live candles.')
+    expect(text).toContain('Runner: Enter a symbol before starting the auto-runner.')
+    expect(text).toContain('Runner: Start live candles first. The auto-runner only reacts to active live bars.')
   })
 })
