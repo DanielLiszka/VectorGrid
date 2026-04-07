@@ -315,6 +315,7 @@ fn smoke_request(
         parent_artifact_path: "synthetic://options_expression_smoke".to_string(),
         parent_candidate_index: None,
         options_dataset_id: "synthetic_spy".to_string(),
+        structure_family: ta_app_core::options_types::OptionsStructureFamily::LongSingle,
         backend_preference,
         delay_minutes: vec![0, 1, 5],
         dte_buckets: vec![1, 3, 5],

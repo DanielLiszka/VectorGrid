@@ -77,6 +77,10 @@ fn default_fill_model() -> OptionsFillModelFamily {
     OptionsFillModelFamily::AggregateResearch
 }
 
+fn default_structure_family() -> OptionsStructureFamily {
+    OptionsStructureFamily::LongSingle
+}
+
 fn default_backend_preference() -> OptionsExpressionBackendPreference {
     OptionsExpressionBackendPreference::Auto
 }
@@ -111,6 +115,14 @@ pub enum OptionsFillModelFamily {
     AggregateResearch,
     QuoteConservative,
     QuoteMid,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsStructureFamily {
+    LongSingle,
+    DebitVertical,
+    LongPair,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -174,6 +186,7 @@ pub enum OptionsCandidateInvalidReason {
     NoPriceRowAfterEntry,
     NoExpirationInBucket,
     NoStrikeInTolerance,
+    NoCompanionLegInStructure,
     SpreadTooWide,
     PremiumTooHigh,
     PremiumTooLow,
@@ -404,6 +417,8 @@ pub struct OptionsSignalEventManifestV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct OptionsTupleSpec {
+    #[serde(default = "default_structure_family")]
+    pub structure_family: OptionsStructureFamily,
     pub delay_minutes: u16,
     pub dte_days: u16,
     pub moneyness_bucket: OptionsMoneynessBucket,
@@ -450,6 +465,10 @@ pub struct OptionsExpressionTupleResult {
     pub harsher_stress_metrics: Option<OptionsExpressionMetrics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed_harsher_stress_metrics: Option<OptionsExpressionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extreme_stress_metrics: Option<OptionsExpressionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_extreme_stress_metrics: Option<OptionsExpressionMetrics>,
     #[serde(default)]
     pub robust_score: f64,
 }
@@ -491,9 +510,13 @@ pub struct OptionsExpressionEventDetailRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_contract_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expiration_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strike: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_strike: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multiplier: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -501,11 +524,15 @@ pub struct OptionsExpressionEventDetailRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_option_price: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_entry_option_price: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_underlier_price: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_timestamp: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_option_price: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_exit_option_price: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub premium_paid: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -748,6 +775,8 @@ pub struct OptionsExpressionRunRequest {
     #[serde(default)]
     pub parent_candidate_index: Option<usize>,
     pub options_dataset_id: String,
+    #[serde(default = "default_structure_family")]
+    pub structure_family: OptionsStructureFamily,
     #[serde(default = "default_backend_preference")]
     pub backend_preference: OptionsExpressionBackendPreference,
     #[serde(default = "default_delay_minutes")]
@@ -840,6 +869,7 @@ mod tests {
             OptionsSplitAssignmentMode::EventChronological
         );
         assert_eq!(req.sealed_finalist_count, 5);
+        assert_eq!(req.structure_family, OptionsStructureFamily::LongSingle);
         assert!(!req.delay_minutes.is_empty());
     }
 }

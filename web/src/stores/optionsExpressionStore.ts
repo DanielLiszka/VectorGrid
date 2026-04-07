@@ -13,6 +13,7 @@ import {
   analyzeOptionsExpressionFeasibility,
   downloadPolygonOptionsDataset,
   exportOptionsExpressionCsv,
+  exportOptionsExpressionEventPathCsv,
   exportOptionsExpressionInspectionCsv,
   importOptionsDataset,
   inspectOptionsExpressionEventPath,
@@ -37,6 +38,11 @@ export const OPTIONS_FILL_MODEL_OPTIONS = [
   'quote_conservative',
   'quote_mid',
 ] as const
+export const OPTIONS_STRUCTURE_FAMILY_OPTIONS = [
+  'long_single',
+  'debit_vertical',
+  'long_pair',
+] as const
 export const OPTIONS_BACKEND_PREFERENCE_OPTIONS = [
   'auto',
   'cpu_reference',
@@ -46,9 +52,27 @@ export const OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS = [
   'event_chronological',
   'session_chronological',
 ] as const
+export const OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS = [
+  'minute_aggregate',
+  'top_of_book_quote',
+  'derived_mid_snapshot',
+] as const
+export const OPTIONS_SUPPORTED_PARENT_STRATEGIES = [
+  'DoubleMa',
+  'CompositeTrend',
+  'RegimeHybrid',
+  'BreakoutMomentum',
+] as const
 
 function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
+}
+
+function isSupportedParentStrategyKind(value: unknown): boolean {
+  const normalized = normalizeText(value)
+  return (
+    OPTIONS_SUPPORTED_PARENT_STRATEGIES as readonly string[]
+  ).includes(normalized)
 }
 
 function normalizeNumber(value: unknown, fallback = 0): number {
@@ -122,6 +146,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     parentDatasetLabel: '',
     parentRootHint: '',
     importRootSymbol: '',
+    importPriceSemantics: 'minute_aggregate',
     downloadDatasetIdInput: '',
     downloadFromDateInput: '',
     downloadToDateInput: '',
@@ -150,6 +175,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     selectedMoneynessBuckets: [...OPTIONS_MONEYNESS_BUCKET_OPTIONS] as string[],
     exitTemplate: 'fixed_hold_or_target_stop',
     fillModel: 'aggregate_research',
+    structureFamily: 'long_single',
     backendPreference: 'auto',
     splitAssignmentMode: 'event_chronological',
     topKInput: '25',
@@ -171,11 +197,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     inspectionBusy: false,
     eventPathBusy: false,
     feasibilityBusy: false,
-    statusLine: 'Select a saved DoubleMa run to configure an options expression follow-up.',
+    statusLine: 'Select a saved supported run to configure an options expression follow-up.',
   }),
 
   getters: {
-    supportedParent: (state) => normalizeText(state.parentStrategyKind) === 'DoubleMa',
+    supportedParent: (state) => isSupportedParentStrategyKind(state.parentStrategyKind),
 
     filteredArtifacts(state): OptionsExpressionArtifactSummary[] {
       const parentId = normalizeText(state.parentArtifactId)
@@ -248,6 +274,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
       this.parentRootHint = nextRootHint
       if (changed) {
         this.importRootSymbol = nextRootHint
+        this.importPriceSemantics = 'minute_aggregate'
         this.downloadDatasetIdInput = ''
         this.downloadFromDateInput = ''
         this.downloadToDateInput = ''
@@ -270,8 +297,9 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         this.statusLine = 'Select a saved run to configure an options expression follow-up.'
         return
       }
-      if (nextStrategy !== 'DoubleMa') {
-        this.statusLine = 'Options expression follow-up currently supports saved DoubleMa runs only.'
+      if (!isSupportedParentStrategyKind(nextStrategy)) {
+        this.statusLine =
+          'Options expression follow-up currently supports saved DoubleMa, CompositeTrend, RegimeHybrid, and BreakoutMomentum runs only.'
         return
       }
       this.statusLine = 'Ready to import a Polygon/Massive options dataset or reuse an existing one.'
@@ -317,14 +345,19 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
           this.statusLine = 'Options dataset import canceled.'
           return
         }
+        const importPriceSemantics = pickSupported(
+          this.importPriceSemantics,
+          OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS,
+          'minute_aggregate',
+        )
         const imported = await importOptionsDataset({
           csv_path: csvPath,
           root_symbol: normalizeText(this.importRootSymbol) || undefined,
           provider_name: 'massive',
-          provider_source_surface: 'minute_aggregate',
+          provider_source_surface: importPriceSemantics,
           contract_reference_source: 'massive_contract_reference',
-          price_semantics: 'minute_aggregate',
-          aggregate_price_field: 'close',
+          price_semantics: importPriceSemantics,
+          aggregate_price_field: importPriceSemantics === 'minute_aggregate' ? 'close' : undefined,
         })
         await this.refreshDatasets()
         this.selectedDatasetId = imported.optionsDatasetId
@@ -453,7 +486,8 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         return
       }
       if (!this.supportedParent) {
-        this.statusLine = 'Only saved DoubleMa runs are currently supported.'
+        this.statusLine =
+          'Only saved DoubleMa, CompositeTrend, RegimeHybrid, and BreakoutMomentum runs are currently supported.'
         return
       }
       if (!this.selectedDatasetId) {
@@ -491,6 +525,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
           'fixed_hold_or_target_stop',
         ),
         fill_model: pickSupported(this.fillModel, OPTIONS_FILL_MODEL_OPTIONS, 'aggregate_research'),
+        structure_family: pickSupported(
+          this.structureFamily,
+          OPTIONS_STRUCTURE_FAMILY_OPTIONS,
+          'long_single',
+        ),
         backend_preference: pickSupported(
           this.backendPreference,
           OPTIONS_BACKEND_PREFERENCE_OPTIONS,
@@ -538,7 +577,8 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         return
       }
       if (!this.supportedParent) {
-        this.statusLine = 'Only saved DoubleMa runs are currently supported.'
+        this.statusLine =
+          'Only saved DoubleMa, CompositeTrend, RegimeHybrid, and BreakoutMomentum runs are currently supported.'
         return
       }
       if (!this.selectedDatasetId) {
@@ -578,6 +618,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
             'fixed_hold_or_target_stop',
           ),
           fill_model: pickSupported(this.fillModel, OPTIONS_FILL_MODEL_OPTIONS, 'aggregate_research'),
+          structure_family: pickSupported(
+            this.structureFamily,
+            OPTIONS_STRUCTURE_FAMILY_OPTIONS,
+            'long_single',
+          ),
           backend_preference: pickSupported(
             this.backendPreference,
             OPTIONS_BACKEND_PREFERENCE_OPTIONS,
@@ -690,6 +735,31 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
 
       this.statusLine = exported
         ? `Exported ${rows.length} inspection row${rows.length === 1 ? '' : 's'} to CSV.`
+        : 'CSV export is unavailable in the current environment.'
+    },
+
+    exportActiveEventPathCsv(): void {
+      const inspection = this.activeEventPathInspection
+      const points = inspection?.points ?? []
+      if (!inspection || !points.length) {
+        this.statusLine = 'Load an executed event path before exporting replay points.'
+        return
+      }
+
+      const artifactStem = normalizeText(this.activeArtifactPath)
+        ? normalizeText(this.activeArtifactPath).split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'vectorgrid_options_expression'
+        : 'vectorgrid_options_expression'
+
+      const exported = exportOptionsExpressionEventPathCsv({
+        filenameStem: `${artifactStem}_tuple_${inspection.tupleIndex + 1}_${normalizeText(inspection.eventId) || `event_${inspection.eventIndex + 1}`}_path`,
+        artifactPath: this.activeArtifactPath,
+        tupleIndex: inspection.tupleIndex,
+        eventId: inspection.eventId,
+        points,
+      })
+
+      this.statusLine = exported
+        ? `Exported ${points.length} replay point${points.length === 1 ? '' : 's'} for event ${inspection.eventId}.`
         : 'CSV export is unavailable in the current environment.'
     },
 

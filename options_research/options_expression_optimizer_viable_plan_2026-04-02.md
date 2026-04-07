@@ -1,7 +1,7 @@
 # Options Expression Optimizer — Repo-Fit Viable Implementation Plan
 
 Date: 2026-04-02
-Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice, CUDA scorer path, and current History follow-up reporting/drilldown slice now landed in the repo while real imported-dataset Phase `0.5` measurement, GPU-vs-CPU proof on representative jobs, and broader productization scope remain pending.
+Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice, CUDA scorer path, current History follow-up reporting/drilldown slice, broadened double-like parent-artifact support, quote-aware CSV import support, and the first bounded fixed-geometry two-leg expansion now landed in the repo while broader non-double-like parent coverage remains future work.
 
 ## Executive Verdict
 
@@ -22,7 +22,7 @@ To fit the current VectorGrid repo and to keep the feature actually shippable, t
 1. **A separate artifact-driven follow-up workflow, not a new core strategy family.**
 2. **A compiler-heavy CPU front half plus a narrow GPU scoring back half, with GPU productization gated by an early feasibility spike.**
 3. **A derived signal-event manifest, not a broad mutation of every existing run artifact writer.**
-4. **A single-underlying-root, long-single-leg, moneyness-first v1.**
+4. **A single-underlying-root, moneyness-first v1 with long-single as the default and tightly bounded two-leg extensions allowed only when they preserve tensor regularity.**
 5. **A separate options data path, not an extension of the current Polygon/live-execution stack.**
 6. **A result artifact + diagnostics UI first, with heavyweight report/export surfaces deferred.**
 
@@ -146,7 +146,9 @@ This one decision removes a large amount of avoidable scope.
 ### In scope
 
 - validated parent artifact input only
-- long single-leg calls and puts only
+- long single-leg calls and puts
+- bounded same-expiry fixed-geometry two-leg families that preserve deterministic compilation
+  - current shipped families: `debit_vertical`, `long_pair`
 - one options root per job
 - minute quote-based entry/exit evaluation
 - deterministic contract selection
@@ -159,7 +161,7 @@ This one decision removes a large amount of avoidable scope.
 
 ### Out of scope for v1
 
-- multi-leg spreads
+- arbitrary or broader multi-leg spread families
 - rolling
 - short premium
 - assignment or exercise
@@ -203,12 +205,11 @@ The key rule is:
 
 **expansion is only allowed if preprocessing can still compile the strategy family into dense candidate slots and dense exit-summary tensors that keep the GPU scorer regular.**
 
-Recommended future expansion order if v1 proves performant enough:
+Recommended future expansion order if the currently shipped two-leg families continue to prove performant enough:
 
-1. same-expiry fixed debit call spreads
-2. same-expiry fixed debit put spreads
-3. fixed-ratio two-leg call or put ladders
-4. only later, other fixed-geometry bundles if they preserve tensor density and deterministic compilation
+1. fixed-ratio two-leg call or put ladders beyond the currently shipped `long_pair`
+2. additional same-expiry fixed debit families beyond the currently shipped `debit_vertical`
+3. only later, other fixed-geometry bundles if they preserve tensor density and deterministic compilation
 
 Hard constraints for any post-v1 multi-leg expansion:
 
@@ -1683,26 +1684,37 @@ Status key:
   - multi-day large-grid replay-cache CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_replaycache.{json,md}`
 - authoritative DTE7 promotion evidence with current telemetry: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.{json,md}`
 - `[x]` Prove the GPU scorer materially beats CPU on representative large jobs before product promotion
-- `[~]` Decide whether the current repeated-preview wall-time economics are strong enough to promote `Auto` / GPU-default productization beyond the current experiment-only posture
+- `[x]` Promote `Auto` toward GPU-first productization while retaining CPU as the correctness oracle and explicit fallback/debug lane
+  Current shipped posture:
+  the options follow-up UI defaults to `auto`, the backend `Auto` policy now uses materially lower workload floors and a lower measured-speedup gate than the original conservative experiment-only posture, and representative provider-backed DTE7 evidence now clears the scorer-speed gate. CPU remains retained for correctness, forced debugging, and fallback when planner/runtime conditions fail.
 - `[~]` Keep using measured provider-slice diagnostics to choose representative strike/DTE windows before concluding on GPU productization
   Current measured lesson from the first SPY slice:
   an under-centered strike band (`500-560`) produced artificial `no_strike_in_tolerance` failure even though the backend/compiler path was correct. The corrected near-spot band (`645-665`) cleared the density and invalid-rate gates on the same underlying day.
 - `[x]` Add robustness rescore variants beyond the current narrow baseline
-- `[ ]` Add any further scenario-rescore families only if later real-data usage proves they are worth the extra tensor and reporting complexity
+- `[~]` Add any further scenario-rescore families only if later real-data usage proves they are worth the extra tensor and reporting complexity
+  Current shipped scope:
+  baseline, conservative, harsher, plus an additional finalist-only `extreme` stress lane are implemented. Any broader scenario family should now be justified by concrete usage rather than roadmap symmetry.
 - `[x]` Add sealed finalist evaluation artifact/reporting beyond the current current finalist/stress summaries once broader comparison surfaces proved necessary
-- `[~]` Add richer trade inspector / full path-level event drilldown beyond the current lazy tuple table plus row detail and path replay
+- `[x]` Add richer trade inspector / full path-level event drilldown beyond the original lazy tuple table baseline
+  Current shipped scope:
+  tuple drilldown now includes split/status rollups, invalid-reason rollups, row-level selection, companion-leg detail where applicable, event-path replay, event-path analytics, and CSV export for both tuple rows and replay paths.
 - `[x]` Add broader reporting surfaces beyond the current CSV export path
-- `[ ]` Add optional post-v1 multi-leg fixed-geometry expression families only if tensor density remains acceptable
+- `[x]` Broaden parent artifact support from `DoubleMa` to the current double-like saved-run families (`DoubleMa`, `CompositeTrend`, `RegimeHybrid`, `BreakoutMomentum`) while keeping non-double-like strategies read-only
+- `[x]` Expose quote-aware Polygon/Massive CSV import semantics in the current options UI while keeping direct provider download on the bounded `1m` aggregate lane
+- `[~]` Add optional post-v1 multi-leg fixed-geometry expression families only if tensor density remains acceptable
+  Current shipped scope:
+  `long_single` remains the default structure family, and two bounded same-expiry fixed-geometry two-leg families are now implemented: `debit_vertical` and `long_pair`. Any broader ladders, additional bundles, or more general multi-leg geometry remain post-v1.
 - `[x]` Keep the normalized import path supported even after direct provider download is added
 
 #### Intentionally narrow first-slice constraints that still hold
 
-- `[~]` Parent artifact support is currently limited to `DoubleMa`
-- `[~]` Current options data realism is limited to the constrained minute-aggregate path
+- `[~]` Parent artifact support is currently limited to the current double-like saved-run families (`DoubleMa`, `CompositeTrend`, `RegimeHybrid`, `BreakoutMomentum`)
+- `[~]` Direct provider download remains limited to the constrained `1m` minute-aggregate path, while quote-aware realism currently enters through imported Polygon/Massive CSV datasets
 - `[~]` The canonical first-wave options resolution is Polygon/Massive `1m`; coarser or quote-aware surfaces remain secondary lanes
 - `[~]` Current Polygon/Massive support is bounded `1m` import/download inside the options follow-up path, not a generic live-connected provider workflow or a reuse of the main stock-data panel
 - `[~]` CPU remains the correctness oracle and the retained-finalist exactifier; the CUDA scorer is implemented and now has representative provider-backed proof, but CPU remains the explicit fallback/debug lane
 - `[~]` The current options UI default backend is `auto`; explicit `cpu_reference` and `gpu_compiled_tensor` remain available for oracle/debug and forced-CUDA experiments
+- `[~]` The currently supported structure families are `long_single` plus two bounded same-expiry fixed-geometry two-leg families (`debit_vertical`, `long_pair`); broader multi-leg, rolling, and assignment-style modeling remain out of scope
 - `[~]` The current frontend host is the History follow-up panel, not a dedicated options mode
 
 ### Phase 0 — Repo-fit contract spike

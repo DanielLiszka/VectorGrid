@@ -73,6 +73,8 @@ struct TupleMetricsSnapshot {
     sealed_stress_expectancy_per_premium: Option<f64>,
     harsher_stress_expectancy_per_premium: Option<f64>,
     sealed_harsher_stress_expectancy_per_premium: Option<f64>,
+    extreme_stress_expectancy_per_premium: Option<f64>,
+    sealed_extreme_stress_expectancy_per_premium: Option<f64>,
     selection_valid_trades: usize,
     holdout_valid_trades: Option<usize>,
     sealed_valid_trades: Option<usize>,
@@ -80,6 +82,8 @@ struct TupleMetricsSnapshot {
     sealed_stress_valid_trades: Option<usize>,
     harsher_stress_valid_trades: Option<usize>,
     sealed_harsher_stress_valid_trades: Option<usize>,
+    extreme_stress_valid_trades: Option<usize>,
+    sealed_extreme_stress_valid_trades: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +99,8 @@ struct MatchedTupleComparison {
     sealed_stress_expectancy_delta: Option<f64>,
     harsher_stress_expectancy_delta: Option<f64>,
     sealed_harsher_stress_expectancy_delta: Option<f64>,
+    extreme_stress_expectancy_delta: Option<f64>,
+    sealed_extreme_stress_expectancy_delta: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -154,6 +160,14 @@ fn tuple_snapshot(row: &OptionsExpressionTupleResult, tuple_index: usize) -> Tup
             .sealed_harsher_stress_metrics
             .as_ref()
             .map(|metrics| metrics.expectancy_per_premium),
+        extreme_stress_expectancy_per_premium: row
+            .extreme_stress_metrics
+            .as_ref()
+            .map(|metrics| metrics.expectancy_per_premium),
+        sealed_extreme_stress_expectancy_per_premium: row
+            .sealed_extreme_stress_metrics
+            .as_ref()
+            .map(|metrics| metrics.expectancy_per_premium),
         selection_valid_trades: row.selection_metrics.valid_trades,
         holdout_valid_trades: row
             .holdout_metrics
@@ -177,6 +191,14 @@ fn tuple_snapshot(row: &OptionsExpressionTupleResult, tuple_index: usize) -> Tup
             .map(|metrics| metrics.valid_trades),
         sealed_harsher_stress_valid_trades: row
             .sealed_harsher_stress_metrics
+            .as_ref()
+            .map(|metrics| metrics.valid_trades),
+        extreme_stress_valid_trades: row
+            .extreme_stress_metrics
+            .as_ref()
+            .map(|metrics| metrics.valid_trades),
+        sealed_extreme_stress_valid_trades: row
+            .sealed_extreme_stress_metrics
             .as_ref()
             .map(|metrics| metrics.valid_trades),
     }
@@ -263,6 +285,14 @@ fn matched_tuple_rows(
                 sealed_harsher_stress_expectancy_delta: right_snapshot
                     .sealed_harsher_stress_expectancy_per_premium
                     .zip(left_snapshot.sealed_harsher_stress_expectancy_per_premium)
+                    .map(|(rhs, lhs)| rhs - lhs),
+                extreme_stress_expectancy_delta: right_snapshot
+                    .extreme_stress_expectancy_per_premium
+                    .zip(left_snapshot.extreme_stress_expectancy_per_premium)
+                    .map(|(rhs, lhs)| rhs - lhs),
+                sealed_extreme_stress_expectancy_delta: right_snapshot
+                    .sealed_extreme_stress_expectancy_per_premium
+                    .zip(left_snapshot.sealed_extreme_stress_expectancy_per_premium)
                     .map(|(rhs, lhs)| rhs - lhs),
                 left: left_snapshot,
                 right: right_snapshot,

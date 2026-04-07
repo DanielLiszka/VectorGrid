@@ -89,6 +89,19 @@ describe('optionsExpressionStore', () => {
     expect(store.backendPreference).toBe('auto')
   })
 
+  it('treats the current double-like parent families as supported follow-up inputs', () => {
+    const store = useOptionsExpressionStore()
+
+    store.attachParent('C:/runs/vectorgrid_run_1.json', 'CompositeTrend', 'SPY.csv')
+    expect(store.supportedParent).toBe(true)
+    expect(store.statusLine).toContain('Ready to import')
+
+    store.attachParent('C:/runs/vectorgrid_run_2.json', 'MlSignal', 'SPY.csv')
+    expect(store.supportedParent).toBe(false)
+    expect(store.statusLine).toContain('CompositeTrend')
+    expect(store.statusLine).toContain('BreakoutMomentum')
+  })
+
   it('runs options expression with normalized request fields', async () => {
     listOptionsDatasetsMock.mockResolvedValue([
       {
@@ -364,9 +377,49 @@ describe('optionsExpressionStore', () => {
       expect.objectContaining({
         csv_path: 'C:/imports/spy_options.csv',
         root_symbol: 'SPY',
+        provider_source_surface: 'minute_aggregate',
+        price_semantics: 'minute_aggregate',
+        aggregate_price_field: 'close',
       }),
     )
     expect(openOrRevealOptionsPathMock).toHaveBeenCalledWith('C:/runs/vectorgrid_options_expression_1.json')
+  })
+
+  it('can import quote-aware Polygon/Massive datasets through the picker flow', async () => {
+    pickOptionsCsvPathMock.mockResolvedValue('C:/imports/spy_quotes.csv')
+    importOptionsDatasetMock.mockResolvedValue({
+      optionsDatasetId: 'spy_quotes',
+      rootSymbol: 'SPY',
+      priceSemantics: 'top_of_book_quote',
+      contractCount: 2,
+      rowCount: 24,
+    })
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_quotes',
+        rootSymbol: 'SPY',
+        priceSemantics: 'top_of_book_quote',
+        contractCount: 2,
+        rowCount: 24,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const store = useOptionsExpressionStore()
+    store.attachParent('C:/runs/vectorgrid_run_1.json', 'CompositeTrend', 'SPY.csv')
+    store.importPriceSemantics = 'top_of_book_quote'
+
+    await store.importDatasetFromPicker()
+
+    expect(importOptionsDatasetMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        csv_path: 'C:/imports/spy_quotes.csv',
+        provider_source_surface: 'top_of_book_quote',
+        price_semantics: 'top_of_book_quote',
+        aggregate_price_field: undefined,
+      }),
+    )
+    expect(store.selectedDatasetId).toBe('spy_quotes')
   })
 
   it('downloads Polygon/Massive datasets through the bounded options flow', async () => {

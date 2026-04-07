@@ -5,6 +5,7 @@ import {
   analyzeOptionsExpressionFeasibility,
   downloadPolygonOptionsDataset,
   exportOptionsExpressionCsv,
+  exportOptionsExpressionEventPathCsv,
   importOptionsDataset,
   inspectOptionsExpressionTuple,
   listOptionsDatasets,
@@ -228,6 +229,26 @@ describe('optionsExpressionService', () => {
                 win_rate: 0.5,
                 total_pnl_per_contract: 2,
               },
+              extreme_stress_metrics: {
+                valid_trades: 2,
+                invalid_events: 0,
+                invalid_rate: 0,
+                expectancy_per_trade: 1,
+                expectancy_per_premium: -0.01,
+                median_return_on_premium: -0.01,
+                win_rate: 0.5,
+                total_pnl_per_contract: 1,
+              },
+              sealed_extreme_stress_metrics: {
+                valid_trades: 2,
+                invalid_events: 0,
+                invalid_rate: 0,
+                expectancy_per_trade: 1,
+                expectancy_per_premium: -0.02,
+                median_return_on_premium: -0.02,
+                win_rate: 0.5,
+                total_pnl_per_contract: 1,
+              },
             },
           ],
         },
@@ -253,10 +274,13 @@ describe('optionsExpressionService', () => {
             best_sealed_stress_expectancy_per_premium: 0.03,
             best_harsher_stress_expectancy_per_premium: 0.02,
             best_sealed_harsher_stress_expectancy_per_premium: 0.01,
+            best_extreme_stress_expectancy_per_premium: -0.01,
+            best_sealed_extreme_stress_expectancy_per_premium: -0.02,
             has_holdout_metrics: true,
             has_sealed_evaluation_metrics: true,
             has_stress_metrics: true,
             has_harsher_stress_metrics: true,
+            has_extreme_stress_metrics: true,
           },
         ],
       })
@@ -279,6 +303,8 @@ describe('optionsExpressionService', () => {
     expect(run.rankedResults[0]?.sealedStressMetrics?.expectancyPerPremium).toBe(0.03)
     expect(run.rankedResults[0]?.harsherStressMetrics?.expectancyPerPremium).toBe(0.02)
     expect(run.rankedResults[0]?.sealedHarsherStressMetrics?.expectancyPerPremium).toBe(0.01)
+    expect(run.rankedResults[0]?.extremeStressMetrics?.expectancyPerPremium).toBe(-0.01)
+    expect(run.rankedResults[0]?.sealedExtremeStressMetrics?.expectancyPerPremium).toBe(-0.02)
     expect(artifacts[0]?.optionsDatasetId).toBe('spy_options')
     expect(artifacts[0]?.tupleCount).toBe(2)
     expect(artifacts[0]?.bestRobustScore).toBe(0.18)
@@ -286,10 +312,13 @@ describe('optionsExpressionService', () => {
     expect(artifacts[0]?.bestSealedExpectancyPerPremium).toBe(0.07)
     expect(artifacts[0]?.bestHarsherStressExpectancyPerPremium).toBe(0.02)
     expect(artifacts[0]?.bestSealedHarsherStressExpectancyPerPremium).toBe(0.01)
+    expect(artifacts[0]?.bestExtremeStressExpectancyPerPremium).toBe(-0.01)
+    expect(artifacts[0]?.bestSealedExtremeStressExpectancyPerPremium).toBe(-0.02)
     expect(artifacts[0]?.sealedFinalistBudget).toBe(0)
     expect(artifacts[0]?.sealedEvaluatedTupleCount).toBe(0)
     expect(artifacts[0]?.hasSealedEvaluationMetrics).toBe(true)
     expect(artifacts[0]?.hasHarsherStressMetrics).toBe(true)
+    expect(artifacts[0]?.hasExtremeStressMetrics).toBe(true)
     expect(artifacts[0]?.backendFallbackReason).toBe('GPU planner probe failed; using CPU.')
     expect(invokeCommandMock).toHaveBeenCalledWith('list_artifact_library')
   })
@@ -738,6 +767,7 @@ describe('optionsExpressionService', () => {
       priceSemantics: 'minute_aggregate',
       tuples: [
         {
+          structureFamily: 'debit_vertical',
           delayMinutes: 1,
           dteDays: 3,
           moneynessBucket: 'otm_1',
@@ -769,6 +799,26 @@ describe('optionsExpressionService', () => {
           },
           sealedEvaluationMetrics: null,
           stressMetrics: null,
+          extremeStressMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: -2.5,
+            expectancyPerPremium: -0.05,
+            medianReturnOnPremium: -0.03,
+            winRate: 0.33,
+            totalPnlPerContract: -8,
+          },
+          sealedExtremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: -4.0,
+            expectancyPerPremium: -0.08,
+            medianReturnOnPremium: -0.05,
+            winRate: 0.0,
+            totalPnlPerContract: -8,
+          },
         },
       ],
     })
@@ -782,8 +832,58 @@ describe('optionsExpressionService', () => {
     expect(blobArg).toBeInstanceOf(Blob)
     const csvBlob = blobArg instanceof Blob ? blobArg : null
     const csvText = await csvBlob?.text()
-    expect(csvText).toContain('delay_minutes,dte_days,moneyness_bucket')
+    expect(csvText).toContain('delay_minutes,dte_days,structure_family,moneyness_bucket')
+    expect(csvText).toContain('extreme_stress_expectancy_per_premium')
+    expect(csvText).toContain('sealed_extreme_stress_expectancy_per_premium')
     expect(csvText).toContain('cpu_reference,minute_aggregate')
-    expect(csvText).toContain('1,3,otm_1,15,0.5,0.25')
+    expect(csvText).toContain('1,3,debit_vertical,otm_1,15,0.5,0.25')
+    expect(csvText).toContain(',-0.05,-0.08,')
+  })
+
+  it('exports event path replays to CSV', async () => {
+    let clicked = 0
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(() => 'blob:event-path')
+    const revokeObjectURL = vi
+      .spyOn(URL, 'revokeObjectURL')
+      .mockImplementation(() => undefined)
+    const createElement = vi.spyOn(document, 'createElement')
+    createElement.mockImplementation(((tagName: string) => {
+      const element = document.createElementNS('http://www.w3.org/1999/xhtml', tagName)
+      if (tagName.toLowerCase() === 'a') {
+        ;(element as HTMLAnchorElement).click = () => {
+          clicked += 1
+        }
+      }
+      return element
+    }) as typeof document.createElement)
+
+    const exported = exportOptionsExpressionEventPathCsv({
+      filenameStem: 'vectorgrid_event_path',
+      artifactPath: 'C:/runs/vectorgrid_options_expression.json',
+      tupleIndex: 0,
+      eventId: 'evt-1',
+      points: [
+        {
+          timestampMs: 1_700_000_060_000,
+          optionOpen: 0.4,
+          optionHigh: 0.8,
+          optionLow: 0.2,
+          optionClose: 0.45,
+          underlyingPrice: 100.5,
+        },
+      ],
+    })
+
+    expect(exported).toBe(true)
+    expect(clicked).toBe(1)
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:event-path')
+    const blobArg = createObjectURL.mock.calls[createObjectURL.mock.calls.length - 1]?.[0]
+    const csvBlob = blobArg instanceof Blob ? blobArg : null
+    const csvText = await csvBlob?.text()
+    expect(csvText).toContain('timestamp_ms,option_open,option_high,option_low,option_close,underlying_price,artifact_path,tuple_index,event_id')
+    expect(csvText).toContain('1700000060000,0.4,0.8,0.2,0.45,100.5,C:/runs/vectorgrid_options_expression.json,0,evt-1')
   })
 })

@@ -1249,6 +1249,7 @@ fn build_request(
         parent_artifact_path: artifact_path.to_string_lossy().to_string(),
         parent_candidate_index: None,
         options_dataset_id: dataset_id.to_string(),
+        structure_family: ta_app_core::options_types::OptionsStructureFamily::LongSingle,
         backend_preference: parse_backend_preference(&cli.backend_preference)?,
         delay_minutes: parse_u16_list(&cli.delay_minutes)?,
         dte_buckets: parse_u16_list(&cli.dte_buckets)?,

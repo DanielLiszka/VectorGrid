@@ -95,6 +95,7 @@ export interface OptionsExpressionRequestSummary {
   parentArtifactPath: string
   parentCandidateIndex: number | null
   optionsDatasetId: string
+  structureFamily?: string
   backendPreference?: string
   splitAssignmentMode: string
   delayMinutes: number[]
@@ -114,6 +115,7 @@ export interface OptionsExpressionRequestSummary {
 }
 
 export interface OptionsExpressionTupleSummary {
+  structureFamily?: string
   delayMinutes: number
   dteDays: number
   moneynessBucket: string
@@ -133,6 +135,8 @@ export interface OptionsExpressionTupleSummary {
   sealedStressMetrics?: OptionsExpressionMetricsSummary | null
   harsherStressMetrics?: OptionsExpressionMetricsSummary | null
   sealedHarsherStressMetrics?: OptionsExpressionMetricsSummary | null
+  extremeStressMetrics?: OptionsExpressionMetricsSummary | null
+  sealedExtremeStressMetrics?: OptionsExpressionMetricsSummary | null
 }
 
 export interface OptionsExpressionDiagnosticsSummary {
@@ -344,12 +348,15 @@ export interface OptionsExpressionArtifactSummary {
   bestSealedStressExpectancyPerPremium: number | null
   bestHarsherStressExpectancyPerPremium: number | null
   bestSealedHarsherStressExpectancyPerPremium: number | null
+  bestExtremeStressExpectancyPerPremium: number | null
+  bestSealedExtremeStressExpectancyPerPremium: number | null
   sealedFinalistBudget?: number
   sealedEvaluatedTupleCount?: number
   hasHoldoutMetrics: boolean
   hasSealedEvaluationMetrics: boolean
   hasStressMetrics: boolean
   hasHarsherStressMetrics: boolean
+  hasExtremeStressMetrics: boolean
 }
 
 export interface OptionsExpressionArtifactRecord {
@@ -383,14 +390,18 @@ export interface OptionsExpressionEventInspectionRow {
   status: string
   candidateInvalidReason: string
   contractId: string
+  companionContractId?: string
   expirationDate: string
   strike: number | null
+  companionStrike?: number | null
   multiplier: number | null
   entryTimestamp: number | null
   entryOptionPrice: number | null
+  companionEntryOptionPrice?: number | null
   entryUnderlierPrice: number | null
   exitTimestamp: number | null
   exitOptionPrice: number | null
+  companionExitOptionPrice?: number | null
   premiumPaid: number | null
   pnlPerContract: number | null
   returnOnPremium: number | null
@@ -453,6 +464,14 @@ export interface OptionsExpressionInspectionCsvExportInput {
   rows: OptionsExpressionEventInspectionRow[]
 }
 
+export interface OptionsExpressionEventPathCsvExportInput {
+  filenameStem?: string
+  artifactPath?: string
+  tupleIndex?: number
+  eventId?: string
+  points: OptionsExpressionEventPathPointSummary[]
+}
+
 function normalizeOptionsDatasetManifest(raw: unknown): OptionsDatasetManifestSummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   return {
@@ -513,6 +532,7 @@ function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const tuple = (row.tuple && typeof row.tuple === 'object' ? row.tuple : {}) as Record<string, unknown>
   return {
+    structureFamily: normalizeText(tuple.structure_family),
     delayMinutes: normalizeNumber(tuple.delay_minutes),
     dteDays: normalizeNumber(tuple.dte_days),
     moneynessBucket: normalizeText(tuple.moneyness_bucket),
@@ -535,6 +555,12 @@ function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
     harsherStressMetrics: row.harsher_stress_metrics ? normalizeMetrics(row.harsher_stress_metrics) : null,
     sealedHarsherStressMetrics: row.sealed_harsher_stress_metrics
       ? normalizeMetrics(row.sealed_harsher_stress_metrics)
+      : null,
+    extremeStressMetrics: row.extreme_stress_metrics
+      ? normalizeMetrics(row.extreme_stress_metrics)
+      : null,
+    sealedExtremeStressMetrics: row.sealed_extreme_stress_metrics
+      ? normalizeMetrics(row.sealed_extreme_stress_metrics)
       : null,
   }
 }
@@ -816,6 +842,7 @@ function normalizeRequest(raw: unknown): OptionsExpressionRequestSummary {
     parentArtifactPath: normalizeText(row.parent_artifact_path),
     parentCandidateIndex: normalizeOptionalNumber(row.parent_candidate_index),
     optionsDatasetId: normalizeText(row.options_dataset_id),
+    structureFamily: normalizeText(row.structure_family),
     backendPreference: normalizeText(row.backend_preference),
     splitAssignmentMode: normalizeText(row.split_assignment_mode) || 'event_chronological',
     delayMinutes: normalizeIntegerList(row.delay_minutes),
@@ -860,12 +887,19 @@ function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpress
     bestSealedHarsherStressExpectancyPerPremium: normalizeOptionalNumber(
       row.best_sealed_harsher_stress_expectancy_per_premium,
     ),
+    bestExtremeStressExpectancyPerPremium: normalizeOptionalNumber(
+      row.best_extreme_stress_expectancy_per_premium,
+    ),
+    bestSealedExtremeStressExpectancyPerPremium: normalizeOptionalNumber(
+      row.best_sealed_extreme_stress_expectancy_per_premium,
+    ),
     sealedFinalistBudget: normalizeNumber(row.sealed_finalist_budget),
     sealedEvaluatedTupleCount: normalizeNumber(row.sealed_evaluated_tuple_count),
     hasHoldoutMetrics: Boolean(row.has_holdout_metrics),
     hasSealedEvaluationMetrics: Boolean(row.has_sealed_evaluation_metrics),
     hasStressMetrics: Boolean(row.has_stress_metrics),
     hasHarsherStressMetrics: Boolean(row.has_harsher_stress_metrics),
+    hasExtremeStressMetrics: Boolean(row.has_extreme_stress_metrics),
   }
 }
 
@@ -906,14 +940,18 @@ function normalizeInspectionRow(raw: unknown): OptionsExpressionEventInspectionR
     status: normalizeText(row.status),
     candidateInvalidReason: normalizeText(row.candidate_invalid_reason),
     contractId: normalizeText(row.contract_id),
+    companionContractId: normalizeText(row.companion_contract_id),
     expirationDate: normalizeText(row.expiration_date),
     strike: normalizeOptionalNumber(row.strike),
+    companionStrike: normalizeOptionalNumber(row.companion_strike),
     multiplier: normalizeOptionalNumber(row.multiplier),
     entryTimestamp: normalizeOptionalNumber(row.entry_timestamp),
     entryOptionPrice: normalizeOptionalNumber(row.entry_option_price),
+    companionEntryOptionPrice: normalizeOptionalNumber(row.companion_entry_option_price),
     entryUnderlierPrice: normalizeOptionalNumber(row.entry_underlier_price),
     exitTimestamp: normalizeOptionalNumber(row.exit_timestamp),
     exitOptionPrice: normalizeOptionalNumber(row.exit_option_price),
+    companionExitOptionPrice: normalizeOptionalNumber(row.companion_exit_option_price),
     premiumPaid: normalizeOptionalNumber(row.premium_paid),
     pnlPerContract: normalizeOptionalNumber(row.pnl_per_contract),
     returnOnPremium: normalizeOptionalNumber(row.return_on_premium),
@@ -1137,6 +1175,7 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
   const header = [
     'delay_minutes',
     'dte_days',
+    'structure_family',
     'moneyness_bucket',
     'hold_minutes',
     'target_return',
@@ -1161,6 +1200,8 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
     'sealed_stress_expectancy_per_premium',
     'harsher_stress_expectancy_per_premium',
     'sealed_harsher_stress_expectancy_per_premium',
+    'extreme_stress_expectancy_per_premium',
+    'sealed_extreme_stress_expectancy_per_premium',
     'backend_used',
     'price_semantics',
   ]
@@ -1169,6 +1210,7 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
     ...tuples.map((row) => [
       row.delayMinutes,
       row.dteDays,
+      row.structureFamily,
       row.moneynessBucket,
       row.holdMinutes,
       row.targetReturn ?? '',
@@ -1193,6 +1235,8 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
       row.sealedStressMetrics?.expectancyPerPremium ?? '',
       row.harsherStressMetrics?.expectancyPerPremium ?? '',
       row.sealedHarsherStressMetrics?.expectancyPerPremium ?? '',
+      row.extremeStressMetrics?.expectancyPerPremium ?? '',
+      row.sealedExtremeStressMetrics?.expectancyPerPremium ?? '',
       normalizeText(input.backendUsed),
       normalizeText(input.priceSemantics),
     ].map((value) => csvCell(value)).join(',')),
@@ -1215,18 +1259,24 @@ export function exportOptionsExpressionInspectionCsv(input: OptionsExpressionIns
     'decision_timestamp',
     'earliest_tradable_timestamp',
     'requested_entry_timestamp',
+    'raw_underlier_price',
+    'base_exit_timestamp',
     'entry_timestamp',
     'entry_lag_minutes',
     'minutes_to_expiry_at_entry',
     'realized_hold_minutes',
     'contract_id',
+    'companion_contract_id',
     'expiration_date',
     'strike',
+    'companion_strike',
     'multiplier',
     'entry_option_price',
+    'companion_entry_option_price',
     'entry_underlier_price',
     'exit_timestamp',
     'exit_option_price',
+    'companion_exit_option_price',
     'exit_reason',
     'premium_paid',
     'pnl_per_contract',
@@ -1249,18 +1299,24 @@ export function exportOptionsExpressionInspectionCsv(input: OptionsExpressionIns
       row.decisionTimestamp,
       row.earliestTradableTimestamp,
       row.requestedEntryTimestamp,
+      row.rawUnderlierPrice,
+      row.baseExitTimestamp ?? '',
       row.entryTimestamp ?? '',
       row.entryLagMinutes ?? '',
       row.minutesToExpiryAtEntry ?? '',
       row.realizedHoldMinutes ?? '',
       row.contractId,
+      row.companionContractId,
       row.expirationDate,
       row.strike ?? '',
+      row.companionStrike ?? '',
       row.multiplier ?? '',
       row.entryOptionPrice ?? '',
+      row.companionEntryOptionPrice ?? '',
       row.entryUnderlierPrice ?? '',
       row.exitTimestamp ?? '',
       row.exitOptionPrice ?? '',
+      row.companionExitOptionPrice ?? '',
       row.exitReason,
       row.premiumPaid ?? '',
       row.pnlPerContract ?? '',
@@ -1270,6 +1326,39 @@ export function exportOptionsExpressionInspectionCsv(input: OptionsExpressionIns
       row.pathUnderlierLow ?? '',
       row.pathUnderlierHigh ?? '',
       normalizeText(input.artifactPath),
+    ].map((value) => csvCell(value)).join(',')),
+  ]
+  return downloadText(`${stem}.csv`, lines.join('\r\n'), 'text/csv;charset=utf-8')
+}
+
+export function exportOptionsExpressionEventPathCsv(input: OptionsExpressionEventPathCsvExportInput): boolean {
+  const points = Array.isArray(input.points) ? input.points : []
+  if (points.length === 0) return false
+  const stem = normalizeText(input.filenameStem)
+    || `vectorgrid_options_expression_tuple_${Math.max(0, Math.floor(normalizeNumber(input.tupleIndex))) + 1}_event_path`
+  const header = [
+    'timestamp_ms',
+    'option_open',
+    'option_high',
+    'option_low',
+    'option_close',
+    'underlying_price',
+    'artifact_path',
+    'tuple_index',
+    'event_id',
+  ]
+  const lines = [
+    header.join(','),
+    ...points.map((point) => [
+      point.timestampMs,
+      point.optionOpen,
+      point.optionHigh,
+      point.optionLow,
+      point.optionClose,
+      point.underlyingPrice,
+      normalizeText(input.artifactPath),
+      input.tupleIndex == null ? '' : input.tupleIndex,
+      normalizeText(input.eventId),
     ].map((value) => csvCell(value)).join(',')),
   ]
   return downloadText(`${stem}.csv`, lines.join('\r\n'), 'text/csv;charset=utf-8')

@@ -6,8 +6,11 @@ import {
   OPTIONS_BACKEND_PREFERENCE_OPTIONS,
   OPTIONS_EXIT_TEMPLATE_OPTIONS,
   OPTIONS_FILL_MODEL_OPTIONS,
+  OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS,
   OPTIONS_MONEYNESS_BUCKET_OPTIONS,
   OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
+  OPTIONS_STRUCTURE_FAMILY_OPTIONS,
+  OPTIONS_SUPPORTED_PARENT_STRATEGIES,
 } from '../stores/optionsExpressionStore'
 
 const props = defineProps<{
@@ -33,6 +36,7 @@ const {
   filteredArtifacts,
   importBusy,
   importRootSymbol,
+  importPriceSemantics,
   downloadDatasetIdInput,
   downloadFromDateInput,
   downloadToDateInput,
@@ -68,6 +72,7 @@ const {
   selectedMoneynessBuckets,
   exitTemplate,
   fillModel,
+  structureFamily,
   backendPreference,
   splitAssignmentMode,
   topKInput,
@@ -84,6 +89,10 @@ const {
 
 function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
+}
+
+function isSupportedParentStrategyKind(value: unknown): boolean {
+  return (OPTIONS_SUPPORTED_PARENT_STRATEGIES as readonly string[]).includes(normalizeText(value))
 }
 
 function formatList(value: Array<number | string> | null | undefined): string {
@@ -167,7 +176,7 @@ watch(
   () => [props.parentArtifactPath, props.parentStrategyKind, props.parentDatasetLabel] as const,
   ([path, strategyKind, datasetLabel]) => {
     store.attachParent(path, strategyKind, datasetLabel)
-    if (normalizeText(path) && normalizeText(strategyKind) === 'DoubleMa') {
+    if (normalizeText(path) && isSupportedParentStrategyKind(strategyKind)) {
       void store.bootstrap()
     }
   },
@@ -264,6 +273,10 @@ const hasStressMetrics = computed(() => activeRows.value.some((row) => row.stres
 const hasSealedStressMetrics = computed(() => activeRows.value.some((row) => row.sealedStressMetrics != null))
 const hasHarsherStressMetrics = computed(() => activeRows.value.some((row) => row.harsherStressMetrics != null))
 const hasSealedHarsherStressMetrics = computed(() => activeRows.value.some((row) => row.sealedHarsherStressMetrics != null))
+const hasExtremeStressMetrics = computed(() => activeRows.value.some((row) => row.extremeStressMetrics != null))
+const hasSealedExtremeStressMetrics = computed(() =>
+  activeRows.value.some((row) => row.sealedExtremeStressMetrics != null),
+)
 const selectedTupleIndex = ref(0)
 const inspectionSplitFilter = ref<'all' | 'search' | 'holdout' | 'sealed_test'>('all')
 const showAllInspectionRows = ref(false)
@@ -303,6 +316,59 @@ const inspectionRows = computed(() => {
   const filter = inspectionSplitFilter.value
   return inspection.rows.filter((row) => filter === 'all' || row.split === filter)
 })
+const inspectionSplitStatusRows = computed(() => {
+  const inspection = selectedInspection.value
+  if (!inspection) return []
+  const buckets = new Map<string, {
+    key: string
+    split: string
+    status: string
+    count: number
+    avgReturn: number | null
+    totalPnl: number | null
+  }>()
+  for (const row of inspection.rows) {
+    const key = `${row.split}|${row.status}`
+    const existing = buckets.get(key) || {
+      key,
+      split: row.split,
+      status: row.status,
+      count: 0,
+      avgReturn: null,
+      totalPnl: null,
+    }
+    existing.count += 1
+    existing.avgReturn =
+      row.returnOnPremium == null
+        ? existing.avgReturn
+        : ((existing.avgReturn ?? 0) * (existing.count - 1) + row.returnOnPremium) / existing.count
+    existing.totalPnl = row.pnlPerContract == null ? existing.totalPnl : (existing.totalPnl ?? 0) + row.pnlPerContract
+    buckets.set(key, existing)
+  }
+  return [...buckets.values()].sort((left, right) => {
+    const splitSort = normalizeText(left.split).localeCompare(normalizeText(right.split))
+    if (splitSort !== 0) return splitSort
+    return normalizeText(left.status).localeCompare(normalizeText(right.status))
+  })
+})
+const inspectionInvalidReasonRows = computed(() => {
+  const inspection = selectedInspection.value
+  if (!inspection) return []
+  const buckets = new Map<string, { key: string; split: string; reason: string; count: number }>()
+  for (const row of inspection.rows) {
+    if (!row.candidateInvalidReason) continue
+    const key = `${row.split}|${row.candidateInvalidReason}`
+    const existing = buckets.get(key) || {
+      key,
+      split: row.split,
+      reason: row.candidateInvalidReason,
+      count: 0,
+    }
+    existing.count += 1
+    buckets.set(key, existing)
+  }
+  return [...buckets.values()].sort((left, right) => right.count - left.count)
+})
 const displayedInspectionRows = computed(() => {
   if (showAllInspectionRows.value) return inspectionRows.value
   return inspectionRows.value.slice(0, 50)
@@ -325,7 +391,7 @@ const artifactComparisonRows = computed(() =>
     return normalizeText(right.ts).localeCompare(normalizeText(left.ts))
   }),
 )
-const resultSortKey = ref<'robust' | 'selection_ev' | 'holdout_ev' | 'stress_ev' | 'harsher_ev' | 'invalid_rate' | 'valid_trades' | 'sealed_rank'>('robust')
+const resultSortKey = ref<'robust' | 'selection_ev' | 'holdout_ev' | 'stress_ev' | 'harsher_ev' | 'extreme_ev' | 'invalid_rate' | 'valid_trades' | 'sealed_rank'>('robust')
 const resultSortDirection = ref<'desc' | 'asc'>('desc')
 const finalistsOnly = ref(false)
 const maxInvalidRateFilterInput = ref('')
@@ -380,6 +446,52 @@ const eventPathSummaryRows = computed(() => {
     },
   ]
 })
+const eventPathAnalyticsRows = computed(() => {
+  const inspection = selectedEventPathInspection.value
+  const selectedRow = selectedInspectionRow.value
+  if (!inspection || !selectedRow || inspection.points.length === 0) return []
+  const entryOption = selectedRow.entryOptionPrice ?? inspection.points[0]?.optionClose
+  const entryUnderlier = selectedRow.entryUnderlierPrice ?? inspection.points[0]?.underlyingPrice
+  const peakOptionPoint = inspection.points.reduce((best, point) =>
+    point.optionHigh > best.optionHigh ? point : best,
+  )
+  const troughOptionPoint = inspection.points.reduce((best, point) =>
+    point.optionLow < best.optionLow ? point : best,
+  )
+  const peakUnderlierPoint = inspection.points.reduce((best, point) =>
+    point.underlyingPrice > best.underlyingPrice ? point : best,
+  )
+  const troughUnderlierPoint = inspection.points.reduce((best, point) =>
+    point.underlyingPrice < best.underlyingPrice ? point : best,
+  )
+  return [
+    {
+      key: 'entry-raw',
+      label: 'Signal underlier / requested entry',
+      value: `${formatOptionalDecimal(selectedRow.rawUnderlierPrice, 2)} / ${formatTimestamp(selectedRow.requestedEntryTimestamp)}`,
+    },
+    {
+      key: 'option-peak',
+      label: 'Option peak / peak return',
+      value: `${formatOptionalDecimal(peakOptionPoint.optionHigh)} @ ${formatTimestamp(peakOptionPoint.timestampMs)}${entryOption && entryOption > 0 ? ` · ${formatPercent((peakOptionPoint.optionHigh - entryOption) / entryOption, 2)}` : ''}`,
+    },
+    {
+      key: 'option-trough',
+      label: 'Option trough / trough return',
+      value: `${formatOptionalDecimal(troughOptionPoint.optionLow)} @ ${formatTimestamp(troughOptionPoint.timestampMs)}${entryOption && entryOption > 0 ? ` · ${formatPercent((troughOptionPoint.optionLow - entryOption) / entryOption, 2)}` : ''}`,
+    },
+    {
+      key: 'underlier-peak',
+      label: 'Underlier peak / move',
+      value: `${formatOptionalDecimal(peakUnderlierPoint.underlyingPrice, 2)} @ ${formatTimestamp(peakUnderlierPoint.timestampMs)}${entryUnderlier && entryUnderlier > 0 ? ` · ${formatPercent((peakUnderlierPoint.underlyingPrice - entryUnderlier) / entryUnderlier, 2)}` : ''}`,
+    },
+    {
+      key: 'underlier-trough',
+      label: 'Underlier trough / move',
+      value: `${formatOptionalDecimal(troughUnderlierPoint.underlyingPrice, 2)} @ ${formatTimestamp(troughUnderlierPoint.timestampMs)}${entryUnderlier && entryUnderlier > 0 ? ` · ${formatPercent((troughUnderlierPoint.underlyingPrice - entryUnderlier) / entryUnderlier, 2)}` : ''}`,
+    },
+  ]
+})
 
 const displayedRowsWithIndex = computed(() => {
   const rawInvalidRate = normalizeText(maxInvalidRateFilterInput.value).length
@@ -403,7 +515,10 @@ const displayedRowsWithIndex = computed(() => {
     .filter(({ row }) => row.selectionMetrics.invalidRate <= maxInvalidRate)
     .filter(({ row }) => row.robustScore >= minRobustScore)
     .filter(({ row }) => {
-      const stressed = row.harsherStressMetrics?.expectancyPerPremium ?? row.stressMetrics?.expectancyPerPremium
+      const stressed =
+        row.extremeStressMetrics?.expectancyPerPremium
+        ?? row.harsherStressMetrics?.expectancyPerPremium
+        ?? row.stressMetrics?.expectancyPerPremium
       if (!Number.isFinite(maxStressDrop) || stressed == null) return true
       return row.selectionMetrics.expectancyPerPremium - stressed <= maxStressDrop
     })
@@ -418,6 +533,8 @@ const displayedRowsWithIndex = computed(() => {
         return entry.row.stressMetrics?.expectancyPerPremium ?? Number.NEGATIVE_INFINITY
       case 'harsher_ev':
         return entry.row.harsherStressMetrics?.expectancyPerPremium ?? Number.NEGATIVE_INFINITY
+      case 'extreme_ev':
+        return entry.row.extremeStressMetrics?.expectancyPerPremium ?? Number.NEGATIVE_INFINITY
       case 'invalid_rate':
         return entry.row.selectionMetrics.invalidRate
       case 'valid_trades':
@@ -931,6 +1048,11 @@ const requestSummaryRows = computed(() => {
       value: `${normalizeText(request.exitTemplate) || '—'} | ${normalizeText(request.fillModel) || '—'}`,
     },
     {
+      key: 'structure-family',
+      label: 'Structure',
+      value: normalizeText(request.structureFamily) || 'long_single',
+    },
+    {
       key: 'backend-preference',
       label: 'Backend preference',
       value: normalizeText(request.backendPreference) || 'auto',
@@ -1012,12 +1134,15 @@ function formatArtifactOptionLabel(entry: {
   bestSealedStressExpectancyPerPremium: number | null
   bestHarsherStressExpectancyPerPremium: number | null
   bestSealedHarsherStressExpectancyPerPremium: number | null
+  bestExtremeStressExpectancyPerPremium: number | null
+  bestSealedExtremeStressExpectancyPerPremium: number | null
   sealedEvaluatedTupleCount?: number
   sealedFinalistBudget?: number
   hasHoldoutMetrics: boolean
   hasSealedEvaluationMetrics: boolean
   hasStressMetrics: boolean
   hasHarsherStressMetrics: boolean
+  hasExtremeStressMetrics: boolean
 }): string {
   const parts = [
     normalizeText(entry.ts) || normalizeText(entry.path),
@@ -1051,6 +1176,14 @@ function formatArtifactOptionLabel(entry: {
   }
   if (entry.bestSealedHarsherStressExpectancyPerPremium != null) {
     parts.push(`sealed harsher ${entry.bestSealedHarsherStressExpectancyPerPremium.toFixed(3)}`)
+  }
+  if (entry.bestExtremeStressExpectancyPerPremium != null) {
+    parts.push(`extreme ${entry.bestExtremeStressExpectancyPerPremium.toFixed(3)}`)
+  } else if (entry.hasExtremeStressMetrics) {
+    parts.push('extreme')
+  }
+  if (entry.bestSealedExtremeStressExpectancyPerPremium != null) {
+    parts.push(`sealed extreme ${entry.bestSealedExtremeStressExpectancyPerPremium.toFixed(3)}`)
   }
   if ((entry.sealedFinalistBudget || 0) > 0) {
     parts.push(`finalists ${entry.sealedEvaluatedTupleCount || 0}/${entry.sealedFinalistBudget || 0}`)
@@ -1092,7 +1225,7 @@ function loadArtifactFromComparison(path: string): void {
     <section v-else-if="!supportedParent" class="emptyState">
       <div class="emptyTitle">Saved run not supported yet.</div>
       <div class="emptyBody">
-        The current vertical slice supports saved <span class="mono">DoubleMa</span> artifacts only. Other strategy families stay read-only until their manifest projector is implemented.
+        The current vertical slice supports saved <span class="mono">DoubleMa</span>, <span class="mono">CompositeTrend</span>, <span class="mono">RegimeHybrid</span>, and <span class="mono">BreakoutMomentum</span> artifacts. Other strategy families stay read-only until their manifest projector is implemented.
       </div>
     </section>
 
@@ -1128,20 +1261,37 @@ function loadArtifactFromComparison(path: string): void {
 
         <div class="controlBlock">
           <label for="optionsImportRoot">Polygon/Massive root symbol</label>
+          <div class="downloadFieldGrid">
+            <label>
+              Root
+              <input
+                id="optionsImportRoot"
+                v-model="importRootSymbol"
+                type="text"
+                placeholder="SPY"
+                spellcheck="false"
+              />
+            </label>
+            <label>
+              CSV semantics
+              <select id="optionsImportPriceSemantics" v-model="importPriceSemantics">
+                <option
+                  v-for="entry in OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS"
+                  :key="entry"
+                  :value="entry"
+                >
+                  {{ entry }}
+                </option>
+              </select>
+            </label>
+          </div>
           <div class="row inlineControls">
-            <input
-              id="optionsImportRoot"
-              v-model="importRootSymbol"
-              type="text"
-              placeholder="SPY"
-              spellcheck="false"
-            />
             <button type="button" :disabled="importBusy" @click="store.importDatasetFromPicker()">
               Import Polygon/Massive CSV
             </button>
           </div>
           <div class="panelMuted">
-            Uses the existing native CSV picker and stores a normalized Polygon/Massive options dataset under the app market-data root.
+            Uses the existing native CSV picker and stores a normalized Polygon/Massive options dataset under the app market-data root. Direct provider download in this panel remains the 1m aggregate lane; quote-aware realism currently enters through CSV import.
           </div>
         </div>
 
@@ -1158,7 +1308,7 @@ function loadArtifactFromComparison(path: string): void {
             </label>
             <label>
               Contract type
-              <select v-model="downloadContractType">
+              <select id="optionsDownloadContractType" v-model="downloadContractType">
                 <option value="call">Calls</option>
                 <option value="put">Puts</option>
                 <option value="both">Calls + puts</option>
@@ -1273,6 +1423,14 @@ function loadArtifactFromComparison(path: string): void {
             Fill model
             <select v-model="fillModel">
               <option v-for="entry in OPTIONS_FILL_MODEL_OPTIONS" :key="entry" :value="entry">
+                {{ entry }}
+              </option>
+            </select>
+          </label>
+          <label>
+            Structure family
+            <select v-model="structureFamily">
+              <option v-for="entry in OPTIONS_STRUCTURE_FAMILY_OPTIONS" :key="entry" :value="entry">
                 {{ entry }}
               </option>
             </select>
@@ -1413,7 +1571,7 @@ function loadArtifactFromComparison(path: string): void {
           Filtered to the currently selected saved run.
         </div>
         <div v-if="selectedArtifactSummary" class="panelMuted mono">
-          {{ selectedArtifactSummary.backendUsed }}<template v-if="normalizeText(selectedArtifactSummary.backendFallbackReason)"> · fallback {{ selectedArtifactSummary.backendFallbackReason }}</template> · {{ selectedArtifactSummary.priceSemantics }} · sel {{ selectedArtifactSummary.bestSelectionExpectancyPerPremium.toFixed(3) }}<template v-if="selectedArtifactSummary.bestHoldoutExpectancyPerPremium != null"> · hold {{ selectedArtifactSummary.bestHoldoutExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExpectancyPerPremium != null"> · sealed {{ selectedArtifactSummary.bestSealedExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestStressExpectancyPerPremium != null"> · stress {{ selectedArtifactSummary.bestStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedStressExpectancyPerPremium != null"> · sealed stress {{ selectedArtifactSummary.bestSealedStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestHarsherStressExpectancyPerPremium != null"> · harsher {{ selectedArtifactSummary.bestHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium != null"> · sealed harsher {{ selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium.toFixed(3) }}</template>
+          {{ selectedArtifactSummary.backendUsed }}<template v-if="normalizeText(selectedArtifactSummary.backendFallbackReason)"> · fallback {{ selectedArtifactSummary.backendFallbackReason }}</template> · {{ selectedArtifactSummary.priceSemantics }} · sel {{ selectedArtifactSummary.bestSelectionExpectancyPerPremium.toFixed(3) }}<template v-if="selectedArtifactSummary.bestHoldoutExpectancyPerPremium != null"> · hold {{ selectedArtifactSummary.bestHoldoutExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExpectancyPerPremium != null"> · sealed {{ selectedArtifactSummary.bestSealedExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestStressExpectancyPerPremium != null"> · stress {{ selectedArtifactSummary.bestStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedStressExpectancyPerPremium != null"> · sealed stress {{ selectedArtifactSummary.bestSealedStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestHarsherStressExpectancyPerPremium != null"> · harsher {{ selectedArtifactSummary.bestHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium != null"> · sealed harsher {{ selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestExtremeStressExpectancyPerPremium != null"> · extreme {{ selectedArtifactSummary.bestExtremeStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium != null"> · sealed extreme {{ selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium.toFixed(3) }}</template>
         </div>
       </div>
 
@@ -1433,7 +1591,8 @@ function loadArtifactFromComparison(path: string): void {
                   <th>Sealed EV</th>
                   <th>Stress</th>
                   <th>Harsher</th>
-                  <th>Sealed</th>
+                  <th>Extreme</th>
+                  <th>Finalists</th>
                   <th></th>
                 </tr>
               </thead>
@@ -1454,6 +1613,7 @@ function loadArtifactFromComparison(path: string): void {
                   <td class="mono">{{ entry.bestSealedExpectancyPerPremium != null ? entry.bestSealedExpectancyPerPremium.toFixed(3) : '—' }}</td>
                   <td class="mono">{{ entry.bestStressExpectancyPerPremium != null ? entry.bestStressExpectancyPerPremium.toFixed(3) : '—' }}</td>
                   <td class="mono">{{ entry.bestHarsherStressExpectancyPerPremium != null ? entry.bestHarsherStressExpectancyPerPremium.toFixed(3) : '—' }}</td>
+                  <td class="mono">{{ entry.bestExtremeStressExpectancyPerPremium != null ? entry.bestExtremeStressExpectancyPerPremium.toFixed(3) : '—' }}</td>
                   <td class="mono">{{ entry.sealedEvaluatedTupleCount ?? 0 }}/{{ entry.sealedFinalistBudget ?? 0 }}</td>
                   <td>
                     <button type="button" @click="loadArtifactFromComparison(entry.path)">
@@ -1673,6 +1833,7 @@ function loadArtifactFromComparison(path: string): void {
               <option value="holdout_ev">holdout EV</option>
               <option value="stress_ev">stress EV</option>
               <option value="harsher_ev">harsher EV</option>
+              <option value="extreme_ev">extreme EV</option>
               <option value="invalid_rate">invalid rate</option>
               <option value="valid_trades">valid trades</option>
               <option value="sealed_rank">sealed rank</option>
@@ -1722,6 +1883,8 @@ function loadArtifactFromComparison(path: string): void {
                 <th v-if="hasSealedStressMetrics">Sealed stress EV / Premium</th>
                 <th v-if="hasHarsherStressMetrics">Harsher EV / Premium</th>
                 <th v-if="hasSealedHarsherStressMetrics">Sealed harsher EV / Premium</th>
+                <th v-if="hasExtremeStressMetrics">Extreme EV / Premium</th>
+                <th v-if="hasSealedExtremeStressMetrics">Sealed extreme EV / Premium</th>
                 <th>Win</th>
                 <th>Trades</th>
               </tr>
@@ -1765,6 +1928,12 @@ function loadArtifactFromComparison(path: string): void {
                 <td v-if="hasSealedHarsherStressMetrics" class="mono">
                   {{ row.sealedHarsherStressMetrics ? row.sealedHarsherStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
                 </td>
+                <td v-if="hasExtremeStressMetrics" class="mono">
+                  {{ row.extremeStressMetrics ? row.extremeStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                </td>
+                <td v-if="hasSealedExtremeStressMetrics" class="mono">
+                  {{ row.sealedExtremeStressMetrics ? row.sealedExtremeStressMetrics.expectancyPerPremium.toFixed(4) : '—' }}
+                </td>
                 <td class="mono">{{ row.selectionMetrics.winRate.toFixed(3) }}</td>
                 <td class="mono">{{ row.selectionMetrics.validTrades }}</td>
               </tr>
@@ -1802,6 +1971,10 @@ function loadArtifactFromComparison(path: string): void {
             <div>
               <span class="panelMetricKey">Moneyness</span>
               <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.moneynessBucket }}</span>
+            </div>
+            <div>
+              <span class="panelMetricKey">Structure</span>
+              <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.structureFamily || 'long_single' }}</span>
             </div>
             <div>
               <span class="panelMetricKey">Target / Stop</span>
@@ -1906,6 +2079,18 @@ function loadArtifactFromComparison(path: string): void {
                 {{ selectedTuple.sealedHarsherStressMetrics.expectancyPerPremium.toFixed(4) }}
               </span>
             </div>
+            <div v-if="selectedTuple.extremeStressMetrics">
+              <span class="panelMetricKey">Extreme EV / premium</span>
+              <span class="panelMetricValue mono panelNumeric">
+                {{ selectedTuple.extremeStressMetrics.expectancyPerPremium.toFixed(4) }}
+              </span>
+            </div>
+            <div v-if="selectedTuple.sealedExtremeStressMetrics">
+              <span class="panelMetricKey">Sealed extreme EV / premium</span>
+              <span class="panelMetricValue mono panelNumeric">
+                {{ selectedTuple.sealedExtremeStressMetrics.expectancyPerPremium.toFixed(4) }}
+              </span>
+            </div>
           </div>
           <details v-if="selectedInspection" class="panelDetails" open>
             <summary>Tuple event drilldown</summary>
@@ -1926,6 +2111,68 @@ function loadArtifactFromComparison(path: string): void {
                 <div>
                   <span class="panelMetricKey">Outcome missing</span>
                   <span class="panelMetricValue mono panelNumeric">{{ selectedInspection.outcomeMissingEvents }}</span>
+                </div>
+              </div>
+
+              <div v-if="inspectionSplitStatusRows.length" class="detailInspector">
+                <div class="panelSectionHeader">
+                  <div>
+                    <div class="panelEyebrow">Split / status rollup</div>
+                    <div class="panelSectionLead">
+                      Quick inspection of where this tuple executed cleanly versus failed across search, holdout, and sealed slices.
+                    </div>
+                  </div>
+                </div>
+                <div class="tableWrap">
+                  <table class="resultTable">
+                    <thead>
+                      <tr>
+                        <th>Split</th>
+                        <th>Status</th>
+                        <th>Count</th>
+                        <th>Avg return / premium</th>
+                        <th>Total PnL / contract</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in inspectionSplitStatusRows" :key="row.key">
+                        <td class="mono">{{ row.split }}</td>
+                        <td class="mono">{{ row.status }}</td>
+                        <td class="mono">{{ row.count }}</td>
+                        <td class="mono">{{ formatOptionalDecimal(row.avgReturn) }}</td>
+                        <td class="mono">{{ formatOptionalDecimal(row.totalPnl) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div v-if="inspectionInvalidReasonRows.length" class="detailInspector">
+                <div class="panelSectionHeader">
+                  <div>
+                    <div class="panelEyebrow">Invalid reason rollup</div>
+                    <div class="panelSectionLead">
+                      Candidate-missing causes grouped by split so data-quality and cutoff failures are visible before reading raw rows.
+                    </div>
+                  </div>
+                </div>
+                <div class="tableWrap">
+                  <table class="resultTable">
+                    <thead>
+                      <tr>
+                        <th>Split</th>
+                        <th>Reason</th>
+                        <th>Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in inspectionInvalidReasonRows" :key="row.key">
+                        <td class="mono">{{ row.split }}</td>
+                        <td class="mono">{{ row.reason }}</td>
+                        <td class="mono">{{ row.count }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
 
@@ -2078,6 +2325,12 @@ function loadArtifactFromComparison(path: string): void {
                       {{ selectedInspectionRow.contractId || '—' }}{{ selectedInspectionRow.strike != null ? ` @ ${formatOptionalDecimal(selectedInspectionRow.strike, 2)}` : '' }}
                     </span>
                   </div>
+                  <div v-if="selectedInspectionRow.companionContractId">
+                    <span class="panelMetricKey">Companion contract</span>
+                    <span class="panelMetricValue mono panelNumeric">
+                      {{ selectedInspectionRow.companionContractId }}{{ selectedInspectionRow.companionStrike != null ? ` @ ${formatOptionalDecimal(selectedInspectionRow.companionStrike, 2)}` : '' }}
+                    </span>
+                  </div>
                   <div>
                     <span class="panelMetricKey">Expiry / multiplier</span>
                     <span class="panelMetricValue mono panelNumeric">
@@ -2088,6 +2341,12 @@ function loadArtifactFromComparison(path: string): void {
                     <span class="panelMetricKey">Decision / tradable</span>
                     <span class="panelMetricValue mono panelNumeric">
                       {{ formatTimestamp(selectedInspectionRow.decisionTimestamp) }} / {{ formatTimestamp(selectedInspectionRow.earliestTradableTimestamp) }}
+                    </span>
+                  </div>
+                  <div>
+                    <span class="panelMetricKey">Signal underlier / requested entry</span>
+                    <span class="panelMetricValue mono panelNumeric">
+                      {{ formatOptionalDecimal(selectedInspectionRow.rawUnderlierPrice, 2) }} / {{ formatTimestamp(selectedInspectionRow.requestedEntryTimestamp) }}
                     </span>
                   </div>
                   <div>
@@ -2112,6 +2371,12 @@ function loadArtifactFromComparison(path: string): void {
                     <span class="panelMetricKey">Entry underlier / option</span>
                     <span class="panelMetricValue mono panelNumeric">
                       {{ formatOptionalDecimal(selectedInspectionRow.entryUnderlierPrice, 2) }} / {{ formatOptionalDecimal(selectedInspectionRow.entryOptionPrice) }}
+                    </span>
+                  </div>
+                  <div v-if="selectedInspectionRow.companionEntryOptionPrice != null">
+                    <span class="panelMetricKey">Companion entry / exit</span>
+                    <span class="panelMetricValue mono panelNumeric">
+                      {{ formatOptionalDecimal(selectedInspectionRow.companionEntryOptionPrice) }} / {{ formatOptionalDecimal(selectedInspectionRow.companionExitOptionPrice) }}
                     </span>
                   </div>
                   <div>
@@ -2141,9 +2406,20 @@ function loadArtifactFromComparison(path: string): void {
                         Replayed option OHLC and underlier path for the selected executed event.
                       </div>
                     </div>
+                    <div class="actions">
+                      <button type="button" @click="store.exportActiveEventPathCsv()">
+                        Export path CSV
+                      </button>
+                    </div>
                   </div>
                   <div class="detailGrid detailGridTight">
                     <div v-for="row in eventPathSummaryRows" :key="row.key">
+                      <span class="panelMetricKey">{{ row.label }}</span>
+                      <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+                    </div>
+                  </div>
+                  <div v-if="eventPathAnalyticsRows.length" class="detailGrid detailGridTight">
+                    <div v-for="row in eventPathAnalyticsRows" :key="row.key">
                       <span class="panelMetricKey">{{ row.label }}</span>
                       <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
                     </div>

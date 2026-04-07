@@ -54,7 +54,7 @@ describe('OptionsExpressionPanel', () => {
     vi.clearAllMocks()
   })
 
-  it('shows an unsupported message for non-DoubleMa parents', () => {
+  it('shows an unsupported message for non-double-like parents', () => {
     const wrapper = mount(OptionsExpressionPanel, {
       props: {
         parentArtifactPath: 'C:/runs/vectorgrid_run_ml_signal.json',
@@ -63,7 +63,8 @@ describe('OptionsExpressionPanel', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('supports saved DoubleMa runs only')
+    expect(wrapper.text()).toContain('supports saved DoubleMa')
+    expect(wrapper.text()).toContain('BreakoutMomentum')
     expect(listOptionsDatasetsMock).not.toHaveBeenCalled()
   })
 
@@ -110,10 +111,13 @@ describe('OptionsExpressionPanel', () => {
         bestSealedStressExpectancyPerPremium: 0.03,
         bestHarsherStressExpectancyPerPremium: 0.02,
         bestSealedHarsherStressExpectancyPerPremium: 0.01,
+        bestExtremeStressExpectancyPerPremium: -0.01,
+        bestSealedExtremeStressExpectancyPerPremium: -0.02,
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
         hasStressMetrics: true,
         hasHarsherStressMetrics: true,
+        hasExtremeStressMetrics: true,
       },
     ])
 
@@ -136,6 +140,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Split assignment')
     expect(wrapper.find('option[value="session_chronological"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Polygon/Massive 1m options download')
+    expect(wrapper.find('#optionsImportPriceSemantics').exists()).toBe(true)
+    expect(wrapper.text()).toContain('quote-aware realism currently enters through CSV import')
     expect(wrapper.text()).toContain('This download is options-only and stays separate from the normal stock data workflow.')
     expect(wrapper.text()).toContain('Dataset manifest')
     expect(wrapper.text()).toContain('options_business')
@@ -150,6 +156,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('stress 0.040')
     expect(wrapper.text()).toContain('harsher 0.020')
     expect(wrapper.text()).toContain('sealed harsher 0.010')
+    expect(wrapper.text()).toContain('extreme -0.010')
+    expect(wrapper.text()).toContain('sealed extreme -0.020')
     expect(useOptionsExpressionStore().splitAssignmentMode).toBe('event_chronological')
   })
 
@@ -196,9 +204,7 @@ describe('OptionsExpressionPanel', () => {
     await inputs[0]!.setValue('2026-04-01')
     await inputs[1]!.setValue('2026-04-02')
 
-    const selects = wrapper.findAll('select')
-    expect(selects.length).toBeGreaterThanOrEqual(2)
-    await selects[1]!.setValue('put')
+    await wrapper.find('#optionsDownloadContractType').setValue('put')
 
     const downloadButton = wrapper.findAll('button').find((entry) => entry.text() === 'Download Polygon/Massive 1m data')
     expect(downloadButton).toBeTruthy()
@@ -225,7 +231,7 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('C:/cache/polygon_stocks_raw_SPY_1m.csv')
   })
 
-  it('boots once the parent strategy becomes DoubleMa after mount', async () => {
+  it('boots once the parent strategy becomes a supported double-like family after mount', async () => {
     listOptionsDatasetsMock.mockResolvedValue([
       {
         optionsDatasetId: 'spy_options',
@@ -249,7 +255,7 @@ describe('OptionsExpressionPanel', () => {
     expect(listOptionsDatasetsMock).not.toHaveBeenCalled()
 
     await wrapper.setProps({
-      parentStrategyKind: 'DoubleMa',
+      parentStrategyKind: 'CompositeTrend',
       parentDatasetLabel: 'SPY.csv',
     })
 
@@ -887,6 +893,26 @@ describe('OptionsExpressionPanel', () => {
             winRate: 0.5,
             totalPnlPerContract: 2,
           },
+          extremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 0,
+            expectancyPerPremium: -0.01,
+            medianReturnOnPremium: -0.01,
+            winRate: 0.5,
+            totalPnlPerContract: 0,
+          },
+          sealedExtremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: -1,
+            expectancyPerPremium: -0.02,
+            medianReturnOnPremium: -0.02,
+            winRate: 0.5,
+            totalPnlPerContract: -2,
+          },
         },
       ],
     }
@@ -901,6 +927,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Sealed stress EV / Premium')
     expect(wrapper.text()).toContain('Harsher EV / Premium')
     expect(wrapper.text()).toContain('Sealed harsher EV / Premium')
+    expect(wrapper.text()).toContain('Extreme EV / Premium')
+    expect(wrapper.text()).toContain('Sealed extreme EV / Premium')
     expect(wrapper.text()).toContain('Bull / Bear')
     expect(wrapper.text()).toContain('6 / 4')
     expect(wrapper.text()).toContain('Search / Holdout / Sealed')
@@ -930,6 +958,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('0.0300')
     expect(wrapper.text()).toContain('0.0200')
     expect(wrapper.text()).toContain('0.0100')
+    expect(wrapper.text()).toContain('-0.0100')
+    expect(wrapper.text()).toContain('-0.0200')
   })
 
   it('supports client-side finalists and robustness filtering in the result table', async () => {
@@ -1019,6 +1049,16 @@ describe('OptionsExpressionPanel', () => {
             winRate: 0.6,
             totalPnlPerContract: 50,
           },
+          extremeStressMetrics: {
+            validTrades: 5,
+            invalidEvents: 1,
+            invalidRate: 0.2,
+            expectancyPerTrade: 2,
+            expectancyPerPremium: 0.08,
+            medianReturnOnPremium: 0.06,
+            winRate: 0.4,
+            totalPnlPerContract: 10,
+          },
         },
         {
           delayMinutes: 5,
@@ -1064,6 +1104,16 @@ describe('OptionsExpressionPanel', () => {
             winRate: 0.71,
             totalPnlPerContract: 105,
           },
+          extremeStressMetrics: {
+            validTrades: 7,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 8,
+            expectancyPerPremium: 0.23,
+            medianReturnOnPremium: 0.16,
+            winRate: 0.57,
+            totalPnlPerContract: 56,
+          },
         },
         {
           delayMinutes: 10,
@@ -1100,6 +1150,16 @@ describe('OptionsExpressionPanel', () => {
             winRate: 0.25,
             totalPnlPerContract: 8,
           },
+          extremeStressMetrics: {
+            validTrades: 4,
+            invalidEvents: 2,
+            invalidRate: 0.5,
+            expectancyPerTrade: -4,
+            expectancyPerPremium: -0.10,
+            medianReturnOnPremium: -0.08,
+            winRate: 0.0,
+            totalPnlPerContract: -16,
+          },
         },
       ],
     }
@@ -1131,7 +1191,7 @@ describe('OptionsExpressionPanel', () => {
 
     rows = wrapper.findAll('.resultTable tbody tr')
     expect(rows).toHaveLength(1)
-    expect(wrapper.text()).toContain('0.2400')
+    expect(wrapper.text()).toContain('0.2200')
   })
 
   it('shows a selected tuple inspector and updates when a different row is clicked', async () => {

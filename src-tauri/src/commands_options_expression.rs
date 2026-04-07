@@ -59,12 +59,15 @@ pub struct OptionsExpressionArtifactSummary {
     pub best_sealed_stress_expectancy_per_premium: Option<f64>,
     pub best_harsher_stress_expectancy_per_premium: Option<f64>,
     pub best_sealed_harsher_stress_expectancy_per_premium: Option<f64>,
+    pub best_extreme_stress_expectancy_per_premium: Option<f64>,
+    pub best_sealed_extreme_stress_expectancy_per_premium: Option<f64>,
     pub sealed_finalist_budget: usize,
     pub sealed_evaluated_tuple_count: usize,
     pub has_holdout_metrics: bool,
     pub has_sealed_evaluation_metrics: bool,
     pub has_stress_metrics: bool,
     pub has_harsher_stress_metrics: bool,
+    pub has_extreme_stress_metrics: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -199,6 +202,24 @@ fn resolve_strategy_kind(value: &Value) -> String {
         })
         .or_else(|| non_empty_string(value.pointer("/validation/req/strategy_kind")))
         .unwrap_or_default()
+}
+
+fn normalize_options_parent_strategy_kind(raw: &str) -> String {
+    match raw.trim() {
+        "" => "DoubleMa".to_string(),
+        "DoubleMa" => "DoubleMa".to_string(),
+        "CompositeTrend" => "CompositeTrend".to_string(),
+        "RegimeHybrid" => "RegimeHybrid".to_string(),
+        "BreakoutMomentum" => "BreakoutMomentum".to_string(),
+        other => other.trim().to_string(),
+    }
+}
+
+fn is_supported_options_parent_strategy_kind(raw: &str) -> bool {
+    matches!(
+        normalize_options_parent_strategy_kind(raw).as_str(),
+        "DoubleMa" | "CompositeTrend" | "RegimeHybrid" | "BreakoutMomentum"
+    )
 }
 
 fn resolve_csv_path(value: &Value) -> String {
@@ -555,8 +576,9 @@ fn choose_drilldown_request(
         .pointer("/run/req")
         .cloned()
         .ok_or_else(|| "saved run artifact is missing run.req".to_string())?;
-    let run_req: DoubleMaRequest = serde_json::from_value(run_req_value)
-        .map_err(|e| format!("failed to deserialize DoubleMa run request from artifact: {e}"))?;
+    let run_req: DoubleMaRequest = serde_json::from_value(run_req_value).map_err(|e| {
+        format!("failed to deserialize supported double-like run request from artifact: {e}")
+    })?;
 
     let candidate_params = if let Some(index) = parent_candidate_index {
         Some(
@@ -576,7 +598,9 @@ fn choose_drilldown_request(
     let (params, strategy, halftrend_filter) = if let Some(candidate_value) = candidate_params {
         let candidate: DoubleMaValidationParams =
             serde_json::from_value(candidate_value).map_err(|e| {
-                format!("failed to deserialize validation candidate from artifact: {e}")
+                format!(
+                    "failed to deserialize supported double-like validation candidate from artifact: {e}"
+                )
             })?;
         (
             DoubleMaParamsResolved {
@@ -598,8 +622,9 @@ fn choose_drilldown_request(
                 "saved run artifact is missing run.res.best_params and validation candidates"
                     .to_string()
             })?;
-        let params: DoubleMaParamsResolved = serde_json::from_value(params_value)
-            .map_err(|e| format!("failed to deserialize best_params from artifact: {e}"))?;
+        let params: DoubleMaParamsResolved = serde_json::from_value(params_value).map_err(|e| {
+            format!("failed to deserialize supported double-like best_params from artifact: {e}")
+        })?;
         (
             params,
             run_req.strategy.clone(),
@@ -725,6 +750,26 @@ pub(crate) fn summarize_options_expression_artifact(
                 .map(|metrics| metrics.expectancy_per_premium)
         })
         .max_by(|left, right| left.total_cmp(right));
+    let best_extreme_stress_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .extreme_stress_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
+    let best_sealed_extreme_stress_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .sealed_extreme_stress_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
     let sealed_evaluated_tuple_count = artifact
         .selection_metrics
         .iter()
@@ -745,6 +790,9 @@ pub(crate) fn summarize_options_expression_artifact(
     let has_harsher_stress_metrics = artifact.selection_metrics.iter().any(|entry| {
         entry.harsher_stress_metrics.is_some() || entry.sealed_harsher_stress_metrics.is_some()
     });
+    let has_extreme_stress_metrics = artifact.selection_metrics.iter().any(|entry| {
+        entry.extreme_stress_metrics.is_some() || entry.sealed_extreme_stress_metrics.is_some()
+    });
     OptionsExpressionArtifactSummary {
         ts: artifact.ts.clone(),
         path: path.to_string_lossy().to_string(),
@@ -764,12 +812,15 @@ pub(crate) fn summarize_options_expression_artifact(
         best_sealed_stress_expectancy_per_premium,
         best_harsher_stress_expectancy_per_premium,
         best_sealed_harsher_stress_expectancy_per_premium,
+        best_extreme_stress_expectancy_per_premium,
+        best_sealed_extreme_stress_expectancy_per_premium,
         sealed_finalist_budget: artifact.request.sealed_finalist_count,
         sealed_evaluated_tuple_count,
         has_holdout_metrics,
         has_sealed_evaluation_metrics,
         has_stress_metrics,
         has_harsher_stress_metrics,
+        has_extreme_stress_metrics,
     }
 }
 
@@ -803,10 +854,10 @@ fn build_options_expression_replay_inputs(
         ));
     }
     let strategy_kind = resolve_strategy_kind(&artifact);
-    if strategy_kind.trim() != "DoubleMa" {
+    if !is_supported_options_parent_strategy_kind(&strategy_kind) {
         return Err(format!(
-            "options expression v1 currently supports DoubleMa parent artifacts only, found '{}'",
-            strategy_kind
+            "options expression currently supports DoubleMa, CompositeTrend, RegimeHybrid, and BreakoutMomentum parent artifacts only, found '{}'",
+            strategy_kind.trim()
         ));
     }
     let csv_path = resolve_csv_path(&artifact);
@@ -1408,5 +1459,15 @@ mod tests {
         assert_eq!(loaded.events[0].event_id, "evt-1");
 
         let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
+
+    #[test]
+    fn options_parent_strategy_kind_support_matches_current_double_like_scope() {
+        assert!(is_supported_options_parent_strategy_kind("DoubleMa"));
+        assert!(is_supported_options_parent_strategy_kind("CompositeTrend"));
+        assert!(is_supported_options_parent_strategy_kind("RegimeHybrid"));
+        assert!(is_supported_options_parent_strategy_kind("BreakoutMomentum"));
+        assert!(!is_supported_options_parent_strategy_kind("MlSignal"));
+        assert!(!is_supported_options_parent_strategy_kind("CompositeMo"));
     }
 }

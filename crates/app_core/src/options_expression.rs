@@ -12,7 +12,8 @@ use crate::options_types::{
     OptionsExpressionStagingStats, OptionsExpressionTupleInspectionResult,
     OptionsExpressionTupleResult, OptionsFillModelFamily, OptionsMoneynessBucket,
     OptionsMoneynessBucketCoverage, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
-    OptionsSignalEventManifestV1, OptionsSplitAssignmentMode, OptionsTupleSpec, SignalSide,
+    OptionsSignalEventManifestV1, OptionsSplitAssignmentMode, OptionsStructureFamily,
+    OptionsTupleSpec, SignalSide,
 };
 use std::cmp::Ordering;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -40,9 +41,9 @@ const OPTIONS_EXPRESSION_PREPARE_CACHE_MAX_ENTRIES: usize = 32;
 const OPTIONS_AUTO_GPU_MIN_CANDIDATE_DENSITY: f64 = 0.30;
 const OPTIONS_AUTO_GPU_MAX_INVALID_SLOT_RATE: f64 = 0.70;
 const OPTIONS_AUTO_GPU_MIN_COMPILED_TUPLES: usize = 256;
-const OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS: usize = 24;
-const OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES: u64 = 100_000;
-const OPTIONS_AUTO_GPU_MIN_MEASURED_SPEEDUP: f64 = 3.0;
+const OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS: usize = 8;
+const OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES: u64 = 10_000;
+const OPTIONS_AUTO_GPU_MIN_MEASURED_SPEEDUP: f64 = 1.25;
 
 #[cfg(test)]
 fn forced_options_expression_cuda_device_id() -> &'static Mutex<Option<Option<u32>>> {
@@ -108,12 +109,19 @@ enum AggregateStressMode {
     Baseline,
     Conservative,
     Harsher,
+    Extreme,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SelectedLeg {
+    contract_index: usize,
+    entry_index: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct SelectedCandidate {
-    contract_index: usize,
-    entry_index: usize,
+    primary_leg: SelectedLeg,
+    companion_leg: Option<SelectedLeg>,
 }
 
 #[derive(Clone, Debug)]
@@ -127,10 +135,12 @@ struct TradeOutcome {
 struct DetailedTradeOutcome {
     entry_timestamp_ms: i64,
     entry_price: f64,
+    companion_entry_price: Option<f64>,
     entry_underlier_price: f64,
     entry_index: usize,
     exit_timestamp_ms: i64,
     exit_price: f64,
+    companion_exit_price: Option<f64>,
     exit_index: usize,
     premium_paid: f64,
     pnl_per_contract: f64,
@@ -287,6 +297,7 @@ fn stress_mode_label(stress_mode: AggregateStressMode) -> &'static str {
         AggregateStressMode::Baseline => "baseline",
         AggregateStressMode::Conservative => "conservative",
         AggregateStressMode::Harsher => "harsher",
+        AggregateStressMode::Extreme => "extreme",
     }
 }
 
@@ -299,7 +310,7 @@ fn structural_candidate_cache_key(
     stress_mode: AggregateStressMode,
 ) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         signal_manifest.manifest_id,
         signal_manifest.source_content_fingerprint,
         signal_manifest.dataset_hash,
@@ -316,6 +327,7 @@ fn structural_candidate_cache_key(
         dataset.manifest.price_semantics,
         dataset.manifest.contract_reference_as_of_utc,
         dataset.manifest.aggregate_price_field,
+        axis.structure_family,
         axis.delay_minutes,
         axis.dte_days,
         axis.moneyness_buckets,
@@ -581,6 +593,7 @@ fn aggregate_entry_price(row: &OptionsPriceRow, stress_mode: AggregateStressMode
         AggregateStressMode::Baseline => row.close,
         AggregateStressMode::Conservative => row.high.max(row.close),
         AggregateStressMode::Harsher => row.high.max(row.close) * 1.02,
+        AggregateStressMode::Extreme => row.high.max(row.close) * 1.05,
     }
 }
 
@@ -589,6 +602,7 @@ fn aggregate_exit_price(row: &OptionsPriceRow, stress_mode: AggregateStressMode)
         AggregateStressMode::Baseline => row.close,
         AggregateStressMode::Conservative => row.low.min(row.close),
         AggregateStressMode::Harsher => (row.low.min(row.close) * 0.98).max(0.0),
+        AggregateStressMode::Extreme => (row.low.min(row.close) * 0.95).max(0.0),
     }
 }
 
@@ -629,6 +643,89 @@ fn option_entry_price_for_row(
     }
 }
 
+fn option_exit_price_for_row(
+    row: &OptionsPriceRow,
+    price_semantics: OptionsPriceSemantics,
+    fill_model: OptionsFillModelFamily,
+    stress_mode: AggregateStressMode,
+) -> Option<f64> {
+    match price_semantics {
+        OptionsPriceSemantics::MinuteAggregate | OptionsPriceSemantics::DerivedMidSnapshot => {
+            Some(aggregate_exit_price(row, stress_mode))
+        }
+        OptionsPriceSemantics::TopOfBookQuote => quote_exit_price(row, fill_model),
+    }
+}
+
+fn position_entry_prices(
+    structure_family: OptionsStructureFamily,
+    primary_row: &OptionsPriceRow,
+    companion_row: Option<&OptionsPriceRow>,
+    price_semantics: OptionsPriceSemantics,
+    fill_model: OptionsFillModelFamily,
+    stress_mode: AggregateStressMode,
+) -> Option<(f64, Option<f64>, f64)> {
+    let primary_entry = option_entry_price_for_row(primary_row, price_semantics, fill_model)?;
+    if let Some(companion_row) = companion_row {
+        match structure_family {
+            OptionsStructureFamily::LongSingle => Some((primary_entry, None, primary_entry)),
+            OptionsStructureFamily::DebitVertical => {
+                let companion_credit = option_exit_price_for_row(
+                    companion_row,
+                    price_semantics,
+                    fill_model,
+                    stress_mode,
+                )?;
+                let net_debit = (primary_entry - companion_credit).max(0.0);
+                Some((net_debit, Some(companion_credit), net_debit))
+            }
+            OptionsStructureFamily::LongPair => {
+                let companion_entry =
+                    option_entry_price_for_row(companion_row, price_semantics, fill_model)?;
+                let net_debit = (primary_entry + companion_entry).max(0.0);
+                Some((net_debit, Some(companion_entry), net_debit))
+            }
+        }
+    } else {
+        Some((primary_entry, None, primary_entry))
+    }
+}
+
+fn position_exit_prices(
+    structure_family: OptionsStructureFamily,
+    primary_row: &OptionsPriceRow,
+    companion_row: Option<&OptionsPriceRow>,
+    price_semantics: OptionsPriceSemantics,
+    fill_model: OptionsFillModelFamily,
+    stress_mode: AggregateStressMode,
+) -> Option<(f64, Option<f64>, f64)> {
+    let primary_exit =
+        option_exit_price_for_row(primary_row, price_semantics, fill_model, stress_mode)?;
+    if let Some(companion_row) = companion_row {
+        match structure_family {
+            OptionsStructureFamily::LongSingle => Some((primary_exit, None, primary_exit)),
+            OptionsStructureFamily::DebitVertical => {
+                let companion_debit =
+                    option_entry_price_for_row(companion_row, price_semantics, fill_model)?;
+                let net_exit = (primary_exit - companion_debit).max(0.0);
+                Some((net_exit, Some(companion_debit), net_exit))
+            }
+            OptionsStructureFamily::LongPair => {
+                let companion_exit = option_exit_price_for_row(
+                    companion_row,
+                    price_semantics,
+                    fill_model,
+                    stress_mode,
+                )?;
+                let net_exit = (primary_exit + companion_exit).max(0.0);
+                Some((net_exit, Some(companion_exit), net_exit))
+            }
+        }
+    } else {
+        Some((primary_exit, None, primary_exit))
+    }
+}
+
 fn option_path_range_for_row(
     row: &OptionsPriceRow,
     price_semantics: OptionsPriceSemantics,
@@ -641,11 +738,13 @@ fn option_path_range_for_row(
                 AggregateStressMode::Baseline => row.high.max(row.close),
                 AggregateStressMode::Conservative => row.high.max(row.close),
                 AggregateStressMode::Harsher => row.high.max(row.close) * 1.02,
+                AggregateStressMode::Extreme => row.high.max(row.close) * 1.05,
             };
             let low = match stress_mode {
                 AggregateStressMode::Baseline => row.low.min(row.close),
                 AggregateStressMode::Conservative => row.low.min(row.close),
                 AggregateStressMode::Harsher => (row.low.min(row.close) * 0.98).max(0.0),
+                AggregateStressMode::Extreme => (row.low.min(row.close) * 0.95).max(0.0),
             };
             Some((high, low))
         }
@@ -653,6 +752,83 @@ fn option_path_range_for_row(
             let px = quote_exit_price(row, fill_model)?;
             Some((px, px))
         }
+    }
+}
+
+fn position_path_range_for_rows(
+    structure_family: OptionsStructureFamily,
+    primary_row: &OptionsPriceRow,
+    companion_row: Option<&OptionsPriceRow>,
+    price_semantics: OptionsPriceSemantics,
+    fill_model: OptionsFillModelFamily,
+    stress_mode: AggregateStressMode,
+) -> Option<(f64, f64)> {
+    let (primary_high, primary_low) =
+        option_path_range_for_row(primary_row, price_semantics, fill_model, stress_mode)?;
+    if let Some(companion_row) = companion_row {
+        let (companion_high, companion_low) =
+            option_path_range_for_row(companion_row, price_semantics, fill_model, stress_mode)?;
+        match structure_family {
+            OptionsStructureFamily::LongSingle => Some((primary_high, primary_low)),
+            OptionsStructureFamily::DebitVertical => Some((
+                (primary_high - companion_low).max(0.0),
+                (primary_low - companion_high).max(0.0),
+            )),
+            OptionsStructureFamily::LongPair => Some((
+                (primary_high + companion_high).max(0.0),
+                (primary_low + companion_low).max(0.0),
+            )),
+        }
+    } else {
+        Some((primary_high, primary_low))
+    }
+}
+
+fn find_companion_contract_index(
+    index: &IndexedOptionsDataset<'_>,
+    primary_contract_index: usize,
+    side: SignalSide,
+) -> Option<usize> {
+    let primary = index.contract(primary_contract_index);
+    let mut best: Option<(f64, usize)> = None;
+    for &candidate_index in index.contracts_for_side(side) {
+        if candidate_index == primary_contract_index {
+            continue;
+        }
+        let candidate = index.contract(candidate_index);
+        if candidate.expiration_timestamp_ms != primary.expiration_timestamp_ms {
+            continue;
+        }
+        let strike_distance = match side {
+            SignalSide::Bullish => candidate.strike - primary.strike,
+            SignalSide::Bearish => primary.strike - candidate.strike,
+        };
+        if strike_distance <= 0.0 {
+            continue;
+        }
+        match best {
+            Some((best_distance, _)) if strike_distance >= best_distance => {}
+            _ => best = Some((strike_distance, candidate_index)),
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
+fn align_entry_indexes(
+    primary_rows: &[OptionsPriceRow],
+    companion_rows: &[OptionsPriceRow],
+    requested_entry_ts: i64,
+) -> Option<(usize, usize)> {
+    let mut target_ts = requested_entry_ts;
+    loop {
+        let primary_index = lower_bound_timestamp(primary_rows, target_ts)?;
+        let companion_index = lower_bound_timestamp(companion_rows, target_ts)?;
+        let primary_ts = primary_rows.get(primary_index)?.timestamp_ms;
+        let companion_ts = companion_rows.get(companion_index)?.timestamp_ms;
+        if primary_ts == companion_ts {
+            return Some((primary_index, companion_index));
+        }
+        target_ts = primary_ts.max(companion_ts);
     }
 }
 
@@ -768,43 +944,79 @@ fn select_candidate(
         return Err(OptionsCandidateInvalidReason::NoStrikeInTolerance);
     };
     let contract = index.contract(contract_index);
-    let Some(entry_index) = lower_bound_timestamp(&contract.rows, requested_entry_ts) else {
-        return Err(OptionsCandidateInvalidReason::NoPriceRowAfterEntry);
-    };
-    let Some(entry_row) = contract.rows.get(entry_index) else {
-        return Err(OptionsCandidateInvalidReason::NoPriceRowAfterEntry);
-    };
-    if let Some(max_lag_minutes) = filters.max_entry_lag_minutes {
-        let max_lag_ms = i64::from(max_lag_minutes) * MINUTE_MS;
-        if entry_row.timestamp_ms - requested_entry_ts > max_lag_ms {
-            return Err(OptionsCandidateInvalidReason::EntryPastCutoff);
+    let (entry_index, companion_leg, premium_paid) = match tuple.structure_family {
+        OptionsStructureFamily::LongSingle => {
+            let Some(entry_index) = lower_bound_timestamp(&contract.rows, requested_entry_ts) else {
+                return Err(OptionsCandidateInvalidReason::NoPriceRowAfterEntry);
+            };
+            let Some(entry_row) = contract.rows.get(entry_index) else {
+                return Err(OptionsCandidateInvalidReason::NoPriceRowAfterEntry);
+            };
+            if let Some(max_lag_minutes) = filters.max_entry_lag_minutes {
+                let max_lag_ms = i64::from(max_lag_minutes) * MINUTE_MS;
+                if entry_row.timestamp_ms - requested_entry_ts > max_lag_ms {
+                    return Err(OptionsCandidateInvalidReason::EntryPastCutoff);
+                }
+            }
+            let (_, _, entry_price) = position_entry_prices(
+                tuple.structure_family,
+                entry_row,
+                None,
+                price_semantics,
+                tuple.fill_model,
+                stress_mode,
+            )
+            .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
+            (entry_index, None, entry_price * contract.multiplier)
         }
-    }
-    let premium_paid = match tuple.fill_model {
-        OptionsFillModelFamily::AggregateResearch => {
-            aggregate_entry_price(entry_row, stress_mode) * contract.multiplier
-        }
-        OptionsFillModelFamily::QuoteConservative => {
-            entry_row
-                .ask
-                .or(entry_row.mid)
-                .or(entry_row.bid)
-                .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?
-                * contract.multiplier
-        }
-        OptionsFillModelFamily::QuoteMid => {
-            entry_row
-                .mid
-                .or_else(|| {
-                    entry_row
-                        .ask
-                        .zip(entry_row.bid)
-                        .map(|(ask, bid)| (ask + bid) * 0.5)
-                })
-                .or(entry_row.bid)
-                .or(entry_row.ask)
-                .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?
-                * contract.multiplier
+        OptionsStructureFamily::DebitVertical | OptionsStructureFamily::LongPair => {
+            let Some(companion_contract_index) =
+                find_companion_contract_index(index, contract_index, event.side)
+            else {
+                return Err(OptionsCandidateInvalidReason::NoCompanionLegInStructure);
+            };
+            let companion_contract = index.contract(companion_contract_index);
+            let Some((primary_entry_index, companion_entry_index)) =
+                align_entry_indexes(&contract.rows, &companion_contract.rows, requested_entry_ts)
+            else {
+                return Err(OptionsCandidateInvalidReason::NoPriceRowAfterEntry);
+            };
+            let entry_timestamp_ms = contract
+                .rows
+                .get(primary_entry_index)
+                .map(|row| row.timestamp_ms)
+                .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
+            if let Some(max_lag_minutes) = filters.max_entry_lag_minutes {
+                let max_lag_ms = i64::from(max_lag_minutes) * MINUTE_MS;
+                if entry_timestamp_ms - requested_entry_ts > max_lag_ms {
+                    return Err(OptionsCandidateInvalidReason::EntryPastCutoff);
+                }
+            }
+            let primary_row = contract
+                .rows
+                .get(primary_entry_index)
+                .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
+            let companion_row = companion_contract
+                .rows
+                .get(companion_entry_index)
+                .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
+            let (_, _, entry_price) = position_entry_prices(
+                tuple.structure_family,
+                primary_row,
+                Some(companion_row),
+                price_semantics,
+                tuple.fill_model,
+                stress_mode,
+            )
+            .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
+            (
+                primary_entry_index,
+                Some(SelectedLeg {
+                    contract_index: companion_contract_index,
+                    entry_index: companion_entry_index,
+                }),
+                entry_price * contract.multiplier,
+            )
         }
     };
     if let Some(min_premium) = filters.min_premium {
@@ -817,19 +1029,49 @@ fn select_candidate(
             return Err(OptionsCandidateInvalidReason::PremiumTooHigh);
         }
     }
+    let entry_row = contract
+        .rows
+        .get(entry_index)
+        .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
     if let Some(min_volume) = filters.min_volume {
         if entry_row.volume.unwrap_or_default() < min_volume {
             return Err(OptionsCandidateInvalidReason::InsufficientVolume);
+        }
+        if let Some(companion_leg) = companion_leg {
+            let companion_row = index
+                .contract(companion_leg.contract_index)
+                .rows
+                .get(companion_leg.entry_index)
+                .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
+            if companion_row.volume.unwrap_or_default() < min_volume {
+                return Err(OptionsCandidateInvalidReason::InsufficientVolume);
+            }
         }
     }
     if let Some(min_open_interest) = filters.min_open_interest {
         if entry_row.open_interest.unwrap_or_default() < min_open_interest {
             return Err(OptionsCandidateInvalidReason::InsufficientOpenInterest);
         }
+        if let Some(companion_leg) = companion_leg {
+            let companion_row = index
+                .contract(companion_leg.contract_index)
+                .rows
+                .get(companion_leg.entry_index)
+                .ok_or(OptionsCandidateInvalidReason::NoPriceRowAfterEntry)?;
+            if companion_row.open_interest.unwrap_or_default() < min_open_interest {
+                return Err(OptionsCandidateInvalidReason::InsufficientOpenInterest);
+            }
+        }
+    }
+    if premium_paid <= 0.0 {
+        return Err(OptionsCandidateInvalidReason::PremiumTooLow);
     }
     Ok(SelectedCandidate {
-        contract_index,
-        entry_index,
+        primary_leg: SelectedLeg {
+            contract_index,
+            entry_index,
+        },
+        companion_leg,
     })
 }
 
@@ -862,176 +1104,260 @@ fn evaluate_trade_detail(
     price_semantics: OptionsPriceSemantics,
     stress_mode: AggregateStressMode,
 ) -> Option<DetailedTradeOutcome> {
-    let contract = index.contract(candidate.contract_index);
+    let contract = index.contract(candidate.primary_leg.contract_index);
     let contract_rows = &contract.rows;
-    let entry_row = contract_rows.get(candidate.entry_index)?;
-    let entry_price = match price_semantics {
-        OptionsPriceSemantics::MinuteAggregate | OptionsPriceSemantics::DerivedMidSnapshot => {
-            aggregate_entry_price(entry_row, stress_mode)
-        }
-        OptionsPriceSemantics::TopOfBookQuote => quote_entry_price(entry_row, tuple.fill_model)?,
+    let entry_row = contract_rows.get(candidate.primary_leg.entry_index)?;
+    let companion_contract = candidate
+        .companion_leg
+        .map(|leg| index.contract(leg.contract_index));
+    let companion_rows = companion_contract.map(|contract| contract.rows.as_slice());
+    let companion_entry_row = match (candidate.companion_leg, companion_rows) {
+        (Some(leg), Some(rows)) => rows.get(leg.entry_index),
+        _ => None,
     };
-    if !entry_price.is_finite() || entry_price <= 0.0 {
+    let (_entry_price, companion_entry_price, net_entry_price) = position_entry_prices(
+        tuple.structure_family,
+        entry_row,
+        companion_entry_row,
+        price_semantics,
+        tuple.fill_model,
+        stress_mode,
+    )?;
+    if !net_entry_price.is_finite() || net_entry_price <= 0.0 {
         return None;
     }
-    let premium_paid = entry_price * contract.multiplier;
-    let mut path_option_high = entry_price;
-    let mut path_option_low = entry_price;
+    let premium_paid = net_entry_price * contract.multiplier;
+    let mut path_option_high = net_entry_price;
+    let mut path_option_low = net_entry_price;
     let mut path_underlier_high = entry_row.underlying_price;
     let mut path_underlier_low = entry_row.underlying_price;
     let target_price = tuple
         .target_return
-        .map(|pct| entry_price * (1.0 + pct.max(0.0)));
+        .map(|pct| net_entry_price * (1.0 + pct.max(0.0)));
     let stop_price = tuple
         .stop_return
-        .map(|pct| entry_price * (1.0 - pct.max(0.0)));
+        .map(|pct| net_entry_price * (1.0 - pct.max(0.0)));
     let forced_expiry_cutoff = contract.expiration_timestamp_ms.saturating_sub(MINUTE_MS);
     let requested_cutoff = match tuple.exit_template {
-        OptionsExitTemplateFamily::FixedHold => {
-            resolve_fixed_hold_cutoff(entry_row.timestamp_ms, tuple)
-        }
-        OptionsExitTemplateFamily::FixedHoldOrTargetStop => {
+        OptionsExitTemplateFamily::FixedHold | OptionsExitTemplateFamily::FixedHoldOrTargetStop => {
             resolve_fixed_hold_cutoff(entry_row.timestamp_ms, tuple)
         }
         OptionsExitTemplateFamily::EndOfDayOrTargetStop => {
-            resolve_eod_cutoff(contract_rows, candidate.entry_index)
+            resolve_eod_cutoff(contract_rows, candidate.primary_leg.entry_index)
         }
         OptionsExitTemplateFamily::BaseExitOrTargetStop => event
             .base_exit_timestamp
             .unwrap_or_else(|| resolve_fixed_hold_cutoff(entry_row.timestamp_ms, tuple)),
     };
     let cutoff_timestamp_ms = requested_cutoff.min(forced_expiry_cutoff);
-    let cutoff_index =
-        find_cutoff_index(contract_rows, candidate.entry_index, cutoff_timestamp_ms)?;
 
-    for idx in (candidate.entry_index + 1)..=cutoff_index {
-        let row = contract_rows.get(idx)?;
-        if let Some((option_high, option_low)) =
-            option_path_range_for_row(row, price_semantics, tuple.fill_model, stress_mode)
-        {
-            path_option_high = path_option_high.max(option_high);
-            path_option_low = path_option_low.min(option_low);
+    if let (Some(companion_leg), Some(companion_rows)) = (candidate.companion_leg, companion_rows) {
+        let mut primary_index = candidate.primary_leg.entry_index;
+        let mut companion_index = companion_leg.entry_index;
+        let mut final_pair: Option<(usize, usize)> = None;
+        while primary_index < contract_rows.len() && companion_index < companion_rows.len() {
+            let primary_row = contract_rows.get(primary_index)?;
+            let companion_row = companion_rows.get(companion_index)?;
+            match primary_row.timestamp_ms.cmp(&companion_row.timestamp_ms) {
+                Ordering::Less => {
+                    primary_index += 1;
+                    continue;
+                }
+                Ordering::Greater => {
+                    companion_index += 1;
+                    continue;
+                }
+                Ordering::Equal => {
+                    let timestamp_ms = primary_row.timestamp_ms;
+                    if timestamp_ms > cutoff_timestamp_ms {
+                        final_pair = Some((primary_index, companion_index));
+                        break;
+                    }
+                    if timestamp_ms > entry_row.timestamp_ms {
+                        let (option_high, option_low) = position_path_range_for_rows(
+                            tuple.structure_family,
+                            primary_row,
+                            Some(companion_row),
+                            price_semantics,
+                            tuple.fill_model,
+                            stress_mode,
+                        )?;
+                        path_option_high = path_option_high.max(option_high);
+                        path_option_low = path_option_low.min(option_low);
+                        path_underlier_high = path_underlier_high.max(primary_row.underlying_price);
+                        path_underlier_low = path_underlier_low.min(primary_row.underlying_price);
+                        let target_hit = target_price
+                            .map(|target| option_high >= target)
+                            .unwrap_or(false);
+                        let stop_hit = stop_price.map(|stop| option_low <= stop).unwrap_or(false);
+                        if stop_hit || target_hit {
+                            let (_, companion_exit_price, fallback_exit_price) =
+                                position_exit_prices(
+                                    tuple.structure_family,
+                                    primary_row,
+                                    Some(companion_row),
+                                    price_semantics,
+                                    tuple.fill_model,
+                                    stress_mode,
+                                )?;
+                            let exit_price = if stop_hit {
+                                stop_price.unwrap_or(fallback_exit_price)
+                            } else {
+                                target_price.unwrap_or(fallback_exit_price)
+                            };
+                            let pnl_per_contract =
+                                (exit_price - net_entry_price) * contract.multiplier;
+                            return Some(DetailedTradeOutcome {
+                                entry_timestamp_ms: entry_row.timestamp_ms,
+                                entry_price: net_entry_price,
+                                companion_entry_price,
+                                entry_underlier_price: entry_row.underlying_price,
+                                entry_index: candidate.primary_leg.entry_index,
+                                exit_timestamp_ms: timestamp_ms,
+                                exit_price,
+                                companion_exit_price,
+                                exit_index: primary_index,
+                                pnl_per_contract,
+                                premium_paid,
+                                return_on_premium: pnl_per_contract / premium_paid,
+                                path_option_high,
+                                path_option_low,
+                                path_underlier_high,
+                                path_underlier_low,
+                                exit_reason: if stop_hit {
+                                    OptionsExpressionExitReason::StopHit
+                                } else {
+                                    OptionsExpressionExitReason::TargetHit
+                                },
+                            });
+                        }
+                    }
+                    if timestamp_ms == cutoff_timestamp_ms {
+                        final_pair = Some((primary_index, companion_index));
+                        break;
+                    }
+                    primary_index += 1;
+                    companion_index += 1;
+                }
+            }
         }
+
+        let (exit_primary_index, exit_companion_index) = final_pair?;
+        let exit_primary_row = contract_rows.get(exit_primary_index)?;
+        let exit_companion_row = companion_rows.get(exit_companion_index)?;
+        let (_, companion_exit_price, net_exit_price) = position_exit_prices(
+            tuple.structure_family,
+            exit_primary_row,
+            Some(exit_companion_row),
+            price_semantics,
+            tuple.fill_model,
+            stress_mode,
+        )?;
+        let pnl_per_contract = (net_exit_price - net_entry_price) * contract.multiplier;
+        return Some(DetailedTradeOutcome {
+            entry_timestamp_ms: entry_row.timestamp_ms,
+            entry_price: net_entry_price,
+            companion_entry_price,
+            entry_underlier_price: entry_row.underlying_price,
+            entry_index: candidate.primary_leg.entry_index,
+            exit_timestamp_ms: exit_primary_row.timestamp_ms,
+            exit_price: net_exit_price,
+            companion_exit_price,
+            exit_index: exit_primary_index,
+            pnl_per_contract,
+            premium_paid,
+            return_on_premium: pnl_per_contract / premium_paid,
+            path_option_high,
+            path_option_low,
+            path_underlier_high,
+            path_underlier_low,
+            exit_reason: cutoff_exit_reason(tuple, requested_cutoff, forced_expiry_cutoff),
+        });
+    }
+
+    let cutoff_index = find_cutoff_index(
+        contract_rows,
+        candidate.primary_leg.entry_index,
+        cutoff_timestamp_ms,
+    )?;
+    for idx in (candidate.primary_leg.entry_index + 1)..=cutoff_index {
+        let row = contract_rows.get(idx)?;
+        let (option_high, option_low) = position_path_range_for_rows(
+            tuple.structure_family,
+            row,
+            None,
+            price_semantics,
+            tuple.fill_model,
+            stress_mode,
+        )?;
+        path_option_high = path_option_high.max(option_high);
+        path_option_low = path_option_low.min(option_low);
         path_underlier_high = path_underlier_high.max(row.underlying_price);
         path_underlier_low = path_underlier_low.min(row.underlying_price);
-        match price_semantics {
-            OptionsPriceSemantics::MinuteAggregate | OptionsPriceSemantics::DerivedMidSnapshot => {
-                let target_hit = target_price
-                    .map(|target| row.high >= target)
-                    .unwrap_or(false);
-                let stop_hit = stop_price.map(|stop| row.low <= stop).unwrap_or(false);
-                if stop_hit {
-                    let exit_price =
-                        stop_price.unwrap_or_else(|| aggregate_exit_price(row, stress_mode));
-                    let pnl_per_contract = (exit_price - entry_price) * contract.multiplier;
-                    return Some(DetailedTradeOutcome {
-                        entry_timestamp_ms: entry_row.timestamp_ms,
-                        entry_price,
-                        entry_underlier_price: entry_row.underlying_price,
-                        entry_index: candidate.entry_index,
-                        exit_timestamp_ms: row.timestamp_ms,
-                        exit_price,
-                        exit_index: idx,
-                        pnl_per_contract,
-                        premium_paid,
-                        return_on_premium: pnl_per_contract / premium_paid,
-                        path_option_high,
-                        path_option_low,
-                        path_underlier_high,
-                        path_underlier_low,
-                        exit_reason: OptionsExpressionExitReason::StopHit,
-                    });
-                }
-                if target_hit {
-                    let exit_price =
-                        target_price.unwrap_or_else(|| aggregate_exit_price(row, stress_mode));
-                    let pnl_per_contract = (exit_price - entry_price) * contract.multiplier;
-                    return Some(DetailedTradeOutcome {
-                        entry_timestamp_ms: entry_row.timestamp_ms,
-                        entry_price,
-                        entry_underlier_price: entry_row.underlying_price,
-                        entry_index: candidate.entry_index,
-                        exit_timestamp_ms: row.timestamp_ms,
-                        exit_price,
-                        exit_index: idx,
-                        pnl_per_contract,
-                        premium_paid,
-                        return_on_premium: pnl_per_contract / premium_paid,
-                        path_option_high,
-                        path_option_low,
-                        path_underlier_high,
-                        path_underlier_low,
-                        exit_reason: OptionsExpressionExitReason::TargetHit,
-                    });
-                }
-            }
-            OptionsPriceSemantics::TopOfBookQuote => {
-                let exitable = quote_exit_price(row, tuple.fill_model)?;
-                let target_hit = target_price
-                    .map(|target| exitable >= target)
-                    .unwrap_or(false);
-                let stop_hit = stop_price.map(|stop| exitable <= stop).unwrap_or(false);
-                if stop_hit {
-                    let exit_price = stop_price.unwrap_or(exitable);
-                    let pnl_per_contract = (exit_price - entry_price) * contract.multiplier;
-                    return Some(DetailedTradeOutcome {
-                        entry_timestamp_ms: entry_row.timestamp_ms,
-                        entry_price,
-                        entry_underlier_price: entry_row.underlying_price,
-                        entry_index: candidate.entry_index,
-                        exit_timestamp_ms: row.timestamp_ms,
-                        exit_price,
-                        exit_index: idx,
-                        pnl_per_contract,
-                        premium_paid,
-                        return_on_premium: pnl_per_contract / premium_paid,
-                        path_option_high,
-                        path_option_low,
-                        path_underlier_high,
-                        path_underlier_low,
-                        exit_reason: OptionsExpressionExitReason::StopHit,
-                    });
-                }
-                if target_hit {
-                    let exit_price = target_price.unwrap_or(exitable);
-                    let pnl_per_contract = (exit_price - entry_price) * contract.multiplier;
-                    return Some(DetailedTradeOutcome {
-                        entry_timestamp_ms: entry_row.timestamp_ms,
-                        entry_price,
-                        entry_underlier_price: entry_row.underlying_price,
-                        entry_index: candidate.entry_index,
-                        exit_timestamp_ms: row.timestamp_ms,
-                        exit_price,
-                        exit_index: idx,
-                        pnl_per_contract,
-                        premium_paid,
-                        return_on_premium: pnl_per_contract / premium_paid,
-                        path_option_high,
-                        path_option_low,
-                        path_underlier_high,
-                        path_underlier_low,
-                        exit_reason: OptionsExpressionExitReason::TargetHit,
-                    });
-                }
-            }
+        let target_hit = target_price
+            .map(|target| option_high >= target)
+            .unwrap_or(false);
+        let stop_hit = stop_price.map(|stop| option_low <= stop).unwrap_or(false);
+        if stop_hit || target_hit {
+            let (_, _, fallback_exit_price) = position_exit_prices(
+                tuple.structure_family,
+                row,
+                None,
+                price_semantics,
+                tuple.fill_model,
+                stress_mode,
+            )?;
+            let exit_price = if stop_hit {
+                stop_price.unwrap_or(fallback_exit_price)
+            } else {
+                target_price.unwrap_or(fallback_exit_price)
+            };
+            let pnl_per_contract = (exit_price - net_entry_price) * contract.multiplier;
+            return Some(DetailedTradeOutcome {
+                entry_timestamp_ms: entry_row.timestamp_ms,
+                entry_price: net_entry_price,
+                companion_entry_price,
+                entry_underlier_price: entry_row.underlying_price,
+                entry_index: candidate.primary_leg.entry_index,
+                exit_timestamp_ms: row.timestamp_ms,
+                exit_price,
+                companion_exit_price: None,
+                exit_index: idx,
+                pnl_per_contract,
+                premium_paid,
+                return_on_premium: pnl_per_contract / premium_paid,
+                path_option_high,
+                path_option_low,
+                path_underlier_high,
+                path_underlier_low,
+                exit_reason: if stop_hit {
+                    OptionsExpressionExitReason::StopHit
+                } else {
+                    OptionsExpressionExitReason::TargetHit
+                },
+            });
         }
     }
 
     let exit_row = contract_rows.get(cutoff_index)?;
-    let exit_price = match price_semantics {
-        OptionsPriceSemantics::MinuteAggregate | OptionsPriceSemantics::DerivedMidSnapshot => {
-            aggregate_exit_price(exit_row, stress_mode)
-        }
-        OptionsPriceSemantics::TopOfBookQuote => quote_exit_price(exit_row, tuple.fill_model)?,
-    };
-    let pnl_per_contract = (exit_price - entry_price) * contract.multiplier;
+    let (exit_price, companion_exit_price, net_exit_price) = position_exit_prices(
+        tuple.structure_family,
+        exit_row,
+        None,
+        price_semantics,
+        tuple.fill_model,
+        stress_mode,
+    )?;
+    let pnl_per_contract = (net_exit_price - net_entry_price) * contract.multiplier;
     Some(DetailedTradeOutcome {
         entry_timestamp_ms: entry_row.timestamp_ms,
-        entry_price,
+        entry_price: net_entry_price,
+        companion_entry_price,
         entry_underlier_price: entry_row.underlying_price,
-        entry_index: candidate.entry_index,
+        entry_index: candidate.primary_leg.entry_index,
         exit_timestamp_ms: exit_row.timestamp_ms,
         exit_price,
+        companion_exit_price,
         exit_index: cutoff_index,
         pnl_per_contract,
         premium_paid,
@@ -1108,6 +1434,7 @@ fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpr
 
 #[derive(Clone, Debug)]
 struct CandidateAxis {
+    structure_family: OptionsStructureFamily,
     delay_minutes: Vec<u16>,
     dte_days: Vec<u16>,
     moneyness_buckets: Vec<OptionsMoneynessBucket>,
@@ -1124,6 +1451,7 @@ impl CandidateAxis {
             );
         }
         Ok(Self {
+            structure_family: req.structure_family,
             delay_minutes: req.delay_minutes.clone(),
             dte_days: req.dte_buckets.clone(),
             moneyness_buckets: req.moneyness_buckets.clone(),
@@ -1482,6 +1810,7 @@ fn compile_tuple_grid(
                         {
                             tuples.push(CompiledTupleSpec {
                                 tuple: OptionsTupleSpec {
+                                    structure_family: candidate_axis.structure_family,
                                     delay_minutes,
                                     dte_days,
                                     moneyness_bucket,
@@ -2076,6 +2405,12 @@ fn assign_sealed_final_ranks(ranked_results: &mut [RankedCompiledTuple]) {
             )
         })
         .then_with(|| {
+            compare_optional_metrics_desc(
+                left.sealed_extreme_stress_metrics.as_ref(),
+                right.sealed_extreme_stress_metrics.as_ref(),
+            )
+        })
+        .then_with(|| {
             right
                 .robust_score
                 .partial_cmp(&left.robust_score)
@@ -2094,9 +2429,11 @@ fn assign_sealed_final_ranks(ranked_results: &mut [RankedCompiledTuple]) {
 fn apply_sealed_finalist_stage(
     req: &OptionsExpressionRunRequest,
     prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
 ) {
     let sealed_test_events = prepared.diagnostics.sealed_test_events;
+    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
     let sealed_finalist_count = if sealed_test_events > 0 {
         req.sealed_finalist_count.max(1).min(ranked_results.len())
     } else {
@@ -2125,15 +2462,26 @@ fn apply_sealed_finalist_stage(
             &prepared.harsher_candidate_cache,
             &prepared.harsher_exit_summary_cache,
         ));
+        ranked.result.sealed_extreme_stress_metrics = Some(evaluate_exact_stress_for_split(
+            &ranked.compiled,
+            &prepared.events,
+            OptionsEvaluationSplit::SealedTest,
+            &index,
+            &prepared.baseline_candidate_cache,
+            dataset.manifest.price_semantics,
+            AggregateStressMode::Extreme,
+        ));
     }
     assign_sealed_final_ranks(ranked_results);
 }
 
 fn exactify_ranked_results(
     prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
 ) {
     let holdout_events = prepared.diagnostics.holdout_events;
+    let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
     for ranked in ranked_results {
         ranked.result.selection_metrics = evaluate_compiled_tuple_for_split(
             &ranked.compiled,
@@ -2175,12 +2523,26 @@ fn exactify_ranked_results(
         } else {
             None
         };
+        ranked.result.extreme_stress_metrics = if holdout_events > 0 {
+            Some(evaluate_exact_stress_for_split(
+                &ranked.compiled,
+                &prepared.events,
+                OptionsEvaluationSplit::Holdout,
+                &index,
+                &prepared.baseline_candidate_cache,
+                dataset.manifest.price_semantics,
+                AggregateStressMode::Extreme,
+            ))
+        } else {
+            None
+        };
         ranked.result.robust_score = robust_score(
             &ranked.result.selection_metrics,
             ranked.result.holdout_metrics.as_ref(),
             None,
             ranked.result.stress_metrics.as_ref(),
             ranked.result.harsher_stress_metrics.as_ref(),
+            ranked.result.extreme_stress_metrics.as_ref(),
         );
     }
 }
@@ -2188,16 +2550,17 @@ fn exactify_ranked_results(
 fn finalize_ranked_results(
     req: &OptionsExpressionRunRequest,
     prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
     ranked_results: &mut [RankedCompiledTuple],
 ) -> (u64, u64) {
     let exactify_start = Instant::now();
-    exactify_ranked_results(prepared, ranked_results);
+    exactify_ranked_results(prepared, dataset, ranked_results);
     let exactify_us = elapsed_us(exactify_start);
 
     let sealed_stage_start = Instant::now();
     sort_ranked_results(ranked_results);
     resequence_pre_sealed_ranks(ranked_results);
-    apply_sealed_finalist_stage(req, prepared, ranked_results);
+    apply_sealed_finalist_stage(req, prepared, dataset, ranked_results);
     let sealed_stage_us = elapsed_us(sealed_stage_start);
 
     (exactify_us, sealed_stage_us)
@@ -2268,6 +2631,7 @@ mod gpu_scoring {
     pub(super) fn rank_compiled_tuples_gpu(
         req: &OptionsExpressionRunRequest,
         prepared: &PreparedOptionsExpressionRun,
+        dataset: &ImportedOptionsDataset,
     ) -> Result<Option<GpuRankedTuplePass>, String> {
         if matches!(
             req.backend_preference,
@@ -2368,6 +2732,7 @@ mod gpu_scoring {
                 None,
                 stress_metrics.as_ref(),
                 None,
+                None,
             );
             ranked_results.push(RankedCompiledTuple {
                 compiled: compiled_tuple.clone(),
@@ -2383,6 +2748,8 @@ mod gpu_scoring {
                     sealed_stress_metrics: None,
                     harsher_stress_metrics: None,
                     sealed_harsher_stress_metrics: None,
+                    extreme_stress_metrics: None,
+                    sealed_extreme_stress_metrics: None,
                     robust_score: robust,
                 },
             });
@@ -2392,7 +2759,7 @@ mod gpu_scoring {
         resequence_pre_sealed_ranks(&mut ranked_results);
         ranked_results.truncate(req.top_k.max(1));
         let (exactify_us, sealed_stage_us) =
-            finalize_ranked_results(req, prepared, &mut ranked_results);
+            finalize_ranked_results(req, prepared, dataset, &mut ranked_results);
         Ok(Some(GpuRankedTuplePass {
             ranked_results,
             stats: GpuRankingExecutionStats {
@@ -2412,6 +2779,7 @@ mod gpu_scoring {
     pub(super) fn gpu_ranking_stats(
         req: &OptionsExpressionRunRequest,
         prepared: &PreparedOptionsExpressionRun,
+        dataset: &ImportedOptionsDataset,
     ) -> Result<Option<GpuRankingExecutionStats>, String> {
         if matches!(
             req.backend_preference,
@@ -2431,7 +2799,7 @@ mod gpu_scoring {
             }
             return Ok(None);
         };
-        if let Some(result) = rank_compiled_tuples_gpu(req, prepared)? {
+        if let Some(result) = rank_compiled_tuples_gpu(req, prepared, dataset)? {
             Ok(Some(result.stats))
         } else {
             Ok(None)
@@ -2442,6 +2810,7 @@ mod gpu_scoring {
 fn rank_compiled_tuples_cpu(
     req: &OptionsExpressionRunRequest,
     prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
 ) -> Vec<RankedCompiledTuple> {
     let holdout_events = prepared.diagnostics.holdout_events;
     let mut ranked_results: Vec<RankedCompiledTuple> = Vec::new();
@@ -2486,6 +2855,7 @@ fn rank_compiled_tuples_cpu(
             None,
             stress_metrics.as_ref(),
             None,
+            None,
         );
 
         ranked_results.push(RankedCompiledTuple {
@@ -2502,6 +2872,8 @@ fn rank_compiled_tuples_cpu(
                 sealed_stress_metrics: None,
                 harsher_stress_metrics: None,
                 sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
                 robust_score: robust,
             },
         });
@@ -2510,13 +2882,14 @@ fn rank_compiled_tuples_cpu(
     sort_ranked_results(&mut ranked_results);
     resequence_pre_sealed_ranks(&mut ranked_results);
     ranked_results.truncate(req.top_k.max(1));
-    let _ = finalize_ranked_results(req, prepared, &mut ranked_results);
+    let _ = finalize_ranked_results(req, prepared, dataset, &mut ranked_results);
     ranked_results
 }
 
 fn rank_compiled_tuples(
     req: &OptionsExpressionRunRequest,
     prepared: &PreparedOptionsExpressionRun,
+    dataset: &ImportedOptionsDataset,
 ) -> Result<RankedTuplePass, String> {
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     {
@@ -2529,7 +2902,7 @@ fn rank_compiled_tuples(
             }
         };
         if should_attempt_gpu {
-            match gpu_scoring::rank_compiled_tuples_gpu(req, prepared) {
+            match gpu_scoring::rank_compiled_tuples_gpu(req, prepared, dataset) {
                 Ok(Some(gpu_ranked)) => {
                     return Ok(RankedTuplePass {
                         ranked: gpu_ranked.ranked_results,
@@ -2548,7 +2921,7 @@ fn rank_compiled_tuples(
                 }
                 Err(err) => {
                     return Ok(RankedTuplePass {
-                        ranked: rank_compiled_tuples_cpu(req, prepared),
+                        ranked: rank_compiled_tuples_cpu(req, prepared, dataset),
                         backend_used: "cpu_reference",
                         backend_fallback_reason: Some(err),
                     });
@@ -2558,7 +2931,7 @@ fn rank_compiled_tuples(
     }
 
     Ok(RankedTuplePass {
-        ranked: rank_compiled_tuples_cpu(req, prepared),
+        ranked: rank_compiled_tuples_cpu(req, prepared, dataset),
         backend_used: "cpu_reference",
         backend_fallback_reason: None,
     })
@@ -2585,6 +2958,7 @@ fn compile_structural_candidate_cache(
                     let slot_index =
                         axis.slot_index(event_index, delay_index, dte_index, moneyness_index);
                     let selector_tuple = OptionsTupleSpec {
+                        structure_family: axis.structure_family,
                         delay_minutes,
                         dte_days,
                         moneyness_bucket,
@@ -2662,6 +3036,7 @@ fn compile_exit_summary_cache(
                                     stop_index,
                                 );
                                 let eval_tuple = OptionsTupleSpec {
+                                    structure_family: candidate_cache.axis.structure_family,
                                     delay_minutes: 0,
                                     dte_days: 0,
                                     moneyness_bucket: OptionsMoneynessBucket::Atm,
@@ -2808,12 +3183,51 @@ fn evaluate_compiled_tuple_for_split(
     compute_metrics(split_event_count, &outcomes)
 }
 
+fn evaluate_exact_stress_for_split(
+    tuple: &CompiledTupleSpec,
+    events: &[OptionsSignalEvent],
+    split: OptionsEvaluationSplit,
+    index: &IndexedOptionsDataset<'_>,
+    candidate_cache: &StructuralCandidateCache,
+    price_semantics: OptionsPriceSemantics,
+    stress_mode: AggregateStressMode,
+) -> OptionsExpressionMetrics {
+    let mut split_event_count = 0usize;
+    let mut outcomes: Vec<TradeOutcome> = Vec::new();
+    for (event_index, event) in events.iter().enumerate() {
+        if event.fold != split {
+            continue;
+        }
+        split_event_count += 1;
+        let Some(candidate) = candidate_cache.candidate(
+            event_index,
+            tuple.delay_index,
+            tuple.dte_index,
+            tuple.moneyness_index,
+        ) else {
+            continue;
+        };
+        if let Some(outcome) = evaluate_trade_detail(
+            event,
+            &tuple.tuple,
+            candidate,
+            index,
+            price_semantics,
+            stress_mode,
+        ) {
+            outcomes.push(outcome.summary());
+        }
+    }
+    compute_metrics(split_event_count, &outcomes)
+}
+
 fn robust_score(
     search: &OptionsExpressionMetrics,
     holdout: Option<&OptionsExpressionMetrics>,
     _sealed: Option<&OptionsExpressionMetrics>,
     stress: Option<&OptionsExpressionMetrics>,
     harsher_stress: Option<&OptionsExpressionMetrics>,
+    extreme_stress: Option<&OptionsExpressionMetrics>,
 ) -> f64 {
     let coverage = (1.0 - search.invalid_rate).clamp(0.0, 1.0);
     let search_score = search.expectancy_per_premium;
@@ -2826,12 +3240,16 @@ fn robust_score(
     let harsher_stress_score = harsher_stress
         .map(|metrics| metrics.expectancy_per_premium)
         .unwrap_or(stress_score);
+    let extreme_stress_score = extreme_stress
+        .map(|metrics| metrics.expectancy_per_premium)
+        .unwrap_or(harsher_stress_score);
     // Sealed metrics are recorded for final reporting, not for tuple ranking.
     coverage
-        * (0.50 * search_score
+        * (0.45 * search_score
             + 0.25 * holdout_score
             + 0.15 * stress_score
-            + 0.10 * harsher_stress_score)
+            + 0.10 * harsher_stress_score
+            + 0.05 * extreme_stress_score)
 }
 
 fn build_event_detail_row(
@@ -2868,14 +3286,18 @@ fn build_event_detail_row(
                 compiled_tuple.moneyness_index,
             ),
             contract_id: None,
+            companion_contract_id: None,
             expiration_date: None,
             strike: None,
+            companion_strike: None,
             multiplier: None,
             entry_timestamp: None,
             entry_option_price: None,
+            companion_entry_option_price: None,
             entry_underlier_price: None,
             exit_timestamp: None,
             exit_option_price: None,
+            companion_exit_option_price: None,
             premium_paid: None,
             pnl_per_contract: None,
             return_on_premium: None,
@@ -2890,8 +3312,11 @@ fn build_event_detail_row(
         };
     };
 
-    let contract = index.contract(candidate.contract_index);
-    let entry_row = contract.rows.get(candidate.entry_index);
+    let contract = index.contract(candidate.primary_leg.contract_index);
+    let companion_contract = candidate
+        .companion_leg
+        .map(|leg| index.contract(leg.contract_index));
+    let entry_row = contract.rows.get(candidate.primary_leg.entry_index);
     let fallback_entry_price = entry_row.and_then(|row| {
         option_entry_price_for_row(
             row,
@@ -2899,6 +3324,17 @@ fn build_event_detail_row(
             compiled_tuple.tuple.fill_model,
         )
     });
+    let fallback_companion_entry_price = candidate
+        .companion_leg
+        .and_then(|leg| companion_contract?.rows.get(leg.entry_index))
+        .and_then(|row| {
+            option_exit_price_for_row(
+                row,
+                index.dataset.manifest.price_semantics,
+                compiled_tuple.tuple.fill_model,
+                AggregateStressMode::Baseline,
+            )
+        });
     let detail = evaluate_trade_detail(
         event,
         &compiled_tuple.tuple,
@@ -2944,17 +3380,24 @@ fn build_event_detail_row(
         status,
         candidate_invalid_reason: None,
         contract_id: Some(contract.contract_id.clone()),
+        companion_contract_id: companion_contract.map(|contract| contract.contract_id.clone()),
         expiration_date: Some(contract.expiration_date.clone()),
         strike: Some(contract.strike),
+        companion_strike: companion_contract.map(|contract| contract.strike),
         multiplier: Some(contract.multiplier),
         entry_timestamp,
         entry_option_price: detail
             .as_ref()
             .map(|value| value.entry_price)
             .or(fallback_entry_price),
+        companion_entry_option_price: detail
+            .as_ref()
+            .and_then(|value| value.companion_entry_price)
+            .or(fallback_companion_entry_price),
         entry_underlier_price,
         exit_timestamp: detail.as_ref().map(|value| value.exit_timestamp_ms),
         exit_option_price: detail.as_ref().map(|value| value.exit_price),
+        companion_exit_option_price: detail.as_ref().and_then(|value| value.companion_exit_price),
         premium_paid: detail.as_ref().map(|value| value.premium_paid),
         pnl_per_contract: detail.as_ref().map(|value| value.pnl_per_contract),
         return_on_premium: detail.as_ref().map(|value| value.return_on_premium),
@@ -2970,28 +3413,82 @@ fn build_event_detail_row(
 }
 
 fn build_event_path_points(
-    contract: &OptionsContractSeries,
+    structure_family: OptionsStructureFamily,
+    primary_contract: &OptionsContractSeries,
+    companion_contract: Option<&OptionsContractSeries>,
     start_index: usize,
+    companion_start_index: Option<usize>,
     end_index: usize,
 ) -> Vec<OptionsExpressionEventPathPoint> {
     let Some(end_index) = (start_index <= end_index).then_some(end_index) else {
         return Vec::new();
     };
-    contract
-        .rows
-        .iter()
-        .enumerate()
-        .skip(start_index)
-        .take(end_index.saturating_sub(start_index) + 1)
-        .map(|(_, row)| OptionsExpressionEventPathPoint {
-            timestamp_ms: row.timestamp_ms,
-            option_open: row.open,
-            option_high: row.high,
-            option_low: row.low,
-            option_close: row.close,
-            underlying_price: row.underlying_price,
-        })
-        .collect()
+    if let Some(companion_contract) = companion_contract {
+        let mut points = Vec::new();
+        let mut primary_index = start_index;
+        let mut companion_index = companion_start_index.unwrap_or(0);
+        while primary_index <= end_index
+            && primary_index < primary_contract.rows.len()
+            && companion_index < companion_contract.rows.len()
+        {
+            let primary_row = &primary_contract.rows[primary_index];
+            let companion_row = &companion_contract.rows[companion_index];
+            match primary_row.timestamp_ms.cmp(&companion_row.timestamp_ms) {
+                Ordering::Less => primary_index += 1,
+                Ordering::Greater => companion_index += 1,
+                Ordering::Equal => {
+                    let (option_open, option_high, option_low, option_close) =
+                        match structure_family {
+                            OptionsStructureFamily::LongSingle => (
+                                primary_row.open,
+                                primary_row.high,
+                                primary_row.low,
+                                primary_row.close,
+                            ),
+                            OptionsStructureFamily::DebitVertical => (
+                                (primary_row.open - companion_row.open).max(0.0),
+                                (primary_row.high - companion_row.low).max(0.0),
+                                (primary_row.low - companion_row.high).max(0.0),
+                                (primary_row.close - companion_row.close).max(0.0),
+                            ),
+                            OptionsStructureFamily::LongPair => (
+                                (primary_row.open + companion_row.open).max(0.0),
+                                (primary_row.high + companion_row.high).max(0.0),
+                                (primary_row.low + companion_row.low).max(0.0),
+                                (primary_row.close + companion_row.close).max(0.0),
+                            ),
+                        };
+                    points.push(OptionsExpressionEventPathPoint {
+                        timestamp_ms: primary_row.timestamp_ms,
+                        option_open,
+                        option_high,
+                        option_low,
+                        option_close,
+                        underlying_price: primary_row.underlying_price,
+                    });
+                    primary_index += 1;
+                    companion_index += 1;
+                }
+            }
+        }
+        points
+    } else {
+        primary_contract
+            .rows
+            .iter()
+            .enumerate()
+            .skip(start_index)
+            .take(end_index.saturating_sub(start_index) + 1)
+            .map(|(_, row)| OptionsExpressionEventPathPoint {
+                timestamp_ms: row.timestamp_ms,
+                option_open: row.open,
+                option_high: row.high,
+                option_low: row.low,
+                option_close: row.close,
+                underlying_price: row.underlying_price,
+            })
+            .collect()
+    }
 }
 
 fn event_has_any_candidate(candidate_cache: &StructuralCandidateCache, event_index: usize) -> bool {
@@ -3115,7 +3612,7 @@ pub fn run_options_expression_blocking(
     dataset: &ImportedOptionsDataset,
 ) -> Result<OptionsExpressionRunResult, String> {
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
-    let ranked_pass = rank_compiled_tuples(&req, &prepared)?;
+    let ranked_pass = rank_compiled_tuples(&req, &prepared, dataset)?;
     let ranked_results: Vec<OptionsExpressionTupleResult> = ranked_pass
         .ranked
         .into_iter()
@@ -3140,7 +3637,7 @@ pub fn analyze_options_expression_feasibility_blocking(
 ) -> Result<OptionsExpressionFeasibilityReport, String> {
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
     let rank_start = Instant::now();
-    let _ = rank_compiled_tuples_cpu(&req, &prepared);
+    let _ = rank_compiled_tuples_cpu(&req, &prepared, dataset);
     let cpu_ranking_us = elapsed_us(rank_start);
     let cpu_ranking_ms = cpu_ranking_us / 1_000;
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -3168,7 +3665,7 @@ pub fn analyze_options_expression_feasibility_blocking(
             ) {
             None
         } else {
-            match gpu_scoring::gpu_ranking_stats(&req, &prepared) {
+            match gpu_scoring::gpu_ranking_stats(&req, &prepared, dataset) {
                 Ok(stats) => stats,
                 Err(err)
                     if matches!(
@@ -3477,7 +3974,7 @@ pub fn inspect_options_expression_tuple_blocking(
     dataset: &ImportedOptionsDataset,
 ) -> Result<OptionsExpressionTupleInspectionResult, String> {
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
-    let ranked = rank_compiled_tuples(&req, &prepared)?.ranked;
+    let ranked = rank_compiled_tuples(&req, &prepared, dataset)?.ranked;
     let tuple_count = ranked.len();
     let selected = ranked.get(tuple_index).ok_or_else(|| {
         format!(
@@ -3535,7 +4032,7 @@ pub fn inspect_options_expression_event_path_blocking(
     dataset: &ImportedOptionsDataset,
 ) -> Result<OptionsExpressionEventPathInspectionResult, String> {
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
-    let ranked = rank_compiled_tuples(&req, &prepared)?;
+    let ranked = rank_compiled_tuples(&req, &prepared, dataset)?;
     let tuple_count = ranked.ranked.len();
     let selected = ranked.ranked.get(tuple_index).ok_or_else(|| {
         format!(
@@ -3567,7 +4064,10 @@ pub fn inspect_options_expression_event_path_blocking(
         selected.compiled.dte_index,
         selected.compiled.moneyness_index,
     ) {
-        let contract = index.contract(candidate.contract_index);
+        let contract = index.contract(candidate.primary_leg.contract_index);
+        let companion_contract = candidate
+            .companion_leg
+            .map(|leg| index.contract(leg.contract_index));
         let detail = evaluate_trade_detail(
             event,
             &selected.compiled.tuple,
@@ -3577,7 +4077,14 @@ pub fn inspect_options_expression_event_path_blocking(
             AggregateStressMode::Baseline,
         );
         if let Some(detail) = detail {
-            build_event_path_points(contract, detail.entry_index, detail.exit_index)
+            build_event_path_points(
+                selected.compiled.tuple.structure_family,
+                contract,
+                companion_contract,
+                detail.entry_index,
+                candidate.companion_leg.map(|leg| leg.entry_index),
+                detail.exit_index,
+            )
         } else {
             Vec::new()
         }
@@ -3602,7 +4109,7 @@ mod tests {
         ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
         OptionsExpressionEventStatus, OptionsExpressionExitReason, OptionsFillModelFamily,
         OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
-        OptionsSignalEventManifestV1, OptionsStaticFilterBundle,
+        OptionsSignalEventManifestV1, OptionsStaticFilterBundle, OptionsStructureFamily,
     };
     use crate::test_support::lock_test_env;
 
@@ -3647,8 +4154,8 @@ mod tests {
                 contract_reference_as_of_utc: None,
                 underlier_reference_source: "underlying_dataset".to_string(),
                 dataset_path: "mem".to_string(),
-                row_count: 8,
-                contract_count: 2,
+                row_count: 16,
+                contract_count: 4,
                 aggregate_price_field: Some("close".to_string()),
             },
             contracts: vec![
@@ -3723,6 +4230,88 @@ mod tests {
                             high: 1.05,
                             low: 0.7,
                             close: 0.8,
+                            underlying_price: 101.0,
+                            bid: None,
+                            ask: None,
+                            mid: None,
+                            volume: Some(100.0),
+                            open_interest: Some(1000.0),
+                            quote_age_ms: None,
+                            session_id: None,
+                        },
+                    ],
+                },
+                OptionsContractSeries {
+                    root_symbol: "SPY".to_string(),
+                    contract_id: "SPY_C_2".to_string(),
+                    option_type: OptionType::Call,
+                    expiration_date: "2026-04-10".to_string(),
+                    expiration_timestamp_ms: 1_700_086_400_000,
+                    strike: 102.0,
+                    multiplier: 100.0,
+                    rows: vec![
+                        OptionsPriceRow {
+                            timestamp_ms: 1_700_000_060_000,
+                            open: 0.6,
+                            high: 0.7,
+                            low: 0.5,
+                            close: 0.6,
+                            underlying_price: 100.0,
+                            bid: None,
+                            ask: None,
+                            mid: None,
+                            volume: Some(100.0),
+                            open_interest: Some(1000.0),
+                            quote_age_ms: None,
+                            session_id: None,
+                        },
+                        OptionsPriceRow {
+                            timestamp_ms: 1_700_000_120_000,
+                            open: 0.6,
+                            high: 0.95,
+                            low: 0.55,
+                            close: 0.85,
+                            underlying_price: 100.5,
+                            bid: None,
+                            ask: None,
+                            mid: None,
+                            volume: Some(100.0),
+                            open_interest: Some(1000.0),
+                            quote_age_ms: None,
+                            session_id: None,
+                        },
+                    ],
+                },
+                OptionsContractSeries {
+                    root_symbol: "SPY".to_string(),
+                    contract_id: "SPY_P_2".to_string(),
+                    option_type: OptionType::Put,
+                    expiration_date: "2026-04-10".to_string(),
+                    expiration_timestamp_ms: 1_700_086_400_000,
+                    strike: 98.0,
+                    multiplier: 100.0,
+                    rows: vec![
+                        OptionsPriceRow {
+                            timestamp_ms: 1_700_000_060_000,
+                            open: 0.65,
+                            high: 0.75,
+                            low: 0.55,
+                            close: 0.65,
+                            underlying_price: 100.0,
+                            bid: None,
+                            ask: None,
+                            mid: None,
+                            volume: Some(100.0),
+                            open_interest: Some(1000.0),
+                            quote_age_ms: None,
+                            session_id: None,
+                        },
+                        OptionsPriceRow {
+                            timestamp_ms: 1_700_000_120_000,
+                            open: 0.6,
+                            high: 0.7,
+                            low: 0.4,
+                            close: 0.55,
                             underlying_price: 101.0,
                             bid: None,
                             ask: None,
@@ -3915,6 +4504,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
@@ -3946,6 +4536,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0, 5],
             dte_buckets: vec![1],
@@ -4056,6 +4647,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
@@ -4091,6 +4683,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1, 9],
@@ -4168,6 +4761,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0, 5],
             dte_buckets: vec![1],
@@ -4230,6 +4824,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
@@ -4272,6 +4867,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
@@ -4332,6 +4928,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
@@ -4353,6 +4950,62 @@ mod tests {
         let prepared =
             prepare_options_expression_run(&req, &dense_manifest, &test_dataset()).expect("prepared");
         let decision = evaluate_auto_backend_decision(&prepared, true, Some(4.0));
+
+        assert!(decision.gpu_eligible);
+        assert_eq!(decision.recommended_backend, "gpu_compiled_tensor_hybrid");
+        assert!(decision.reasons.is_empty());
+    }
+
+    #[test]
+    fn auto_backend_decision_promotes_gpu_for_medium_dense_workloads() {
+        let template_manifest = test_manifest();
+        let template_event = template_manifest.events[0].clone();
+        let mut manifest = template_manifest.clone();
+        manifest.events = (0..20)
+            .map(|idx| {
+                let mut event = template_event.clone();
+                event.event_id = format!("medium_{idx}");
+                event.side = if idx % 2 == 0 {
+                    SignalSide::Bullish
+                } else {
+                    SignalSide::Bearish
+                };
+                event.fold = if idx < 12 {
+                    OptionsEvaluationSplit::Search
+                } else if idx < 16 {
+                    OptionsEvaluationSplit::Holdout
+                } else {
+                    OptionsEvaluationSplit::SealedTest
+                };
+                event
+            })
+            .collect();
+
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0, 1, 2, 3],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: (1..=32).collect(),
+            target_return_buckets: vec![0.1, 0.2, 0.3, 0.4],
+            stop_return_buckets: vec![0.1, 0.2, 0.3, 0.4],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 25,
+            min_valid_trades: None,
+            split_ratio_search: 0.6,
+            split_ratio_holdout: 0.2,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 5,
+        };
+
+        let prepared = prepare_options_expression_run(&req, &manifest, &test_dataset()).expect("prepared");
+        let decision = evaluate_auto_backend_decision(&prepared, true, None);
 
         assert!(decision.gpu_eligible);
         assert_eq!(decision.recommended_backend, "gpu_compiled_tensor_hybrid");
@@ -4394,11 +5047,13 @@ mod tests {
             Some(&sealed_low),
             Some(&stress),
             Some(&stress),
+            Some(&stress),
         );
         let right = robust_score(
             &holdout,
             Some(&holdout),
             Some(&sealed_high),
+            Some(&stress),
             Some(&stress),
             Some(&stress),
         );
@@ -4422,6 +5077,7 @@ mod tests {
         };
         let make_compiled = |dte_days| CompiledTupleSpec {
             tuple: OptionsTupleSpec {
+                structure_family: OptionsStructureFamily::LongSingle,
                 delay_minutes: 0,
                 dte_days,
                 moneyness_bucket: OptionsMoneynessBucket::Atm,
@@ -4455,6 +5111,8 @@ mod tests {
                     sealed_stress_metrics: Some(metrics(4, 0.04, 0.03, 0.50)),
                     harsher_stress_metrics: None,
                     sealed_harsher_stress_metrics: Some(metrics(4, 0.03, 0.02, 0.50)),
+                    extreme_stress_metrics: None,
+                    sealed_extreme_stress_metrics: Some(metrics(4, 0.02, 0.01, 0.50)),
                     robust_score: 0.30,
                 },
             },
@@ -4472,6 +5130,8 @@ mod tests {
                     sealed_stress_metrics: Some(metrics(4, 0.09, 0.07, 0.50)),
                     harsher_stress_metrics: None,
                     sealed_harsher_stress_metrics: Some(metrics(4, 0.08, 0.06, 0.50)),
+                    extreme_stress_metrics: None,
+                    sealed_extreme_stress_metrics: Some(metrics(4, 0.07, 0.05, 0.50)),
                     robust_score: 0.20,
                 },
             },
@@ -4491,6 +5151,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
@@ -4544,6 +5205,7 @@ mod tests {
             parent_artifact_path: "C:/runs/a.json".to_string(),
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
             backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
@@ -4602,5 +5264,165 @@ mod tests {
             assert!(missing_row.candidate_invalid_reason.is_some());
         }
         assert!(inspection.rows.iter().all(|row| !row.event_id.is_empty()));
+    }
+
+    #[test]
+    fn tuple_inspection_returns_companion_leg_for_debit_vertical() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::DebitVertical,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+
+        let inspection =
+            inspect_options_expression_tuple_blocking(req, 0, &test_manifest(), &test_dataset())
+                .expect("inspection");
+        let first_row = inspection.rows.first().expect("first row");
+        assert_eq!(first_row.contract_id.as_deref(), Some("SPY_C_1"));
+        assert_eq!(first_row.companion_contract_id.as_deref(), Some("SPY_C_2"));
+        assert_eq!(first_row.companion_strike, Some(102.0));
+        assert!(first_row.companion_entry_option_price.is_some());
+    }
+
+    #[test]
+    fn tuple_inspection_returns_companion_leg_for_long_pair() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongPair,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+
+        let inspection =
+            inspect_options_expression_tuple_blocking(req, 0, &test_manifest(), &test_dataset())
+                .expect("inspection");
+        let first_row = inspection.rows.first().expect("first row");
+        assert_eq!(first_row.contract_id.as_deref(), Some("SPY_C_1"));
+        assert_eq!(first_row.companion_contract_id.as_deref(), Some("SPY_C_2"));
+        assert_eq!(first_row.companion_strike, Some(102.0));
+        assert_eq!(first_row.entry_option_price, Some(1.6));
+        assert_eq!(first_row.companion_entry_option_price, Some(0.6));
+        assert!(
+            (first_row.return_on_premium.unwrap_or_default() - 0.25).abs() < 1e-9,
+            "unexpected return_on_premium: {:?}",
+            first_row.return_on_premium
+        );
+    }
+
+    #[test]
+    fn event_path_replay_returns_net_position_points_for_debit_vertical() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::DebitVertical,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+
+        let inspection = inspect_options_expression_event_path_blocking(
+            req,
+            0,
+            0,
+            &test_manifest(),
+            &test_dataset(),
+        )
+        .expect("path inspection");
+
+        assert!(!inspection.points.is_empty());
+        assert!((inspection.points[0].option_close - 0.40).abs() < 1e-6);
+        assert!(inspection.row.companion_contract_id.is_some());
+    }
+
+    #[test]
+    fn event_path_replay_returns_net_position_points_for_long_pair() {
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongPair,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 1,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 1,
+        };
+
+        let inspection = inspect_options_expression_event_path_blocking(
+            req,
+            0,
+            0,
+            &test_manifest(),
+            &test_dataset(),
+        )
+        .expect("path inspection");
+
+        assert_eq!(inspection.point_count, 2);
+        assert!((inspection.points[0].option_open - 1.60).abs() < 1e-6);
+        assert!((inspection.points[0].option_high - 1.80).abs() < 1e-6);
+        assert!((inspection.points[0].option_low - 1.40).abs() < 1e-6);
+        assert!((inspection.points[0].option_close - 1.60).abs() < 1e-6);
+        assert!((inspection.points[1].option_high - 2.35).abs() < 1e-6);
+        assert!((inspection.points[1].option_low - 1.50).abs() < 1e-6);
+        assert!((inspection.points[1].option_close - 2.15).abs() < 1e-6);
+        assert!(inspection.row.companion_contract_id.is_some());
     }
 }
