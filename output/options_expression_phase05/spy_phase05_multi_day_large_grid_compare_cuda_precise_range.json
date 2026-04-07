@@ -1,0 +1,243 @@
+{
+  "app_local_data_dir": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid",
+  "artifact_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\runs\\vectorgrid_run_2026-04-07T03-56-14.824717100_00-00.json",
+  "options_dataset_id": "spy_phase05_2026_03_31_to_2026_04_02_calls_645_665",
+  "dataset_manifest": {
+    "version": 1,
+    "options_dataset_id": "spy_phase05_2026_03_31_to_2026_04_02_calls_645_665",
+    "root_symbol": "SPY",
+    "provider_name": "massive",
+    "provider_source_surface": "minute_aggregate",
+    "quote_resolution": "1m",
+    "price_semantics": "minute_aggregate",
+    "calendar_id": "market_hours_utc",
+    "timezone": "UTC",
+    "coverage_start": 1774963800000,
+    "coverage_end": 1775160840000,
+    "normalization_version": 1,
+    "quote_semantics_version": 1,
+    "corporate_action_mapping_version": 1,
+    "contract_reference_source": "massive_contract_reference",
+    "contract_reference_as_of_utc": "2026-04-02T23:59:00Z",
+    "underlier_reference_source": "polygon_stocks_1m_raw:SPY",
+    "dataset_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\options_research\\datasets\\spy_phase05_2026_03_31_to_2026_04_02_calls_645_665\\rows.csv",
+    "row_count": 21263,
+    "contract_count": 21,
+    "aggregate_price_field": "close"
+  },
+  "response": {
+    "replay_build_ms": 182,
+    "total_preview_ms": 696,
+    "report": {
+      "diagnostics": {
+        "parent_artifact_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\runs\\vectorgrid_run_2026-04-07T03-56-14.824717100_00-00.json",
+        "options_dataset_id": "spy_phase05_2026_03_31_to_2026_04_02_calls_645_665",
+        "root_symbol": "SPY",
+        "total_events": 18,
+        "bullish_events": 18,
+        "bearish_events": 0,
+        "search_events": 6,
+        "holdout_events": 7,
+        "sealed_test_events": 5,
+        "dataset_contracts": 21,
+        "dataset_rows": 21263,
+        "coverage_start": 1774963800000,
+        "coverage_end": 1775160840000
+      },
+      "price_semantics": "minute_aggregate",
+      "fill_model": "aggregate_research",
+      "best_available_backend": "gpu_compiled_tensor_hybrid",
+      "compiled_tuple_count": 51200,
+      "per_event_candidate_slots": 160,
+      "per_candidate_exit_summaries": 320,
+      "candidate_slot_count": 2880,
+      "compiled_candidate_count": 608,
+      "candidate_density": 0.2111111111111111,
+      "invalid_slot_count": 2272,
+      "invalid_slot_rate": 0.7888888888888889,
+      "baseline_exit_summary_count": 921600,
+      "baseline_compiled_exit_summary_count": 190480,
+      "baseline_exit_summary_density": 0.20668402777777778,
+      "conservative_exit_summary_count": 921600,
+      "conservative_compiled_exit_summary_count": 190480,
+      "conservative_exit_summary_density": 0.20668402777777778,
+      "harsher_exit_summary_count": 921600,
+      "harsher_compiled_exit_summary_count": 190480,
+      "harsher_exit_summary_density": 0.20668402777777778,
+      "projected_event_tuple_evaluations": 921600,
+      "structural_cache_bytes_estimate": 72000,
+      "baseline_summary_bytes_estimate": 29491200,
+      "conservative_summary_bytes_estimate": 29491200,
+      "harsher_summary_bytes_estimate": 29491200,
+      "timings": {
+        "tuple_compile_ms": 2,
+        "baseline_candidate_compile_ms": 1,
+        "baseline_exit_summary_compile_ms": 102,
+        "conservative_candidate_compile_ms": 1,
+        "conservative_exit_summary_compile_ms": 100,
+        "harsher_candidate_compile_ms": 1,
+        "harsher_exit_summary_compile_ms": 102,
+        "cpu_ranking_ms": 98,
+        "cpu_ranking_us": 98195,
+        "gpu_ranking_ms": 87,
+        "gpu_ranking_us": 87583,
+        "gpu_speedup_vs_cpu": 1.121165066279986
+      },
+      "event_coverage": {
+        "total_events_with_candidates": 11,
+        "search_events_with_candidates": 4,
+        "holdout_events_with_candidates": 3,
+        "sealed_test_events_with_candidates": 4,
+        "total_events_with_baseline_outcomes": 11,
+        "search_events_with_baseline_outcomes": 4,
+        "holdout_events_with_baseline_outcomes": 3,
+        "sealed_test_events_with_baseline_outcomes": 4,
+        "total_events_with_conservative_outcomes": 11,
+        "search_events_with_conservative_outcomes": 4,
+        "holdout_events_with_conservative_outcomes": 3,
+        "sealed_test_events_with_conservative_outcomes": 4,
+        "total_events_with_harsher_outcomes": 11,
+        "search_events_with_harsher_outcomes": 4,
+        "holdout_events_with_harsher_outcomes": 3,
+        "sealed_test_events_with_harsher_outcomes": 4
+      },
+      "cache_stats": {
+        "structural_cache_hits": 0,
+        "structural_cache_misses": 3,
+        "structural_cache_entries": 3,
+        "summary_cache_hits": 0,
+        "summary_cache_misses": 3,
+        "summary_cache_entries": 3
+      },
+      "invalid_reasons": [
+        {
+          "reason": "no_expiration_in_bucket",
+          "count": 1712
+        },
+        {
+          "reason": "no_strike_in_tolerance",
+          "count": 96
+        },
+        {
+          "reason": "entry_past_cutoff",
+          "count": 464
+        }
+      ]
+    }
+  },
+  "phase05_gates": {
+    "valid_slot_density_gate_min": 0.25,
+    "valid_slot_density_observed": 0.2111111111111111,
+    "valid_slot_density_pass": false,
+    "invalid_slot_rate_gate_max": 0.75,
+    "invalid_slot_rate_observed": 0.7888888888888889,
+    "invalid_slot_rate_pass": false,
+    "cache_reuse_gate_min": 0.9,
+    "structural_cache_reuse_observed": 1.0,
+    "structural_cache_reuse_pass": true,
+    "summary_cache_reuse_observed": 1.0,
+    "summary_cache_reuse_pass": true,
+    "gpu_speedup_gate_min": 3.0,
+    "gpu_speedup_observed": 1.363730482959315,
+    "gpu_speedup_pass": false,
+    "scorer_share_of_preview_observed": 0.125,
+    "scorer_backend_used_for_share": "gpu_compiled_tensor_hybrid"
+  },
+  "warm_runs": [
+    {
+      "iteration": 1,
+      "replay_build_ms": 80,
+      "total_preview_ms": 295,
+      "structural_cache_hits": 3,
+      "structural_cache_misses": 0,
+      "summary_cache_hits": 3,
+      "summary_cache_misses": 0
+    }
+  ],
+  "backend_comparison": {
+    "accelerated_backend_preference": "Auto",
+    "cpu_reference_preview": {
+      "backend_preference": "CpuReference",
+      "best_available_backend": "cpu_reference",
+      "iterations": 5,
+      "wall_ms_samples": [
+        230,
+        236,
+        229,
+        229,
+        229
+      ],
+      "preview_ms_samples": [
+        229,
+        235,
+        228,
+        228,
+        229
+      ],
+      "ranking_ms_samples": [
+        97,
+        97,
+        97,
+        97,
+        97
+      ],
+      "ranking_us_samples": [
+        97877,
+        97474,
+        97138,
+        97102,
+        97530
+      ],
+      "median_wall_ms": 229,
+      "median_preview_ms": 229,
+      "median_ranking_ms": 97,
+      "median_ranking_us": 97474,
+      "candidate_density": 0.2111111111111111,
+      "invalid_slot_rate": 0.7888888888888889
+    },
+    "accelerated_preview": {
+      "backend_preference": "Auto",
+      "best_available_backend": "gpu_compiled_tensor_hybrid",
+      "iterations": 5,
+      "wall_ms_samples": [
+        297,
+        297,
+        301,
+        331,
+        322
+      ],
+      "preview_ms_samples": [
+        297,
+        296,
+        300,
+        330,
+        321
+      ],
+      "ranking_ms_samples": [
+        66,
+        65,
+        71,
+        79,
+        72
+      ],
+      "ranking_us_samples": [
+        66801,
+        65943,
+        71476,
+        79661,
+        72949
+      ],
+      "median_wall_ms": 301,
+      "median_preview_ms": 300,
+      "median_ranking_ms": 71,
+      "median_ranking_us": 71476,
+      "candidate_density": 0.2111111111111111,
+      "invalid_slot_rate": 0.7888888888888889
+    },
+    "preview_wall_speedup_vs_cpu": 0.760797342192691,
+    "scorer_only_speedup_vs_cpu": 1.363730482959315,
+    "notes": [
+      "accelerated backend preference used auto-selection so the preview/full-run target reflects the best available backend on this machine"
+    ]
+  }
+}

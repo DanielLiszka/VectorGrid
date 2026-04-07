@@ -4,13 +4,18 @@ import type {
   OptionsDatasetManifestSummary,
   OptionsExpressionArtifactRecord,
   OptionsExpressionArtifactSummary,
+  OptionsExpressionEventPathInspectionSummary,
   OptionsExpressionTupleInspectionSummary,
+  PolygonOptionsDatasetDownloadSummary,
   RunOptionsExpressionSummary,
 } from '../services/optionsExpressionService'
 import {
   analyzeOptionsExpressionFeasibility,
+  downloadPolygonOptionsDataset,
   exportOptionsExpressionCsv,
+  exportOptionsExpressionInspectionCsv,
   importOptionsDataset,
+  inspectOptionsExpressionEventPath,
   inspectOptionsExpressionTuple,
   listOptionsDatasets,
   listOptionsExpressionArtifacts,
@@ -31,6 +36,15 @@ export const OPTIONS_FILL_MODEL_OPTIONS = [
   'aggregate_research',
   'quote_conservative',
   'quote_mid',
+] as const
+export const OPTIONS_BACKEND_PREFERENCE_OPTIONS = [
+  'auto',
+  'cpu_reference',
+  'gpu_compiled_tensor',
+] as const
+export const OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS = [
+  'event_chronological',
+  'session_chronological',
 ] as const
 
 function normalizeText(value: unknown): string {
@@ -108,14 +122,26 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     parentDatasetLabel: '',
     parentRootHint: '',
     importRootSymbol: '',
+    downloadDatasetIdInput: '',
+    downloadFromDateInput: '',
+    downloadToDateInput: '',
+    downloadContractType: 'both',
+    downloadExpirationFromDateInput: '',
+    downloadExpirationToDateInput: '',
+    downloadMaxDteDaysInput: '',
+    downloadStrikeMinInput: '',
+    downloadStrikeMaxInput: '',
+    downloadMaxContractsInput: '30',
     datasets: [] as OptionsDatasetManifestSummary[],
     artifacts: [] as OptionsExpressionArtifactSummary[],
+    latestDatasetDownload: null as PolygonOptionsDatasetDownloadSummary | null,
     selectedDatasetId: '',
     selectedArtifactPath: '',
     activeArtifact: null as OptionsExpressionArtifactRecord | null,
     latestRun: null as RunOptionsExpressionSummary | null,
     latestFeasibility: null as AnalyzeOptionsExpressionFeasibilitySummary | null,
     activeTupleInspection: null as OptionsExpressionTupleInspectionSummary | null,
+    activeEventPathInspection: null as OptionsExpressionEventPathInspectionSummary | null,
     delayMinutesInput: '0,1,5',
     dteBucketsInput: '1,3,5',
     holdMinutesInput: '5,15,30,60',
@@ -124,7 +150,10 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     selectedMoneynessBuckets: [...OPTIONS_MONEYNESS_BUCKET_OPTIONS] as string[],
     exitTemplate: 'fixed_hold_or_target_stop',
     fillModel: 'aggregate_research',
+    backendPreference: 'auto',
+    splitAssignmentMode: 'event_chronological',
     topKInput: '25',
+    sealedFinalistCountInput: '5',
     minValidTradesInput: '',
     splitRatioSearchInput: '0.6',
     splitRatioHoldoutInput: '0.2',
@@ -138,7 +167,9 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     runBusy: false,
     loadBusy: false,
     importBusy: false,
+    downloadBusy: false,
     inspectionBusy: false,
+    eventPathBusy: false,
     feasibilityBusy: false,
     statusLine: 'Select a saved DoubleMa run to configure an options expression follow-up.',
   }),
@@ -189,6 +220,10 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
       return normalizeText(state.latestRun?.backendUsed) || normalizeText(state.activeArtifact?.backendUsed)
     },
 
+    activeBackendFallbackReason(state): string {
+      return normalizeText(state.latestRun?.backendFallbackReason) || normalizeText(state.activeArtifact?.backendFallbackReason)
+    },
+
     activePriceSemantics(state): string {
       return normalizeText(state.latestRun?.priceSemantics) || normalizeText(state.activeArtifact?.priceSemantics)
     },
@@ -213,11 +248,23 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
       this.parentRootHint = nextRootHint
       if (changed) {
         this.importRootSymbol = nextRootHint
+        this.downloadDatasetIdInput = ''
+        this.downloadFromDateInput = ''
+        this.downloadToDateInput = ''
+        this.downloadContractType = 'both'
+        this.downloadExpirationFromDateInput = ''
+        this.downloadExpirationToDateInput = ''
+        this.downloadMaxDteDaysInput = ''
+        this.downloadStrikeMinInput = ''
+        this.downloadStrikeMaxInput = ''
+        this.downloadMaxContractsInput = '30'
         this.selectedArtifactPath = ''
         this.activeArtifact = null
         this.latestRun = null
         this.latestFeasibility = null
+        this.latestDatasetDownload = null
         this.activeTupleInspection = null
+        this.activeEventPathInspection = null
       }
       if (!nextPath) {
         this.statusLine = 'Select a saved run to configure an options expression follow-up.'
@@ -227,7 +274,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         this.statusLine = 'Options expression follow-up currently supports saved DoubleMa runs only.'
         return
       }
-      this.statusLine = 'Ready to import a normalized options dataset or reuse an existing one.'
+      this.statusLine = 'Ready to import a Polygon/Massive options dataset or reuse an existing one.'
     },
 
     async bootstrap(): Promise<void> {
@@ -273,18 +320,112 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         const imported = await importOptionsDataset({
           csv_path: csvPath,
           root_symbol: normalizeText(this.importRootSymbol) || undefined,
-          provider_name: 'manual_import',
+          provider_name: 'massive',
           provider_source_surface: 'minute_aggregate',
+          contract_reference_source: 'massive_contract_reference',
           price_semantics: 'minute_aggregate',
           aggregate_price_field: 'close',
         })
         await this.refreshDatasets()
         this.selectedDatasetId = imported.optionsDatasetId
+        this.latestDatasetDownload = null
         this.statusLine = `Imported options dataset ${imported.optionsDatasetId}.`
       } catch (error) {
         this.statusLine = String(error || '').trim() || 'Failed to import options dataset.'
       } finally {
         this.importBusy = false
+      }
+    },
+
+    async downloadDatasetFromPolygon(): Promise<void> {
+      const rootSymbol = normalizeText(this.importRootSymbol || this.parentRootHint).toUpperCase()
+      const from = normalizeText(this.downloadFromDateInput)
+      const to = normalizeText(this.downloadToDateInput)
+      if (!rootSymbol) {
+        this.statusLine = 'Enter a Polygon/Massive root symbol before downloading options data.'
+        return
+      }
+      if (!from || !to) {
+        this.statusLine = 'Enter both from/to dates for the Polygon/Massive options download.'
+        return
+      }
+
+      const request = {
+        rootSymbol,
+        from,
+        to,
+      } as {
+        rootSymbol: string
+        from: string
+        to: string
+        optionsDatasetId?: string
+        contractType?: 'both' | 'call' | 'put'
+        expirationDateFrom?: string
+        expirationDateTo?: string
+        maxDteDays?: number
+        strikeMin?: number
+        strikeMax?: number
+        maxContracts?: number
+      }
+      const optionsDatasetId = normalizeText(this.downloadDatasetIdInput)
+      if (optionsDatasetId) request.optionsDatasetId = optionsDatasetId
+      const contractType = pickSupported(this.downloadContractType, ['both', 'call', 'put'] as const, 'both')
+      if (contractType) request.contractType = contractType
+      const expirationDateFrom = normalizeText(this.downloadExpirationFromDateInput)
+      if (expirationDateFrom) request.expirationDateFrom = expirationDateFrom
+      const expirationDateTo = normalizeText(this.downloadExpirationToDateInput)
+      if (expirationDateTo) request.expirationDateTo = expirationDateTo
+      const maxDteDays = normalizeOptionalInteger(this.downloadMaxDteDaysInput)
+      if (maxDteDays != null) request.maxDteDays = maxDteDays
+      const strikeMin = normalizeOptionalNumber(this.downloadStrikeMinInput)
+      if (strikeMin != null) request.strikeMin = strikeMin
+      const strikeMax = normalizeOptionalNumber(this.downloadStrikeMaxInput)
+      if (strikeMax != null) request.strikeMax = strikeMax
+      const maxContracts = normalizeOptionalInteger(this.downloadMaxContractsInput)
+      if (maxContracts != null) request.maxContracts = maxContracts
+
+      this.downloadBusy = true
+      try {
+        const downloaded: PolygonOptionsDatasetDownloadSummary = await downloadPolygonOptionsDataset(request)
+        await this.refreshDatasets()
+        this.selectedDatasetId = downloaded.manifest.optionsDatasetId
+        this.latestDatasetDownload = downloaded
+        this.statusLine =
+          `Downloaded Polygon/Massive options dataset ${downloaded.manifest.optionsDatasetId} ` +
+          `(${downloaded.contractsWithRows}/${downloaded.contractsSelected} contracts with rows, ` +
+          `${downloaded.downloadedOptionRows} option rows).`
+      } catch (error) {
+        this.statusLine = String(error || '').trim() || 'Failed to download Polygon/Massive options dataset.'
+      } finally {
+        this.downloadBusy = false
+      }
+    },
+
+    async revealSelectedDatasetPath(): Promise<void> {
+      const datasetPath = normalizeText(this.selectedDataset?.datasetPath)
+      if (!datasetPath) {
+        this.statusLine = 'No dataset path available for the selected options dataset.'
+        return
+      }
+      try {
+        const result = await openOrRevealOptionsPath(datasetPath)
+        this.statusLine = `Opened dataset path via ${result.openedWith}.`
+      } catch (error) {
+        this.statusLine = String(error || '').trim() || 'Failed to open the selected options dataset path.'
+      }
+    },
+
+    async revealLatestDownloadUnderlyingPath(): Promise<void> {
+      const csvPath = normalizeText(this.latestDatasetDownload?.underlyingCsvPath)
+      if (!csvPath) {
+        this.statusLine = 'No underlying CSV path is available for the latest options download.'
+        return
+      }
+      try {
+        const result = await openOrRevealOptionsPath(csvPath)
+        this.statusLine = `Opened underlying CSV path via ${result.openedWith}.`
+      } catch (error) {
+        this.statusLine = String(error || '').trim() || 'Failed to open the underlying CSV path.'
       }
     },
 
@@ -322,6 +463,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
 
       const splitRatioSearch = normalizeNumber(this.splitRatioSearchInput, 0.6)
       const splitRatioHoldout = normalizeNumber(this.splitRatioHoldoutInput, 0.2)
+      const topK = Math.max(1, Math.floor(normalizeNumber(this.topKInput, 25)))
+      const sealedFinalistCount = Math.min(
+        topK,
+        Math.max(1, Math.floor(normalizeNumber(this.sealedFinalistCountInput, 5))),
+      )
       if (!(splitRatioSearch > 0 && splitRatioHoldout >= 0 && splitRatioSearch + splitRatioHoldout < 1)) {
         this.statusLine = 'Split ratios must satisfy search > 0, holdout >= 0, and search + holdout < 1.'
         return
@@ -345,6 +491,16 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
           'fixed_hold_or_target_stop',
         ),
         fill_model: pickSupported(this.fillModel, OPTIONS_FILL_MODEL_OPTIONS, 'aggregate_research'),
+        backend_preference: pickSupported(
+          this.backendPreference,
+          OPTIONS_BACKEND_PREFERENCE_OPTIONS,
+          'auto',
+        ),
+        split_assignment_mode: pickSupported(
+          this.splitAssignmentMode,
+          OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
+          'event_chronological',
+        ),
         filters: {
           max_entry_lag_minutes: normalizeOptionalInteger(this.maxEntryLagMinutesInput),
           max_premium: normalizeOptionalNumber(this.maxPremiumInput),
@@ -352,10 +508,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
           min_volume: normalizeOptionalNumber(this.minVolumeInput),
           min_open_interest: normalizeOptionalNumber(this.minOpenInterestInput),
         },
-        top_k: Math.max(1, Math.floor(normalizeNumber(this.topKInput, 25))),
+        top_k: topK,
         min_valid_trades: normalizeOptionalInteger(this.minValidTradesInput),
         split_ratio_search: splitRatioSearch,
         split_ratio_holdout: splitRatioHoldout,
+        sealed_finalist_count: sealedFinalistCount,
       }
 
       this.runBusy = true
@@ -364,6 +521,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         this.latestRun = result
         this.activeArtifact = null
         this.activeTupleInspection = null
+        this.activeEventPathInspection = null
         this.selectedArtifactPath = result.artifactPath
         await this.refreshArtifacts()
         this.statusLine = `Options expression run completed with ${result.tupleCount} ranked tuple${result.tupleCount === 1 ? '' : 's'}.`
@@ -390,6 +548,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
 
       const splitRatioSearch = normalizeNumber(this.splitRatioSearchInput, 0.6)
       const splitRatioHoldout = normalizeNumber(this.splitRatioHoldoutInput, 0.2)
+      const topK = Math.max(1, Math.floor(normalizeNumber(this.topKInput, 25)))
+      const sealedFinalistCount = Math.min(
+        topK,
+        Math.max(1, Math.floor(normalizeNumber(this.sealedFinalistCountInput, 5))),
+      )
       if (!(splitRatioSearch > 0 && splitRatioHoldout >= 0 && splitRatioSearch + splitRatioHoldout < 1)) {
         this.statusLine = 'Split ratios must satisfy search > 0, holdout >= 0, and search + holdout < 1.'
         return
@@ -415,6 +578,16 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
             'fixed_hold_or_target_stop',
           ),
           fill_model: pickSupported(this.fillModel, OPTIONS_FILL_MODEL_OPTIONS, 'aggregate_research'),
+          backend_preference: pickSupported(
+            this.backendPreference,
+            OPTIONS_BACKEND_PREFERENCE_OPTIONS,
+            'auto',
+          ),
+          split_assignment_mode: pickSupported(
+            this.splitAssignmentMode,
+            OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
+            'event_chronological',
+          ),
           filters: {
             max_entry_lag_minutes: normalizeOptionalInteger(this.maxEntryLagMinutesInput),
             max_premium: normalizeOptionalNumber(this.maxPremiumInput),
@@ -422,10 +595,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
             min_volume: normalizeOptionalNumber(this.minVolumeInput),
             min_open_interest: normalizeOptionalNumber(this.minOpenInterestInput),
           },
-          top_k: Math.max(1, Math.floor(normalizeNumber(this.topKInput, 25))),
+          top_k: topK,
           min_valid_trades: normalizeOptionalInteger(this.minValidTradesInput),
           split_ratio_search: splitRatioSearch,
           split_ratio_holdout: splitRatioHoldout,
+          sealed_finalist_count: sealedFinalistCount,
         })
         this.latestFeasibility = preview
         this.statusLine = `Feasibility preview compiled ${preview.compiledTupleCount} tuple${preview.compiledTupleCount === 1 ? '' : 's'} with ${(preview.candidateDensity * 100).toFixed(1)}% candidate density.`
@@ -450,6 +624,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         this.latestRun = null
         this.latestFeasibility = null
         this.activeTupleInspection = null
+        this.activeEventPathInspection = null
         this.statusLine = `Loaded saved options expression artifact ${fileStem(nextPath) || nextPath}.`
       } catch (error) {
         this.statusLine = String(error || '').trim() || 'Failed to load saved options expression artifact.'
@@ -494,8 +669,37 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         : 'CSV export is unavailable in the current environment.'
     },
 
+    exportActiveInspectionCsv(): void {
+      const inspection = this.activeTupleInspection
+      const rows = inspection?.rows ?? []
+      if (!inspection || !rows.length) {
+        this.statusLine = 'Load a tuple drilldown before exporting inspection rows.'
+        return
+      }
+
+      const artifactStem = normalizeText(this.activeArtifactPath)
+        ? normalizeText(this.activeArtifactPath).split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'vectorgrid_options_expression'
+        : 'vectorgrid_options_expression'
+
+      const exported = exportOptionsExpressionInspectionCsv({
+        filenameStem: `${artifactStem}_tuple_${inspection.tupleIndex + 1}_inspection`,
+        artifactPath: this.activeArtifactPath,
+        tupleIndex: inspection.tupleIndex,
+        rows,
+      })
+
+      this.statusLine = exported
+        ? `Exported ${rows.length} inspection row${rows.length === 1 ? '' : 's'} to CSV.`
+        : 'CSV export is unavailable in the current environment.'
+    },
+
     clearTupleInspection(): void {
       this.activeTupleInspection = null
+      this.activeEventPathInspection = null
+    },
+
+    clearEventPathInspection(): void {
+      this.activeEventPathInspection = null
     },
 
     async loadTupleInspection(tupleIndex: number): Promise<void> {
@@ -509,6 +713,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         return
       }
       this.inspectionBusy = true
+      this.activeEventPathInspection = null
       try {
         const inspection = await inspectOptionsExpressionTuple({
           artifactPath,
@@ -520,6 +725,28 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         this.statusLine = String(error || '').trim() || 'Failed to load tuple inspection rows.'
       } finally {
         this.inspectionBusy = false
+      }
+    },
+
+    async loadEventPathInspection(tupleIndex: number, eventIndex: number): Promise<void> {
+      const artifactPath = this.activeArtifactPath
+      if (!artifactPath) {
+        this.statusLine = 'Run or load an options expression artifact before inspecting event paths.'
+        return
+      }
+      this.eventPathBusy = true
+      try {
+        const inspection = await inspectOptionsExpressionEventPath({
+          artifactPath,
+          tupleIndex,
+          eventIndex,
+        })
+        this.activeEventPathInspection = inspection
+        this.statusLine = `Loaded ${inspection.pointCount} path point${inspection.pointCount === 1 ? '' : 's'} for event ${inspection.eventId}.`
+      } catch (error) {
+        this.statusLine = String(error || '').trim() || 'Failed to load event-path inspection.'
+      } finally {
+        this.eventPathBusy = false
       }
     },
   },

@@ -3,6 +3,7 @@ use crate::options_types::{
     OPTIONS_SIGNAL_MANIFEST_VERSION,
 };
 use crate::DoubleMaCurves;
+use chrono::{DateTime, Utc};
 use vector_ta::utilities::data_loader::Candles;
 
 fn clamp_index(idx: usize, len: usize) -> usize {
@@ -21,6 +22,11 @@ fn infer_side(direction: i32) -> Option<SignalSide> {
 
 fn build_event_id(parent_artifact_id: &str, index: usize) -> String {
     format!("{parent_artifact_id}:event:{index}")
+}
+
+fn session_id_from_timestamp(timestamp_ms: i64) -> Option<String> {
+    DateTime::<Utc>::from_timestamp_millis(timestamp_ms)
+        .map(|value| value.format("%Y-%m-%d").to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -101,7 +107,7 @@ pub fn build_options_signal_manifest_from_double_ma(
             base_exit_timestamp,
             base_exit_bar_index,
             fold: OptionsEvaluationSplit::Search,
-            session_id: None,
+            session_id: session_id_from_timestamp(earliest_tradable_timestamp),
             regime_tag: None,
             confidence_tag: None,
             calendar_id: "market_hours_utc".to_string(),
@@ -193,5 +199,6 @@ mod tests {
         assert_eq!(event.earliest_tradable_bar_index, 1);
         assert_eq!(event.side, SignalSide::Bullish);
         assert_eq!(event.raw_underlier_price, 101.0);
+        assert_eq!(event.session_id.as_deref(), Some("2023-11-14"));
     }
 }

@@ -98,6 +98,22 @@ harness = false
 name = "e2e_workflow_ml"
 harness = false
 
+[[bench]]
+name = "options_expression_candidate_compile"
+harness = false
+
+[[bench]]
+name = "options_expression_summary_compile"
+harness = false
+
+[[bench]]
+name = "options_expression_cpu_score"
+harness = false
+
+[[bench]]
+name = "options_expression_gpu_score"
+harness = false
+
 [[bin]]
 name = "ta_cli"
 path = "src/bin/ta_cli.rs"

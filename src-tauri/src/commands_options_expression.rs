@@ -3,18 +3,27 @@ use crate::settings;
 use crate::state::AppState;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 use ta_app_core::{
     analyze_options_expression_feasibility_blocking, build_options_signal_manifest_from_double_ma,
     compute_double_ma_drilldown_blocking_with_candles, dataset_manifest_path,
-    inspect_options_expression_tuple_blocking, load_imported_options_dataset_from_csv,
-    parse_timeframe_label, read_options_dataset_manifest, resample_candles,
-    run_options_expression_blocking, DoubleMaDrilldownRequest, DoubleMaParamsResolved,
-    DoubleMaRequest, DoubleMaValidationParams, ImportedOptionsDatasetCsvBuildRequest,
-    OptionsExpressionArtifactV1, OptionsExpressionFeasibilityReport, OptionsExpressionRunRequest,
-    OptionsExpressionRunResult, OptionsExpressionTupleInspectionResult, OptionsPriceSemantics,
+    inspect_options_expression_event_path_blocking, inspect_options_expression_tuple_blocking,
+    load_imported_options_dataset_from_csv, parse_timeframe_label, read_options_dataset_manifest,
+    resample_candles, run_options_expression_blocking, DoubleMaDrilldownRequest,
+    DoubleMaParamsResolved, DoubleMaRequest, DoubleMaValidationParams,
+    ImportedOptionsDatasetCsvBuildRequest, OptionsExpressionArtifactV1,
+    OptionsExpressionEventPathInspectionResult, OptionsExpressionFeasibilityReport,
+    OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    OptionsExpressionTupleInspectionResult, OptionsPriceSemantics,
     OPTIONS_EXPRESSION_ARTIFACT_VERSION,
 };
 use tauri::Manager;
+
+const OPTIONS_REPLAY_CACHE_LIMIT: usize = 4;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunOptionsExpressionResponse {
@@ -39,13 +48,23 @@ pub struct OptionsExpressionArtifactSummary {
     pub root_symbol: String,
     pub options_dataset_id: String,
     pub backend_used: String,
+    pub backend_fallback_reason: Option<String>,
     pub price_semantics: OptionsPriceSemantics,
     pub tuple_count: usize,
     pub best_robust_score: f64,
     pub best_selection_expectancy_per_premium: f64,
+    pub best_holdout_expectancy_per_premium: Option<f64>,
+    pub best_sealed_expectancy_per_premium: Option<f64>,
+    pub best_stress_expectancy_per_premium: Option<f64>,
+    pub best_sealed_stress_expectancy_per_premium: Option<f64>,
+    pub best_harsher_stress_expectancy_per_premium: Option<f64>,
+    pub best_sealed_harsher_stress_expectancy_per_premium: Option<f64>,
+    pub sealed_finalist_budget: usize,
+    pub sealed_evaluated_tuple_count: usize,
     pub has_holdout_metrics: bool,
     pub has_sealed_evaluation_metrics: bool,
     pub has_stress_metrics: bool,
+    pub has_harsher_stress_metrics: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -54,11 +73,112 @@ pub struct InspectOptionsExpressionTupleRequest {
     pub tuple_index: usize,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct InspectOptionsExpressionEventPathRequest {
+    pub artifact_path: String,
+    pub tuple_index: usize,
+    pub event_index: usize,
+}
+
+#[derive(Clone)]
+struct CachedParentSignalReplay {
+    cache_key: String,
+    parent_artifact_id: String,
+    signal_manifest: Arc<ta_app_core::OptionsSignalEventManifestV1>,
+}
+
+#[derive(Clone)]
+struct CachedOptionsDatasetReplay {
+    cache_key: String,
+    options_dataset_hash: String,
+    dataset: Arc<ta_app_core::ImportedOptionsDataset>,
+}
+
+fn parent_signal_cache() -> &'static Mutex<Vec<CachedParentSignalReplay>> {
+    static CACHE: OnceLock<Mutex<Vec<CachedParentSignalReplay>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn options_dataset_cache() -> &'static Mutex<Vec<CachedOptionsDatasetReplay>> {
+    static CACHE: OnceLock<Mutex<Vec<CachedOptionsDatasetReplay>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 fn non_empty_string(v: Option<&Value>) -> Option<String> {
     v.and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn file_cache_stamp(path: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| format!("failed to read metadata for {}: {e}", path.display()))?;
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    Ok(format!(
+        "{}|{}|{}",
+        path.display(),
+        metadata.len(),
+        modified_ms
+    ))
+}
+
+fn insert_parent_signal_cache_entry(entry: CachedParentSignalReplay) {
+    let mut cache = parent_signal_cache()
+        .lock()
+        .expect("parent signal cache poisoned");
+    cache.retain(|existing| existing.cache_key != entry.cache_key);
+    cache.push(entry);
+    if cache.len() > OPTIONS_REPLAY_CACHE_LIMIT {
+        let overflow = cache.len() - OPTIONS_REPLAY_CACHE_LIMIT;
+        cache.drain(0..overflow);
+    }
+}
+
+fn load_parent_signal_cache_entry(
+    cache_key: &str,
+) -> Option<(String, Arc<ta_app_core::OptionsSignalEventManifestV1>)> {
+    let mut cache = parent_signal_cache()
+        .lock()
+        .expect("parent signal cache poisoned");
+    let position = cache.iter().position(|entry| entry.cache_key == cache_key)?;
+    let entry = cache.remove(position);
+    let result = (
+        entry.parent_artifact_id.clone(),
+        Arc::clone(&entry.signal_manifest),
+    );
+    cache.push(entry);
+    Some(result)
+}
+
+fn insert_options_dataset_cache_entry(entry: CachedOptionsDatasetReplay) {
+    let mut cache = options_dataset_cache()
+        .lock()
+        .expect("options dataset cache poisoned");
+    cache.retain(|existing| existing.cache_key != entry.cache_key);
+    cache.push(entry);
+    if cache.len() > OPTIONS_REPLAY_CACHE_LIMIT {
+        let overflow = cache.len() - OPTIONS_REPLAY_CACHE_LIMIT;
+        cache.drain(0..overflow);
+    }
+}
+
+fn load_options_dataset_cache_entry(
+    cache_key: &str,
+) -> Option<(String, Arc<ta_app_core::ImportedOptionsDataset>)> {
+    let mut cache = options_dataset_cache()
+        .lock()
+        .expect("options dataset cache poisoned");
+    let position = cache.iter().position(|entry| entry.cache_key == cache_key)?;
+    let entry = cache.remove(position);
+    let result = (entry.options_dataset_hash.clone(), Arc::clone(&entry.dataset));
+    cache.push(entry);
+    Some(result)
 }
 
 fn is_run_artifact_kind(kind: &str) -> bool {
@@ -176,6 +296,23 @@ fn options_datasets_dir(
     Ok(dir)
 }
 
+fn options_replay_cache_dir(
+    app_local_data_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let market_root = settings::resolve_market_data_root_dir(app_local_data_dir)?;
+    let dir = market_root.join("options_research").join("replay_cache");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn signal_manifest_replay_cache_dir(
+    app_local_data_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let dir = options_replay_cache_dir(app_local_data_dir)?.join("signal_manifests");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
 fn runs_dir(app_local_data_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let dir = app_local_data_dir.join("runs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -216,6 +353,79 @@ fn sanitize_dataset_id(raw: &str) -> Result<String, String> {
         return Err("options_dataset_id resolved to an empty value".to_string());
     }
     Ok(sanitized)
+}
+
+fn cache_key_digest(cache_key: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    cache_key.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn signal_manifest_replay_cache_path(
+    app_local_data_dir: &std::path::Path,
+    parent_artifact_id: &str,
+    cache_key: &str,
+) -> Result<std::path::PathBuf, String> {
+    let dir = signal_manifest_replay_cache_dir(app_local_data_dir)?;
+    let safe_parent = sanitize_dataset_id_component(parent_artifact_id);
+    let stem = if safe_parent.is_empty() {
+        "parent".to_string()
+    } else {
+        safe_parent
+    };
+    Ok(dir.join(format!(
+        "vectorgrid_options_signal_manifest_{}_{}.json",
+        stem,
+        cache_key_digest(cache_key)
+    )))
+}
+
+fn load_signal_manifest_replay_cache(
+    app_local_data_dir: &std::path::Path,
+    parent_artifact_id: &str,
+    cache_key: &str,
+) -> Result<Option<ta_app_core::OptionsSignalEventManifestV1>, String> {
+    let path = signal_manifest_replay_cache_path(app_local_data_dir, parent_artifact_id, cache_key)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let dir = signal_manifest_replay_cache_dir(app_local_data_dir)?;
+    ensure_path_is_within_dir(&path, &dir)?;
+    let bytes = std::fs::read(&path)
+        .map_err(|e| format!("failed to read cached signal manifest {}: {e}", path.display()))?;
+    let manifest = serde_json::from_slice::<ta_app_core::OptionsSignalEventManifestV1>(&bytes)
+        .map_err(|e| {
+            format!(
+                "failed to deserialize cached signal manifest {}: {e}",
+                path.display()
+            )
+        })?;
+    Ok(Some(manifest))
+}
+
+fn persist_signal_manifest_replay_cache(
+    app_local_data_dir: &std::path::Path,
+    parent_artifact_id: &str,
+    cache_key: &str,
+    manifest: &ta_app_core::OptionsSignalEventManifestV1,
+) -> Result<(), String> {
+    let path = signal_manifest_replay_cache_path(app_local_data_dir, parent_artifact_id, cache_key)?;
+    let dir = signal_manifest_replay_cache_dir(app_local_data_dir)?;
+    if !path.starts_with(&dir) {
+        return Err(format!(
+            "cached signal manifest path {} is outside {}",
+            path.display(),
+            dir.display()
+        ));
+    }
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|e| format!("failed to serialize cached signal manifest: {e}"))?;
+    std::fs::write(&path, bytes).map_err(|e| {
+        format!(
+            "failed to write cached signal manifest {}: {e}",
+            path.display()
+        )
+    })
 }
 
 fn build_import_request_from_manifest(
@@ -431,6 +641,7 @@ fn build_options_expression_artifact(
         options_dataset_id: result.diagnostics.options_dataset_id.clone(),
         options_dataset_hash,
         backend_used: result.backend_used.clone(),
+        backend_fallback_reason: result.backend_fallback_reason.clone(),
         price_semantics: result.price_semantics,
         request,
         diagnostics: result.diagnostics.clone(),
@@ -439,11 +650,134 @@ fn build_options_expression_artifact(
     }
 }
 
+pub(crate) fn summarize_options_expression_artifact(
+    path: &std::path::Path,
+    bytes: u64,
+    artifact: &OptionsExpressionArtifactV1,
+) -> OptionsExpressionArtifactSummary {
+    let best_robust_score = artifact
+        .selection_metrics
+        .iter()
+        .map(|entry| entry.robust_score)
+        .fold(0.0_f64, f64::max);
+    let best_selection_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .map(|entry| entry.selection_metrics.expectancy_per_premium)
+        .fold(0.0_f64, f64::max);
+    let best_holdout_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .holdout_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
+    let best_sealed_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .sealed_evaluation_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
+    let best_stress_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .stress_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
+    let best_sealed_stress_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .sealed_stress_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
+    let best_harsher_stress_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .harsher_stress_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
+    let best_sealed_harsher_stress_expectancy_per_premium = artifact
+        .selection_metrics
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .sealed_harsher_stress_metrics
+                .as_ref()
+                .map(|metrics| metrics.expectancy_per_premium)
+        })
+        .max_by(|left, right| left.total_cmp(right));
+    let sealed_evaluated_tuple_count = artifact
+        .selection_metrics
+        .iter()
+        .filter(|entry| entry.sealed_finalist || entry.sealed_evaluation_metrics.is_some())
+        .count();
+    let has_holdout_metrics = artifact
+        .selection_metrics
+        .iter()
+        .any(|entry| entry.holdout_metrics.is_some());
+    let has_sealed_evaluation_metrics = artifact
+        .selection_metrics
+        .iter()
+        .any(|entry| entry.sealed_evaluation_metrics.is_some());
+    let has_stress_metrics = artifact
+        .selection_metrics
+        .iter()
+        .any(|entry| entry.stress_metrics.is_some() || entry.sealed_stress_metrics.is_some());
+    let has_harsher_stress_metrics = artifact.selection_metrics.iter().any(|entry| {
+        entry.harsher_stress_metrics.is_some() || entry.sealed_harsher_stress_metrics.is_some()
+    });
+    OptionsExpressionArtifactSummary {
+        ts: artifact.ts.clone(),
+        path: path.to_string_lossy().to_string(),
+        bytes,
+        parent_artifact_id: artifact.parent_artifact_id.clone(),
+        root_symbol: artifact.root_symbol.clone(),
+        options_dataset_id: artifact.options_dataset_id.clone(),
+        backend_used: artifact.backend_used.clone(),
+        backend_fallback_reason: artifact.backend_fallback_reason.clone(),
+        price_semantics: artifact.price_semantics,
+        tuple_count: artifact.selection_metrics.len(),
+        best_robust_score,
+        best_selection_expectancy_per_premium,
+        best_holdout_expectancy_per_premium,
+        best_sealed_expectancy_per_premium,
+        best_stress_expectancy_per_premium,
+        best_sealed_stress_expectancy_per_premium,
+        best_harsher_stress_expectancy_per_premium,
+        best_sealed_harsher_stress_expectancy_per_premium,
+        sealed_finalist_budget: artifact.request.sealed_finalist_count,
+        sealed_evaluated_tuple_count,
+        has_holdout_metrics,
+        has_sealed_evaluation_metrics,
+        has_stress_metrics,
+        has_harsher_stress_metrics,
+    }
+}
+
 struct OptionsExpressionReplayInputs {
     parent_artifact_id: String,
     normalized_req: OptionsExpressionRunRequest,
-    signal_manifest: ta_app_core::OptionsSignalEventManifestV1,
-    dataset: ta_app_core::ImportedOptionsDataset,
+    signal_manifest: Arc<ta_app_core::OptionsSignalEventManifestV1>,
+    dataset: Arc<ta_app_core::ImportedOptionsDataset>,
     options_dataset_hash: String,
 }
 
@@ -481,34 +815,75 @@ fn build_options_expression_replay_inputs(
     }
     let timeframe = resolve_timeframe(&artifact);
     let adjustment_mode = resolve_adjustment_mode(&artifact);
-    let (candles, source_identity, source_content_fingerprint) =
-        load_replayed_candles(app_local_data_dir, &artifact, &csv_path, &timeframe)?;
+    let source_csv_path = std::path::Path::new(&csv_path);
     let parent_artifact_id = parent_artifact_path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("parent_artifact")
         .to_string();
-    let source_dataset_identity_hash =
-        build_source_dataset_identity_hash(std::path::Path::new(&csv_path), source_identity);
-    let dataset_hash = build_dataset_hash(&source_content_fingerprint, &timeframe);
-    let symbol_root = resolve_symbol_root(&artifact, &csv_path);
-    let (drilldown_req, trade_on_next_bar) =
-        choose_drilldown_request(&artifact, req.parent_candidate_index)?;
-    let curves = compute_double_ma_drilldown_blocking_with_candles(drilldown_req, &candles)?;
-    let signal_manifest = build_options_signal_manifest_from_double_ma(
-        &parent_artifact_id,
-        &kind,
-        &source_dataset_identity_hash,
-        &source_content_fingerprint,
-        &dataset_hash,
-        &timeframe,
-        None,
-        &adjustment_mode,
-        &symbol_root,
-        trade_on_next_bar,
-        &candles,
-        &curves,
-    )?;
+    let parent_cache_key = format!(
+        "{}|source={}|timeframe={}|candidate={}",
+        file_cache_stamp(parent_artifact_path)?,
+        file_cache_stamp(source_csv_path)?,
+        timeframe.trim(),
+        req.parent_candidate_index
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+    let (parent_artifact_id, signal_manifest) =
+        if let Some((cached_parent_artifact_id, cached_manifest)) =
+            load_parent_signal_cache_entry(&parent_cache_key)
+        {
+            (cached_parent_artifact_id, cached_manifest)
+        } else if let Some(cached_manifest) = load_signal_manifest_replay_cache(
+            app_local_data_dir,
+            &parent_artifact_id,
+            &parent_cache_key,
+        )? {
+            let signal_manifest = Arc::new(cached_manifest);
+            insert_parent_signal_cache_entry(CachedParentSignalReplay {
+                cache_key: parent_cache_key.clone(),
+                parent_artifact_id: parent_artifact_id.clone(),
+                signal_manifest: Arc::clone(&signal_manifest),
+            });
+            (parent_artifact_id, signal_manifest)
+        } else {
+            let (candles, source_identity, source_content_fingerprint) =
+                load_replayed_candles(app_local_data_dir, &artifact, &csv_path, &timeframe)?;
+            let source_dataset_identity_hash =
+                build_source_dataset_identity_hash(source_csv_path, source_identity);
+            let dataset_hash = build_dataset_hash(&source_content_fingerprint, &timeframe);
+            let symbol_root = resolve_symbol_root(&artifact, &csv_path);
+            let (drilldown_req, trade_on_next_bar) =
+                choose_drilldown_request(&artifact, req.parent_candidate_index)?;
+            let curves = compute_double_ma_drilldown_blocking_with_candles(drilldown_req, &candles)?;
+            let signal_manifest = Arc::new(build_options_signal_manifest_from_double_ma(
+                &parent_artifact_id,
+                &kind,
+                &source_dataset_identity_hash,
+                &source_content_fingerprint,
+                &dataset_hash,
+                &timeframe,
+                None,
+                &adjustment_mode,
+                &symbol_root,
+                trade_on_next_bar,
+                &candles,
+                &curves,
+            )?);
+            persist_signal_manifest_replay_cache(
+                app_local_data_dir,
+                &parent_artifact_id,
+                &parent_cache_key,
+                signal_manifest.as_ref(),
+            )?;
+            insert_parent_signal_cache_entry(CachedParentSignalReplay {
+                cache_key: parent_cache_key,
+                parent_artifact_id: parent_artifact_id.clone(),
+                signal_manifest: Arc::clone(&signal_manifest),
+            });
+            (parent_artifact_id, signal_manifest)
+        };
 
     let datasets_dir = options_datasets_dir(app_local_data_dir)?;
     let dataset_id = sanitize_dataset_id(req.options_dataset_id.trim())?;
@@ -534,11 +909,28 @@ fn build_options_expression_replay_inputs(
         );
     }
     let dataset_rows_path = dataset_rows_path_from_manifest_path(&manifest_path)?;
-    let options_dataset_hash = data_cache::content_fingerprint_for_source(&dataset_rows_path)?;
-    let dataset = load_imported_options_dataset_from_csv(&build_import_request_from_manifest(
-        &dataset_manifest,
-        &dataset_rows_path,
-    ))?;
+    let dataset_cache_key = format!(
+        "{}|{}",
+        file_cache_stamp(&manifest_path)?,
+        file_cache_stamp(&dataset_rows_path)?
+    );
+    let (options_dataset_hash, dataset) =
+        if let Some((cached_hash, cached_dataset)) =
+            load_options_dataset_cache_entry(&dataset_cache_key)
+        {
+            (cached_hash, cached_dataset)
+        } else {
+            let options_dataset_hash = data_cache::content_fingerprint_for_source(&dataset_rows_path)?;
+            let dataset = Arc::new(load_imported_options_dataset_from_csv(
+                &build_import_request_from_manifest(&dataset_manifest, &dataset_rows_path),
+            )?);
+            insert_options_dataset_cache_entry(CachedOptionsDatasetReplay {
+                cache_key: dataset_cache_key,
+                options_dataset_hash: options_dataset_hash.clone(),
+                dataset: Arc::clone(&dataset),
+            });
+            (options_dataset_hash, dataset)
+        };
     let mut normalized_req = req;
     normalized_req.options_dataset_id = dataset_id;
 
@@ -558,8 +950,8 @@ fn run_options_expression_blocking_impl(
     let replay = build_options_expression_replay_inputs(req, app_local_data_dir)?;
     let result = run_options_expression_blocking(
         replay.normalized_req.clone(),
-        &replay.signal_manifest,
-        &replay.dataset,
+        replay.signal_manifest.as_ref(),
+        replay.dataset.as_ref(),
     )?;
     let ts = chrono::Utc::now().to_rfc3339();
     let artifact_path = suggest_options_expression_artifact_path(app_local_data_dir, &ts)?;
@@ -596,8 +988,8 @@ fn analyze_options_expression_feasibility_blocking_impl(
     let replay_build_ms = replay_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     let report = analyze_options_expression_feasibility_blocking(
         replay.normalized_req,
-        &replay.signal_manifest,
-        &replay.dataset,
+        replay.signal_manifest.as_ref(),
+        replay.dataset.as_ref(),
     )?;
     let total_preview_ms = preview_start
         .elapsed()
@@ -609,6 +1001,118 @@ fn analyze_options_expression_feasibility_blocking_impl(
         total_preview_ms,
         report,
     })
+}
+
+pub fn analyze_options_expression_feasibility_blocking_headless(
+    req: OptionsExpressionRunRequest,
+    app_local_data_dir: &std::path::Path,
+) -> Result<AnalyzeOptionsExpressionFeasibilityResponse, String> {
+    analyze_options_expression_feasibility_blocking_impl(req, app_local_data_dir)
+}
+
+pub fn run_options_expression_blocking_headless(
+    req: OptionsExpressionRunRequest,
+    app_local_data_dir: &std::path::Path,
+) -> Result<RunOptionsExpressionResponse, String> {
+    run_options_expression_blocking_impl(req, app_local_data_dir)
+}
+
+pub fn inspect_options_expression_tuple_blocking_headless(
+    req: OptionsExpressionRunRequest,
+    tuple_index: usize,
+    app_local_data_dir: &std::path::Path,
+) -> Result<OptionsExpressionTupleInspectionResult, String> {
+    let replay = build_options_expression_replay_inputs(req, app_local_data_dir)?;
+    inspect_options_expression_tuple_blocking(
+        replay.normalized_req,
+        tuple_index,
+        replay.signal_manifest.as_ref(),
+        replay.dataset.as_ref(),
+    )
+}
+
+pub fn inspect_options_expression_event_path_blocking_headless(
+    req: OptionsExpressionRunRequest,
+    tuple_index: usize,
+    event_index: usize,
+    app_local_data_dir: &std::path::Path,
+) -> Result<OptionsExpressionEventPathInspectionResult, String> {
+    let replay = build_options_expression_replay_inputs(req, app_local_data_dir)?;
+    inspect_options_expression_event_path_blocking(
+        replay.normalized_req,
+        tuple_index,
+        event_index,
+        replay.signal_manifest.as_ref(),
+        replay.dataset.as_ref(),
+    )
+}
+
+pub fn list_options_expression_artifacts_blocking_headless(
+    app_local_data_dir: &std::path::Path,
+) -> Result<Vec<OptionsExpressionArtifactSummary>, String> {
+    let runs_dir = runs_dir(app_local_data_dir)?;
+    if !runs_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<OptionsExpressionArtifactSummary> = Vec::new();
+    for entry in std::fs::read_dir(&runs_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if !file_name.starts_with("vectorgrid_options_expression_") {
+            continue;
+        }
+        let bytes = entry.metadata().map_err(|e| e.to_string())?.len();
+        let Ok(value) = read_artifact_value(&path) else {
+            continue;
+        };
+        let Ok(artifact) = serde_json::from_value::<OptionsExpressionArtifactV1>(value) else {
+            continue;
+        };
+        if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
+            continue;
+        }
+        out.push(summarize_options_expression_artifact(
+            &path, bytes, &artifact,
+        ));
+    }
+    out.sort_by(|a, b| b.ts.cmp(&a.ts));
+    Ok(out)
+}
+
+pub fn load_options_expression_artifact_blocking_headless(
+    artifact_path: &std::path::Path,
+    app_local_data_dir: &std::path::Path,
+) -> Result<OptionsExpressionArtifactV1, String> {
+    if !artifact_path.is_file() {
+        return Err(format!(
+            "options expression artifact does not exist: {}",
+            artifact_path.display()
+        ));
+    }
+    let runs_dir = runs_dir(app_local_data_dir)?;
+    ensure_path_is_within_dir(artifact_path, &runs_dir)?;
+    let value = read_artifact_value(artifact_path)?;
+    let artifact = serde_json::from_value::<OptionsExpressionArtifactV1>(value).map_err(|e| {
+        format!(
+            "failed to deserialize options expression artifact {}: {e}",
+            artifact_path.display()
+        )
+    })?;
+    if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
+        return Err(format!(
+            "unsupported options expression artifact kind: {}",
+            artifact.kind
+        ));
+    }
+    Ok(artifact)
 }
 
 #[tauri::command]
@@ -645,76 +1149,7 @@ pub async fn list_options_expression_artifacts(
 ) -> Result<Vec<OptionsExpressionArtifactSummary>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        let runs_dir = runs_dir(&app_local_data_dir)?;
-        if !runs_dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut out: Vec<OptionsExpressionArtifactSummary> = Vec::new();
-        for entry in std::fs::read_dir(&runs_dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let file_name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_string();
-            if !file_name.starts_with("vectorgrid_options_expression_") {
-                continue;
-            }
-            let bytes = entry.metadata().map_err(|e| e.to_string())?.len();
-            let Ok(value) = read_artifact_value(&path) else {
-                continue;
-            };
-            let Ok(artifact) = serde_json::from_value::<OptionsExpressionArtifactV1>(value) else {
-                continue;
-            };
-            if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
-                continue;
-            }
-            let best_robust_score = artifact
-                .selection_metrics
-                .iter()
-                .map(|entry| entry.robust_score)
-                .fold(0.0_f64, f64::max);
-            let best_selection_expectancy_per_premium = artifact
-                .selection_metrics
-                .iter()
-                .map(|entry| entry.selection_metrics.expectancy_per_premium)
-                .fold(0.0_f64, f64::max);
-            let has_holdout_metrics = artifact
-                .selection_metrics
-                .iter()
-                .any(|entry| entry.holdout_metrics.is_some());
-            let has_sealed_evaluation_metrics = artifact
-                .selection_metrics
-                .iter()
-                .any(|entry| entry.sealed_evaluation_metrics.is_some());
-            let has_stress_metrics = artifact
-                .selection_metrics
-                .iter()
-                .any(|entry| entry.stress_metrics.is_some());
-            out.push(OptionsExpressionArtifactSummary {
-                ts: artifact.ts.clone(),
-                path: path.to_string_lossy().to_string(),
-                bytes,
-                parent_artifact_id: artifact.parent_artifact_id.clone(),
-                root_symbol: artifact.root_symbol.clone(),
-                options_dataset_id: artifact.options_dataset_id.clone(),
-                backend_used: artifact.backend_used.clone(),
-                price_semantics: artifact.price_semantics,
-                tuple_count: artifact.selection_metrics.len(),
-                best_robust_score,
-                best_selection_expectancy_per_premium,
-                has_holdout_metrics,
-                has_sealed_evaluation_metrics,
-                has_stress_metrics,
-            });
-        }
-        out.sort_by(|a, b| b.ts.cmp(&a.ts));
-        Ok(out)
+        list_options_expression_artifacts_blocking_headless(&app_local_data_dir)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -727,30 +1162,8 @@ pub async fn load_options_expression_artifact(
 ) -> Result<OptionsExpressionArtifactV1, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let artifact_path = std::path::Path::new(path.trim());
-        if !artifact_path.is_file() {
-            return Err(format!(
-                "options expression artifact does not exist: {}",
-                artifact_path.display()
-            ));
-        }
         let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-        let runs_dir = runs_dir(&app_local_data_dir)?;
-        ensure_path_is_within_dir(artifact_path, &runs_dir)?;
-        let value = read_artifact_value(artifact_path)?;
-        let artifact =
-            serde_json::from_value::<OptionsExpressionArtifactV1>(value).map_err(|e| {
-                format!(
-                    "failed to deserialize options expression artifact {}: {e}",
-                    artifact_path.display()
-                )
-            })?;
-        if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
-            return Err(format!(
-                "unsupported options expression artifact kind: {}",
-                artifact.kind
-            ));
-        }
-        Ok(artifact)
+        load_options_expression_artifact_blocking_headless(artifact_path, &app_local_data_dir)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -808,8 +1221,8 @@ pub async fn inspect_options_expression_tuple(
         let inspection = inspect_options_expression_tuple_blocking(
             replay.normalized_req,
             req.tuple_index,
-            &replay.signal_manifest,
-            &replay.dataset,
+            replay.signal_manifest.as_ref(),
+            replay.dataset.as_ref(),
         )?;
         if inspection.tuple_result.tuple != expected_tuple {
             return Err(format!(
@@ -821,4 +1234,179 @@ pub async fn inspect_options_expression_tuple(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn inspect_options_expression_event_path(
+    req: InspectOptionsExpressionEventPathRequest,
+    app: tauri::AppHandle,
+) -> Result<OptionsExpressionEventPathInspectionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let artifact_path = std::path::Path::new(req.artifact_path.trim());
+        if !artifact_path.is_file() {
+            return Err(format!(
+                "options expression artifact does not exist: {}",
+                artifact_path.display()
+            ));
+        }
+        let app_local_data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        let runs_dir = runs_dir(&app_local_data_dir)?;
+        ensure_path_is_within_dir(artifact_path, &runs_dir)?;
+        let value = read_artifact_value(artifact_path)?;
+        let artifact =
+            serde_json::from_value::<OptionsExpressionArtifactV1>(value).map_err(|e| {
+                format!(
+                    "failed to deserialize options expression artifact {}: {e}",
+                    artifact_path.display()
+                )
+            })?;
+        if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
+            return Err(format!(
+                "unsupported options expression artifact kind: {}",
+                artifact.kind
+            ));
+        }
+        let expected_tuple = artifact
+            .selection_metrics
+            .get(req.tuple_index)
+            .ok_or_else(|| {
+                format!(
+                    "tuple_index {} is out of range for saved artifact with {} tuple{}",
+                    req.tuple_index,
+                    artifact.selection_metrics.len(),
+                    if artifact.selection_metrics.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                )
+            })?
+            .tuple
+            .clone();
+        let replay =
+            build_options_expression_replay_inputs(artifact.request.clone(), &app_local_data_dir)?;
+        let inspection = inspect_options_expression_event_path_blocking(
+            replay.normalized_req,
+            req.tuple_index,
+            req.event_index,
+            replay.signal_manifest.as_ref(),
+            replay.dataset.as_ref(),
+        )?;
+        if inspection.row.event_id.trim().is_empty() {
+            return Err("recomputed event path inspection returned an empty event id".to_string());
+        }
+        if inspection.row.status == ta_app_core::OptionsExpressionEventStatus::CandidateMissing
+            && !inspection.points.is_empty()
+        {
+            return Err(
+                "candidate-missing event path inspection returned path points unexpectedly"
+                    .to_string(),
+            );
+        }
+        if artifact.selection_metrics[req.tuple_index].tuple != expected_tuple {
+            return Err(format!(
+                "saved tuple at index {} changed during event-path inspection replay",
+                req.tuple_index
+            ));
+        }
+        Ok(inspection)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ta_app_core::{
+        OptionsEvaluationSplit, OptionsSignalEvent, OptionsSignalEventManifestV1, SignalSide,
+        OPTIONS_SIGNAL_MANIFEST_VERSION,
+    };
+
+    fn temp_app_local_data_dir(test_name: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "ta_options_expr_cmds_{}_{}",
+            test_name,
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn sample_signal_manifest() -> OptionsSignalEventManifestV1 {
+        OptionsSignalEventManifestV1 {
+            version: OPTIONS_SIGNAL_MANIFEST_VERSION,
+            manifest_id: "manifest".to_string(),
+            parent_artifact_id: "parent_artifact".to_string(),
+            parent_run_kind: "vectorgrid_run_artifact".to_string(),
+            source_dataset_identity_hash: "identity".to_string(),
+            source_content_fingerprint: "fingerprint".to_string(),
+            dataset_hash: "dataset_hash".to_string(),
+            timeframe: "1m".to_string(),
+            resample_spec_hash: None,
+            adjustment_mode: "raw".to_string(),
+            symbol_root: "SPY".to_string(),
+            calendar_id: "market_hours_utc".to_string(),
+            runtime_dataset_id: None,
+            events: vec![OptionsSignalEvent {
+                event_id: "evt-1".to_string(),
+                parent_artifact_id: "parent_artifact".to_string(),
+                parent_run_kind: "vectorgrid_run_artifact".to_string(),
+                source_dataset_identity_hash: "identity".to_string(),
+                source_content_fingerprint: "fingerprint".to_string(),
+                dataset_hash: "dataset_hash".to_string(),
+                timeframe: "1m".to_string(),
+                resample_spec_hash: None,
+                adjustment_mode: "raw".to_string(),
+                symbol_root: "SPY".to_string(),
+                side: SignalSide::Bullish,
+                decision_timestamp: 1_700_000_000_000,
+                earliest_tradable_timestamp: 1_700_000_060_000,
+                decision_bar_index: 0,
+                earliest_tradable_bar_index: 1,
+                raw_underlier_price: 100.0,
+                adjusted_underlier_price: None,
+                base_entry_timestamp: Some(1_700_000_060_000),
+                base_exit_timestamp: Some(1_700_000_120_000),
+                base_exit_bar_index: Some(2),
+                fold: OptionsEvaluationSplit::Search,
+                session_id: Some("2026-04-07".to_string()),
+                regime_tag: None,
+                confidence_tag: None,
+                calendar_id: "market_hours_utc".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn signal_manifest_replay_cache_round_trips_to_disk() {
+        let app_local_data_dir = temp_app_local_data_dir("signal_manifest_cache_round_trip");
+        let manifest = sample_signal_manifest();
+        let cache_key = "artifact|source=csv|timeframe=1m|candidate=none";
+
+        persist_signal_manifest_replay_cache(
+            &app_local_data_dir,
+            "parent_artifact",
+            cache_key,
+            &manifest,
+        )
+        .expect("persist cache");
+        let loaded = load_signal_manifest_replay_cache(
+            &app_local_data_dir,
+            "parent_artifact",
+            cache_key,
+        )
+        .expect("load cache")
+        .expect("cached manifest");
+
+        assert_eq!(loaded.manifest_id, manifest.manifest_id);
+        assert_eq!(loaded.events.len(), 1);
+        assert_eq!(loaded.events[0].event_id, "evt-1");
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
+    }
 }

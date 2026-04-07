@@ -60,11 +60,12 @@ pub use commands_data::{
     load_price_data, pick_csv_file, pick_folder, pick_save_csv, polygon_clear_api_key,
     polygon_download_1m_and_load, polygon_get_cache_info, polygon_live_candle_stream_status,
     polygon_repair_dataset, polygon_set_api_key, polygon_start_live_candle_stream,
-    polygon_stop_live_candle_stream, polygon_validate_dataset, resample_price_data,
-    set_market_data_dir, ClearLoadedDataResponse, GpuSpeedupEntry, MarketDataDirInfo,
-    PolygonDownloadAndLoadResponse, PolygonLiveCandleStreamStatusResponse,
+    polygon_stop_live_candle_stream, polygon_top_off_dataset, polygon_validate_dataset,
+    resample_price_data, set_market_data_dir, ClearLoadedDataResponse, GpuSpeedupEntry,
+    MarketDataDirInfo, PolygonDownloadAndLoadResponse, PolygonLiveCandleStreamStatusResponse,
     PolygonStartLiveCandleStreamRequest, PolygonStartLiveCandleStreamResponse,
-    PolygonStopLiveCandleStreamResponse, RepoDataCsvEntry, RepoDataCsvList, SampleCsv,
+    PolygonStopLiveCandleStreamResponse, PolygonTopOffRequest, RepoDataCsvEntry, RepoDataCsvList,
+    SampleCsv,
 };
 pub use commands_dynamic::{
     encode_dynamic_strategy_constant_bits, format_dynamic_strategy_ir_json,
@@ -101,14 +102,22 @@ pub use commands_optimize::{
 };
 pub(crate) use commands_optimize::{OffsetProgressSink, TauriProgressSink};
 pub use commands_options_data::{
-    import_options_dataset, list_options_datasets, load_options_dataset_manifest,
-    OptionsDatasetImportRequest,
+    download_polygon_options_dataset, download_polygon_options_dataset_blocking_headless,
+    import_options_dataset, import_options_dataset_blocking_headless, list_options_datasets,
+    load_options_dataset_manifest, OptionsDatasetImportRequest,
+    PolygonOptionsDatasetDownloadRequest, PolygonOptionsDatasetDownloadResponse,
 };
 pub use commands_options_expression::{
-    analyze_options_expression_feasibility, inspect_options_expression_tuple,
-    list_options_expression_artifacts, load_options_expression_artifact, run_options_expression,
-    AnalyzeOptionsExpressionFeasibilityResponse, InspectOptionsExpressionTupleRequest,
-    OptionsExpressionArtifactSummary, RunOptionsExpressionResponse,
+    analyze_options_expression_feasibility,
+    analyze_options_expression_feasibility_blocking_headless,
+    inspect_options_expression_event_path, inspect_options_expression_event_path_blocking_headless,
+    inspect_options_expression_tuple, inspect_options_expression_tuple_blocking_headless,
+    list_options_expression_artifacts, list_options_expression_artifacts_blocking_headless,
+    load_options_expression_artifact, load_options_expression_artifact_blocking_headless,
+    run_options_expression, run_options_expression_blocking_headless,
+    AnalyzeOptionsExpressionFeasibilityResponse, InspectOptionsExpressionEventPathRequest,
+    InspectOptionsExpressionTupleRequest, OptionsExpressionArtifactSummary,
+    RunOptionsExpressionResponse,
 };
 pub use commands_reports::build_report_xlsx_bytes_headless;
 pub(crate) use commands_reports::{

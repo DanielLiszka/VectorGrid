@@ -411,10 +411,10 @@ onBeforeUnmount(() => {
       </section>
 
       <div v-if="historyStage !== 'no_data'" class="grid">
-        <section class="pane">
+        <section class="pane historyPaneSession">
           <div class="panelSectionHeader">
             <div>
-              <div class="panelEyebrow">Current session</div>
+              <div class="panelEyebrow">Session recall</div>
               <h3 class="panelPaneTitle">Session History</h3>
               <div class="panelSectionLead">
                 These runs live only for the active session unless you export or save them elsewhere.
@@ -487,10 +487,10 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="pane">
+        <section class="pane historyPaneSaved panelProminentPane">
           <div class="panelSectionHeader">
             <div>
-              <div class="panelEyebrow">Saved artifacts</div>
+              <div class="panelEyebrow">Run library</div>
               <h3 class="panelPaneTitle">Saved Runs</h3>
               <div class="panelSectionLead">
                 Search by strategy, dataset, or tag, then choose one artifact to load, rerun, or inspect in detail below.
@@ -807,7 +807,7 @@ onBeforeUnmount(() => {
 
 .grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
   gap: 0.8rem;
 }
 
@@ -817,6 +817,15 @@ onBeforeUnmount(() => {
   background: var(--panel-footer);
   padding: 0.75rem 0.8rem;
   min-width: 0;
+}
+
+.historyPaneSession {
+  background: color-mix(in oklab, var(--panel-footer) 92%, var(--surface-sunken));
+}
+
+.historyPaneSaved {
+  background: color-mix(in oklab, var(--surface-working) 94%, var(--panel-footer));
+  border-color: color-mix(in oklab, var(--panel-focus-edge) 54%, var(--border));
 }
 
 .sectionMeta {

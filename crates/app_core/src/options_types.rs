@@ -13,15 +13,15 @@ fn default_quote_resolution() -> String {
 }
 
 fn default_provider_name() -> String {
-    "manual_import".to_string()
+    "massive".to_string()
 }
 
 fn default_provider_source_surface() -> String {
-    "manual_normalized_import".to_string()
+    "minute_aggregate".to_string()
 }
 
 fn default_contract_reference_source() -> String {
-    "unknown".to_string()
+    "massive_contract_reference".to_string()
 }
 
 fn default_underlier_reference_source() -> String {
@@ -77,12 +77,24 @@ fn default_fill_model() -> OptionsFillModelFamily {
     OptionsFillModelFamily::AggregateResearch
 }
 
+fn default_backend_preference() -> OptionsExpressionBackendPreference {
+    OptionsExpressionBackendPreference::Auto
+}
+
 fn default_split_ratio_search() -> f64 {
     0.60
 }
 
 fn default_split_ratio_holdout() -> f64 {
     0.20
+}
+
+fn default_sealed_finalist_count() -> usize {
+    5
+}
+
+fn default_split_assignment_mode() -> OptionsSplitAssignmentMode {
+    OptionsSplitAssignmentMode::EventChronological
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -99,6 +111,21 @@ pub enum OptionsFillModelFamily {
     AggregateResearch,
     QuoteConservative,
     QuoteMid,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExpressionBackendPreference {
+    Auto,
+    CpuReference,
+    GpuCompiledTensor,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsSplitAssignmentMode {
+    EventChronological,
+    SessionChronological,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -163,6 +190,49 @@ pub enum OptionsCandidateInvalidReason {
 pub struct OptionsCandidateInvalidReasonCount {
     pub reason: OptionsCandidateInvalidReason,
     pub count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsDelayBucketCoverage {
+    pub delay_minutes: u16,
+    pub slot_count: usize,
+    pub valid_slot_count: usize,
+    pub invalid_slot_count: usize,
+    pub valid_rate: f64,
+    #[serde(default)]
+    pub invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsDteBucketCoverage {
+    pub dte_days: u16,
+    pub slot_count: usize,
+    pub valid_slot_count: usize,
+    pub invalid_slot_count: usize,
+    pub valid_rate: f64,
+    #[serde(default)]
+    pub invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsMoneynessBucketCoverage {
+    pub moneyness_bucket: OptionsMoneynessBucket,
+    pub slot_count: usize,
+    pub valid_slot_count: usize,
+    pub invalid_slot_count: usize,
+    pub valid_rate: f64,
+    #[serde(default)]
+    pub invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsCandidateAxisCoverage {
+    #[serde(default)]
+    pub delay_minutes: Vec<OptionsDelayBucketCoverage>,
+    #[serde(default)]
+    pub dte_days: Vec<OptionsDteBucketCoverage>,
+    #[serde(default)]
+    pub moneyness_buckets: Vec<OptionsMoneynessBucketCoverage>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -361,6 +431,12 @@ pub struct OptionsExpressionMetrics {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionTupleResult {
     pub tuple: OptionsTupleSpec,
+    #[serde(default)]
+    pub pre_sealed_rank: usize,
+    #[serde(default)]
+    pub sealed_finalist: bool,
+    #[serde(default)]
+    pub sealed_final_rank: usize,
     pub selection_metrics: OptionsExpressionMetrics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holdout_metrics: Option<OptionsExpressionMetrics>,
@@ -368,6 +444,12 @@ pub struct OptionsExpressionTupleResult {
     pub sealed_evaluation_metrics: Option<OptionsExpressionMetrics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stress_metrics: Option<OptionsExpressionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_stress_metrics: Option<OptionsExpressionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harsher_stress_metrics: Option<OptionsExpressionMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_harsher_stress_metrics: Option<OptionsExpressionMetrics>,
     #[serde(default)]
     pub robust_score: f64,
 }
@@ -405,6 +487,8 @@ pub struct OptionsExpressionEventDetailRow {
     pub base_exit_timestamp: Option<i64>,
     pub status: OptionsExpressionEventStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_invalid_reason: Option<OptionsCandidateInvalidReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contract_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expiration_date: Option<String>,
@@ -429,6 +513,20 @@ pub struct OptionsExpressionEventDetailRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_on_premium: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_lag_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes_to_expiry_at_entry: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realized_hold_minutes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_option_high: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_option_low: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_underlier_high: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_underlier_low: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_reason: Option<OptionsExpressionExitReason>,
 }
 
@@ -442,6 +540,27 @@ pub struct OptionsExpressionTupleInspectionResult {
     pub candidate_missing_events: usize,
     pub outcome_missing_events: usize,
     pub rows: Vec<OptionsExpressionEventDetailRow>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsExpressionEventPathPoint {
+    pub timestamp_ms: i64,
+    pub option_open: f64,
+    pub option_high: f64,
+    pub option_low: f64,
+    pub option_close: f64,
+    pub underlying_price: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OptionsExpressionEventPathInspectionResult {
+    pub tuple_index: usize,
+    pub event_index: usize,
+    pub event_id: String,
+    pub row: OptionsExpressionEventDetailRow,
+    pub point_count: usize,
+    #[serde(default)]
+    pub points: Vec<OptionsExpressionEventPathPoint>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -469,6 +588,7 @@ pub struct OptionsExpressionStagingStats {
     pub compiled_candidate_count: usize,
     pub baseline_exit_summary_count: usize,
     pub conservative_exit_summary_count: usize,
+    pub harsher_exit_summary_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -478,7 +598,29 @@ pub struct OptionsExpressionFeasibilityTimingStats {
     pub baseline_exit_summary_compile_ms: u64,
     pub conservative_candidate_compile_ms: u64,
     pub conservative_exit_summary_compile_ms: u64,
+    pub harsher_candidate_compile_ms: u64,
+    pub harsher_exit_summary_compile_ms: u64,
     pub cpu_ranking_ms: u64,
+    #[serde(default)]
+    pub cpu_ranking_us: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_ranking_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_ranking_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_tensor_score_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_tensor_score_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_exactify_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_stage_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_sealed_stage_us: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_speedup_vs_cpu: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -495,6 +637,70 @@ pub struct OptionsExpressionFeasibilityEventCoverage {
     pub search_events_with_conservative_outcomes: usize,
     pub holdout_events_with_conservative_outcomes: usize,
     pub sealed_test_events_with_conservative_outcomes: usize,
+    pub total_events_with_harsher_outcomes: usize,
+    pub search_events_with_harsher_outcomes: usize,
+    pub holdout_events_with_harsher_outcomes: usize,
+    pub sealed_test_events_with_harsher_outcomes: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionFeasibilityCacheStats {
+    pub structural_cache_hits: usize,
+    pub structural_cache_misses: usize,
+    pub structural_cache_entries: usize,
+    pub summary_cache_hits: usize,
+    pub summary_cache_misses: usize,
+    pub summary_cache_entries: usize,
+    #[serde(default)]
+    pub gpu_shared_input_cache_hits: usize,
+    #[serde(default)]
+    pub gpu_shared_input_cache_misses: usize,
+    #[serde(default)]
+    pub gpu_outcome_input_cache_hits: usize,
+    #[serde(default)]
+    pub gpu_outcome_input_cache_misses: usize,
+    #[serde(default)]
+    pub gpu_output_buffer_reuses: usize,
+    #[serde(default)]
+    pub gpu_output_buffer_allocations: usize,
+    #[serde(default)]
+    pub gpu_tuple_chunk_count: usize,
+    #[serde(default)]
+    pub gpu_tuple_chunk_size: usize,
+    #[serde(default)]
+    pub gpu_kernel_launch_count: usize,
+    #[serde(default)]
+    pub gpu_tuple_budget_bytes: usize,
+    #[serde(default)]
+    pub gpu_outcome_tensor_bytes: usize,
+    #[serde(default)]
+    pub gpu_shared_input_bytes_per_chunk: usize,
+    #[serde(default)]
+    pub gpu_output_bytes_per_chunk: usize,
+    #[serde(default)]
+    pub gpu_total_device_bytes_per_chunk: usize,
+    #[serde(default)]
+    pub gpu_device_total_memory_bytes: usize,
+    #[serde(default)]
+    pub gpu_device_free_memory_bytes: usize,
+    #[serde(default)]
+    pub gpu_device_usable_memory_bytes: usize,
+    #[serde(default)]
+    pub gpu_memory_budget_source: String,
+    #[serde(default)]
+    pub gpu_outcome_tensor_fits_in_memory: bool,
+    #[serde(default)]
+    pub gpu_chunk_plan_fits_in_memory: bool,
+    #[serde(default)]
+    pub gpu_plan_notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionAutoBackendDecision {
+    pub recommended_backend: String,
+    pub gpu_eligible: bool,
+    #[serde(default)]
+    pub reasons: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -502,6 +708,9 @@ pub struct OptionsExpressionFeasibilityReport {
     pub diagnostics: OptionsExpressionDiagnostics,
     pub price_semantics: OptionsPriceSemantics,
     pub fill_model: OptionsFillModelFamily,
+    pub best_available_backend: String,
+    #[serde(default)]
+    pub auto_backend_decision: OptionsExpressionAutoBackendDecision,
     pub compiled_tuple_count: usize,
     pub per_event_candidate_slots: usize,
     pub per_candidate_exit_summaries: usize,
@@ -516,14 +725,21 @@ pub struct OptionsExpressionFeasibilityReport {
     pub conservative_exit_summary_count: usize,
     pub conservative_compiled_exit_summary_count: usize,
     pub conservative_exit_summary_density: f64,
+    pub harsher_exit_summary_count: usize,
+    pub harsher_compiled_exit_summary_count: usize,
+    pub harsher_exit_summary_density: f64,
     pub projected_event_tuple_evaluations: u64,
     pub structural_cache_bytes_estimate: usize,
     pub baseline_summary_bytes_estimate: usize,
     pub conservative_summary_bytes_estimate: usize,
+    pub harsher_summary_bytes_estimate: usize,
     pub timings: OptionsExpressionFeasibilityTimingStats,
     pub event_coverage: OptionsExpressionFeasibilityEventCoverage,
+    pub cache_stats: OptionsExpressionFeasibilityCacheStats,
     #[serde(default)]
     pub invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+    #[serde(default)]
+    pub axis_coverage: OptionsCandidateAxisCoverage,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -532,6 +748,8 @@ pub struct OptionsExpressionRunRequest {
     #[serde(default)]
     pub parent_candidate_index: Option<usize>,
     pub options_dataset_id: String,
+    #[serde(default = "default_backend_preference")]
+    pub backend_preference: OptionsExpressionBackendPreference,
     #[serde(default = "default_delay_minutes")]
     pub delay_minutes: Vec<u16>,
     #[serde(default = "default_dte_buckets")]
@@ -558,12 +776,18 @@ pub struct OptionsExpressionRunRequest {
     pub split_ratio_search: f64,
     #[serde(default = "default_split_ratio_holdout")]
     pub split_ratio_holdout: f64,
+    #[serde(default = "default_split_assignment_mode")]
+    pub split_assignment_mode: OptionsSplitAssignmentMode,
+    #[serde(default = "default_sealed_finalist_count")]
+    pub sealed_finalist_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionRunResult {
     pub diagnostics: OptionsExpressionDiagnostics,
     pub backend_used: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_fallback_reason: Option<String>,
     pub price_semantics: OptionsPriceSemantics,
     pub tuple_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -583,6 +807,8 @@ pub struct OptionsExpressionArtifactV1 {
     pub options_dataset_id: String,
     pub options_dataset_hash: String,
     pub backend_used: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_fallback_reason: Option<String>,
     pub price_semantics: OptionsPriceSemantics,
     pub request: OptionsExpressionRunRequest,
     pub diagnostics: OptionsExpressionDiagnostics,
@@ -605,6 +831,15 @@ mod tests {
             req.exit_template,
             OptionsExitTemplateFamily::FixedHoldOrTargetStop
         );
+        assert_eq!(
+            req.backend_preference,
+            OptionsExpressionBackendPreference::Auto
+        );
+        assert_eq!(
+            req.split_assignment_mode,
+            OptionsSplitAssignmentMode::EventChronological
+        );
+        assert_eq!(req.sealed_finalist_count, 5);
         assert!(!req.delay_minutes.is_empty());
     }
 }

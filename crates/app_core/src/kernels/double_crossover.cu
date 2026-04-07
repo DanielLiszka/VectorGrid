@@ -114,6 +114,69 @@ void strategy_program_probe_f32(
     out_summary[6] = checksum;
 }
 
+struct OptionsTupleAggregateF32 {
+    float total_pnl;
+    float total_premium;
+    uint32_t valid_trades;
+    uint32_t wins;
+};
+
+extern "C" __global__
+void options_expression_score_tuple_outcomes_f32(
+    const uint8_t* __restrict__ event_splits,
+    int event_count,
+    int split_filter,
+    int candidate_slot_stride,
+    int summary_stride,
+    const uint32_t* __restrict__ tuple_candidate_offsets,
+    const uint32_t* __restrict__ tuple_summary_offsets,
+    int tuple_count,
+    const uint8_t* __restrict__ valid_flags,
+    const float* __restrict__ pnl_values,
+    const float* __restrict__ premium_values,
+    OptionsTupleAggregateF32* __restrict__ out_aggregates
+) {
+    const int tuple_idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (tuple_idx < 0 || tuple_idx >= tuple_count || !out_aggregates) {
+        return;
+    }
+
+    const uint32_t candidate_offset = tuple_candidate_offsets ? tuple_candidate_offsets[tuple_idx] : 0u;
+    const uint32_t summary_offset = tuple_summary_offsets ? tuple_summary_offsets[tuple_idx] : 0u;
+
+    float total_pnl = 0.0f;
+    float total_premium = 0.0f;
+    uint32_t valid_trades = 0u;
+    uint32_t wins = 0u;
+
+    for (int event_idx = 0; event_idx < event_count; ++event_idx) {
+        if (event_splits && (int)event_splits[event_idx] != split_filter) {
+            continue;
+        }
+        const uint64_t candidate_slot_index =
+            (uint64_t)event_idx * (uint64_t)candidate_slot_stride + (uint64_t)candidate_offset;
+        const uint64_t summary_index =
+            candidate_slot_index * (uint64_t)summary_stride + (uint64_t)summary_offset;
+        if (valid_flags && valid_flags[summary_index] != 0u) {
+            const float pnl = pnl_values ? pnl_values[summary_index] : 0.0f;
+            const float premium = premium_values ? premium_values[summary_index] : 0.0f;
+            total_pnl += pnl;
+            total_premium += premium;
+            valid_trades += 1u;
+            if (pnl > 0.0f) {
+                wins += 1u;
+            }
+        }
+    }
+
+    OptionsTupleAggregateF32 out;
+    out.total_pnl = total_pnl;
+    out.total_premium = total_premium;
+    out.valid_trades = valid_trades;
+    out.wins = wins;
+    out_aggregates[tuple_idx] = out;
+}
+
 static __device__ __forceinline__ float strategy_program_decode_constant_f32(uint64_t bits) {
     return (float)__longlong_as_double((long long)bits);
 }

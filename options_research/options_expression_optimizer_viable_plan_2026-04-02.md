@@ -1,7 +1,7 @@
 # Options Expression Optimizer — Repo-Fit Viable Implementation Plan
 
 Date: 2026-04-02
-Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice now landed in the repo while the feasibility spike, GPU scorer, and richer drilldown/productization work remain pending.
+Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice, CUDA scorer path, and current History follow-up reporting/drilldown slice now landed in the repo while real imported-dataset Phase `0.5` measurement, GPU-vs-CPU proof on representative jobs, and broader productization scope remain pending.
 
 ## Executive Verdict
 
@@ -342,6 +342,8 @@ For v1, freeze the placement more concretely:
 - mount inside the existing shell as a **side panel / mounted results panel**
 - do **not** add a new workflow tab
 - do **not** add a new workspace tab
+- make the mode boundary visually explicit so users cannot confuse options follow-up work with the conventional stock optimization/validation workflow
+- keep the options surface labeled as an artifact-driven follow-up, not as the default path for ordinary stock backtests
 
 ### Why this fits the repo better
 
@@ -383,6 +385,7 @@ Do not start with:
 - a fully separate design language from the current results shell
 
 The goal is to feel like a natural artifact follow-up, not a second app inside the app.
+It should also be immediately obvious which surface is options-specific and which surface remains the ordinary stock workflow.
 
 ---
 
@@ -572,8 +575,9 @@ Minimum fields:
 - `options_dataset_id`
 - `root_symbol`
 - `provider_name`
+  - current implementation assumption: `massive` / `polygon`
 - `provider_source_surface`
-  - for example: `massive_all_contracts`, `massive_minute_aggregates`, `massive_quotes`, or `manual_normalized_import`
+  - current v1 expectation: `minute_aggregate`
 - `provider_entitlement_profile`
   - record the entitlement or access assumption used when the dataset was produced
 - `quote_resolution`
@@ -710,11 +714,11 @@ To make it viable in the current repo, the data layer must be **separate** from 
 
 ### Recommended provider posture
 
-Treat the first-wave implementation as **Massive-first but provider-decoupled**.
+Treat the first-wave implementation as **Massive/Polygon-only at the data-contract level**, while keeping it separate from the current Polygon spot/live runtime path.
 
 That means:
 
-- design the import and normalization layers so they can record provider/source semantics explicitly
+- design the import and normalization layers so they record Massive/Polygon provider/source semantics explicitly
 - do **not** hardwire the runtime to current Polygon candle-download flows
 - do **not** assume that every options data surface has the same entitlement, history depth, recency, or file-size economics
 
@@ -729,7 +733,7 @@ The v1 plan should assume:
 The preferred first-wave data shape is:
 
 1. Massive contract-reference data for contract universe and metadata
-2. Massive options minute aggregates for contract price-path research
+2. Massive options **1-minute** aggregates for contract price-path research
 3. optional later quote-aware imports for higher-realism entry/exit semantics
 
 This is the safer first release because:
@@ -765,12 +769,25 @@ If quote-aware datasets are available later, they should enter as a stricter rea
 
 Support import of already-downloaded normalized options datasets first.
 
+Current implementation status:
+
+- the frontend and backend are wired for Polygon/Massive-origin **normalized dataset import**
+- the current UI launches import through the native file picker and stores the dataset locally
+- the current backend import command normalizes provider metadata to Polygon/Massive assumptions
+- the backend now also has a Polygon/Massive provider-download path for contract-reference plus `1m` minute aggregates
+- the current options follow-up UI now also exposes a bounded Polygon/Massive `1m` download flow that stays separate from the main stock-data workspace
+- live-connected provider ingestion remains a separate future decision, not an implicit part of v1
+- the normalized import path still remains supported for manually prepared datasets and provider-derived exports
+
 Suggested first-wave inputs:
 
 - Massive-derived contract-reference exports
-- Massive-derived options minute aggregates
+- Massive-derived options **1-minute** aggregates
 - normalized Parquet
 - normalized CSV with a strict schema
+
+For the avoidance of doubt, v1 should treat `1m` as the canonical options-resolution target for the optimizer hot path.
+If later work introduces coarser or quote-aware surfaces, those should remain secondary realism or fallback lanes rather than replacing the first-wave `1m` aggregate path.
 
 Optional later:
 
@@ -1565,7 +1582,10 @@ Status key:
 
 - `[x]` Add dedicated app-core options types and artifact contracts
 - `[x]` Add deterministic `DoubleMa -> SignalEventManifestV1` projector
-- `[x]` Add normalized options dataset import/load path for single-root datasets
+- `[x]` Add Polygon/Massive normalized options dataset import/load path for single-root datasets
+- `[x]` Wire the frontend and backend to import Polygon/Massive-origin options datasets through the normalized local-dataset path
+- `[x]` Lock the first-wave optimizer price surface to Polygon/Massive `1m` minute aggregates plus contract-reference metadata
+- `[x]` Add backend Polygon/Massive provider-download support for contract-reference plus `1m` minute-aggregate options data
 - `[x]` Add options dataset manifest persistence and listing
 - `[x]` Add the explicit compiled structural candidate cache / candidate-compiler stage for the current constrained search space
 - `[x]` Add the explicit exit-summary cache / exit-summary compiler stage for the current constrained search space
@@ -1589,25 +1609,100 @@ Status key:
 - `[x]` Expose invalid-rate plus holdout/sealed/stress reporting columns in the current result table when those metrics are present
 - `[x]` Add a tuple detail inspector and dataset-provenance reporting inside the current History follow-up panel
 - `[x]` Surface richer saved-artifact summaries plus run/artifact provenance using the existing response payload
-- `[~]` Add lazy per-tuple event drilldown in the History follow-up panel without widening the main run payload or touching workflow hydration
+- `[x]` Add lazy per-tuple event drilldown in the History follow-up panel without widening the main run payload or touching workflow hydration
 - `[x]` Add a feasibility preview path with density, invalid-reason, event-coverage, compile-timing, and replay-cost reporting
+- `[x]` Add a headless `ta_options_expression_feasibility` harness so Phase `0.5` can be run from the terminal against saved artifacts
+- `[x]` Add a synthetic `ta_options_expression_smoke` runner so the backend can be regression-smoked without local options datasets
+- `[x]` Add first-wave Criterion benches for options-expression feasibility preview and CPU scoring
+- `[x]` Add a summary-heavy Criterion bench for exit-summary compilation pressure using the current constrained aggregate path
+- `[x]` Extend the headless feasibility harness so it can optionally run the full backend and inspect the top tuple from the same CLI entrypoint
+- `[x]` Add a headless `ta_options_dataset_import` CLI so normalized options CSVs can be imported from the terminal without using the current panel workflow
+- `[x]` Add a headless `ta_options_dataset_download` CLI so the backend Polygon/Massive download path can be exercised without building the dedicated options-download UI first
+- `[x]` Add a headless `ta_options_parent_artifact` CLI so a bounded `DoubleMa` parent artifact can be generated from local `1m` stock bars without going through the UI
+- `[x]` Include candidate-miss reason codes in tuple drilldown rows and surface them in the current options inspection table
+- `[x]` Add a headless `ta_options_expression_compare` tool plus reusable headless artifact list/load helpers for comparing saved options-expression artifacts without widening the frontend workflow
+- `[x]` Add in-process structural candidate cache reuse and exit-summary cache reuse for repeated identical previews/runs inside one process
+- `[x]` Expose cache hit/miss telemetry in the feasibility report and add warm-preview iteration reporting in the headless feasibility harness
+- `[x]` Enrich tuple-inspection payloads with path-level trade context (entry lag, realized hold, expiry distance, and option/underlier path extrema) without widening the main run payload
+- `[x]` Surface feasibility cache reuse telemetry in the current options preview panel
+- `[x]` Add inspection-row CSV export for the current tuple drilldown table without widening the main run payload
+- `[x]` Convert sealed evaluation into a real finalist-budget stage and surface finalist rank/status in saved artifacts and the current History follow-up panel
+- `[x]` Add a second conservative robustness lane for sealed finalists and surface it in the current options result reporting
+- `[x]` Add a selectable event-detail card inside the lazy tuple drilldown so the current History follow-up panel has a real row-level trade inspector without widening the backend payload again
+- `[x]` Add row-level event-path replay from saved artifacts plus richer artifact-summary reporting inside the current History follow-up surface
+- `[x]` Implement the GPU scorer / compiled-tensor evaluation path for CUDA builds and keep CPU exactification for retained finalists
+- `[x]` Expose backend preference plus CPU/GPU feasibility timing/reporting in the current History follow-up surface
+- `[x]` Make sealed finalist rank reflect sealed-evaluation ordering instead of only pre-sealed search order
+- `[x]` Surface the broader harsher robustness lane end to end in artifact summaries, feasibility preview reporting, result tables, tuple detail, and CSV export
+- `[x]` Add a CUDA-gated `options_expression_gpu_score` Criterion bench plus synthetic smoke compare coverage so CPU-vs-GPU proof work can start before real imported options datasets are wired in
+- `[x]` Expose sealed finalist count as a first-class frontend control for both preview and run requests instead of keeping it implicit
+- `[x]` Align the headless Phase `0.5` feasibility harness with explicit sealed-finalist-count input instead of keeping it implicit
+- `[x]` Add a repo-local `run_options_expression_phase05.ps1` wrapper so import + feasibility + compare output can be repeated once a real normalized options CSV is available
+- `[x]` Add explicit Phase `0.5` GPU-viability gate badges plus structured per-lane diagnostics in the current History follow-up panel
+- `[x]` Add client-side tuple-table sort/filter controls plus richer run-provenance dataset/filter reporting in the current History follow-up panel
+- `[x]` Add direct Polygon/Massive options download integration in the current options UI while keeping it visually separate from the normal stock-data workflow
+- `[x]` Add a non-breaking session-aware split-assignment mode for backend/headless experiments while keeping event-level chronology as the current default
+- `[x]` Expose the split-assignment mode through the headless feasibility CLI and the repo-local Phase `0.5` PowerShell wrapper for repeatable real-data experiments
+- `[x]` Surface split-assignment mode in the advanced History follow-up panel and run-provenance summary while keeping `event_chronological` as the default UI path
+- `[x]` Carry microsecond hybrid-ranking timings through feasibility reports, headless compare output, and the current History follow-up summary so sub-millisecond preview work does not collapse to `0 ms`
+- `[x]` Switch the first-wave CUDA scorer from split-array full-event scans to contiguous event-range launches for search/holdout workloads and capture an updated large-grid Phase `0.5` compare run
+- `[x]` Prebuild flat GPU score tensors during prepare and reuse uploaded shared/outcome buffers plus tuple-sized output buffers inside the thread-local CUDA runtime
+- `[x]` Split GPU feasibility timing into tensor-score vs CPU exactify vs sealed-finalist finalize spans, and surface the breakdown plus GPU upload-reuse telemetry in the current History follow-up panel
+- `[x]` Keep the current History follow-up default backend preference at `cpu_reference` until the Phase `0.5` GPU promotion gate is actually closed, while leaving explicit `gpu_compiled_tensor` available for experiments
+- `[x]` Add quality recommendations to the Phase `0.5` harness output and the current History follow-up panel so density failures point users toward strike/DTE/cutoff adjustments instead of treating the GPU scorer as the blocker
+- `[x]` Add a dedicated `run_options_expression_gpu_promotion_gate.ps1` wrapper so the current GPU-promotion decision can be repeated from the terminal against the latest provider-backed artifact/dataset pair
+- `[x]` Add repo-root `.env` fallback parsing for `POLYGON_KEY` / `POLYGON_API_KEY` so local provider-backed headless/download workflows can run without requiring a separately exported shell variable when no saved app key is present
+- `[x]` Add process-local parent-signal and imported-dataset replay caches so repeated feasibility/rerun work stops rebuilding the same artifact and options CSV inputs on every call
+- `[x]` Persist derived `SignalEventManifestV1` replay artifacts under an app-owned options replay cache so restart no longer forces a full parent-signal reprojection on every follow-up run
+- `[x]` Stamp explicit session ids into the current `DoubleMa`-derived options signal manifests so `session_chronological` follow-up work no longer relies on implicit UTC-day grouping
+- `[x]` Restore the current options follow-up default backend preference to gate-driven `auto` once the scorer stops treating “GPU available” as equivalent to “GPU recommended”
+- `[x]` Add a gate-driven `auto` backend policy so the current options scorer no longer treats “GPU available” as equivalent to “GPU recommended,” and surface the recommendation plus reasons in feasibility preview reporting
+- `[x]` Surface full options-dataset manifest inspection plus dataset-path reveal in the current History follow-up panel
+- `[x]` Surface latest Polygon/Massive download audit details, including the underlying CSV/cache provenance, in the current History follow-up panel
+- `[x]` Add a saved-artifact comparison surface for options-expression follow-ups from the same parent run without widening the main workflow shell
+- `[x]` Switch options-expression artifact listing to the canonical artifact-library path while keeping the dedicated backend/headless commands available for internal tooling
+- `[x]` Base CUDA tuple-chunk planning on current free device memory plus explicit usable-memory headroom rather than cached total VRAM alone
+- `[x]` Surface explicit GPU planner fit/fallback telemetry and backend-fallback reasons through feasibility previews, saved artifacts, and the current History follow-up panel
+- `[x]` Carry backend fallback reasons through saved-artifact summaries plus the headless compare / feasibility full-run surfaces so CPU results can be distinguished from GPU fallback runs
+- `[x]` Carry auto-backend recommendation and GPU planner fit/note details through the repeated-preview feasibility summaries and markdown output instead of dropping them outside the base feasibility JSON
+- `[x]` Add backend unit coverage for feasibility-report GPU-planner failure handling so planner notes and forced-CPU auto-backend overrides are pinned by Rust tests rather than frontend mocks alone
 
 #### Still pending for the full roadmap
 
-- `[~]` Run the documented Phase `0.5` compiled-tensor feasibility spike and capture real density/cache metrics
-- `[ ]` Implement the GPU scorer / compiled-tensor evaluation path
-- `[ ]` Prove the GPU scorer materially beats CPU on representative large jobs before product promotion
-- `[ ]` Add robustness rescore variants beyond the current narrow baseline
-- `[ ]` Add sealed finalist evaluation artifact/reporting beyond the current basic split-aware scoring
-- `[ ]` Add richer trade inspector / full path-level event drilldown beyond the current lazy tuple-event table
+- `[x]` Run the documented Phase `0.5` compiled-tensor feasibility spike and capture real density/cache metrics
+  Current measured status:
+  real SPY `1m` slices executed on April 6-7, 2026 using provider-downloaded contract-reference + minute aggregates, bounded saved `DoubleMa` parent artifacts, and the headless feasibility harness. The first under-centered strike window (`500-560`) failed density/invalid gates and exposed that the strike band was misaligned with live SPY levels. The corrected near-spot strike window (`645-665`) produced real slices that pass the density/cache gates. The current authoritative product-promotion evidence is the broader expiry-covered DTE7 slice (`2026-03-31` through `2026-04-02`, strikes `645-665`, `max_dte_days=7`, `105` contracts, `54,985` option rows) captured after the newer GPU-planner/fit telemetry work and rerun quietly with the updated feasibility summary surfaces. On that slice the current measured result is: valid-slot density `0.5247`, invalid-slot rate `0.4753`, structural-cache reuse `1.0000`, summary-cache reuse `1.0000`, repeated hybrid-ranking GPU speedup vs CPU `5.3197x`, and estimated backend-only preview wall speedup vs CPU `1.3333x`. That means the density/cache gates and the scorer-speed gate are now met on the authoritative DTE7 slice, but the bounded preview still auto-recommends CPU because the search-event count and projected event-tuple work remain below the current auto thresholds. Earlier compare runs remain useful as exploratory profiler evidence, but the `_cuda_features` DTE7 pair below is the authoritative proof set for current promotion decisions. Concrete evidence:
+  - sparse first pass: `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed.{json,md}`
+  - corrected dense pass: `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665.{json,md}`
+  - CUDA compare pass: `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665_compare.{json,md}`
+  - multi-day dense pass: `output/options_expression_phase05/spy_phase05_multi_day_relaxed.{json,md}`
+  - multi-day CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_relaxed_compare.{json,md}`
+  - multi-day large-grid precise CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise.{json,md}`
+  - multi-day large-grid range-based CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_range.{json,md}`
+  - multi-day large-grid cached-upload CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached.{json,md}`
+  - multi-day large-grid replay-cache CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_replaycache.{json,md}`
+- authoritative DTE7 promotion evidence with current telemetry: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.{json,md}`
+- `[x]` Prove the GPU scorer materially beats CPU on representative large jobs before product promotion
+- `[~]` Decide whether the current repeated-preview wall-time economics are strong enough to promote `Auto` / GPU-default productization beyond the current experiment-only posture
+- `[~]` Keep using measured provider-slice diagnostics to choose representative strike/DTE windows before concluding on GPU productization
+  Current measured lesson from the first SPY slice:
+  an under-centered strike band (`500-560`) produced artificial `no_strike_in_tolerance` failure even though the backend/compiler path was correct. The corrected near-spot band (`645-665`) cleared the density and invalid-rate gates on the same underlying day.
+- `[x]` Add robustness rescore variants beyond the current narrow baseline
+- `[ ]` Add any further scenario-rescore families only if later real-data usage proves they are worth the extra tensor and reporting complexity
+- `[x]` Add sealed finalist evaluation artifact/reporting beyond the current current finalist/stress summaries once broader comparison surfaces proved necessary
+- `[~]` Add richer trade inspector / full path-level event drilldown beyond the current lazy tuple table plus row detail and path replay
 - `[x]` Add broader reporting surfaces beyond the current CSV export path
 - `[ ]` Add optional post-v1 multi-leg fixed-geometry expression families only if tensor density remains acceptable
+- `[x]` Keep the normalized import path supported even after direct provider download is added
 
 #### Intentionally narrow first-slice constraints that still hold
 
 - `[~]` Parent artifact support is currently limited to `DoubleMa`
 - `[~]` Current options data realism is limited to the constrained minute-aggregate path
-- `[~]` The current scorer is `cpu_reference`; GPU productization is still pending
+- `[~]` The canonical first-wave options resolution is Polygon/Massive `1m`; coarser or quote-aware surfaces remain secondary lanes
+- `[~]` Current Polygon/Massive support is bounded `1m` import/download inside the options follow-up path, not a generic live-connected provider workflow or a reuse of the main stock-data panel
+- `[~]` CPU remains the correctness oracle and the retained-finalist exactifier; the CUDA scorer is implemented and now has representative provider-backed proof, but CPU remains the explicit fallback/debug lane
+- `[~]` The current options UI default backend is `auto`; explicit `cpu_reference` and `gpu_compiled_tensor` remain available for oracle/debug and forced-CUDA experiments
 - `[~]` The current frontend host is the History follow-up panel, not a dedicated options mode
 
 ### Phase 0 — Repo-fit contract spike
@@ -1655,6 +1750,66 @@ If not:
 - keep the work internal
 - or stop before broad workflow implementation
 
+Current measured baseline, corrected real-data runs:
+
+- provider/data path: Polygon/Massive-derived SPY contract-reference + `1m` minute aggregates
+- underlying parent: saved `DoubleMa` artifact generated from bounded SPY `1m` stock bars aligned to the options coverage window
+- artifact/result evidence:
+  - `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665.json`
+  - `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665.md`
+  - `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665_compare.json`
+  - `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665_compare.md`
+  - `output/options_expression_phase05/spy_phase05_multi_day_relaxed.json`
+  - `output/options_expression_phase05/spy_phase05_multi_day_relaxed.md`
+  - `output/options_expression_phase05/spy_phase05_multi_day_relaxed_compare.json`
+  - `output/options_expression_phase05/spy_phase05_multi_day_relaxed_compare.md`
+  - `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
+  - `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.md`
+- measured outcome on April 6, 2026:
+  - valid-slot density: `1.0000`
+  - invalid-slot rate: `0.0000`
+  - structural-cache reuse: `1.0000`
+  - summary-cache reuse: `1.0000`
+  - GPU compare result on the corrected small slice: accelerated preview wall speedup vs CPU `0.6875x` (`gpu_compiled_tensor_hybrid` slower than CPU on this small workload)
+- measured outcome on April 7, 2026 for the larger three-session SPY slice (`2026-03-31` through `2026-04-02`, strikes `645-665`):
+  - valid-slot density: `0.6111`
+  - invalid-slot rate: `0.3889`
+  - structural-cache reuse: `1.0000`
+  - summary-cache reuse: `1.0000`
+  - GPU compare result on the larger slice: accelerated preview wall speedup vs CPU `0.9651x` (`gpu_compiled_tensor_hybrid` still slightly slower than CPU, but materially closer than the first small-slice compare)
+- measured outcome on April 7, 2026 for the authoritative broader DTE-covered representative grid on the same three-session SPY slice (`2026-03-31` through `2026-04-02`, strikes `645-665`, `max_dte_days=7`, `105` contracts) after the current free-memory-aware GPU planner and corrected fit/fallback telemetry:
+  - valid-slot density: `0.5247`
+  - invalid-slot rate: `0.4753`
+  - structural-cache reuse: `1.0000`
+  - summary-cache reuse: `1.0000`
+  - CPU hybrid-ranking median: `1.697 ms`
+  - accelerated hybrid-ranking median: `0.319 ms`
+  - repeated hybrid-ranking GPU speedup vs CPU: `5.3197x`
+  - estimated backend-only preview wall speedup vs CPU: `1.3333x`
+  - current auto-backend recommendation on that bounded job: `cpu_reference`
+  - concrete evidence:
+    - `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
+    - `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.md`
+- measured outcome on April 7, 2026 for the same larger three-session slice under the new `session_chronological` split-assignment mode (preview-only, CPU-safe):
+  - valid-slot density: `0.6111`
+  - invalid-slot rate: `0.3889`
+  - holdout events with candidates: `3` (up from `0` under event chronology)
+  - sealed-test events with candidates: `5`
+  - concrete evidence:
+    - `output/options_expression_phase05/spy_phase05_multi_day_relaxed_session_split_preview.json`
+    - `output/options_expression_phase05/spy_phase05_multi_day_relaxed_session_split_preview.md`
+- measured notes from the corrected provider-backed slices:
+  - candidate compilation and exit-summary density are now high enough to justify further GPU proof work
+  - the broader DTE-covered representative slice now meets the density/cache gates and clears the documented `3x` scorer-speed threshold on the authoritative quiet rerun
+  - replay/process-local cache reuse is strong enough to justify retaining a gate-driven `auto` mode, but the current bounded preview still recommends CPU on the measured DTE7 job because workload size remains below the auto-promotion floors even though scorer speed is now favorable
+  - late-session `entry_past_cutoff` invalidations are still a real factor on multi-session runs, but the new session-aware split mode materially improves holdout coverage without changing the default path yet
+
+Interpretation:
+
+- the backend/provider path is now real and functional
+- the candidate/compiler path is viable on a real liquid-root slice when the downloaded strike window matches the actual underlier regime
+- the next engineering step is further GPU productization work and larger quiet-environment representative compares before treating the GPU scorer as promotion-ready
+
 ### Phase 1 — Artifact handoff and diagnostics shell
 
 Deliverables:
@@ -1672,16 +1827,17 @@ Exit criterion:
 
 Deliverables:
 
-- normalized import path
-- Massive-first provider adapters for:
+- Polygon/Massive normalized import path
+- Polygon/Massive-first provider adapters for:
   - contract-reference imports
-  - minute-aggregate imports
+  - `1m` minute-aggregate imports
 - dataset manifest
 - coverage queries
 - session/calendar alignment
 - price/quote cleanup rules
 - provider-surface semantics captured in the manifest
 - contract-reference `as_of` semantics enforced
+- direct-provider download contract defined for later options-UI integration, while keeping backend-first implementation order
 
 Exit criterion:
 

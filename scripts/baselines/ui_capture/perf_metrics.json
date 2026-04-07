@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-04-05T04:45:50.888Z",
-  "app_cold_start_ms": 82,
-  "time_to_interactive_ms": 593,
+  "generated_at": "2026-04-05T18:39:14.797Z",
+  "app_cold_start_ms": 89,
+  "time_to_interactive_ms": 606,
   "js_heap_used_bytes_at_idle": 10000000,
   "chart_live_feed_responsiveness": {
     "events": 200,
@@ -9,6 +9,6 @@
     "avg_ms_per_event": 0.0005,
     "status": ""
   },
-  "capture_runtime_ms": 9369,
+  "capture_runtime_ms": 9886,
   "note": "Synthetic live-bar event throughput captured via mocked Tauri event emitter."
 }

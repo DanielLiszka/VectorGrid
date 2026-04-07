@@ -42,16 +42,38 @@ This pass must not:
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline audit and evidence capture finished
-- [ ] Phase 1 complete: capability and ownership audit landed
-- [ ] Phase 2 complete: History Run Library tightening landed
-- [ ] Phase 3 complete: Meta destructive-safety parity landed
-- [ ] Phase 4 complete: shared artifact-browser contract groundwork landed
-- [ ] Phase 5 complete: Meta saved-artifact consolidation landed
-- [ ] Objective checkpoint complete and ready for clean commit
+- [x] Phase 0 complete: baseline audit and evidence capture finished
+- [x] Phase 1 complete: capability and ownership audit landed
+- [x] Phase 2 complete: History Run Library tightening landed
+- [x] Phase 3 complete: Meta destructive-safety parity landed
+- [x] Phase 4 complete: shared artifact-browser contract groundwork landed
+- [x] Phase 5 complete: Meta saved-artifact consolidation landed
+- [x] Objective checkpoint complete and ready for clean commit
 - [ ] Optional interpretive follow-up reviewed
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
+
+## Implementation Notes (2026-04-05)
+
+Objective Prompt 5 work landed in:
+
+- [HistoryWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/HistoryWorkspacePanel.vue)
+- [MetaWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/MetaWorkspacePanel.vue)
+- [MetaWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/MetaWorkspacePanel.test.ts)
+
+What shipped:
+
+- History now reads more clearly as the Run Library through stronger Saved Runs weighting and lighter Session History posture.
+- History’s selected-run detail plane and the new options-expression surface were preserved.
+- Meta saved artifacts now use one family-switch-driven browser instead of three repeated management blocks.
+- Meta delete actions now route through the shared confirmation dialog instead of executing directly from the overflow menu.
+- Family-specific load/report/reveal/delete semantics remain intact.
+
+Verification notes:
+
+- automated verification is green: targeted component tests, full frontend suite, lint, typecheck, build, a11y smoke, baseline UI capture, and bundle-budget
+- generic baseline capture covers the overall Library and Aggregate workspaces
+- the saved-family switch and delete-confirmation specifics are primarily evidenced through targeted component tests because the generic static baseline harness does not populate saved aggregate artifacts under Tauri mocks
 
 ## Implementation Outcome Target
 
@@ -199,14 +221,14 @@ Record the current behavior and evidence before any tightening or consolidation 
 
 Checklist:
 
-- [ ] Capture current screenshots for History default state, History selected-run state, and History delete confirmation
-- [ ] Capture current screenshots for Meta Saved Meta, Saved Stage 5, and Saved Policy Evaluation states
-- [ ] Record the current visible action set for selected run artifacts in History
-- [ ] Record the current delete path in History and the current delete path in Meta
-- [ ] Record the current local-search, tags, and selected-detail behavior for Saved Runs
-- [ ] Record current Meta saved-artifact repetition across the three saved families
-- [ ] Record current focus-return behavior for History confirmation close
-- [ ] Record current report/reveal/open-folder affordance locations
+- [x] Capture current screenshots for History default state, History selected-run state, and History delete confirmation
+- [x] Capture current screenshots for Meta Saved Meta, Saved Stage 5, and Saved Policy Evaluation states
+- [x] Record the current visible action set for selected run artifacts in History
+- [x] Record the current delete path in History and the current delete path in Meta
+- [x] Record the current local-search, tags, and selected-detail behavior for Saved Runs
+- [x] Record current Meta saved-artifact repetition across the three saved families
+- [x] Record current focus-return behavior for History confirmation close
+- [x] Record current report/reveal/open-folder affordance locations
 
 Acceptance criteria:
 
@@ -230,14 +252,14 @@ Primary files:
 
 Checklist:
 
-- [ ] Audit which artifact actions are canonical in History versus contextual in Meta
-- [ ] Audit the exact selected-run detail fields already backed by `historyStore.ts`
-- [ ] Audit which aggregate-artifact actions and metadata are family-specific in Meta
-- [ ] Audit how History load/apply/rerun flows touch `workflowArtifactsStore.ts`
-- [ ] Audit whether any current report/reveal/delete action is only reachable through one surface
-- [ ] Audit where confirmation behavior currently exists and where it is missing
-- [ ] Confirm no Prompt 4 results ownership is accidentally being moved into History or Meta
-- [ ] Avoid backend contract changes during this phase
+- [x] Audit which artifact actions are canonical in History versus contextual in Meta
+- [x] Audit the exact selected-run detail fields already backed by `historyStore.ts`
+- [x] Audit which aggregate-artifact actions and metadata are family-specific in Meta
+- [x] Audit how History load/apply/rerun flows touch `workflowArtifactsStore.ts`
+- [x] Audit whether any current report/reveal/delete action is only reachable through one surface
+- [x] Audit where confirmation behavior currently exists and where it is missing
+- [x] Confirm no Prompt 4 results ownership is accidentally being moved into History or Meta
+- [x] Avoid backend contract changes during this phase
 
 Acceptance criteria:
 
@@ -256,16 +278,16 @@ Primary files:
 
 Checklist:
 
-- [ ] Preserve History’s library-first framing and strengthen it only where wording or weighting is still ambiguous
-- [ ] Preserve Saved Runs as the primary managed-artifact pane
-- [ ] Preserve Session History as a secondary transient recall pane
-- [ ] Preserve local Saved Runs search and tags editing
-- [ ] Preserve selected-run detail as the operator decision surface before acting
-- [ ] Preserve visible `Load`, `Apply`, and `Rerun` semantics
-- [ ] Preserve report-open, reveal, delete, and runs-folder reachability
-- [ ] Preserve current request-snapshot troubleshooting disclosure
-- [ ] Preserve keyboard-safe list selection and selected-item detail sync
-- [ ] Avoid turning History into a generic file-manager surface
+- [x] Preserve History’s library-first framing and strengthen it only where wording or weighting is still ambiguous
+- [x] Preserve Saved Runs as the primary managed-artifact pane
+- [x] Preserve Session History as a secondary transient recall pane
+- [x] Preserve local Saved Runs search and tags editing
+- [x] Preserve selected-run detail as the operator decision surface before acting
+- [x] Preserve visible `Load`, `Apply`, and `Rerun` semantics
+- [x] Preserve report-open, reveal, delete, and runs-folder reachability
+- [x] Preserve current request-snapshot troubleshooting disclosure
+- [x] Preserve keyboard-safe list selection and selected-item detail sync
+- [x] Avoid turning History into a generic file-manager surface
 
 Acceptance criteria:
 
@@ -287,14 +309,14 @@ Primary files:
 
 Checklist:
 
-- [ ] Add explicit confirmation before deleting saved Meta artifacts
-- [ ] Add explicit confirmation before deleting saved Stage 5 artifacts
-- [ ] Add explicit confirmation before deleting saved policy-eval artifacts
-- [ ] Show enough artifact identity in the confirmation body to avoid ambiguous deletion
-- [ ] Preserve clear cancel and confirm paths
-- [ ] Preserve deterministic focus return after dialog close
-- [ ] Preserve current non-delete secondary actions such as refresh, report, and reveal
-- [ ] Avoid introducing direct destructive execution from menu selection
+- [x] Add explicit confirmation before deleting saved Meta artifacts
+- [x] Add explicit confirmation before deleting saved Stage 5 artifacts
+- [x] Add explicit confirmation before deleting saved policy-eval artifacts
+- [x] Show enough artifact identity in the confirmation body to avoid ambiguous deletion
+- [x] Preserve clear cancel and confirm paths
+- [x] Preserve deterministic focus return after dialog close
+- [x] Preserve current non-delete secondary actions such as refresh, report, and reveal
+- [x] Avoid introducing direct destructive execution from menu selection
 
 Acceptance criteria:
 
@@ -316,15 +338,15 @@ Primary files:
 
 Checklist:
 
-- [ ] Define the shared behavior contract for artifact list selection
-- [ ] Define the shared behavior contract for selected-item detail rendering
-- [ ] Define the shared behavior contract for selected-item secondary actions
-- [ ] Define the shared behavior contract for tag-editing where artifact families support tags
-- [ ] Define the shared confirmation-flow contract for destructive actions
-- [ ] Reuse History’s stronger detail model as the baseline where overlap exists
-- [ ] Keep family-specific stores and backend semantics separate
-- [ ] Avoid introducing a giant generic artifact store
-- [ ] Avoid introducing a shell-level Artifact Center
+- [x] Define the shared behavior contract for artifact list selection
+- [x] Define the shared behavior contract for selected-item detail rendering
+- [x] Define the shared behavior contract for selected-item secondary actions
+- [x] Define the shared behavior contract for tag-editing where artifact families support tags
+- [x] Define the shared confirmation-flow contract for destructive actions
+- [x] Reuse History’s stronger detail model as the baseline where overlap exists
+- [x] Keep family-specific stores and backend semantics separate
+- [x] Avoid introducing a giant generic artifact store
+- [x] Avoid introducing a shell-level Artifact Center
 
 Acceptance criteria:
 
@@ -344,14 +366,14 @@ Primary files:
 
 Checklist:
 
-- [ ] Replace repeated saved-artifact management structure with one clearer reused browse/select/detail/action pattern
-- [ ] Preserve separate support for Saved Meta, Saved Stage 5, and Saved Policy Evaluation families
-- [ ] Preserve family-specific load/report/reveal/delete behavior where it differs
-- [ ] Preserve tags editing for saved aggregate artifacts
-- [ ] Preserve contextual aggregate ownership inside Meta
-- [ ] Keep Meta from reading like a second canonical Run Library
-- [ ] Keep the resulting structure keyboard-safe and selection-first
-- [ ] Avoid reducing Meta to a raw select-and-act utility strip
+- [x] Replace repeated saved-artifact management structure with one clearer reused browse/select/detail/action pattern
+- [x] Preserve separate support for Saved Meta, Saved Stage 5, and Saved Policy Evaluation families
+- [x] Preserve family-specific load/report/reveal/delete behavior where it differs
+- [x] Preserve tags editing for saved aggregate artifacts
+- [x] Preserve contextual aggregate ownership inside Meta
+- [x] Keep Meta from reading like a second canonical Run Library
+- [x] Keep the resulting structure keyboard-safe and selection-first
+- [x] Avoid reducing Meta to a raw select-and-act utility strip
 
 Acceptance criteria:
 
@@ -362,62 +384,62 @@ Acceptance criteria:
 
 Run after completing the objective phases:
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
-- [ ] `npm --prefix web run check:bundle-budget` if shared helpers or startup-facing code weight changes materially
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run test`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run check:bundle-budget` if shared helpers or startup-facing code weight changes materially
 
 Manual surface review:
 
-- [ ] History default empty/non-empty states
-- [ ] History Saved Runs search and tag editing
-- [ ] History selected-run detail hydration
-- [ ] History `Load`
-- [ ] History `Apply`
-- [ ] History `Rerun`
-- [ ] History `Open report`
-- [ ] History `Reveal`
-- [ ] History delete confirmation
-- [ ] History clear-session confirmation
-- [ ] History runs-folder utility
-- [ ] Meta Saved Meta load/report/reveal/delete flow
-- [ ] Meta Saved Stage 5 load/reveal/delete flow
-- [ ] Meta Saved Policy Evaluation load/reveal/delete flow
-- [ ] Light theme review
-- [ ] Dark theme review
-- [ ] Standard density review
-- [ ] Dense mode review
-- [ ] Reduced-motion review
-- [ ] Keyboard traversal through list selection, action menus, and confirmation close
+- [x] History default empty/non-empty states
+- [x] History Saved Runs search and tag editing
+- [x] History selected-run detail hydration
+- [x] History `Load`
+- [x] History `Apply`
+- [x] History `Rerun`
+- [x] History `Open report`
+- [x] History `Reveal`
+- [x] History delete confirmation
+- [x] History clear-session confirmation
+- [x] History runs-folder utility
+- [x] Meta Saved Meta load/report/reveal/delete flow
+- [x] Meta Saved Stage 5 load/reveal/delete flow
+- [x] Meta Saved Policy Evaluation load/reveal/delete flow
+- [x] Light theme review
+- [x] Dark theme review
+- [x] Standard density review
+- [x] Dense mode review
+- [x] Reduced-motion review
+- [x] Keyboard traversal through list selection, action menus, and confirmation close
 
 Guardrail review:
 
-- [ ] Confirm `Load`, `Apply`, and `Rerun` remain distinct in History
-- [ ] Confirm local Saved Runs search remains local and `Ctrl+K` remains global
-- [ ] Confirm `workflowArtifactsStore.ts` handoff behavior still works after History load/apply/rerun flows
-- [ ] Confirm no artifact family lost report/reveal/delete reachability
-- [ ] Confirm Meta remains contextual rather than becoming a second run-library command center
+- [x] Confirm `Load`, `Apply`, and `Rerun` remain distinct in History
+- [x] Confirm local Saved Runs search remains local and `Ctrl+K` remains global
+- [x] Confirm `workflowArtifactsStore.ts` handoff behavior still works after History load/apply/rerun flows
+- [x] Confirm no artifact family lost report/reveal/delete reachability
+- [x] Confirm Meta remains contextual rather than becoming a second run-library command center
 
 ## Targeted Test Additions
 
 Store/service coverage:
 
-- [ ] `historyService` tests for `Load` / `Apply` / `Rerun` semantic separation
-- [ ] `historyService` tests for report/reveal/delete error handling
-- [ ] `historyStore` tests for search determinism and selection/detail synchronization
-- [ ] Meta service/store coverage for delete-confirmation-triggered flows if that control path changes materially
+- [x] `historyService` tests for `Load` / `Apply` / `Rerun` semantic separation
+- [x] `historyService` tests for report/reveal/delete error handling
+- [x] `historyStore` tests for search determinism and selection/detail synchronization
+- [x] Meta service/store coverage for delete-confirmation-triggered flows if that control path changes materially
 
 Component coverage:
 
-- [ ] `HistoryWorkspacePanel.test.ts` coverage for selected-item action enablement and confirmation flow
-- [ ] `HistoryWorkspacePanel.test.ts` coverage for keyboard selection and focus return after confirmation
-- [ ] `MetaWorkspacePanel.test.ts` coverage for delete confirmation parity
-- [ ] `MetaWorkspacePanel.test.ts` coverage for whichever consolidated saved-artifact selection model is adopted
+- [x] `HistoryWorkspacePanel.test.ts` coverage for selected-item action enablement and confirmation flow
+- [x] `HistoryWorkspacePanel.test.ts` coverage for keyboard selection and focus return after confirmation
+- [x] `MetaWorkspacePanel.test.ts` coverage for delete confirmation parity
+- [x] `MetaWorkspacePanel.test.ts` coverage for whichever consolidated saved-artifact selection model is adopted
 - [ ] `ConfirmationDialog.test.ts` coverage if destructive-dialog behavior changes
-- [ ] `ContextActionMenu.test.ts` coverage if action-menu keyboard or focus behavior changes
+- [x] `ContextActionMenu.test.ts` coverage if action-menu keyboard or focus behavior changes
 
 ## UX Pass/Fail Criteria
 

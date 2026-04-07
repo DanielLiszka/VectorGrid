@@ -1,0 +1,420 @@
+{
+  "app_local_data_dir": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid",
+  "artifact_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\runs\\vectorgrid_run_2026-04-07T03-31-16.761528900_00-00.json",
+  "options_dataset_id": "spy_phase05_2026_04_01_calls_500_560",
+  "dataset_manifest": {
+    "version": 1,
+    "options_dataset_id": "spy_phase05_2026_04_01_calls_500_560",
+    "root_symbol": "SPY",
+    "provider_name": "massive",
+    "provider_source_surface": "minute_aggregate",
+    "quote_resolution": "1m",
+    "price_semantics": "minute_aggregate",
+    "calendar_id": "market_hours_utc",
+    "timezone": "UTC",
+    "coverage_start": 1775052660000,
+    "coverage_end": 1775073540000,
+    "normalization_version": 1,
+    "quote_semantics_version": 1,
+    "corporate_action_mapping_version": 1,
+    "contract_reference_source": "massive_contract_reference",
+    "contract_reference_as_of_utc": "2026-04-01T23:59:00Z",
+    "underlier_reference_source": "polygon_stocks_1m_raw:SPY",
+    "dataset_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\options_research\\datasets\\spy_phase05_2026_04_01_calls_500_560\\rows.csv",
+    "row_count": 23,
+    "contract_count": 7,
+    "aggregate_price_field": "close"
+  },
+  "response": {
+    "replay_build_ms": 7,
+    "total_preview_ms": 9,
+    "report": {
+      "diagnostics": {
+        "parent_artifact_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\runs\\vectorgrid_run_2026-04-07T03-31-16.761528900_00-00.json",
+        "options_dataset_id": "spy_phase05_2026_04_01_calls_500_560",
+        "root_symbol": "SPY",
+        "total_events": 6,
+        "bullish_events": 6,
+        "bearish_events": 0,
+        "search_events": 3,
+        "holdout_events": 1,
+        "sealed_test_events": 2,
+        "dataset_contracts": 7,
+        "dataset_rows": 23,
+        "coverage_start": 1775052660000,
+        "coverage_end": 1775073540000
+      },
+      "price_semantics": "minute_aggregate",
+      "fill_model": "aggregate_research",
+      "best_available_backend": "cpu_reference",
+      "compiled_tuple_count": 864,
+      "per_event_candidate_slots": 36,
+      "per_candidate_exit_summaries": 24,
+      "candidate_slot_count": 216,
+      "compiled_candidate_count": 0,
+      "candidate_density": 0.0,
+      "invalid_slot_count": 216,
+      "invalid_slot_rate": 1.0,
+      "baseline_exit_summary_count": 5184,
+      "baseline_compiled_exit_summary_count": 0,
+      "baseline_exit_summary_density": 0.0,
+      "conservative_exit_summary_count": 5184,
+      "conservative_compiled_exit_summary_count": 0,
+      "conservative_exit_summary_density": 0.0,
+      "harsher_exit_summary_count": 5184,
+      "harsher_compiled_exit_summary_count": 0,
+      "harsher_exit_summary_density": 0.0,
+      "projected_event_tuple_evaluations": 5184,
+      "structural_cache_bytes_estimate": 5400,
+      "baseline_summary_bytes_estimate": 165888,
+      "conservative_summary_bytes_estimate": 165888,
+      "harsher_summary_bytes_estimate": 165888,
+      "timings": {
+        "tuple_compile_ms": 0,
+        "baseline_candidate_compile_ms": 0,
+        "baseline_exit_summary_compile_ms": 0,
+        "conservative_candidate_compile_ms": 0,
+        "conservative_exit_summary_compile_ms": 0,
+        "harsher_candidate_compile_ms": 0,
+        "harsher_exit_summary_compile_ms": 0,
+        "cpu_ranking_ms": 0
+      },
+      "event_coverage": {
+        "total_events_with_candidates": 0,
+        "search_events_with_candidates": 0,
+        "holdout_events_with_candidates": 0,
+        "sealed_test_events_with_candidates": 0,
+        "total_events_with_baseline_outcomes": 0,
+        "search_events_with_baseline_outcomes": 0,
+        "holdout_events_with_baseline_outcomes": 0,
+        "sealed_test_events_with_baseline_outcomes": 0,
+        "total_events_with_conservative_outcomes": 0,
+        "search_events_with_conservative_outcomes": 0,
+        "holdout_events_with_conservative_outcomes": 0,
+        "sealed_test_events_with_conservative_outcomes": 0,
+        "total_events_with_harsher_outcomes": 0,
+        "search_events_with_harsher_outcomes": 0,
+        "holdout_events_with_harsher_outcomes": 0,
+        "sealed_test_events_with_harsher_outcomes": 0
+      },
+      "cache_stats": {
+        "structural_cache_hits": 0,
+        "structural_cache_misses": 3,
+        "structural_cache_entries": 3,
+        "summary_cache_hits": 0,
+        "summary_cache_misses": 3,
+        "summary_cache_entries": 3
+      },
+      "invalid_reasons": [
+        {
+          "reason": "no_expiration_in_bucket",
+          "count": 144
+        },
+        {
+          "reason": "no_strike_in_tolerance",
+          "count": 36
+        },
+        {
+          "reason": "entry_past_cutoff",
+          "count": 36
+        }
+      ]
+    }
+  },
+  "phase05_gates": {
+    "valid_slot_density_gate_min": 0.25,
+    "valid_slot_density_observed": 0.0,
+    "valid_slot_density_pass": false,
+    "invalid_slot_rate_gate_max": 0.75,
+    "invalid_slot_rate_observed": 1.0,
+    "invalid_slot_rate_pass": false,
+    "cache_reuse_gate_min": 0.9,
+    "structural_cache_reuse_observed": 1.0,
+    "structural_cache_reuse_pass": true,
+    "summary_cache_reuse_observed": 1.0,
+    "summary_cache_reuse_pass": true,
+    "gpu_speedup_gate_min": 3.0,
+    "gpu_speedup_observed": null,
+    "gpu_speedup_pass": null,
+    "scorer_share_of_preview_observed": 0.0,
+    "scorer_backend_used_for_share": "cpu_reference",
+    "notes": [
+      "GPU speedup is unavailable on this run; use a CUDA build plus imported options data to measure the product-promotion gate"
+    ]
+  },
+  "warm_runs": [
+    {
+      "iteration": 1,
+      "replay_build_ms": 2,
+      "total_preview_ms": 3,
+      "structural_cache_hits": 3,
+      "structural_cache_misses": 0,
+      "summary_cache_hits": 3,
+      "summary_cache_misses": 0
+    }
+  ],
+  "run_summary": {
+    "artifact_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\runs\\vectorgrid_options_expression_2026-04-07T03-31-32.594962100_00-00.json",
+    "backend_used": "cpu_reference",
+    "tuple_count": 25,
+    "top_tuple": {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 5,
+        "target_return": 0.25,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 1,
+      "sealed_finalist": true,
+      "sealed_final_rank": 1,
+      "selection_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 3,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 1,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "sealed_evaluation_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 2,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 1,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "sealed_stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 2,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 1,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "sealed_harsher_stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 2,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "robust_score": 0.0
+    }
+  },
+  "top_tuple_inspection": {
+    "tuple_index": 0,
+    "tuple_count": 25,
+    "tuple_result": {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 5,
+        "target_return": 0.25,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 1,
+      "sealed_finalist": true,
+      "sealed_final_rank": 1,
+      "selection_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 3,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 1,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "sealed_evaluation_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 2,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 1,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "sealed_stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 2,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 1,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "sealed_harsher_stress_metrics": {
+        "valid_trades": 0,
+        "invalid_events": 2,
+        "invalid_rate": 1.0,
+        "expectancy_per_trade": 0.0,
+        "expectancy_per_premium": 0.0,
+        "median_return_on_premium": 0.0,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": 0.0
+      },
+      "robust_score": 0.0
+    },
+    "total_events": 6,
+    "executed_events": 0,
+    "candidate_missing_events": 6,
+    "outcome_missing_events": 0,
+    "rows": [
+      {
+        "event_index": 0,
+        "event_id": "vectorgrid_run_2026-04-07T03-31-16.761528900_00-00:event:0",
+        "split": "search",
+        "side": "bullish",
+        "decision_timestamp": 1775054400000,
+        "earliest_tradable_timestamp": 1775054460000,
+        "requested_entry_timestamp": 1775054460000,
+        "raw_underlier_price": 654.97,
+        "base_exit_timestamp": 1775055120000,
+        "status": "candidate_missing",
+        "candidate_invalid_reason": "entry_past_cutoff"
+      },
+      {
+        "event_index": 1,
+        "event_id": "vectorgrid_run_2026-04-07T03-31-16.761528900_00-00:event:1",
+        "split": "search",
+        "side": "bullish",
+        "decision_timestamp": 1775055240000,
+        "earliest_tradable_timestamp": 1775055300000,
+        "requested_entry_timestamp": 1775055300000,
+        "raw_underlier_price": 656.52,
+        "base_exit_timestamp": 1775058240000,
+        "status": "candidate_missing",
+        "candidate_invalid_reason": "entry_past_cutoff"
+      },
+      {
+        "event_index": 2,
+        "event_id": "vectorgrid_run_2026-04-07T03-31-16.761528900_00-00:event:2",
+        "split": "search",
+        "side": "bullish",
+        "decision_timestamp": 1775058540000,
+        "earliest_tradable_timestamp": 1775058600000,
+        "requested_entry_timestamp": 1775058600000,
+        "raw_underlier_price": 657.21,
+        "base_exit_timestamp": 1775061360000,
+        "status": "candidate_missing",
+        "candidate_invalid_reason": "entry_past_cutoff"
+      },
+      {
+        "event_index": 3,
+        "event_id": "vectorgrid_run_2026-04-07T03-31-16.761528900_00-00:event:3",
+        "split": "holdout",
+        "side": "bullish",
+        "decision_timestamp": 1775062260000,
+        "earliest_tradable_timestamp": 1775062320000,
+        "requested_entry_timestamp": 1775062320000,
+        "raw_underlier_price": 657.8,
+        "base_exit_timestamp": 1775065620000,
+        "status": "candidate_missing",
+        "candidate_invalid_reason": "entry_past_cutoff"
+      },
+      {
+        "event_index": 4,
+        "event_id": "vectorgrid_run_2026-04-07T03-31-16.761528900_00-00:event:4",
+        "split": "sealed_test",
+        "side": "bullish",
+        "decision_timestamp": 1775069880000,
+        "earliest_tradable_timestamp": 1775069940000,
+        "requested_entry_timestamp": 1775069940000,
+        "raw_underlier_price": 654.35,
+        "base_exit_timestamp": 1775070120000,
+        "status": "candidate_missing",
+        "candidate_invalid_reason": "entry_past_cutoff"
+      },
+      {
+        "event_index": 5,
+        "event_id": "vectorgrid_run_2026-04-07T03-31-16.761528900_00-00:event:5",
+        "split": "sealed_test",
+        "side": "bullish",
+        "decision_timestamp": 1775070960000,
+        "earliest_tradable_timestamp": 1775071020000,
+        "requested_entry_timestamp": 1775071020000,
+        "raw_underlier_price": 655.18,
+        "status": "candidate_missing",
+        "candidate_invalid_reason": "entry_past_cutoff"
+      }
+    ]
+  }
+}

@@ -11,6 +11,7 @@ import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import ConfirmationDialog from './ConfirmationDialog.vue'
 import ContextHelpTip from './ContextHelpTip.vue'
 import ContextActionMenu from './ContextActionMenu.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -65,6 +66,13 @@ const aggregateTabItems = [
 ] as const
 
 type AggregateTabKey = (typeof aggregateTabItems)[number]['key']
+type SavedArtifactFamilyKey = 'meta' | 'stage5' | 'policyEval'
+
+const savedArtifactFamilyItems = [
+  { key: 'meta', label: 'Saved Meta' },
+  { key: 'stage5', label: 'Saved Stage 5' },
+  { key: 'policyEval', label: 'Saved Policy Eval' },
+] as const
 
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
@@ -240,6 +248,8 @@ const metaStage4MaxAcceptUncertaintyDraft = ref('0.45')
 const metaStage4AutoTrainDraft = ref(true)
 const metaStage4RequireHealthyDraft = ref(true)
 const metaStage4FallbackToMetaDraft = ref(true)
+const savedArtifactFamily = ref<SavedArtifactFamilyKey>('meta')
+const pendingSavedArtifactDeleteFamily = ref<SavedArtifactFamilyKey | null>(null)
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'meta')
 const activeAggregateTab = computed(() => String(aggregateTab.value || '').trim() || 'meta')
@@ -333,6 +343,25 @@ const policyEvalSavedSelectOptions = computed<OptionItem[]>(() => {
   if (options.length > 0) return options
   return [{ value: '', label: 'No saved policy evaluation', disabled: false }]
 })
+
+interface SavedArtifactFamilyConfig {
+  key: SavedArtifactFamilyKey
+  title: string
+  lead: string
+  selectLabel: string
+  searchFieldId: string
+  selectFieldId: string
+  tagsFieldId: string
+  searchDraft: string
+  selectedValue: string
+  tagsDraft: string
+  options: OptionItem[]
+  meta: string
+  canSaveTags: boolean
+  canLoad: boolean
+  secondaryActions: ContextActionMenuItem[]
+  actionMenuLabel: string
+}
 
 const holdoutModeOptions: OptionItem[] = [
   { value: 'light', label: 'Light (fast)', disabled: false },
@@ -591,7 +620,305 @@ const savedPolicyEvalSecondaryActions = computed<ContextActionMenuItem[]>(() => 
   },
 ])
 
-function onSavedMetaActionSelect(actionKey: string): void {
+const savedArtifactFamilyConfig = computed<SavedArtifactFamilyConfig>(() => {
+  switch (savedArtifactFamily.value) {
+    case 'stage5':
+      return {
+        key: 'stage5',
+        title: 'Saved Stage 5',
+        lead: 'Manage saved Stage 5 confidence outputs alongside the base meta artifacts.',
+        selectLabel: 'Saved Stage 5',
+        searchFieldId: 'vueStage4SavedSearch',
+        selectFieldId: 'vueStage4SavedSelect',
+        tagsFieldId: 'vueStage4SavedTags',
+        searchDraft: stage4SavedSearchDraft.value,
+        selectedValue: stage4SavedSelectDraft.value,
+        tagsDraft: stage4SavedTagsLocalDraft.value,
+        options: stage4SavedSelectOptions.value,
+        meta: String(stage4SavedMeta.value || ''),
+        canSaveTags: !!canSaveStage4SavedTags.value,
+        canLoad: !!canLoadStage4Saved.value,
+        secondaryActions: savedStage5SecondaryActions.value,
+        actionMenuLabel: 'Saved Stage 5 artifact actions',
+      }
+    case 'policyEval':
+      return {
+        key: 'policyEval',
+        title: 'Saved Policy Evaluation',
+        lead: 'Review and reopen saved policy-evaluation outputs without leaving the aggregate workspace.',
+        selectLabel: 'Saved policy evaluation',
+        searchFieldId: 'vuePolicyEvalSavedSearch',
+        selectFieldId: 'vuePolicyEvalSavedSelect',
+        tagsFieldId: 'vuePolicyEvalSavedTags',
+        searchDraft: policyEvalSavedSearchDraft.value,
+        selectedValue: policyEvalSavedSelectDraft.value,
+        tagsDraft: policyEvalSavedTagsLocalDraft.value,
+        options: policyEvalSavedSelectOptions.value,
+        meta: String(policyEvalSavedMeta.value || ''),
+        canSaveTags: !!canSavePolicyEvalSavedTags.value,
+        canLoad: !!canLoadPolicyEvalSaved.value,
+        secondaryActions: savedPolicyEvalSecondaryActions.value,
+        actionMenuLabel: 'Saved policy evaluation artifact actions',
+      }
+    default:
+      return {
+        key: 'meta',
+        title: 'Saved Meta',
+        lead: 'Search, tag, load, and reveal previously generated meta-analysis artifacts.',
+        selectLabel: 'Saved meta',
+        searchFieldId: 'vueMetaSavedSearch',
+        selectFieldId: 'vueMetaSavedSelect',
+        tagsFieldId: 'vueMetaSavedTags',
+        searchDraft: metaSavedSearchDraft.value,
+        selectedValue: metaSavedSelectDraft.value,
+        tagsDraft: metaSavedTagsLocalDraft.value,
+        options: metaSavedSelectOptions.value,
+        meta: String(metaSavedMeta.value || ''),
+        canSaveTags: !!canSaveMetaSavedTags.value,
+        canLoad: !!canLoadMetaSaved.value,
+        secondaryActions: savedMetaSecondaryActions.value,
+        actionMenuLabel: 'Saved meta artifact actions',
+      }
+  }
+})
+
+const pendingSavedArtifactDeleteIdentity = computed(() => {
+  const family = pendingSavedArtifactDeleteFamily.value
+  if (!family) return ''
+  const config =
+    family === savedArtifactFamily.value
+      ? savedArtifactFamilyConfig.value
+      : family === 'stage5'
+        ? {
+            options: stage4SavedSelectOptions.value,
+            selectedValue: stage4SavedSelectDraft.value,
+          }
+        : family === 'policyEval'
+          ? {
+              options: policyEvalSavedSelectOptions.value,
+              selectedValue: policyEvalSavedSelectDraft.value,
+            }
+          : {
+              options: metaSavedSelectOptions.value,
+              selectedValue: metaSavedSelectDraft.value,
+            }
+  const selectedOption = config.options.find(
+    (option) => option.value === config.selectedValue,
+  )
+  return String(selectedOption?.label || config.selectedValue || '').trim()
+})
+
+const savedArtifactDeleteTitle = computed(() => {
+  if (pendingSavedArtifactDeleteFamily.value === 'stage5') {
+    return 'Delete saved Stage 5 artifact'
+  }
+  if (pendingSavedArtifactDeleteFamily.value === 'policyEval') {
+    return 'Delete saved policy evaluation'
+  }
+  return 'Delete saved meta artifact'
+})
+
+const savedArtifactDeleteBody = computed(() => {
+  const identity = pendingSavedArtifactDeleteIdentity.value
+  const familyLabel =
+    pendingSavedArtifactDeleteFamily.value === 'stage5'
+      ? 'saved Stage 5 artifact'
+      : pendingSavedArtifactDeleteFamily.value === 'policyEval'
+        ? 'saved policy evaluation'
+        : 'saved meta artifact'
+  if (!identity) {
+    return `Select a ${familyLabel} before deleting it.`
+  }
+  return `Delete this ${familyLabel}?\n\n${identity}\n\nThis cannot be undone from the aggregate artifact library.`
+})
+
+const canConfirmSavedArtifactDelete = computed(() => {
+  switch (pendingSavedArtifactDeleteFamily.value) {
+    case 'stage5':
+      return Boolean(canDeleteStage4Saved.value && stage4SavedSelectDraft.value)
+    case 'policyEval':
+      return Boolean(canDeletePolicyEvalSaved.value && policyEvalSavedSelectDraft.value)
+    case 'meta':
+      return Boolean(canDeleteMetaSaved.value && metaSavedSelectDraft.value)
+    default:
+      return false
+  }
+})
+
+function clickSavedArtifactFamily(key: SavedArtifactFamilyKey): void {
+  savedArtifactFamily.value = key
+}
+
+function moveSavedArtifactFamilyFocus(event: KeyboardEvent): void {
+  if (savedArtifactFamilyItems.length <= 1) return
+  const currentIndex = savedArtifactFamilyItems.findIndex(
+    (item) => item.key === savedArtifactFamily.value,
+  )
+  if (currentIndex < 0) return
+
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    nextIndex = (currentIndex + 1) % savedArtifactFamilyItems.length
+  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    nextIndex =
+      (currentIndex - 1 + savedArtifactFamilyItems.length) %
+      savedArtifactFamilyItems.length
+  } else if (event.key === 'Home') {
+    nextIndex = 0
+  } else if (event.key === 'End') {
+    nextIndex = savedArtifactFamilyItems.length - 1
+  } else {
+    return
+  }
+
+  event.preventDefault()
+  clickSavedArtifactFamily(savedArtifactFamilyItems[nextIndex]!.key)
+  void nextTick().then(() => {
+    const buttons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[data-saved-artifact-family]'),
+    )
+    buttons[nextIndex]?.focus()
+  })
+}
+
+function updateSavedArtifactSearch(nextValue: string): void {
+  if (savedArtifactFamily.value === 'stage5') {
+    stage4SavedSearchDraft.value = nextValue
+    queueInputValue('stage4SavedSearch', nextValue)
+    return
+  }
+  if (savedArtifactFamily.value === 'policyEval') {
+    policyEvalSavedSearchDraft.value = nextValue
+    queueInputValue('policyEvalSavedSearch', nextValue)
+    return
+  }
+  metaSavedSearchDraft.value = nextValue
+  queueInputValue('metaSavedSearch', nextValue)
+}
+
+function commitSavedArtifactSearch(): void {
+  commitInputValue(
+    savedArtifactFamilyConfig.value.searchFieldId.replace(/^vue/, '').replace(/^./, (v) => v.toLowerCase()),
+    savedArtifactFamilyConfig.value.searchDraft,
+  )
+}
+
+function updateSavedArtifactSelect(nextValue: string): void {
+  if (savedArtifactFamily.value === 'stage5') {
+    stage4SavedSelectDraft.value = nextValue
+    setSelectValue('stage4SavedSelect', nextValue)
+    return
+  }
+  if (savedArtifactFamily.value === 'policyEval') {
+    policyEvalSavedSelectDraft.value = nextValue
+    setSelectValue('policyEvalSavedSelect', nextValue)
+    return
+  }
+  metaSavedSelectDraft.value = nextValue
+  setSelectValue('metaSavedSelect', nextValue)
+}
+
+function updateSavedArtifactTags(nextValue: string): void {
+  if (savedArtifactFamily.value === 'stage5') {
+    stage4SavedTagsLocalDraft.value = nextValue
+    queueInputValue('stage4SavedTags', nextValue)
+    return
+  }
+  if (savedArtifactFamily.value === 'policyEval') {
+    policyEvalSavedTagsLocalDraft.value = nextValue
+    queueInputValue('policyEvalSavedTags', nextValue)
+    return
+  }
+  metaSavedTagsLocalDraft.value = nextValue
+  queueInputValue('metaSavedTags', nextValue)
+}
+
+function commitSavedArtifactTags(): void {
+  commitInputValue(
+    savedArtifactFamilyConfig.value.tagsFieldId.replace(/^vue/, '').replace(/^./, (v) => v.toLowerCase()),
+    savedArtifactFamilyConfig.value.tagsDraft,
+  )
+}
+
+function saveSelectedArtifactTags(): void {
+  if (savedArtifactFamily.value === 'stage5') {
+    runAction(() => analysisStore.saveStage5SavedTags())
+    return
+  }
+  if (savedArtifactFamily.value === 'policyEval') {
+    runAction(() => analysisStore.savePolicyEvalSavedTags())
+    return
+  }
+  runAction(() => analysisStore.saveSavedTags())
+}
+
+function loadSelectedArtifact(): void {
+  if (savedArtifactFamily.value === 'stage5') {
+    runAction(() => analysisStore.loadStage5Saved())
+    return
+  }
+  if (savedArtifactFamily.value === 'policyEval') {
+    runAction(() => analysisStore.loadPolicyEvalSaved())
+    return
+  }
+  runAction(() => analysisStore.loadSaved())
+}
+
+function queueSavedArtifactDeleteConfirmation(
+  family: SavedArtifactFamilyKey,
+): void {
+  flushQueuedInputValuesNow()
+  void nextTick().then(() => {
+    pendingSavedArtifactDeleteFamily.value = family
+  })
+}
+
+function cancelPendingSavedArtifactDelete(): void {
+  pendingSavedArtifactDeleteFamily.value = null
+}
+
+function confirmPendingSavedArtifactDelete(): void {
+  const family = pendingSavedArtifactDeleteFamily.value
+  pendingSavedArtifactDeleteFamily.value = null
+  if (family === 'stage5') {
+    runAction(() => analysisStore.deleteStage5Saved())
+    return
+  }
+  if (family === 'policyEval') {
+    runAction(() => analysisStore.deletePolicyEvalSaved())
+    return
+  }
+  runAction(() => analysisStore.deleteSaved())
+}
+
+function onSavedArtifactActionSelect(actionKey: string): void {
+  if (actionKey === 'delete') {
+    queueSavedArtifactDeleteConfirmation(savedArtifactFamily.value)
+    return
+  }
+
+  if (savedArtifactFamily.value === 'stage5') {
+    if (actionKey === 'refresh') {
+      runAction(() => analysisStore.refreshStage5Saved())
+      return
+    }
+    if (actionKey === 'reveal') {
+      runAction(() => analysisStore.revealStage5Saved())
+    }
+    return
+  }
+
+  if (savedArtifactFamily.value === 'policyEval') {
+    if (actionKey === 'refresh') {
+      runAction(() => analysisStore.refreshPolicyEvalSaved())
+      return
+    }
+    if (actionKey === 'reveal') {
+      runAction(() => analysisStore.revealPolicyEvalSaved())
+    }
+    return
+  }
+
   if (actionKey === 'refresh') {
     runAction(() => analysisStore.refreshSaved())
     return
@@ -602,38 +929,6 @@ function onSavedMetaActionSelect(actionKey: string): void {
   }
   if (actionKey === 'reveal') {
     runAction(() => analysisStore.revealSaved())
-    return
-  }
-  if (actionKey === 'delete') {
-    runAction(() => analysisStore.deleteSaved())
-  }
-}
-
-function onSavedStage5ActionSelect(actionKey: string): void {
-  if (actionKey === 'refresh') {
-    runAction(() => analysisStore.refreshStage5Saved())
-    return
-  }
-  if (actionKey === 'reveal') {
-    runAction(() => analysisStore.revealStage5Saved())
-    return
-  }
-  if (actionKey === 'delete') {
-    runAction(() => analysisStore.deleteStage5Saved())
-  }
-}
-
-function onSavedPolicyEvalActionSelect(actionKey: string): void {
-  if (actionKey === 'refresh') {
-    runAction(() => analysisStore.refreshPolicyEvalSaved())
-    return
-  }
-  if (actionKey === 'reveal') {
-    runAction(() => analysisStore.revealPolicyEvalSaved())
-    return
-  }
-  if (actionKey === 'delete') {
-    runAction(() => analysisStore.deletePolicyEvalSaved())
   }
 }
 
@@ -981,194 +1276,107 @@ onBeforeUnmount(() => {
         role="tabpanel"
         :aria-labelledby="aggregateTabId('saved')"
       >
-      <section class="pane">
-        <div class="panelSectionHeader">
-          <div class="panelHeadCopy">
-            <div class="panelEyebrow">Saved</div>
-            <h3 class="panelPaneTitle">Saved Meta</h3>
-            <div class="panelSectionLead">
-              Search, tag, load, and reveal previously generated meta-analysis artifacts.
+        <section class="pane panelProminentPane savedArtifactPane">
+          <div class="panelSectionHeader">
+            <div class="panelHeadCopy">
+              <div class="panelEyebrow">Aggregate library</div>
+              <h3 class="panelPaneTitle">{{ savedArtifactFamilyConfig.title }}</h3>
+              <div class="panelSectionLead">
+                {{ savedArtifactFamilyConfig.lead }}
+              </div>
             </div>
           </div>
-        </div>
-        <div class="gridThree">
-          <div>
-            <label for="vueMetaSavedSearch">Search</label>
-            <input
-              id="vueMetaSavedSearch"
-              type="text"
-              :value="metaSavedSearchDraft"
-              @input="metaSavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('metaSavedSearch', metaSavedSearchDraft)"
-              @change="commitInputValue('metaSavedSearch', metaSavedSearchDraft)"
-            />
-          </div>
-          <div>
-            <label for="vueMetaSavedSelect">Saved meta</label>
-            <select
-              id="vueMetaSavedSelect"
-              :value="metaSavedSelectDraft"
-              @change="metaSavedSelectDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('metaSavedSelect', metaSavedSelectDraft)"
-            >
-              <option
-                v-for="option in metaSavedSelectOptions"
-                :key="`saved_meta_${option.value}_${option.label}`"
-                :value="option.value"
-                :disabled="option.disabled"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </div>
-          <div>
-            <label for="vueMetaSavedTags">Tags</label>
-            <div class="rowAuto">
-              <input
-                id="vueMetaSavedTags"
-                type="text"
-                :value="metaSavedTagsLocalDraft"
-                @input="metaSavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('metaSavedTags', metaSavedTagsLocalDraft)"
-                @change="commitInputValue('metaSavedTags', metaSavedTagsLocalDraft)"
-              />
-              <button type="button" :disabled="!canSaveMetaSavedTags" @click="runAction(() => analysisStore.saveSavedTags())">Save</button>
-            </div>
-          </div>
-        </div>
-        <div class="actions savedArtifactActions">
-          <button type="button" :disabled="!canLoadMetaSaved" @click="runAction(() => analysisStore.loadSaved())">Load</button>
-          <ContextActionMenu
-            aria-label="Saved meta artifact actions"
-            :items="savedMetaSecondaryActions"
-            @select="onSavedMetaActionSelect"
-          />
-        </div>
-        <div class="metaLine mono">{{ metaSavedMeta }}</div>
-      </section>
 
-      <section class="pane">
-        <div class="panelSectionHeader">
-          <div class="panelHeadCopy">
-            <div class="panelEyebrow">Saved</div>
-            <h3 class="panelPaneTitle">Saved Stage 5</h3>
-            <div class="panelSectionLead">
-              Manage saved Stage 5 confidence outputs alongside the base meta artifacts.
-            </div>
-          </div>
-        </div>
-        <div class="gridThree">
-          <div>
-            <label for="vueStage4SavedSearch">Search</label>
-            <input
-              id="vueStage4SavedSearch"
-              type="text"
-              :value="stage4SavedSearchDraft"
-              @input="stage4SavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('stage4SavedSearch', stage4SavedSearchDraft)"
-              @change="commitInputValue('stage4SavedSearch', stage4SavedSearchDraft)"
-            />
-          </div>
-          <div>
-            <label for="vueStage4SavedSelect">Saved Stage 5</label>
-            <select
-              id="vueStage4SavedSelect"
-              :value="stage4SavedSelectDraft"
-              @change="stage4SavedSelectDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('stage4SavedSelect', stage4SavedSelectDraft)"
+          <div
+            class="subtabs savedArtifactFamilyTabs"
+            aria-label="Saved aggregate artifact families"
+            role="tablist"
+            aria-orientation="horizontal"
+            @keydown="moveSavedArtifactFamilyFocus"
+          >
+            <button
+              v-for="item in savedArtifactFamilyItems"
+              :key="`saved_artifact_family_${item.key}`"
+              type="button"
+              :class="{ active: savedArtifactFamily === item.key }"
+              role="tab"
+              :aria-selected="savedArtifactFamily === item.key"
+              :tabindex="savedArtifactFamily === item.key ? 0 : -1"
+              :data-saved-artifact-family="item.key"
+              @click="clickSavedArtifactFamily(item.key)"
             >
-              <option
-                v-for="option in stage4SavedSelectOptions"
-                :key="`saved_stage4_${option.value}_${option.label}`"
-                :value="option.value"
-                :disabled="option.disabled"
-              >
-                {{ option.label }}
-              </option>
-            </select>
+              {{ item.label }}
+            </button>
           </div>
-          <div>
-            <label for="vueStage4SavedTags">Tags</label>
-            <div class="rowAuto">
-              <input
-                id="vueStage4SavedTags"
-                type="text"
-                :value="stage4SavedTagsLocalDraft"
-                @input="stage4SavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('stage4SavedTags', stage4SavedTagsLocalDraft)"
-                @change="commitInputValue('stage4SavedTags', stage4SavedTagsLocalDraft)"
-              />
-              <button type="button" :disabled="!canSaveStage4SavedTags" @click="runAction(() => analysisStore.saveStage5SavedTags())">Save</button>
-            </div>
-          </div>
-        </div>
-        <div class="actions savedArtifactActions">
-          <button type="button" :disabled="!canLoadStage4Saved" @click="runAction(() => analysisStore.loadStage5Saved())">Load</button>
-          <ContextActionMenu
-            aria-label="Saved Stage 5 artifact actions"
-            :items="savedStage5SecondaryActions"
-            @select="onSavedStage5ActionSelect"
-          />
-        </div>
-        <div class="metaLine mono">{{ stage4SavedMeta }}</div>
-      </section>
 
-      <section class="pane">
-        <div class="panelSectionHeader">
-          <div class="panelHeadCopy">
-            <div class="panelEyebrow">Saved</div>
-            <h3 class="panelPaneTitle">Saved Policy Evaluation</h3>
-            <div class="panelSectionLead">
-              Review and reopen saved policy-evaluation outputs without leaving the aggregate workspace.
+          <div class="gridThree">
+            <div>
+              <label :for="savedArtifactFamilyConfig.searchFieldId">Search</label>
+              <input
+                :id="savedArtifactFamilyConfig.searchFieldId"
+                type="text"
+                :value="savedArtifactFamilyConfig.searchDraft"
+                @input="updateSavedArtifactSearch(String(($event.target as HTMLInputElement).value || ''))"
+                @change="commitSavedArtifactSearch()"
+              />
+            </div>
+            <div>
+              <label :for="savedArtifactFamilyConfig.selectFieldId">
+                {{ savedArtifactFamilyConfig.selectLabel }}
+              </label>
+              <select
+                :id="savedArtifactFamilyConfig.selectFieldId"
+                :value="savedArtifactFamilyConfig.selectedValue"
+                @change="updateSavedArtifactSelect(String(($event.target as HTMLSelectElement).value || ''))"
+              >
+                <option
+                  v-for="option in savedArtifactFamilyConfig.options"
+                  :key="`saved_artifact_${savedArtifactFamilyConfig.key}_${option.value}_${option.label}`"
+                  :value="option.value"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
+            <div>
+              <label :for="savedArtifactFamilyConfig.tagsFieldId">Tags</label>
+              <div class="rowAuto">
+                <input
+                  :id="savedArtifactFamilyConfig.tagsFieldId"
+                  type="text"
+                  :value="savedArtifactFamilyConfig.tagsDraft"
+                  @input="updateSavedArtifactTags(String(($event.target as HTMLInputElement).value || ''))"
+                  @change="commitSavedArtifactTags()"
+                />
+                <button
+                  type="button"
+                  :disabled="!savedArtifactFamilyConfig.canSaveTags"
+                  @click="saveSelectedArtifactTags"
+                >
+                  Save
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-        <div class="gridThree">
-          <div>
-            <label for="vuePolicyEvalSavedSearch">Search</label>
-            <input
-              id="vuePolicyEvalSavedSearch"
-              type="text"
-              :value="policyEvalSavedSearchDraft"
-              @input="policyEvalSavedSearchDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('policyEvalSavedSearch', policyEvalSavedSearchDraft)"
-              @change="commitInputValue('policyEvalSavedSearch', policyEvalSavedSearchDraft)"
+
+          <div class="actions savedArtifactActions">
+            <button
+              type="button"
+              :disabled="!savedArtifactFamilyConfig.canLoad"
+              @click="loadSelectedArtifact"
+            >
+              Load
+            </button>
+            <ContextActionMenu
+              :aria-label="savedArtifactFamilyConfig.actionMenuLabel"
+              :items="savedArtifactFamilyConfig.secondaryActions"
+              @select="onSavedArtifactActionSelect"
             />
           </div>
-          <div>
-            <label for="vuePolicyEvalSavedSelect">Saved policy evaluation</label>
-            <select
-              id="vuePolicyEvalSavedSelect"
-              :value="policyEvalSavedSelectDraft"
-              @change="policyEvalSavedSelectDraft = String(($event.target as HTMLSelectElement).value || ''); setSelectValue('policyEvalSavedSelect', policyEvalSavedSelectDraft)"
-            >
-              <option
-                v-for="option in policyEvalSavedSelectOptions"
-                :key="`saved_policy_eval_${option.value}_${option.label}`"
-                :value="option.value"
-                :disabled="option.disabled"
-              >
-                {{ option.label }}
-              </option>
-            </select>
-          </div>
-          <div>
-            <label for="vuePolicyEvalSavedTags">Tags</label>
-            <div class="rowAuto">
-              <input
-                id="vuePolicyEvalSavedTags"
-                type="text"
-                :value="policyEvalSavedTagsLocalDraft"
-                @input="policyEvalSavedTagsLocalDraft = String(($event.target as HTMLInputElement).value || ''); queueInputValue('policyEvalSavedTags', policyEvalSavedTagsLocalDraft)"
-                @change="commitInputValue('policyEvalSavedTags', policyEvalSavedTagsLocalDraft)"
-              />
-              <button type="button" :disabled="!canSavePolicyEvalSavedTags" @click="runAction(() => analysisStore.savePolicyEvalSavedTags())">Save</button>
-            </div>
-          </div>
-        </div>
-        <div class="actions savedArtifactActions">
-          <button type="button" :disabled="!canLoadPolicyEvalSaved" @click="runAction(() => analysisStore.loadPolicyEvalSaved())">Load</button>
-          <ContextActionMenu
-            aria-label="Saved policy evaluation artifact actions"
-            :items="savedPolicyEvalSecondaryActions"
-            @select="onSavedPolicyEvalActionSelect"
-          />
-        </div>
-        <div class="metaLine mono">{{ policyEvalSavedMeta }}</div>
-      </section>
+
+          <div class="metaLine mono">{{ savedArtifactFamilyConfig.meta }}</div>
+        </section>
       </div>
 
       <div
@@ -1791,6 +1999,17 @@ onBeforeUnmount(() => {
       </section>
 
       <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
+      <ConfirmationDialog
+        id-base="meta_saved_artifact_confirmation"
+        :open="pendingSavedArtifactDeleteFamily !== null"
+        :title="savedArtifactDeleteTitle"
+        :body="savedArtifactDeleteBody"
+        confirm-label="Delete artifact"
+        :confirm-disabled="!canConfirmSavedArtifactDelete"
+        danger
+        @cancel="cancelPendingSavedArtifactDelete"
+        @confirm="confirmPendingSavedArtifactDelete"
+      />
     </section>
   </Teleport>
 </template>
@@ -1840,6 +2059,15 @@ onBeforeUnmount(() => {
 .aggregatePanelStack {
   display: grid;
   gap: 0.85rem;
+}
+
+.savedArtifactPane {
+  gap: 0.75rem;
+}
+
+.savedArtifactFamilyTabs {
+  margin-top: 0.2rem;
+  margin-bottom: 0.1rem;
 }
 
 .summaryGrid {

@@ -48,6 +48,8 @@ pub mod ml_signal;
 pub mod nvtx;
 pub mod options_data_store;
 pub mod options_expression;
+#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+pub(crate) mod options_expression_gpu;
 pub mod options_signal_manifest;
 pub mod options_types;
 pub(crate) mod prescan_predictive;
@@ -211,7 +213,8 @@ pub use options_data_store::{
     ImportedOptionsDatasetCsvBuildRequest,
 };
 pub use options_expression::{
-    analyze_options_expression_feasibility_blocking, inspect_options_expression_tuple_blocking,
+    analyze_options_expression_feasibility_blocking,
+    inspect_options_expression_event_path_blocking, inspect_options_expression_tuple_blocking,
     run_options_expression_blocking,
 };
 pub use options_signal_manifest::build_options_signal_manifest_from_double_ma;
@@ -219,14 +222,16 @@ pub use options_types::{
     ImportedOptionsDataset, OptionType, OptionsCandidateInvalidReason,
     OptionsCandidateInvalidReasonCount, OptionsContractSeries, OptionsDatasetManifestV1,
     OptionsEvaluationSplit, OptionsExitTemplateFamily, OptionsExpressionArtifactV1,
-    OptionsExpressionDiagnostics, OptionsExpressionEventDetailRow, OptionsExpressionEventStatus,
-    OptionsExpressionExitReason, OptionsExpressionFeasibilityReport, OptionsExpressionMetrics,
-    OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    OptionsExpressionBackendPreference, OptionsExpressionDiagnostics,
+    OptionsExpressionEventDetailRow, OptionsExpressionEventPathInspectionResult,
+    OptionsExpressionEventPathPoint, OptionsExpressionEventStatus, OptionsExpressionExitReason,
+    OptionsExpressionFeasibilityCacheStats, OptionsExpressionFeasibilityReport,
+    OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionRunResult,
     OptionsExpressionTupleInspectionResult, OptionsExpressionTupleResult, OptionsFillModelFamily,
     OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
-    OptionsSignalEventManifestV1, OptionsStaticFilterBundle, OptionsTupleSpec, SignalSide,
-    OPTIONS_DATASET_MANIFEST_VERSION, OPTIONS_EXPRESSION_ARTIFACT_VERSION,
-    OPTIONS_SIGNAL_MANIFEST_VERSION,
+    OptionsSignalEventManifestV1, OptionsSplitAssignmentMode, OptionsStaticFilterBundle,
+    OptionsTupleSpec, SignalSide, OPTIONS_DATASET_MANIFEST_VERSION,
+    OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_SIGNAL_MANIFEST_VERSION,
 };
 
 pub use sharpe_stats::{

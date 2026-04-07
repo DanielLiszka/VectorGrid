@@ -15,11 +15,14 @@ const REQUIRED_DOUBLE_CROSSOVER_SYMBOLS: &[&str] = &[
     "gather_topk_pairs_tm_f32",
     "pack_metric_rows_f32",
 ];
+const REQUIRED_OPTIONS_EXPRESSION_SYMBOLS: &[&str] = &["options_expression_score_split_f64"];
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/kernels/double_crossover.cu");
     println!("cargo:rerun-if-changed=src/kernels/double_crossover.prebuilt.ptx");
+    println!("cargo:rerun-if-changed=src/kernels/options_expression.cu");
+    println!("cargo:rerun-if-changed=src/kernels/options_expression.prebuilt.ptx");
     println!("cargo:rerun-if-env-changed=CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=NVCC_ARGS");
@@ -28,6 +31,7 @@ fn main() {
 
     if env::var("CARGO_FEATURE_CUDA_BACKTEST_KERNEL").is_ok() {
         build_double_crossover_artifacts();
+        build_options_expression_artifacts();
     }
 }
 
@@ -131,6 +135,95 @@ fn build_double_crossover_artifacts() {
 
     validate_ptx_contains_symbols(&ptx_out, REQUIRED_DOUBLE_CROSSOVER_SYMBOLS);
     build_sm89_cubin_best_effort(&nvcc, kernel, &cubin_out);
+}
+
+fn build_options_expression_artifacts() {
+    let arch = resolve_cuda_arch();
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
+    let kernel = Path::new("src/kernels/options_expression.cu");
+    let prebuilt = Path::new("src/kernels/options_expression.prebuilt.ptx");
+    let ptx_out = out_dir.join("options_expression.ptx");
+
+    let use_prebuilt = matches!(env::var("VECTORBT_USE_PREBUILT_PTX"), Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true"));
+    let require_nvcc = matches!(env::var("VECTORBT_REQUIRE_NVCC"), Ok(ref v) if v == "1" || v.eq_ignore_ascii_case("true"));
+
+    if use_prebuilt {
+        if !prebuilt.exists() {
+            panic!(
+                "VECTORBT_USE_PREBUILT_PTX requested, but prebuilt PTX is missing: {}",
+                prebuilt.display()
+            );
+        }
+        std::fs::copy(prebuilt, &ptx_out).unwrap_or_else(|e| {
+            panic!("failed to copy options-expression prebuilt PTX to OUT_DIR: {e}")
+        });
+        validate_ptx_contains_symbols(&ptx_out, REQUIRED_OPTIONS_EXPRESSION_SYMBOLS);
+        eprintln!(
+            "[ta_app_core] Using options-expression prebuilt PTX: {} -> {}",
+            prebuilt.display(),
+            ptx_out.display()
+        );
+        return;
+    }
+
+    let Some(nvcc) = find_nvcc() else {
+        if require_nvcc {
+            panic!("NVCC not found (VECTORBT_REQUIRE_NVCC=1)");
+        }
+        if prebuilt.exists() {
+            std::fs::copy(prebuilt, &ptx_out).unwrap_or_else(|e| {
+                panic!("failed to copy options-expression prebuilt PTX to OUT_DIR: {e}")
+            });
+            validate_ptx_contains_symbols(&ptx_out, REQUIRED_OPTIONS_EXPRESSION_SYMBOLS);
+            eprintln!(
+                "[ta_app_core] NVCC not found; using options-expression prebuilt PTX: {} -> {}",
+                prebuilt.display(),
+                ptx_out.display()
+            );
+            return;
+        }
+        panic!(
+            "NVCC not found and no options-expression prebuilt PTX available at {}",
+            prebuilt.display()
+        );
+    };
+
+    let mut out = build_nvcc_output(&nvcc, kernel, &ptx_out, NvccArtifact::Ptx, arch.as_str());
+    if !out.status.success() {
+        let out_s = String::from_utf8_lossy(&out.stdout);
+        let err_s = String::from_utf8_lossy(&out.stderr);
+        let maybe_arch_fail = err_s.contains("unsupported gpu architecture")
+            || err_s.contains("Value 'compute_")
+            || out_s.contains("unsupported gpu architecture");
+
+        if arch != "compute_80" && maybe_arch_fail {
+            eprintln!(
+                "Falling back to -arch=compute_80 for options-expression kernel (nvcc doesn't support {})",
+                arch
+            );
+            out = build_nvcc_output(&nvcc, kernel, &ptx_out, NvccArtifact::Ptx, "compute_80");
+        }
+    }
+
+    if !out.status.success() {
+        eprintln!("stdout: {}", String::from_utf8_lossy(&out.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&out.stderr));
+        if !require_nvcc && prebuilt.exists() {
+            std::fs::copy(prebuilt, &ptx_out).unwrap_or_else(|e| {
+                panic!("failed to copy options-expression prebuilt PTX to OUT_DIR: {e}")
+            });
+            validate_ptx_contains_symbols(&ptx_out, REQUIRED_OPTIONS_EXPRESSION_SYMBOLS);
+            eprintln!(
+                "[ta_app_core] NVCC failed; using options-expression prebuilt PTX: {} -> {}",
+                prebuilt.display(),
+                ptx_out.display()
+            );
+            return;
+        }
+        panic!("nvcc failed for options-expression kernel");
+    }
+
+    validate_ptx_contains_symbols(&ptx_out, REQUIRED_OPTIONS_EXPRESSION_SYMBOLS);
 }
 
 fn validate_ptx_contains_symbols(path: &Path, required_symbols: &[&str]) {

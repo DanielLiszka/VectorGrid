@@ -1,0 +1,1631 @@
+{
+  "version": 1,
+  "kind": "vectorgrid_options_expression_v1",
+  "ts": "2026-04-07T04:27:26.109559200+00:00",
+  "artifact_path": ".codex_tmp_options_phase05\\app_local_data\\runs\\vectorgrid_options_expression_2026-04-07T04-27-26.109115100_00-00.json",
+  "parent_artifact_id": "vectorgrid_run_2026-04-07T03-56-14.824717100_00-00",
+  "root_symbol": "SPY",
+  "options_dataset_id": "spy_phase05_2026_03_31_to_2026_04_02_calls_645_665",
+  "options_dataset_hash": "fnv1a64-full-6047138b9e634a25",
+  "backend_used": "cpu_reference",
+  "price_semantics": "minute_aggregate",
+  "request": {
+    "parent_artifact_path": ".codex_tmp_options_phase05\\app_local_data\\runs\\vectorgrid_run_2026-04-07T03-56-14.824717100_00-00.json",
+    "parent_candidate_index": null,
+    "options_dataset_id": "spy_phase05_2026_03_31_to_2026_04_02_calls_645_665",
+    "backend_preference": "auto",
+    "delay_minutes": [
+      0,
+      1,
+      5
+    ],
+    "dte_buckets": [
+      1
+    ],
+    "moneyness_buckets": [
+      "atm",
+      "otm1",
+      "otm2",
+      "itm1"
+    ],
+    "hold_minutes": [
+      5,
+      15,
+      30,
+      60
+    ],
+    "target_return_buckets": [
+      0.25,
+      0.5,
+      1.0
+    ],
+    "stop_return_buckets": [
+      0.25,
+      0.5
+    ],
+    "exit_template": "fixed_hold_or_target_stop",
+    "fill_model": "aggregate_research",
+    "filters": {
+      "max_entry_lag_minutes": 60
+    },
+    "top_k": 25,
+    "split_ratio_search": 0.6,
+    "split_ratio_holdout": 0.2,
+    "split_assignment_mode": "session_chronological",
+    "sealed_finalist_count": 5
+  },
+  "diagnostics": {
+    "parent_artifact_path": ".codex_tmp_options_phase05\\app_local_data\\runs\\vectorgrid_run_2026-04-07T03-56-14.824717100_00-00.json",
+    "options_dataset_id": "spy_phase05_2026_03_31_to_2026_04_02_calls_645_665",
+    "root_symbol": "SPY",
+    "total_events": 18,
+    "bullish_events": 18,
+    "bearish_events": 0,
+    "search_events": 6,
+    "holdout_events": 7,
+    "sealed_test_events": 5,
+    "dataset_contracts": 21,
+    "dataset_rows": 21263,
+    "coverage_start": 1774963800000,
+    "coverage_end": 1775160840000
+  },
+  "staging": {
+    "candidate_slot_count": 216,
+    "compiled_candidate_count": 132,
+    "baseline_exit_summary_count": 5184,
+    "conservative_exit_summary_count": 5184,
+    "harsher_exit_summary_count": 5184
+  },
+  "selection_metrics": [
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 1,
+      "sealed_finalist": true,
+      "sealed_final_rank": 4,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 161.5,
+        "expectancy_per_premium": 0.5078616352201258,
+        "median_return_on_premium": 0.515015015015015,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 646.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -46.41666666666665,
+        "expectancy_per_premium": -0.11193729903536973,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -139.24999999999994
+      },
+      "sealed_evaluation_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -41.75,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -208.75
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -107.75,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -323.25
+      },
+      "sealed_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -45.85,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -229.25
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -109.90499999999999,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -329.715
+      },
+      "sealed_harsher_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -46.767,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.24999999999999997,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -233.835
+      },
+      "robust_score": 0.10896432856748034
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 2,
+      "sealed_finalist": true,
+      "sealed_final_rank": 2,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 161.5,
+        "expectancy_per_premium": 0.5078616352201258,
+        "median_return_on_premium": 0.515015015015015,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 646.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -69.8333333333333,
+        "expectancy_per_premium": -0.1684083601286173,
+        "median_return_on_premium": -0.1578947368421052,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -209.49999999999991
+      },
+      "sealed_evaluation_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": 18.400000000000002,
+        "expectancy_per_premium": 0.11017964071856289,
+        "median_return_on_premium": -0.030000000000000027,
+        "win_rate": 0.4,
+        "total_pnl_per_contract": 92.00000000000001
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -91.5,
+        "expectancy_per_premium": -0.2122969837587007,
+        "median_return_on_premium": -0.2511013215859031,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -274.5
+      },
+      "sealed_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -18.400000000000002,
+        "expectancy_per_premium": -0.10032715376226828,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.2,
+        "total_pnl_per_contract": -92.00000000000001
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -103.98333333333333,
+        "expectancy_per_premium": -0.23653003351379223,
+        "median_return_on_premium": -0.28046989720998533,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -311.95
+      },
+      "sealed_harsher_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -23.51200000000001,
+        "expectancy_per_premium": -0.1256869159877692,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.2,
+        "total_pnl_per_contract": -117.56000000000006
+      },
+      "robust_score": 0.1042207844418162
+    },
+    {
+      "tuple": {
+        "delay_minutes": 1,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 3,
+      "sealed_finalist": true,
+      "sealed_final_rank": 5,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 130.8125,
+        "expectancy_per_premium": 0.4012653374233129,
+        "median_return_on_premium": 0.4828571428571428,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 523.25
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -43.416666666666686,
+        "expectancy_per_premium": -0.10863219349457887,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -130.25000000000006
+      },
+      "sealed_evaluation_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -42.8,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -214.0
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -50.583333333333336,
+        "expectancy_per_premium": -0.1231737012987013,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -151.75
+      },
+      "sealed_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -45.85,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -229.25
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -57.52833333333334,
+        "expectancy_per_premium": -0.13733845811051695,
+        "median_return_on_premium": -0.24999999999999994,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -172.58500000000004
+      },
+      "sealed_harsher_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -46.767,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -233.835
+      },
+      "robust_score": 0.0941764795547699
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 4,
+      "sealed_finalist": true,
+      "sealed_final_rank": 1,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 112.0,
+        "expectancy_per_premium": 0.4933920704845815,
+        "median_return_on_premium": 0.49537037037037035,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 448.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -22.333333333333325,
+        "expectancy_per_premium": -0.19142857142857134,
+        "median_return_on_premium": -0.3217391304347825,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -66.99999999999997
+      },
+      "sealed_evaluation_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": 9.5,
+        "expectancy_per_premium": 0.5792682926829268,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.2,
+        "total_pnl_per_contract": 47.5
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -32.666666666666664,
+        "expectancy_per_premium": -0.2670299727520436,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -98.0
+      },
+      "sealed_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": 12.4,
+        "expectancy_per_premium": 0.6326530612244898,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.2,
+        "total_pnl_per_contract": 62.0
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -35.29333333333333,
+        "expectancy_per_premium": -0.28284447293903936,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -105.88
+      },
+      "sealed_harsher_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": 12.648,
+        "expectancy_per_premium": 0.6326530612244898,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.2,
+        "total_pnl_per_contract": 63.239999999999995
+      },
+      "robust_score": 0.08699996611895829
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 5,
+      "sealed_finalist": true,
+      "sealed_final_rank": 3,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 112.0,
+        "expectancy_per_premium": 0.4933920704845815,
+        "median_return_on_premium": 0.49537037037037035,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 448.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -29.166666666666668,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -87.5
+      },
+      "sealed_evaluation_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -4.1,
+        "expectancy_per_premium": -0.24999999999999994,
+        "median_return_on_premium": -0.25000000000000006,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -20.499999999999996
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -30.583333333333332,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -91.75
+      },
+      "sealed_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -4.900000000000001,
+        "expectancy_per_premium": -0.25000000000000006,
+        "median_return_on_premium": -0.25000000000000006,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -24.500000000000007
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -31.194999999999997,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -93.585
+      },
+      "sealed_harsher_stress_metrics": {
+        "valid_trades": 5,
+        "invalid_events": 0,
+        "invalid_rate": 0.0,
+        "expectancy_per_trade": -4.997999999999999,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -24.99
+      },
+      "robust_score": 0.08113069016152717
+    },
+    {
+      "tuple": {
+        "delay_minutes": 1,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 6,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 145.5,
+        "expectancy_per_premium": 0.44631901840490795,
+        "median_return_on_premium": 0.4828571428571428,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 582.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -78.50000000000001,
+        "expectancy_per_premium": -0.19641367806505425,
+        "median_return_on_premium": -0.2605633802816901,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -235.50000000000003
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -94.83333333333333,
+        "expectancy_per_premium": -0.23092532467532467,
+        "median_return_on_premium": -0.32045454545454544,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -284.5
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -106.65000000000002,
+        "expectancy_per_premium": -0.25460752482811305,
+        "median_return_on_premium": -0.34710338680926917,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -319.95000000000005
+      },
+      "robust_score": 0.0759710256680536
+    },
+    {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 7,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 130.25,
+        "expectancy_per_premium": 0.3995398773006135,
+        "median_return_on_premium": 0.4589041095890411,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 521.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -71.00000000000001,
+        "expectancy_per_premium": -0.17914213624894873,
+        "median_return_on_premium": -0.20873786407766998,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -213.00000000000003
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -83.83333333333333,
+        "expectancy_per_premium": -0.20682565789473684,
+        "median_return_on_premium": -0.23317307692307696,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -251.5
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -95.68333333333334,
+        "expectancy_per_premium": -0.23143221104231165,
+        "median_return_on_premium": -0.2632447209653092,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -287.05
+      },
+      "robust_score": 0.06721155653308526
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 30,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 8,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 111.75,
+        "expectancy_per_premium": 0.35141509433962265,
+        "median_return_on_premium": 0.22867231638418078,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 447.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -44.33333333333332,
+        "expectancy_per_premium": -0.10691318327974274,
+        "median_return_on_premium": -0.1099744245524297,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -132.99999999999997
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -79.0,
+        "expectancy_per_premium": -0.18329466357308585,
+        "median_return_on_premium": -0.1925,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -237.0
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -94.65999999999998,
+        "expectancy_per_premium": -0.21532232382512168,
+        "median_return_on_premium": -0.22416666666666668,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -283.97999999999996
+      },
+      "robust_score": 0.06663521295426707
+    },
+    {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 9,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 100.0,
+        "expectancy_per_premium": 0.4132231404958678,
+        "median_return_on_premium": 0.451271186440678,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 400.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -24.500000000000004,
+        "expectancy_per_premium": -0.2194029850746269,
+        "median_return_on_premium": -0.3839285714285715,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -73.50000000000001
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -27.50000000000001,
+        "expectancy_per_premium": -0.2426470588235295,
+        "median_return_on_premium": -0.3839285714285715,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -82.50000000000003
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -30.810000000000013,
+        "expectancy_per_premium": -0.2665224913494811,
+        "median_return_on_premium": -0.40808823529411775,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -92.43000000000004
+      },
+      "robust_score": 0.05914101068053308
+    },
+    {
+      "tuple": {
+        "delay_minutes": 1,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 10,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 103.0,
+        "expectancy_per_premium": 0.42605997931747674,
+        "median_return_on_premium": 0.448559670781893,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 412.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -25.5,
+        "expectancy_per_premium": -0.22972972972972974,
+        "median_return_on_premium": -0.44444444444444436,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -76.5
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -30.833333333333332,
+        "expectancy_per_premium": -0.2665706051873199,
+        "median_return_on_premium": -0.49193548387096775,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -92.5
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -33.656666666666666,
+        "expectancy_per_premium": -0.2852743402836639,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -100.97
+      },
+      "robust_score": 0.058056354946561056
+    },
+    {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 11,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 102.875,
+        "expectancy_per_premium": 0.31556748466257667,
+        "median_return_on_premium": 0.375,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 411.5
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -43.33333333333334,
+        "expectancy_per_premium": -0.10933557611438185,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -130.00000000000003
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -52.583333333333336,
+        "expectancy_per_premium": -0.12972861842105263,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -157.75
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -103.36000000000001,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -310.08000000000004
+      },
+      "robust_score": 0.05732703702635667
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 30,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 12,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 83.25,
+        "expectancy_per_premium": 0.3667400881057269,
+        "median_return_on_premium": 0.24766009852216753,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 333.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -17.666666666666657,
+        "expectancy_per_premium": -0.15142857142857136,
+        "median_return_on_premium": -0.14876033057851235,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -52.99999999999997
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -28.333333333333332,
+        "expectancy_per_premium": -0.23160762942779292,
+        "median_return_on_premium": -0.22400000000000003,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -85.0
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -32.66,
+        "expectancy_per_premium": -0.26174066356787945,
+        "median_return_on_premium": -0.25443137254901954,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -97.97999999999999
+      },
+      "robust_score": 0.05639846028317583
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 30,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 13,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 111.75,
+        "expectancy_per_premium": 0.35141509433962265,
+        "median_return_on_premium": 0.22867231638418078,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 447.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -62.16666666666666,
+        "expectancy_per_premium": -0.14991961414790994,
+        "median_return_on_premium": -0.1099744245524297,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -186.49999999999997
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -90.83333333333331,
+        "expectancy_per_premium": -0.21075019334880118,
+        "median_return_on_premium": -0.24999999999999994,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -272.49999999999994
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -97.71666666666665,
+        "expectancy_per_premium": -0.22227529836373838,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -293.15
+      },
+      "robust_score": 0.0562583898627599
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 30,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 14,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 83.25,
+        "expectancy_per_premium": 0.3667400881057269,
+        "median_return_on_premium": 0.24766009852216753,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 333.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -22.33333333333333,
+        "expectancy_per_premium": -0.1914285714285714,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -66.99999999999999
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -26.083333333333332,
+        "expectancy_per_premium": -0.21321525885558584,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -78.25
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -27.924999999999997,
+        "expectancy_per_premium": -0.22379387722391408,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -83.77499999999999
+      },
+      "robust_score": 0.05410081642999422
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "otm2",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 15,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 28.75,
+        "expectancy_per_premium": 0.4197080291970803,
+        "median_return_on_premium": 0.4274193548387097,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 115.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -11.833333333333334,
+        "expectancy_per_premium": -0.24825174825174826,
+        "median_return_on_premium": -0.36538461538461536,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -35.5
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -15.499999999999998,
+        "expectancy_per_premium": -0.30999999999999994,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -46.49999999999999
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -16.463333333333335,
+        "expectancy_per_premium": -0.3228104575163399,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -49.39
+      },
+      "robust_score": 0.04600668785597941
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "otm2",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 16,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 25.999999999999996,
+        "expectancy_per_premium": 0.37956204379562036,
+        "median_return_on_premium": 0.375,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 103.99999999999999
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -11.916666666666666,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -35.75
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -12.499999999999998,
+        "expectancy_per_premium": -0.24999999999999994,
+        "median_return_on_premium": -0.24999999999999997,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -37.49999999999999
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -12.749999999999998,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -38.24999999999999
+      },
+      "robust_score": 0.04318734793187346
+    },
+    {
+      "tuple": {
+        "delay_minutes": 1,
+        "dte_days": 1,
+        "moneyness_bucket": "otm2",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 17,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 24.0625,
+        "expectancy_per_premium": 0.35648148148148145,
+        "median_return_on_premium": 0.375,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 96.25
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -11.416666666666666,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -34.25
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -11.833333333333336,
+        "expectancy_per_premium": -0.25000000000000006,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -35.50000000000001
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -12.070000000000002,
+        "expectancy_per_premium": -0.25000000000000006,
+        "median_return_on_premium": -0.25000000000000006,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -36.21000000000001
+      },
+      "robust_score": 0.03549382716049381
+    },
+    {
+      "tuple": {
+        "delay_minutes": 1,
+        "dte_days": 1,
+        "moneyness_bucket": "otm2",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 18,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 27.0,
+        "expectancy_per_premium": 0.4,
+        "median_return_on_premium": 0.435483870967742,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 108.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -12.500000000000002,
+        "expectancy_per_premium": -0.27372262773722633,
+        "median_return_on_premium": -0.45283018867924535,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -37.50000000000001
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -14.833333333333334,
+        "expectancy_per_premium": -0.31338028169014087,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -44.5
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -15.743333333333334,
+        "expectancy_per_premium": -0.32608395470864404,
+        "median_return_on_premium": -0.5,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -47.230000000000004
+      },
+      "robust_score": 0.03463593689420527
+    },
+    {
+      "tuple": {
+        "delay_minutes": 1,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 19,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 85.5,
+        "expectancy_per_premium": 0.3536711478800414,
+        "median_return_on_premium": 0.375,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 342.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -27.75,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -83.25
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -28.916666666666675,
+        "expectancy_per_premium": -0.25000000000000006,
+        "median_return_on_premium": -0.25000000000000006,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -86.75000000000003
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -29.495000000000005,
+        "expectancy_per_premium": -0.25000000000000006,
+        "median_return_on_premium": -0.25000000000000006,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -88.48500000000001
+      },
+      "robust_score": 0.034557049293347124
+    },
+    {
+      "tuple": {
+        "delay_minutes": 1,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 30,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 20,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 73.25,
+        "expectancy_per_premium": 0.22469325153374234,
+        "median_return_on_premium": 0.05077114427860696,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 293.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -37.00000000000001,
+        "expectancy_per_premium": -0.0925771476230192,
+        "median_return_on_premium": -0.08918918918918921,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -111.00000000000003
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -56.666666666666686,
+        "expectancy_per_premium": -0.13798701298701305,
+        "median_return_on_premium": -0.12987012987012986,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -170.00000000000006
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -71.96000000000004,
+        "expectancy_per_premium": -0.17179144385026746,
+        "median_return_on_premium": -0.16399286987522282,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -215.8800000000001
+      },
+      "robust_score": 0.03421676168535845
+    },
+    {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "otm1",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 21,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 83.25,
+        "expectancy_per_premium": 0.3440082644628099,
+        "median_return_on_premium": 0.375,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 333.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -27.916666666666668,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.24999999999999994,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -83.75
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -28.333333333333332,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -85.0
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -28.900000000000002,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.24999999999999997,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -86.7
+      },
+      "robust_score": 0.03133608815426997
+    },
+    {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 30,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 22,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 57.0,
+        "expectancy_per_premium": 0.17484662576687116,
+        "median_return_on_premium": 0.00952013065120233,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 228.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -25.0,
+        "expectancy_per_premium": -0.06307821698906645,
+        "median_return_on_premium": -0.07161803713527852,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -75.0
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -37.33333333333335,
+        "expectancy_per_premium": -0.09210526315789479,
+        "median_return_on_premium": -0.11057692307692307,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -112.00000000000006
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -52.80000000000005,
+        "expectancy_per_premium": -0.1277089783281735,
+        "median_return_on_premium": -0.14545625942684767,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -158.40000000000015
+      },
+      "robust_score": 0.030044714219778265
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "atm",
+        "hold_minutes": 60,
+        "target_return": 0.5,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 23,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 81.62500000000003,
+        "expectancy_per_premium": 0.256682389937107,
+        "median_return_on_premium": 0.26501501501501507,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 326.5000000000001
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -46.41666666666665,
+        "expectancy_per_premium": -0.11193729903536973,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.3333333333333333,
+        "total_pnl_per_contract": -139.24999999999994
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -107.75,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -323.25
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -109.90499999999999,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -329.715
+      },
+      "robust_score": 0.02523791347314071
+    },
+    {
+      "tuple": {
+        "delay_minutes": 0,
+        "dte_days": 1,
+        "moneyness_bucket": "otm2",
+        "hold_minutes": 60,
+        "target_return": 1.0,
+        "stop_return": 0.25,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 24,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 23.125,
+        "expectancy_per_premium": 0.32456140350877194,
+        "median_return_on_premium": 0.375,
+        "win_rate": 0.5,
+        "total_pnl_per_contract": 92.5
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -11.25,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -33.75
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -11.583333333333334,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -34.75
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -11.815,
+        "expectancy_per_premium": -0.25,
+        "median_return_on_premium": -0.25,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -35.445
+      },
+      "robust_score": 0.02485380116959065
+    },
+    {
+      "tuple": {
+        "delay_minutes": 5,
+        "dte_days": 1,
+        "moneyness_bucket": "otm2",
+        "hold_minutes": 30,
+        "target_return": 1.0,
+        "stop_return": 0.5,
+        "exit_template": "fixed_hold_or_target_stop",
+        "fill_model": "aggregate_research"
+      },
+      "pre_sealed_rank": 25,
+      "sealed_finalist": false,
+      "sealed_final_rank": 0,
+      "selection_metrics": {
+        "valid_trades": 4,
+        "invalid_events": 2,
+        "invalid_rate": 0.3333333333333333,
+        "expectancy_per_trade": 21.5,
+        "expectancy_per_premium": 0.31386861313868614,
+        "median_return_on_premium": 0.24806949806949813,
+        "win_rate": 0.75,
+        "total_pnl_per_contract": 86.0
+      },
+      "holdout_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -9.000000000000002,
+        "expectancy_per_premium": -0.18881118881118886,
+        "median_return_on_premium": -0.15,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -27.000000000000007
+      },
+      "stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -13.999999999999998,
+        "expectancy_per_premium": -0.27999999999999997,
+        "median_return_on_premium": -0.26829268292682923,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -41.99999999999999
+      },
+      "harsher_stress_metrics": {
+        "valid_trades": 3,
+        "invalid_events": 4,
+        "invalid_rate": 0.5714285714285714,
+        "expectancy_per_trade": -17.46333333333333,
+        "expectancy_per_premium": -0.3424183006535948,
+        "median_return_on_premium": -0.296987087517934,
+        "win_rate": 0.0,
+        "total_pnl_per_contract": -52.38999999999999
+      },
+      "robust_score": 0.022326452867457585
+    }
+  ]
+}

@@ -13,6 +13,7 @@ const API_BASE: &str = "https://api.polygon.io";
 const BARS_PER_REQUEST_LIMIT: u32 = 50_000;
 const CHUNK_DAYS: i64 = 30;
 const KEYRING_USERNAME: &str = "polygon_api_key";
+const FREE_PLAN_LOOKBACK_DAYS: i64 = 365 * 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolygonSettings {
@@ -207,6 +208,91 @@ fn keyring_service_name(app_identifier: &str) -> String {
     }
 }
 
+fn env_api_key_fallback() -> Option<String> {
+    for name in ["POLYGON_KEY", "POLYGON_API_KEY"] {
+        if let Ok(raw) = std::env::var(name) {
+            let key = raw.trim().to_string();
+            if !key.is_empty() {
+                return Some(key);
+            }
+        }
+    }
+    let cwd = std::env::current_dir().ok()?;
+    dotenv_api_key_fallback_from_dir(&cwd)
+}
+
+fn dotenv_api_key_fallback_from_dir(start_dir: &Path) -> Option<String> {
+    for dir in start_dir.ancestors().take(8) {
+        let env_path = dir.join(".env");
+        if !env_path.is_file() {
+            continue;
+        }
+        if dir != start_dir && !dir.join("Cargo.toml").exists() && !dir.join(".git").exists() {
+            continue;
+        }
+        if let Some(key) = parse_polygon_key_from_dotenv_file(&env_path) {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn parse_polygon_key_from_dotenv_file(path: &Path) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    for line in contents.lines() {
+        if let Some(key) = parse_polygon_key_from_dotenv_line(line) {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn parse_polygon_key_from_dotenv_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let without_export = trimmed
+        .strip_prefix("export ")
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    let (name, raw_value) = without_export.split_once('=')?;
+    let normalized_name = name.trim();
+    if !matches!(normalized_name, "POLYGON_KEY" | "POLYGON_API_KEY") {
+        return None;
+    }
+    let value = raw_value.trim();
+    let value = value
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .or_else(|| value.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\'')))
+        .unwrap_or(value)
+        .trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn maybe_migrate_settings_key_to_keyring(app_identifier: &str, cache_dir: &Path, key: &str) {
+    let service = keyring_service_name(app_identifier);
+    let Ok(entry) = keyring::Entry::new(&service, KEYRING_USERNAME) else {
+        return;
+    };
+    if entry.set_password(key).is_err() {
+        return;
+    }
+    match entry.get_password() {
+        Ok(read_back) if read_back.trim() == key => {
+            let _ = fs::remove_file(settings_path(cache_dir));
+        }
+        _ => {
+            // Keep the legacy fallback file in place unless the keyring round-trip is proven.
+        }
+    }
+}
+
 pub fn set_api_key(app_identifier: &str, cache_dir: &Path, api_key: &str) -> Result<(), String> {
     let key = api_key.trim();
     if key.is_empty() {
@@ -253,18 +339,14 @@ pub fn read_api_key(app_identifier: &str, cache_dir: &Path) -> Result<Option<Str
     // Fallback (and migrate) from legacy disk storage.
     let st = read_settings_file(cache_dir)?;
     let Some(st) = st else {
-        return Ok(None);
+        return Ok(env_api_key_fallback());
     };
     let key = st.api_key.trim().to_string();
     if key.is_empty() {
-        return Ok(None);
+        return Ok(env_api_key_fallback());
     }
 
-    if let Ok(entry) = keyring::Entry::new(&service, KEYRING_USERNAME) {
-        if entry.set_password(&key).is_ok() {
-            let _ = fs::remove_file(settings_path(cache_dir));
-        }
-    }
+    maybe_migrate_settings_key_to_keyring(app_identifier, cache_dir, &key);
 
     Ok(Some(key))
 }
@@ -876,6 +958,68 @@ pub fn repair_cached_dataset(
     Ok(out)
 }
 
+fn find_manifest_dataset_by_csv_path<'a>(
+    manifest: &'a PolygonCacheManifest,
+    csv_path: &str,
+) -> Option<&'a PolygonDatasetMeta> {
+    let target = csv_path.trim();
+    if target.is_empty() {
+        return None;
+    }
+    manifest
+        .datasets
+        .values()
+        .find(|ds| ds.csv_path.trim() == target)
+}
+
+fn build_top_off_request_for_dataset(
+    dataset: &PolygonDatasetMeta,
+    now_date: NaiveDate,
+) -> Result<PolygonDownloadRequest, String> {
+    if dataset.max_ts <= 0 {
+        return Err("cached Polygon dataset has no valid max timestamp".to_string());
+    }
+
+    let last_date = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(dataset.max_ts)
+        .map(|dt| dt.date_naive())
+        .ok_or_else(|| "cached Polygon dataset max timestamp is out of range".to_string())?;
+    let earliest_allowed = now_date - Duration::days(FREE_PLAN_LOOKBACK_DAYS);
+    if last_date < earliest_allowed {
+        return Err(format!(
+            "Polygon top-off requires the last dataset date to be within the free-plan lookback window. Last dataset date: {last_date}, earliest allowed: {earliest_allowed}."
+        ));
+    }
+
+    let timeframe = if dataset.timeframe.trim().is_empty() {
+        default_polygon_timeframe()
+    } else {
+        dataset.timeframe.trim().to_string()
+    };
+    let from_date = std::cmp::min(last_date, now_date);
+    Ok(PolygonDownloadRequest {
+        market: dataset.market.trim().to_string(),
+        symbol: dataset.polygon_ticker.trim().to_string(),
+        from: from_date.format("%Y-%m-%d").to_string(),
+        to: now_date.format("%Y-%m-%d").to_string(),
+        adjusted: Some(dataset.adjusted),
+        timeframe: Some(timeframe),
+    })
+}
+
+pub fn top_off_cached_dataset(
+    app_identifier: &str,
+    cache_dir: &Path,
+    csv_path: &str,
+) -> Result<PolygonDownloadResult, String> {
+    let manifest = load_manifest(cache_dir)?;
+    let dataset = find_manifest_dataset_by_csv_path(&manifest, csv_path)
+        .cloned()
+        .ok_or_else(|| "dataset not found in Polygon manifest".to_string())?;
+    let now_date = chrono::Utc::now().date_naive();
+    let req = build_top_off_request_for_dataset(&dataset, now_date)?;
+    download_1m_to_cache(app_identifier, cache_dir, &req)
+}
+
 pub fn download_1m_to_cache(
     app_identifier: &str,
     cache_dir: &Path,
@@ -1173,5 +1317,94 @@ badline\n",
 
         let txt = fs::read_to_string(&csv_path).expect("read repaired csv");
         assert!(txt.to_ascii_lowercase().starts_with("timestamp,open,close"));
+    }
+
+    #[test]
+    fn build_top_off_request_uses_cached_dataset_identity_and_now_date() {
+        let req = build_top_off_request_for_dataset(
+            &PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "AAPL".to_string(),
+                polygon_ticker: "AAPL".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: "C:/cache/polygon_stocks_AAPL_1m.csv".to_string(),
+                min_ts: 0,
+                max_ts: 1_735_689_600_000, // 2025-01-01T00:00:00Z
+                last_updated_utc_ms: 0,
+                row_count: 0,
+                adjusted: true,
+                integrity: None,
+            },
+            NaiveDate::from_ymd_opt(2026, 4, 6).expect("valid date"),
+        )
+        .expect("build top-off request");
+
+        assert_eq!(req.market, "stocks");
+        assert_eq!(req.symbol, "AAPL");
+        assert_eq!(req.from, "2025-01-01");
+        assert_eq!(req.to, "2026-04-06");
+        assert_eq!(req.adjusted, Some(true));
+        assert_eq!(req.timeframe.as_deref(), Some("1m"));
+    }
+
+    #[test]
+    fn build_top_off_request_rejects_dataset_older_than_free_plan_window() {
+        let err = build_top_off_request_for_dataset(
+            &PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "AAPL".to_string(),
+                polygon_ticker: "AAPL".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: "C:/cache/polygon_stocks_AAPL_1m.csv".to_string(),
+                min_ts: 0,
+                max_ts: 1_640_995_200_000, // 2022-01-01T00:00:00Z
+                last_updated_utc_ms: 0,
+                row_count: 0,
+                adjusted: true,
+                integrity: None,
+            },
+            NaiveDate::from_ymd_opt(2026, 4, 6).expect("valid date"),
+        )
+        .expect_err("old dataset should be rejected");
+
+        assert!(err.contains("free-plan lookback window"));
+    }
+
+    #[test]
+    fn read_api_key_falls_back_to_env_vars_when_cache_is_empty() {
+        let cache_dir = make_temp_dir("vectorta_polygon_key_env_test");
+        let app_identifier = format!(
+            "dev.vectoralpha.vectorgrid.test.{}.{}",
+            std::process::id(),
+            now_utc_ms().max(1)
+        );
+        let env_key = "polygon-env-fallback-test-key";
+        std::env::set_var("POLYGON_KEY", env_key);
+        std::env::remove_var("POLYGON_API_KEY");
+
+        let resolved = read_api_key(&app_identifier, &cache_dir).expect("read api key");
+
+        std::env::remove_var("POLYGON_KEY");
+        assert_eq!(resolved.as_deref(), Some(env_key));
+    }
+
+    #[test]
+    fn parse_polygon_key_from_dotenv_line_accepts_spaced_and_quoted_assignment() {
+        let parsed = parse_polygon_key_from_dotenv_line(r#"POLYGON_KEY = "polygon-dotenv-key""#);
+        assert_eq!(parsed.as_deref(), Some("polygon-dotenv-key"));
+    }
+
+    #[test]
+    fn dotenv_api_key_fallback_from_dir_reads_repo_style_env_file() {
+        let dir = make_temp_dir("vectorta_polygon_dotenv_test");
+        fs::write(
+            dir.join(".env"),
+            "# comment\nPOLYGON_KEY = \"polygon-dotenv-key\"\n",
+        )
+        .expect("write .env");
+
+        let resolved = dotenv_api_key_fallback_from_dir(&dir);
+
+        assert_eq!(resolved.as_deref(), Some("polygon-dotenv-key"));
     }
 }

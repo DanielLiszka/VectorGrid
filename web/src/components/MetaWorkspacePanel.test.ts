@@ -96,7 +96,7 @@ describe('MetaWorkspacePanel', () => {
     expect(localStorage.getItem(META_RESULTS_TABLE_STATE_KEY)).toBeNull()
   })
 
-  it('reuses the shared contextual action menu for saved aggregate artifacts', async () => {
+  it('reuses the shared contextual action menu across saved aggregate artifact families', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflow = useWorkflowStore(pinia)
@@ -145,13 +145,20 @@ describe('MetaWorkspacePanel', () => {
     })
     await flushPanel()
 
+    const familyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-saved-artifact-family]'))
+    expect(familyButtons.map((button) => String(button.textContent || '').trim())).toEqual([
+      'Saved Meta',
+      'Saved Stage 5',
+      'Saved Policy Eval',
+    ])
+
     const menuTriggers = Array.from(document.querySelectorAll<HTMLButtonElement>('button.contextActionMenuTrigger'))
-    expect(menuTriggers).toHaveLength(3)
+    expect(menuTriggers).toHaveLength(1)
 
     const loadButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).filter((button) =>
       String(button.textContent || '').trim() === 'Load',
     )
-    expect(loadButtons).toHaveLength(3)
+    expect(loadButtons).toHaveLength(1)
 
     menuTriggers[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPanel()
@@ -166,5 +173,122 @@ describe('MetaWorkspacePanel', () => {
 
     expect(openSavedReportSpy).toHaveBeenCalledTimes(1)
     expect(document.activeElement).toBe(menuTriggers[0])
+
+    familyButtons[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPanel()
+
+    const stage5MenuTrigger = document.querySelector<HTMLButtonElement>('button.contextActionMenuTrigger')
+    expect(stage5MenuTrigger).not.toBeNull()
+    stage5MenuTrigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPanel()
+
+    const stage5MenuText = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).map((item) =>
+      String(item.textContent || '').trim(),
+    )
+    expect(stage5MenuText).not.toContain('Open report')
+
+    familyButtons[2]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPanel()
+
+    expect(document.body.textContent || '').toContain('Saved Policy Evaluation')
+  })
+
+  it('uses inline confirmation before deleting saved aggregate artifacts', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const historyStore = useHistoryStore(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+
+    workflow.selectResultsTab('meta', { persist: false })
+    workflow.selectAggregateTab('saved', { persist: false })
+    historyStore.savedRunCount = 1
+
+    analysisStore.metaSavedOptions = [
+      { value: 'meta-a', label: 'meta-a', disabled: false },
+    ]
+    analysisStore.metaSavedSelected = 'meta-a'
+    analysisStore.canDeleteMetaSaved = true
+
+    analysisStore.stage4SavedOptions = [
+      { value: 'stage5-a', label: 'stage5-a', disabled: false },
+    ]
+    analysisStore.stage4SavedSelected = 'stage5-a'
+    analysisStore.canDeleteStage4Saved = true
+
+    analysisStore.policyEvalSavedOptions = [
+      { value: 'policy-a', label: 'policy-a', disabled: false },
+    ]
+    analysisStore.policyEvalSavedSelected = 'policy-a'
+    analysisStore.canDeletePolicyEvalSaved = true
+
+    const deleteSavedSpy = vi
+      .spyOn(analysisStore, 'deleteSaved')
+      .mockImplementation(() => {})
+    const deleteStage5Spy = vi
+      .spyOn(analysisStore, 'deleteStage5Saved')
+      .mockImplementation(() => {})
+    const deletePolicySpy = vi
+      .spyOn(analysisStore, 'deletePolicyEvalSaved')
+      .mockImplementation(() => {})
+
+    mount(MetaWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const openDeleteDialog = async (): Promise<void> => {
+      const trigger = document.querySelector<HTMLButtonElement>('button.contextActionMenuTrigger')
+      expect(trigger).not.toBeNull()
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await flushPanel()
+      const deleteItem = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+        (item) => String(item.textContent || '').trim() === 'Delete',
+      )
+      expect(deleteItem).toBeTruthy()
+      deleteItem?.click()
+      await flushPanel()
+    }
+
+    await openDeleteDialog()
+    expect(document.body.textContent || '').toContain('Delete saved meta artifact')
+    expect(document.body.textContent || '').toContain('meta-a')
+    expect(deleteSavedSpy).not.toHaveBeenCalled()
+
+    let confirmButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => String(button.textContent || '').trim() === 'Delete artifact',
+    )
+    expect(confirmButton).toBeDefined()
+    confirmButton?.click()
+    await flushPanel()
+    expect(deleteSavedSpy).toHaveBeenCalledTimes(1)
+
+    const familyButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-saved-artifact-family]'))
+    familyButtons[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPanel()
+
+    await openDeleteDialog()
+    expect(document.body.textContent || '').toContain('Delete saved Stage 5 artifact')
+    expect(document.body.textContent || '').toContain('stage5-a')
+    confirmButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => String(button.textContent || '').trim() === 'Delete artifact',
+    )
+    confirmButton?.click()
+    await flushPanel()
+    expect(deleteStage5Spy).toHaveBeenCalledTimes(1)
+
+    familyButtons[2]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPanel()
+
+    await openDeleteDialog()
+    expect(document.body.textContent || '').toContain('Delete saved policy evaluation')
+    expect(document.body.textContent || '').toContain('policy-a')
+    confirmButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => String(button.textContent || '').trim() === 'Delete artifact',
+    )
+    confirmButton?.click()
+    await flushPanel()
+    expect(deletePolicySpy).toHaveBeenCalledTimes(1)
   })
 })

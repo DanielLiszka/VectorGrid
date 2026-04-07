@@ -1071,6 +1071,13 @@ pub struct PolygonDownloadAndLoadResponse {
     pub load: LoadPriceDataResponse,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PolygonTopOffRequest {
+    pub csv_path: String,
+    #[serde(default)]
+    pub timeframe: Option<String>,
+}
+
 #[tauri::command]
 pub async fn polygon_download_1m_and_load(
     req: polygon::PolygonDownloadRequest,
@@ -1102,6 +1109,51 @@ pub async fn polygon_download_1m_and_load(
     .map_err(|e| e.to_string())??;
 
     let csv_path = dl.csv_path.to_string_lossy().to_string();
+    let base_load = state.load_price_data(&csv_path, &cache_dir)?;
+    let load = if requested_tf.eq_ignore_ascii_case("1m") {
+        base_load.clone()
+    } else {
+        state.resample_loaded_data(&base_load.id, &requested_tf)?
+    };
+    Ok(PolygonDownloadAndLoadResponse {
+        csv_path,
+        downloaded_bars: dl.downloaded_bars,
+        used_cache_only: dl.used_cache_only,
+        base_load,
+        load,
+    })
+}
+
+#[tauri::command]
+pub async fn polygon_top_off_dataset(
+    req: PolygonTopOffRequest,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<PolygonDownloadAndLoadResponse, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let root = settings::resolve_market_data_root_dir(&base)?;
+    let dir = polygon::polygon_cache_dir(&root);
+    let cache_dir = crate::data_cache::app_data_cache_dir(&base);
+    let app_identifier = app.config().identifier.clone();
+    let csv_path = req.csv_path.trim().to_string();
+    if csv_path.is_empty() {
+        return Err("select a cached Polygon dataset first".to_string());
+    }
+
+    let requested_tf = req
+        .timeframe
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("1m")
+        .to_string();
+    let csv_path2 = csv_path.clone();
+    let dl = tauri::async_runtime::spawn_blocking(move || {
+        polygon::top_off_cached_dataset(&app_identifier, &dir, &csv_path2)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
     let base_load = state.load_price_data(&csv_path, &cache_dir)?;
     let load = if requested_tf.eq_ignore_ascii_case("1m") {
         base_load.clone()

@@ -2,9 +2,13 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use ta_app_core::OptionsExpressionArtifactV1;
 use tauri::Manager;
 
 use super::{
+    commands_options_expression::{
+        summarize_options_expression_artifact, OptionsExpressionArtifactSummary,
+    },
     metric_surface::build_optimization_metric_surface_artifact_value, reveal_path_blocking,
     sanitize_filename_component,
 };
@@ -19,6 +23,10 @@ fn is_run_artifact_kind(kind: &str) -> bool {
         kind.trim(),
         "vectorbt_run_artifact" | "vectorgrid_run_artifact"
     )
+}
+
+fn is_options_expression_artifact_kind(kind: &str) -> bool {
+    matches!(kind.trim(), "vectorgrid_options_expression_v1")
 }
 
 fn is_meta_selection_kind(kind: &str) -> bool {
@@ -174,6 +182,7 @@ pub struct ArtifactLibrarySnapshot {
     pub meta: Vec<MetaArtifactSummary>,
     pub stage5: Vec<Stage5ArtifactSummary>,
     pub policy_evals: Vec<MlPolicyEvalArtifactSummary>,
+    pub options_expression: Vec<OptionsExpressionArtifactSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1301,6 +1310,23 @@ fn build_run_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<RunA
     })
 }
 
+fn build_options_expression_artifact_summary(
+    path: &Path,
+    bytes: u64,
+    v: &Value,
+) -> Option<OptionsExpressionArtifactSummary> {
+    let kind = v
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if !is_options_expression_artifact_kind(kind) {
+        return None;
+    }
+
+    let artifact = serde_json::from_value::<OptionsExpressionArtifactV1>(v.clone()).ok()?;
+    Some(summarize_options_expression_artifact(path, bytes, &artifact))
+}
+
 fn build_meta_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<MetaArtifactSummary> {
     let kind = v
         .get("kind")
@@ -1495,6 +1521,7 @@ pub(super) fn list_artifact_library_blocking(
     let mut meta = Vec::new();
     let mut stage5 = Vec::new();
     let mut policy_evals = Vec::new();
+    let mut options_expression = Vec::new();
 
     for entry in entries {
         if let Some(summary) = build_run_artifact_summary(&entry.path, entry.bytes, &entry.value) {
@@ -1511,18 +1538,25 @@ pub(super) fn list_artifact_library_blocking(
         {
             policy_evals.push(summary);
         }
+        if let Some(summary) =
+            build_options_expression_artifact_summary(&entry.path, entry.bytes, &entry.value)
+        {
+            options_expression.push(summary);
+        }
     }
 
     runs.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
     meta.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
     stage5.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
     policy_evals.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
+    options_expression.sort_by(|lhs, rhs| rhs.ts.cmp(&lhs.ts));
 
     Ok(ArtifactLibrarySnapshot {
         runs,
         meta,
         stage5,
         policy_evals,
+        options_expression,
     })
 }
 
@@ -1837,6 +1871,7 @@ pub(super) fn update_artifact_tags_blocking(
         && !is_meta_selection_kind(kind)
         && !is_meta_stage_result_kind(kind)
         && !is_ml_confidence_policy_eval_kind(kind)
+        && !is_options_expression_artifact_kind(kind)
     {
         return Err(format!("unsupported artifact kind: {kind}"));
     }
@@ -1870,9 +1905,9 @@ mod tests {
     use super::{
         build_run_artifact_detail_response, build_workflow_artifacts_hydration_payload,
         canonical_json, compute_config_fingerprint_from_artifact, is_meta_artifact_file_name,
-        is_meta_stage_artifact_file_name, is_run_artifact_kind, normalize_dataset_meta,
-        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
-        resolve_run_artifact_timeframe,
+        is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
+        is_run_artifact_kind, normalize_dataset_meta, resolve_run_artifact_csv_path,
+        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe,
     };
     use serde_json::json;
 
@@ -2066,6 +2101,14 @@ mod tests {
         assert!(is_run_artifact_kind("vectorbt_run_artifact"));
         assert!(is_run_artifact_kind("vectorgrid_run_artifact"));
         assert!(!is_run_artifact_kind("vectorbt_meta_selection"));
+    }
+
+    #[test]
+    fn options_expression_artifact_kind_alias_accepts_vectorgrid_name() {
+        assert!(is_options_expression_artifact_kind(
+            "vectorgrid_options_expression_v1"
+        ));
+        assert!(!is_options_expression_artifact_kind("vectorgrid_run_artifact"));
     }
 
     #[test]

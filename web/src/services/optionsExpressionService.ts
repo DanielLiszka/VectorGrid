@@ -45,6 +45,33 @@ export interface OptionsDatasetManifestSummary {
   aggregatePriceField: string
 }
 
+export interface PolygonOptionsDatasetDownloadRequestSummary {
+  rootSymbol: string
+  from: string
+  to: string
+  optionsDatasetId?: string
+  contractType?: string
+  expirationDateFrom?: string
+  expirationDateTo?: string
+  maxDteDays?: number | null
+  strikeMin?: number | null
+  strikeMax?: number | null
+  maxContracts?: number | null
+  providerEntitlementProfile?: string
+  contractReferenceAsOfUtc?: string
+}
+
+export interface PolygonOptionsDatasetDownloadSummary {
+  manifest: OptionsDatasetManifestSummary
+  contractsDiscovered: number
+  contractsSelected: number
+  contractsWithRows: number
+  downloadedOptionRows: number
+  skippedContracts: number
+  underlyingCsvPath: string
+  usedUnderlyingCacheOnly: boolean
+}
+
 export interface OptionsExpressionMetricsSummary {
   validTrades: number
   invalidEvents: number
@@ -68,6 +95,8 @@ export interface OptionsExpressionRequestSummary {
   parentArtifactPath: string
   parentCandidateIndex: number | null
   optionsDatasetId: string
+  backendPreference?: string
+  splitAssignmentMode: string
   delayMinutes: number[]
   dteBuckets: number[]
   moneynessBuckets: string[]
@@ -81,6 +110,7 @@ export interface OptionsExpressionRequestSummary {
   minValidTrades: number | null
   splitRatioSearch: number
   splitRatioHoldout: number
+  sealedFinalistCount?: number
 }
 
 export interface OptionsExpressionTupleSummary {
@@ -92,11 +122,17 @@ export interface OptionsExpressionTupleSummary {
   stopReturn: number | null
   exitTemplate: string
   fillModel: string
+  preSealedRank?: number | undefined
+  sealedFinalist?: boolean | undefined
+  sealedFinalRank?: number | undefined
   robustScore: number
   selectionMetrics: OptionsExpressionMetricsSummary
   holdoutMetrics: OptionsExpressionMetricsSummary | null
   sealedEvaluationMetrics: OptionsExpressionMetricsSummary | null
   stressMetrics: OptionsExpressionMetricsSummary | null
+  sealedStressMetrics?: OptionsExpressionMetricsSummary | null
+  harsherStressMetrics?: OptionsExpressionMetricsSummary | null
+  sealedHarsherStressMetrics?: OptionsExpressionMetricsSummary | null
 }
 
 export interface OptionsExpressionDiagnosticsSummary {
@@ -120,11 +156,45 @@ export interface OptionsExpressionStagingSummary {
   compiledCandidateCount: number
   baselineExitSummaryCount: number
   conservativeExitSummaryCount: number
+  harsherExitSummaryCount: number
 }
 
 export interface OptionsCandidateInvalidReasonCountSummary {
   reason: string
   count: number
+}
+
+export interface OptionsDelayBucketCoverageSummary {
+  delayMinutes: number
+  slotCount: number
+  validSlotCount: number
+  invalidSlotCount: number
+  validRate: number
+  invalidReasons: OptionsCandidateInvalidReasonCountSummary[]
+}
+
+export interface OptionsDteBucketCoverageSummary {
+  dteDays: number
+  slotCount: number
+  validSlotCount: number
+  invalidSlotCount: number
+  validRate: number
+  invalidReasons: OptionsCandidateInvalidReasonCountSummary[]
+}
+
+export interface OptionsMoneynessBucketCoverageSummary {
+  moneynessBucket: string
+  slotCount: number
+  validSlotCount: number
+  invalidSlotCount: number
+  validRate: number
+  invalidReasons: OptionsCandidateInvalidReasonCountSummary[]
+}
+
+export interface OptionsCandidateAxisCoverageSummary {
+  delayMinutes: OptionsDelayBucketCoverageSummary[]
+  dteDays: OptionsDteBucketCoverageSummary[]
+  moneynessBuckets: OptionsMoneynessBucketCoverageSummary[]
 }
 
 export interface OptionsExpressionFeasibilityTimingSummary {
@@ -133,7 +203,19 @@ export interface OptionsExpressionFeasibilityTimingSummary {
   baselineExitSummaryCompileMs: number
   conservativeCandidateCompileMs: number
   conservativeExitSummaryCompileMs: number
+  harsherCandidateCompileMs: number
+  harsherExitSummaryCompileMs: number
   cpuRankingMs: number
+  cpuRankingUs: number
+  gpuRankingMs: number | null
+  gpuRankingUs: number | null
+  gpuTensorScoreMs: number | null
+  gpuTensorScoreUs: number | null
+  gpuExactifyMs: number | null
+  gpuExactifyUs: number | null
+  gpuSealedStageMs: number | null
+  gpuSealedStageUs: number | null
+  gpuSpeedupVsCpu: number | null
 }
 
 export interface OptionsExpressionFeasibilityEventCoverageSummary {
@@ -149,6 +231,46 @@ export interface OptionsExpressionFeasibilityEventCoverageSummary {
   searchEventsWithConservativeOutcomes: number
   holdoutEventsWithConservativeOutcomes: number
   sealedTestEventsWithConservativeOutcomes: number
+  totalEventsWithHarsherOutcomes: number
+  searchEventsWithHarsherOutcomes: number
+  holdoutEventsWithHarsherOutcomes: number
+  sealedTestEventsWithHarsherOutcomes: number
+}
+
+export interface OptionsExpressionFeasibilityCacheStatsSummary {
+  structuralCacheHits: number
+  structuralCacheMisses: number
+  structuralCacheEntries: number
+  summaryCacheHits: number
+  summaryCacheMisses: number
+  summaryCacheEntries: number
+  gpuSharedInputCacheHits: number
+  gpuSharedInputCacheMisses: number
+  gpuOutcomeInputCacheHits: number
+  gpuOutcomeInputCacheMisses: number
+  gpuOutputBufferReuses: number
+  gpuOutputBufferAllocations: number
+  gpuTupleChunkCount: number
+  gpuTupleChunkSize: number
+  gpuKernelLaunchCount: number
+  gpuTupleBudgetBytes: number
+  gpuOutcomeTensorBytes: number
+  gpuSharedInputBytesPerChunk: number
+  gpuOutputBytesPerChunk: number
+  gpuTotalDeviceBytesPerChunk: number
+  gpuDeviceTotalMemoryBytes: number
+  gpuDeviceFreeMemoryBytes: number
+  gpuDeviceUsableMemoryBytes: number
+  gpuMemoryBudgetSource: string
+  gpuOutcomeTensorFitsInMemory: boolean
+  gpuChunkPlanFitsInMemory: boolean
+  gpuPlanNotes: string[]
+}
+
+export interface OptionsExpressionAutoBackendDecisionSummary {
+  recommendedBackend: string
+  gpuEligible: boolean
+  reasons: string[]
 }
 
 export interface AnalyzeOptionsExpressionFeasibilitySummary {
@@ -157,6 +279,8 @@ export interface AnalyzeOptionsExpressionFeasibilitySummary {
   diagnostics: OptionsExpressionDiagnosticsSummary
   priceSemantics: string
   fillModel: string
+  bestAvailableBackend: string
+  autoBackendDecision: OptionsExpressionAutoBackendDecisionSummary
   compiledTupleCount: number
   perEventCandidateSlots: number
   perCandidateExitSummaries: number
@@ -171,13 +295,19 @@ export interface AnalyzeOptionsExpressionFeasibilitySummary {
   conservativeExitSummaryCount: number
   conservativeCompiledExitSummaryCount: number
   conservativeExitSummaryDensity: number
+  harsherExitSummaryCount: number
+  harsherCompiledExitSummaryCount: number
+  harsherExitSummaryDensity: number
   projectedEventTupleEvaluations: number
   structuralCacheBytesEstimate: number
   baselineSummaryBytesEstimate: number
   conservativeSummaryBytesEstimate: number
+  harsherSummaryBytesEstimate: number
   timings: OptionsExpressionFeasibilityTimingSummary
   eventCoverage: OptionsExpressionFeasibilityEventCoverageSummary
+  cacheStats: OptionsExpressionFeasibilityCacheStatsSummary
   invalidReasons: OptionsCandidateInvalidReasonCountSummary[]
+  axisCoverage: OptionsCandidateAxisCoverageSummary
 }
 
 export interface RunOptionsExpressionSummary {
@@ -186,6 +316,7 @@ export interface RunOptionsExpressionSummary {
   parentArtifactId: string
   optionsDatasetHash: string
   backendUsed: string
+  backendFallbackReason?: string
   priceSemantics: string
   tupleCount: number
   request: OptionsExpressionRequestSummary | null
@@ -202,13 +333,23 @@ export interface OptionsExpressionArtifactSummary {
   rootSymbol: string
   optionsDatasetId: string
   backendUsed: string
+  backendFallbackReason?: string
   priceSemantics: string
   tupleCount: number
   bestRobustScore: number
   bestSelectionExpectancyPerPremium: number
+  bestHoldoutExpectancyPerPremium: number | null
+  bestSealedExpectancyPerPremium: number | null
+  bestStressExpectancyPerPremium: number | null
+  bestSealedStressExpectancyPerPremium: number | null
+  bestHarsherStressExpectancyPerPremium: number | null
+  bestSealedHarsherStressExpectancyPerPremium: number | null
+  sealedFinalistBudget?: number
+  sealedEvaluatedTupleCount?: number
   hasHoldoutMetrics: boolean
   hasSealedEvaluationMetrics: boolean
   hasStressMetrics: boolean
+  hasHarsherStressMetrics: boolean
 }
 
 export interface OptionsExpressionArtifactRecord {
@@ -221,6 +362,7 @@ export interface OptionsExpressionArtifactRecord {
   optionsDatasetId: string
   optionsDatasetHash: string
   backendUsed: string
+  backendFallbackReason?: string
   priceSemantics: string
   request: OptionsExpressionRequestSummary
   diagnostics: OptionsExpressionDiagnosticsSummary
@@ -239,6 +381,7 @@ export interface OptionsExpressionEventInspectionRow {
   rawUnderlierPrice: number
   baseExitTimestamp: number | null
   status: string
+  candidateInvalidReason: string
   contractId: string
   expirationDate: string
   strike: number | null
@@ -251,6 +394,13 @@ export interface OptionsExpressionEventInspectionRow {
   premiumPaid: number | null
   pnlPerContract: number | null
   returnOnPremium: number | null
+  entryLagMinutes: number | null
+  minutesToExpiryAtEntry: number | null
+  realizedHoldMinutes: number | null
+  pathOptionHigh: number | null
+  pathOptionLow: number | null
+  pathUnderlierHigh: number | null
+  pathUnderlierLow: number | null
   exitReason: string
 }
 
@@ -265,6 +415,24 @@ export interface OptionsExpressionTupleInspectionSummary {
   rows: OptionsExpressionEventInspectionRow[]
 }
 
+export interface OptionsExpressionEventPathPointSummary {
+  timestampMs: number
+  optionOpen: number
+  optionHigh: number
+  optionLow: number
+  optionClose: number
+  underlyingPrice: number
+}
+
+export interface OptionsExpressionEventPathInspectionSummary {
+  tupleIndex: number
+  eventIndex: number
+  eventId: string
+  row: OptionsExpressionEventInspectionRow
+  pointCount: number
+  points: OptionsExpressionEventPathPointSummary[]
+}
+
 export interface OpenOrRevealPathResult {
   path: string
   openedWith: 'open_path' | 'reveal_path'
@@ -276,6 +444,13 @@ export interface OptionsExpressionCsvExportInput {
   backendUsed?: string
   priceSemantics?: string
   tuples: OptionsExpressionTupleSummary[]
+}
+
+export interface OptionsExpressionInspectionCsvExportInput {
+  filenameStem?: string
+  artifactPath?: string
+  tupleIndex?: number
+  rows: OptionsExpressionEventInspectionRow[]
 }
 
 function normalizeOptionsDatasetManifest(raw: unknown): OptionsDatasetManifestSummary {
@@ -306,6 +481,20 @@ function normalizeOptionsDatasetManifest(raw: unknown): OptionsDatasetManifestSu
   }
 }
 
+function normalizePolygonOptionsDatasetDownload(raw: unknown): PolygonOptionsDatasetDownloadSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    manifest: normalizeOptionsDatasetManifest(row.manifest),
+    contractsDiscovered: normalizeNumber(row.contracts_discovered),
+    contractsSelected: normalizeNumber(row.contracts_selected),
+    contractsWithRows: normalizeNumber(row.contracts_with_rows),
+    downloadedOptionRows: normalizeNumber(row.downloaded_option_rows),
+    skippedContracts: normalizeNumber(row.skipped_contracts),
+    underlyingCsvPath: normalizeText(row.underlying_csv_path),
+    usedUnderlyingCacheOnly: Boolean(row.used_underlying_cache_only),
+  }
+}
+
 function normalizeMetrics(raw: unknown): OptionsExpressionMetricsSummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   return {
@@ -332,6 +521,9 @@ function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
     stopReturn: normalizeOptionalNumber(tuple.stop_return),
     exitTemplate: normalizeText(tuple.exit_template),
     fillModel: normalizeText(tuple.fill_model),
+    preSealedRank: row.pre_sealed_rank == null ? undefined : normalizeNumber(row.pre_sealed_rank),
+    sealedFinalist: Boolean(row.sealed_finalist),
+    sealedFinalRank: row.sealed_final_rank == null ? undefined : normalizeNumber(row.sealed_final_rank),
     robustScore: normalizeNumber(row.robust_score),
     selectionMetrics: normalizeMetrics(row.selection_metrics),
     holdoutMetrics: row.holdout_metrics ? normalizeMetrics(row.holdout_metrics) : null,
@@ -339,6 +531,11 @@ function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
       ? normalizeMetrics(row.sealed_evaluation_metrics)
       : null,
     stressMetrics: row.stress_metrics ? normalizeMetrics(row.stress_metrics) : null,
+    sealedStressMetrics: row.sealed_stress_metrics ? normalizeMetrics(row.sealed_stress_metrics) : null,
+    harsherStressMetrics: row.harsher_stress_metrics ? normalizeMetrics(row.harsher_stress_metrics) : null,
+    sealedHarsherStressMetrics: row.sealed_harsher_stress_metrics
+      ? normalizeMetrics(row.sealed_harsher_stress_metrics)
+      : null,
   }
 }
 
@@ -369,6 +566,7 @@ function normalizeStaging(raw: unknown): OptionsExpressionStagingSummary | null 
     compiledCandidateCount: normalizeNumber(row.compiled_candidate_count),
     baselineExitSummaryCount: normalizeNumber(row.baseline_exit_summary_count),
     conservativeExitSummaryCount: normalizeNumber(row.conservative_exit_summary_count),
+    harsherExitSummaryCount: normalizeNumber(row.harsher_exit_summary_count),
   }
 }
 
@@ -380,7 +578,19 @@ function normalizeFeasibilityTiming(raw: unknown): OptionsExpressionFeasibilityT
     baselineExitSummaryCompileMs: normalizeNumber(row.baseline_exit_summary_compile_ms),
     conservativeCandidateCompileMs: normalizeNumber(row.conservative_candidate_compile_ms),
     conservativeExitSummaryCompileMs: normalizeNumber(row.conservative_exit_summary_compile_ms),
+    harsherCandidateCompileMs: normalizeNumber(row.harsher_candidate_compile_ms),
+    harsherExitSummaryCompileMs: normalizeNumber(row.harsher_exit_summary_compile_ms),
     cpuRankingMs: normalizeNumber(row.cpu_ranking_ms),
+    cpuRankingUs: normalizeNumber(row.cpu_ranking_us),
+    gpuRankingMs: row.gpu_ranking_ms == null ? null : normalizeNumber(row.gpu_ranking_ms),
+    gpuRankingUs: row.gpu_ranking_us == null ? null : normalizeNumber(row.gpu_ranking_us),
+    gpuTensorScoreMs: row.gpu_tensor_score_ms == null ? null : normalizeNumber(row.gpu_tensor_score_ms),
+    gpuTensorScoreUs: row.gpu_tensor_score_us == null ? null : normalizeNumber(row.gpu_tensor_score_us),
+    gpuExactifyMs: row.gpu_exactify_ms == null ? null : normalizeNumber(row.gpu_exactify_ms),
+    gpuExactifyUs: row.gpu_exactify_us == null ? null : normalizeNumber(row.gpu_exactify_us),
+    gpuSealedStageMs: row.gpu_sealed_stage_ms == null ? null : normalizeNumber(row.gpu_sealed_stage_ms),
+    gpuSealedStageUs: row.gpu_sealed_stage_us == null ? null : normalizeNumber(row.gpu_sealed_stage_us),
+    gpuSpeedupVsCpu: normalizeOptionalNumber(row.gpu_speedup_vs_cpu),
   }
 }
 
@@ -399,6 +609,43 @@ function normalizeFeasibilityEventCoverage(raw: unknown): OptionsExpressionFeasi
     searchEventsWithConservativeOutcomes: normalizeNumber(row.search_events_with_conservative_outcomes),
     holdoutEventsWithConservativeOutcomes: normalizeNumber(row.holdout_events_with_conservative_outcomes),
     sealedTestEventsWithConservativeOutcomes: normalizeNumber(row.sealed_test_events_with_conservative_outcomes),
+    totalEventsWithHarsherOutcomes: normalizeNumber(row.total_events_with_harsher_outcomes),
+    searchEventsWithHarsherOutcomes: normalizeNumber(row.search_events_with_harsher_outcomes),
+    holdoutEventsWithHarsherOutcomes: normalizeNumber(row.holdout_events_with_harsher_outcomes),
+    sealedTestEventsWithHarsherOutcomes: normalizeNumber(row.sealed_test_events_with_harsher_outcomes),
+  }
+}
+
+function normalizeFeasibilityCacheStats(raw: unknown): OptionsExpressionFeasibilityCacheStatsSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    structuralCacheHits: normalizeNumber(row.structural_cache_hits),
+    structuralCacheMisses: normalizeNumber(row.structural_cache_misses),
+    structuralCacheEntries: normalizeNumber(row.structural_cache_entries),
+    summaryCacheHits: normalizeNumber(row.summary_cache_hits),
+    summaryCacheMisses: normalizeNumber(row.summary_cache_misses),
+    summaryCacheEntries: normalizeNumber(row.summary_cache_entries),
+    gpuSharedInputCacheHits: normalizeNumber(row.gpu_shared_input_cache_hits),
+    gpuSharedInputCacheMisses: normalizeNumber(row.gpu_shared_input_cache_misses),
+    gpuOutcomeInputCacheHits: normalizeNumber(row.gpu_outcome_input_cache_hits),
+    gpuOutcomeInputCacheMisses: normalizeNumber(row.gpu_outcome_input_cache_misses),
+    gpuOutputBufferReuses: normalizeNumber(row.gpu_output_buffer_reuses),
+    gpuOutputBufferAllocations: normalizeNumber(row.gpu_output_buffer_allocations),
+    gpuTupleChunkCount: normalizeNumber(row.gpu_tuple_chunk_count),
+    gpuTupleChunkSize: normalizeNumber(row.gpu_tuple_chunk_size),
+    gpuKernelLaunchCount: normalizeNumber(row.gpu_kernel_launch_count),
+    gpuTupleBudgetBytes: normalizeNumber(row.gpu_tuple_budget_bytes),
+    gpuOutcomeTensorBytes: normalizeNumber(row.gpu_outcome_tensor_bytes),
+    gpuSharedInputBytesPerChunk: normalizeNumber(row.gpu_shared_input_bytes_per_chunk),
+    gpuOutputBytesPerChunk: normalizeNumber(row.gpu_output_bytes_per_chunk),
+    gpuTotalDeviceBytesPerChunk: normalizeNumber(row.gpu_total_device_bytes_per_chunk),
+    gpuDeviceTotalMemoryBytes: normalizeNumber(row.gpu_device_total_memory_bytes),
+    gpuDeviceFreeMemoryBytes: normalizeNumber(row.gpu_device_free_memory_bytes),
+    gpuDeviceUsableMemoryBytes: normalizeNumber(row.gpu_device_usable_memory_bytes),
+    gpuMemoryBudgetSource: normalizeText(row.gpu_memory_budget_source),
+    gpuOutcomeTensorFitsInMemory: !!row.gpu_outcome_tensor_fits_in_memory,
+    gpuChunkPlanFitsInMemory: !!row.gpu_chunk_plan_fits_in_memory,
+    gpuPlanNotes: normalizeStringList(row.gpu_plan_notes),
   }
 }
 
@@ -413,6 +660,69 @@ function normalizeInvalidReasonCounts(value: unknown): OptionsCandidateInvalidRe
   })
 }
 
+function normalizeDelayBucketCoverage(value: unknown): OptionsDelayBucketCoverageSummary[] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => {
+    const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    return {
+      delayMinutes: normalizeNumber(row.delay_minutes),
+      slotCount: normalizeNumber(row.slot_count),
+      validSlotCount: normalizeNumber(row.valid_slot_count),
+      invalidSlotCount: normalizeNumber(row.invalid_slot_count),
+      validRate: normalizeNumber(row.valid_rate),
+      invalidReasons: normalizeInvalidReasonCounts(row.invalid_reasons),
+    }
+  })
+}
+
+function normalizeDteBucketCoverage(value: unknown): OptionsDteBucketCoverageSummary[] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => {
+    const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    return {
+      dteDays: normalizeNumber(row.dte_days),
+      slotCount: normalizeNumber(row.slot_count),
+      validSlotCount: normalizeNumber(row.valid_slot_count),
+      invalidSlotCount: normalizeNumber(row.invalid_slot_count),
+      validRate: normalizeNumber(row.valid_rate),
+      invalidReasons: normalizeInvalidReasonCounts(row.invalid_reasons),
+    }
+  })
+}
+
+function normalizeMoneynessBucketCoverage(value: unknown): OptionsMoneynessBucketCoverageSummary[] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => {
+    const row = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>
+    return {
+      moneynessBucket: normalizeText(row.moneyness_bucket),
+      slotCount: normalizeNumber(row.slot_count),
+      validSlotCount: normalizeNumber(row.valid_slot_count),
+      invalidSlotCount: normalizeNumber(row.invalid_slot_count),
+      validRate: normalizeNumber(row.valid_rate),
+      invalidReasons: normalizeInvalidReasonCounts(row.invalid_reasons),
+    }
+  })
+}
+
+function normalizeAxisCoverage(raw: unknown): OptionsCandidateAxisCoverageSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    delayMinutes: normalizeDelayBucketCoverage(row.delay_minutes),
+    dteDays: normalizeDteBucketCoverage(row.dte_days),
+    moneynessBuckets: normalizeMoneynessBucketCoverage(row.moneyness_buckets),
+  }
+}
+
+function normalizeAutoBackendDecision(raw: unknown): OptionsExpressionAutoBackendDecisionSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    recommendedBackend: normalizeText(row.recommended_backend),
+    gpuEligible: Boolean(row.gpu_eligible),
+    reasons: normalizeStringList(row.reasons),
+  }
+}
+
 function normalizeFeasibilityResponse(raw: unknown): AnalyzeOptionsExpressionFeasibilitySummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const report = (row.report && typeof row.report === 'object' ? row.report : {}) as Record<string, unknown>
@@ -422,6 +732,8 @@ function normalizeFeasibilityResponse(raw: unknown): AnalyzeOptionsExpressionFea
     diagnostics: normalizeDiagnostics(report.diagnostics),
     priceSemantics: normalizeText(report.price_semantics),
     fillModel: normalizeText(report.fill_model),
+    bestAvailableBackend: normalizeText(report.best_available_backend),
+    autoBackendDecision: normalizeAutoBackendDecision(report.auto_backend_decision),
     compiledTupleCount: normalizeNumber(report.compiled_tuple_count),
     perEventCandidateSlots: normalizeNumber(report.per_event_candidate_slots),
     perCandidateExitSummaries: normalizeNumber(report.per_candidate_exit_summaries),
@@ -436,13 +748,19 @@ function normalizeFeasibilityResponse(raw: unknown): AnalyzeOptionsExpressionFea
     conservativeExitSummaryCount: normalizeNumber(report.conservative_exit_summary_count),
     conservativeCompiledExitSummaryCount: normalizeNumber(report.conservative_compiled_exit_summary_count),
     conservativeExitSummaryDensity: normalizeNumber(report.conservative_exit_summary_density),
+    harsherExitSummaryCount: normalizeNumber(report.harsher_exit_summary_count),
+    harsherCompiledExitSummaryCount: normalizeNumber(report.harsher_compiled_exit_summary_count),
+    harsherExitSummaryDensity: normalizeNumber(report.harsher_exit_summary_density),
     projectedEventTupleEvaluations: normalizeNumber(report.projected_event_tuple_evaluations),
     structuralCacheBytesEstimate: normalizeNumber(report.structural_cache_bytes_estimate),
     baselineSummaryBytesEstimate: normalizeNumber(report.baseline_summary_bytes_estimate),
     conservativeSummaryBytesEstimate: normalizeNumber(report.conservative_summary_bytes_estimate),
+    harsherSummaryBytesEstimate: normalizeNumber(report.harsher_summary_bytes_estimate),
     timings: normalizeFeasibilityTiming(report.timings),
     eventCoverage: normalizeFeasibilityEventCoverage(report.event_coverage),
+    cacheStats: normalizeFeasibilityCacheStats(report.cache_stats),
     invalidReasons: normalizeInvalidReasonCounts(report.invalid_reasons),
+    axisCoverage: normalizeAxisCoverage(report.axis_coverage),
   }
 }
 
@@ -457,6 +775,7 @@ function normalizeRunOptionsExpression(raw: unknown): RunOptionsExpressionSummar
     parentArtifactId: normalizeText(artifact.parent_artifact_id),
     optionsDatasetHash: normalizeText(artifact.options_dataset_hash),
     backendUsed: normalizeText(result.backend_used),
+    backendFallbackReason: normalizeText(result.backend_fallback_reason),
     priceSemantics: normalizeText(result.price_semantics),
     tupleCount: normalizeNumber(result.tuple_count),
     request: Object.keys(artifact).length > 0 ? normalizeRequest(artifact.request) : null,
@@ -497,6 +816,8 @@ function normalizeRequest(raw: unknown): OptionsExpressionRequestSummary {
     parentArtifactPath: normalizeText(row.parent_artifact_path),
     parentCandidateIndex: normalizeOptionalNumber(row.parent_candidate_index),
     optionsDatasetId: normalizeText(row.options_dataset_id),
+    backendPreference: normalizeText(row.backend_preference),
+    splitAssignmentMode: normalizeText(row.split_assignment_mode) || 'event_chronological',
     delayMinutes: normalizeIntegerList(row.delay_minutes),
     dteBuckets: normalizeIntegerList(row.dte_buckets),
     moneynessBuckets: normalizeStringList(row.moneyness_buckets),
@@ -510,6 +831,7 @@ function normalizeRequest(raw: unknown): OptionsExpressionRequestSummary {
     minValidTrades: normalizeOptionalNumber(row.min_valid_trades),
     splitRatioSearch: normalizeNumber(row.split_ratio_search),
     splitRatioHoldout: normalizeNumber(row.split_ratio_holdout),
+    sealedFinalistCount: normalizeNumber(row.sealed_finalist_count, 5),
   }
 }
 
@@ -523,13 +845,27 @@ function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpress
     rootSymbol: normalizeText(row.root_symbol),
     optionsDatasetId: normalizeText(row.options_dataset_id),
     backendUsed: normalizeText(row.backend_used),
+    backendFallbackReason: normalizeText(row.backend_fallback_reason),
     priceSemantics: normalizeText(row.price_semantics),
     tupleCount: normalizeNumber(row.tuple_count),
     bestRobustScore: normalizeNumber(row.best_robust_score),
     bestSelectionExpectancyPerPremium: normalizeNumber(row.best_selection_expectancy_per_premium),
+    bestHoldoutExpectancyPerPremium: normalizeOptionalNumber(row.best_holdout_expectancy_per_premium),
+    bestSealedExpectancyPerPremium: normalizeOptionalNumber(row.best_sealed_expectancy_per_premium),
+    bestStressExpectancyPerPremium: normalizeOptionalNumber(row.best_stress_expectancy_per_premium),
+    bestSealedStressExpectancyPerPremium: normalizeOptionalNumber(row.best_sealed_stress_expectancy_per_premium),
+    bestHarsherStressExpectancyPerPremium: normalizeOptionalNumber(
+      row.best_harsher_stress_expectancy_per_premium,
+    ),
+    bestSealedHarsherStressExpectancyPerPremium: normalizeOptionalNumber(
+      row.best_sealed_harsher_stress_expectancy_per_premium,
+    ),
+    sealedFinalistBudget: normalizeNumber(row.sealed_finalist_budget),
+    sealedEvaluatedTupleCount: normalizeNumber(row.sealed_evaluated_tuple_count),
     hasHoldoutMetrics: Boolean(row.has_holdout_metrics),
     hasSealedEvaluationMetrics: Boolean(row.has_sealed_evaluation_metrics),
     hasStressMetrics: Boolean(row.has_stress_metrics),
+    hasHarsherStressMetrics: Boolean(row.has_harsher_stress_metrics),
   }
 }
 
@@ -546,6 +882,7 @@ function normalizeOptionsExpressionArtifact(raw: unknown): OptionsExpressionArti
     optionsDatasetId: normalizeText(row.options_dataset_id),
     optionsDatasetHash: normalizeText(row.options_dataset_hash),
     backendUsed: normalizeText(row.backend_used),
+    backendFallbackReason: normalizeText(row.backend_fallback_reason),
     priceSemantics: normalizeText(row.price_semantics),
     request: normalizeRequest(row.request),
     diagnostics: normalizeDiagnostics(row.diagnostics),
@@ -567,6 +904,7 @@ function normalizeInspectionRow(raw: unknown): OptionsExpressionEventInspectionR
     rawUnderlierPrice: normalizeNumber(row.raw_underlier_price),
     baseExitTimestamp: normalizeOptionalNumber(row.base_exit_timestamp),
     status: normalizeText(row.status),
+    candidateInvalidReason: normalizeText(row.candidate_invalid_reason),
     contractId: normalizeText(row.contract_id),
     expirationDate: normalizeText(row.expiration_date),
     strike: normalizeOptionalNumber(row.strike),
@@ -579,6 +917,13 @@ function normalizeInspectionRow(raw: unknown): OptionsExpressionEventInspectionR
     premiumPaid: normalizeOptionalNumber(row.premium_paid),
     pnlPerContract: normalizeOptionalNumber(row.pnl_per_contract),
     returnOnPremium: normalizeOptionalNumber(row.return_on_premium),
+    entryLagMinutes: normalizeOptionalNumber(row.entry_lag_minutes),
+    minutesToExpiryAtEntry: normalizeOptionalNumber(row.minutes_to_expiry_at_entry),
+    realizedHoldMinutes: normalizeOptionalNumber(row.realized_hold_minutes),
+    pathOptionHigh: normalizeOptionalNumber(row.path_option_high),
+    pathOptionLow: normalizeOptionalNumber(row.path_option_low),
+    pathUnderlierHigh: normalizeOptionalNumber(row.path_underlier_high),
+    pathUnderlierLow: normalizeOptionalNumber(row.path_underlier_low),
     exitReason: normalizeText(row.exit_reason),
   }
 }
@@ -595,6 +940,31 @@ function normalizeTupleInspection(raw: unknown): OptionsExpressionTupleInspectio
     candidateMissingEvents: normalizeNumber(row.candidate_missing_events),
     outcomeMissingEvents: normalizeNumber(row.outcome_missing_events),
     rows: rows.map((entry) => normalizeInspectionRow(entry)),
+  }
+}
+
+function normalizeEventPathPoint(raw: unknown): OptionsExpressionEventPathPointSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    timestampMs: normalizeNumber(row.timestamp_ms),
+    optionOpen: normalizeNumber(row.option_open),
+    optionHigh: normalizeNumber(row.option_high),
+    optionLow: normalizeNumber(row.option_low),
+    optionClose: normalizeNumber(row.option_close),
+    underlyingPrice: normalizeNumber(row.underlying_price),
+  }
+}
+
+function normalizeEventPathInspection(raw: unknown): OptionsExpressionEventPathInspectionSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const points = Array.isArray(row.points) ? row.points : []
+  return {
+    tupleIndex: normalizeNumber(row.tuple_index),
+    eventIndex: normalizeNumber(row.event_index),
+    eventId: normalizeText(row.event_id),
+    row: normalizeInspectionRow(row.row),
+    pointCount: normalizeNumber(row.point_count),
+    points: points.map((entry) => normalizeEventPathPoint(entry)),
   }
 }
 
@@ -637,6 +1007,35 @@ export async function importOptionsDataset(req: Record<string, unknown>): Promis
   return normalizeOptionsDatasetManifest(raw)
 }
 
+export async function downloadPolygonOptionsDataset(
+  req: PolygonOptionsDatasetDownloadRequestSummary,
+): Promise<PolygonOptionsDatasetDownloadSummary> {
+  const commandReq: Record<string, unknown> = {
+    root_symbol: normalizeText(req.rootSymbol).toUpperCase(),
+    from: normalizeText(req.from),
+    to: normalizeText(req.to),
+  }
+  const optionsDatasetId = normalizeText(req.optionsDatasetId)
+  if (optionsDatasetId) commandReq.options_dataset_id = optionsDatasetId
+  const contractType = normalizeText(req.contractType)
+  if (contractType) commandReq.contract_type = contractType
+  const expirationDateFrom = normalizeText(req.expirationDateFrom)
+  if (expirationDateFrom) commandReq.expiration_date_from = expirationDateFrom
+  const expirationDateTo = normalizeText(req.expirationDateTo)
+  if (expirationDateTo) commandReq.expiration_date_to = expirationDateTo
+  if (req.maxDteDays != null) commandReq.max_dte_days = Math.max(0, Math.floor(normalizeNumber(req.maxDteDays)))
+  if (req.strikeMin != null) commandReq.strike_min = normalizeNumber(req.strikeMin)
+  if (req.strikeMax != null) commandReq.strike_max = normalizeNumber(req.strikeMax)
+  if (req.maxContracts != null) commandReq.max_contracts = Math.max(1, Math.floor(normalizeNumber(req.maxContracts)))
+  const providerEntitlementProfile = normalizeText(req.providerEntitlementProfile)
+  if (providerEntitlementProfile) commandReq.provider_entitlement_profile = providerEntitlementProfile
+  const contractReferenceAsOfUtc = normalizeText(req.contractReferenceAsOfUtc)
+  if (contractReferenceAsOfUtc) commandReq.contract_reference_as_of_utc = contractReferenceAsOfUtc
+
+  const raw = await invokeCommand('download_polygon_options_dataset', { req: commandReq })
+  return normalizePolygonOptionsDatasetDownload(raw)
+}
+
 export async function listOptionsDatasets(): Promise<OptionsDatasetManifestSummary[]> {
   const raw = await invokeCommand('list_options_datasets')
   return Array.isArray(raw) ? raw.map((entry) => normalizeOptionsDatasetManifest(entry)) : []
@@ -660,8 +1059,14 @@ export async function analyzeOptionsExpressionFeasibility(
 }
 
 export async function listOptionsExpressionArtifacts(): Promise<OptionsExpressionArtifactSummary[]> {
-  const raw = await invokeCommand('list_options_expression_artifacts')
-  return Array.isArray(raw) ? raw.map((entry) => normalizeOptionsExpressionArtifactSummary(entry)) : []
+  const raw = await invokeCommand('list_artifact_library')
+  const library = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const rows = Array.isArray(library.optionsExpression)
+    ? library.optionsExpression
+    : Array.isArray(library.options_expression)
+      ? library.options_expression
+      : []
+  return rows.map((entry) => normalizeOptionsExpressionArtifactSummary(entry))
 }
 
 export async function loadOptionsExpressionArtifact(path: string): Promise<OptionsExpressionArtifactRecord> {
@@ -680,6 +1085,21 @@ export async function inspectOptionsExpressionTuple(input: {
     },
   })
   return normalizeTupleInspection(raw)
+}
+
+export async function inspectOptionsExpressionEventPath(input: {
+  artifactPath: string
+  tupleIndex: number
+  eventIndex: number
+}): Promise<OptionsExpressionEventPathInspectionSummary> {
+  const raw = await invokeCommand('inspect_options_expression_event_path', {
+    req: {
+      artifact_path: normalizeText(input.artifactPath),
+      tuple_index: Math.max(0, Math.floor(normalizeNumber(input.tupleIndex))),
+      event_index: Math.max(0, Math.floor(normalizeNumber(input.eventIndex))),
+    },
+  })
+  return normalizeEventPathInspection(raw)
 }
 
 export async function pickOptionsCsvPath(): Promise<string | null> {
@@ -723,6 +1143,9 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
     'stop_return',
     'exit_template',
     'fill_model',
+    'pre_sealed_rank',
+    'sealed_finalist',
+    'sealed_final_rank',
     'robust_score',
     'selection_valid_trades',
     'selection_invalid_events',
@@ -735,6 +1158,9 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
     'holdout_expectancy_per_premium',
     'sealed_expectancy_per_premium',
     'stress_expectancy_per_premium',
+    'sealed_stress_expectancy_per_premium',
+    'harsher_stress_expectancy_per_premium',
+    'sealed_harsher_stress_expectancy_per_premium',
     'backend_used',
     'price_semantics',
   ]
@@ -749,6 +1175,9 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
       row.stopReturn ?? '',
       row.exitTemplate,
       row.fillModel,
+      row.preSealedRank,
+      row.sealedFinalist ? 'yes' : '',
+      row.sealedFinalRank ?? '',
       row.robustScore,
       row.selectionMetrics.validTrades,
       row.selectionMetrics.invalidEvents,
@@ -761,8 +1190,86 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
       row.holdoutMetrics?.expectancyPerPremium ?? '',
       row.sealedEvaluationMetrics?.expectancyPerPremium ?? '',
       row.stressMetrics?.expectancyPerPremium ?? '',
+      row.sealedStressMetrics?.expectancyPerPremium ?? '',
+      row.harsherStressMetrics?.expectancyPerPremium ?? '',
+      row.sealedHarsherStressMetrics?.expectancyPerPremium ?? '',
       normalizeText(input.backendUsed),
       normalizeText(input.priceSemantics),
+    ].map((value) => csvCell(value)).join(',')),
+  ]
+  return downloadText(`${stem}.csv`, lines.join('\r\n'), 'text/csv;charset=utf-8')
+}
+
+export function exportOptionsExpressionInspectionCsv(input: OptionsExpressionInspectionCsvExportInput): boolean {
+  const rows = Array.isArray(input.rows) ? input.rows : []
+  if (rows.length === 0) return false
+  const stem = normalizeText(input.filenameStem)
+    || `vectorgrid_options_expression_tuple_${Math.max(0, Math.floor(normalizeNumber(input.tupleIndex))) + 1}`
+  const header = [
+    'event_index',
+    'event_id',
+    'split',
+    'side',
+    'status',
+    'candidate_invalid_reason',
+    'decision_timestamp',
+    'earliest_tradable_timestamp',
+    'requested_entry_timestamp',
+    'entry_timestamp',
+    'entry_lag_minutes',
+    'minutes_to_expiry_at_entry',
+    'realized_hold_minutes',
+    'contract_id',
+    'expiration_date',
+    'strike',
+    'multiplier',
+    'entry_option_price',
+    'entry_underlier_price',
+    'exit_timestamp',
+    'exit_option_price',
+    'exit_reason',
+    'premium_paid',
+    'pnl_per_contract',
+    'return_on_premium',
+    'path_option_low',
+    'path_option_high',
+    'path_underlier_low',
+    'path_underlier_high',
+    'artifact_path',
+  ]
+  const lines = [
+    header.join(','),
+    ...rows.map((row) => [
+      row.eventIndex,
+      row.eventId,
+      row.split,
+      row.side,
+      row.status,
+      row.candidateInvalidReason,
+      row.decisionTimestamp,
+      row.earliestTradableTimestamp,
+      row.requestedEntryTimestamp,
+      row.entryTimestamp ?? '',
+      row.entryLagMinutes ?? '',
+      row.minutesToExpiryAtEntry ?? '',
+      row.realizedHoldMinutes ?? '',
+      row.contractId,
+      row.expirationDate,
+      row.strike ?? '',
+      row.multiplier ?? '',
+      row.entryOptionPrice ?? '',
+      row.entryUnderlierPrice ?? '',
+      row.exitTimestamp ?? '',
+      row.exitOptionPrice ?? '',
+      row.exitReason,
+      row.premiumPaid ?? '',
+      row.pnlPerContract ?? '',
+      row.returnOnPremium ?? '',
+      row.pathOptionLow ?? '',
+      row.pathOptionHigh ?? '',
+      row.pathUnderlierLow ?? '',
+      row.pathUnderlierHigh ?? '',
+      normalizeText(input.artifactPath),
     ].map((value) => csvCell(value)).join(',')),
   ]
   return downloadText(`${stem}.csv`, lines.join('\r\n'), 'text/csv;charset=utf-8')
