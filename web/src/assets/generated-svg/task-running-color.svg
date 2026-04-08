@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="currentColor" stroke="currentColor" stroke-linecap="round">
+  <title>Task running</title>
+  <desc>A task being actively processed with remaining items queued</desc>
+
+  <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.18"/>
+  <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.25"/>
+
+  <path d="M15.9 19.1A3.9 3.9 0 1 1 12 15.2" fill="none" stroke="#0D84D8" stroke-width="2.25" opacity="0.9"/>
+  <circle cx="15.9" cy="19.1" r="1.1" fill="#0D84D8" stroke="none"/>
+</svg>

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="currentColor" stroke="currentColor" stroke-linecap="round">
+  <title>Task cancelling</title>
+  <desc>A running task being interrupted by a controlled stop request</desc>
+
+  <!-- Queue blocks -->
+  <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.18"/>
+  <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.25"/>
+
+  <!-- Processing arc — dimmed, computation winding down -->
+  <path d="M15.5 19 A3.5 3.5 0 1 1 12 15.5" fill="none" stroke-width="2.25" opacity="0.25"/>
+
+  <!-- Stop square — cancellation requested, process unwinding -->
+  <rect x="10.25" y="17.25" width="3.5" height="3.5" rx="0.5" fill="currentColor" stroke="none" opacity="0.5"/>
+</svg>

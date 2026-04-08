@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useStorage } from '@vueuse/core'
+import AppVisualIcon from './AppVisualIcon.vue'
 import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
 import {
   TASK_CENTER_PANEL_ID,
@@ -470,7 +471,7 @@ function openRelatedView(task: TrackedTask): void {
         <div class="toastMeta">
           <span class="toastSource">{{ sourceLabel(toast.source) }}</span>
           <span class="toastLevel">
-            <component :is="levelIcon(toast.level)" class="levelIcon" aria-hidden="true" />
+            <AppVisualIcon :icon="levelIcon(toast.level)" class="levelIcon" />
             <span>{{ levelLabel(toast.level) }}</span>
           </span>
         </div>
@@ -524,7 +525,7 @@ function openRelatedView(task: TrackedTask): void {
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
                   <div class="taskStatus" :class="statusClass(task)">
-                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <AppVisualIcon :icon="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" />
                     <span>{{ statusLabel(task) }}</span>
                   </div>
                 </div>
@@ -559,7 +560,7 @@ function openRelatedView(task: TrackedTask): void {
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
                   <div class="taskStatus" :class="statusClass(task)">
-                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <AppVisualIcon :icon="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" />
                     <span>{{ statusLabel(task) }}</span>
                   </div>
                 </div>
@@ -589,7 +590,7 @@ function openRelatedView(task: TrackedTask): void {
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
                   <div class="taskStatus" :class="statusClass(task)">
-                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <AppVisualIcon :icon="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" />
                     <span>{{ statusLabel(task) }}</span>
                   </div>
                 </div>
@@ -619,7 +620,7 @@ function openRelatedView(task: TrackedTask): void {
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
                   <div class="taskStatus" :class="statusClass(task)">
-                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <AppVisualIcon :icon="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" />
                     <span>{{ statusLabel(task) }}</span>
                   </div>
                 </div>
@@ -650,7 +651,7 @@ function openRelatedView(task: TrackedTask): void {
                 <div class="taskRow">
                   <div class="taskName">{{ formatCommandLabel(task.command) }}</div>
                   <div class="taskStatus" :class="statusClass(task)">
-                    <component :is="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" aria-hidden="true" />
+                    <AppVisualIcon :icon="statusIcon(task)" class="statusIcon" :class="statusIconClass(task)" />
                     <span>{{ statusLabel(task) }}</span>
                   </div>
                 </div>
@@ -685,7 +686,7 @@ function openRelatedView(task: TrackedTask): void {
             <div class="eventMeta">
               <span class="eventTime">{{ absoluteTime(evt.atUnixMs) }}</span>
               <span class="eventBadge" :class="toastClass(evt)">
-                <component :is="levelIcon(evt.level)" class="levelIcon" aria-hidden="true" />
+                <AppVisualIcon :icon="levelIcon(evt.level)" class="levelIcon" />
                 <span>{{ levelLabel(evt.level) }}</span>
               </span>
               <span class="eventSource">{{ sourceLabel(evt.source) }}</span>
@@ -708,7 +709,7 @@ function openRelatedView(task: TrackedTask): void {
             <div class="eventMeta">
               <span class="eventTime">{{ absoluteTime(entry.atUnixMs) }}</span>
               <span class="eventBadge" :class="toastClass(entry)">
-                <component :is="levelIcon(entry.level)" class="levelIcon" aria-hidden="true" />
+                <AppVisualIcon :icon="levelIcon(entry.level)" class="levelIcon" />
                 <span>{{ levelLabel(entry.level) }}</span>
               </span>
               <span class="eventBadge">{{ phaseLabel(entry.phase) }}</span>

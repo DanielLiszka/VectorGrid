@@ -117,6 +117,7 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Foreground-first workstation')
     expect(text).toContain('Close exits the app by default.')
     expect(document.querySelector('.diagnosticsBadgeIcon')).not.toBeNull()
+    expect(document.querySelector('img.diagnosticsBadgeIcon')).not.toBeNull()
   })
 
   it('opens the shared task center from diagnostics actions', async () => {

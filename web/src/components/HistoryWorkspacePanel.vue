@@ -13,6 +13,7 @@ import { useShellMount } from "../composables/useShellMount";
 import { useUiReadiness } from "../composables/useUiReadiness";
 import { useHistoryStore } from "../stores/historyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+import { emptyArtifactLibraryIllustration } from "../utils/appSvgAssets";
 import { formatUiBinaryBytes } from "../utils/uiFormat";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 import ConfirmationDialog from "./ConfirmationDialog.vue";
@@ -390,6 +391,7 @@ onBeforeUnmount(() => {
       </div>
 
       <section v-if="historyStage === 'no_data'" class="emptyState">
+        <img class="emptyStateIllustration" :src="emptyArtifactLibraryIllustration" alt="" aria-hidden="true" draggable="false" />
         <div class="emptyTitle">Run Library is empty.</div>
         <div class="emptyBody">
           Save or rerun an optimization to build a library of artifacts you can
@@ -964,6 +966,13 @@ onBeforeUnmount(() => {
   padding: 0.75rem;
   background: color-mix(in oklab, var(--surface) 95%, var(--panel));
   font-size: 0.8rem;
+}
+
+.emptyStateIllustration {
+  width: clamp(88px, 16vw, 124px);
+  height: auto;
+  margin-bottom: 0.2rem;
+  opacity: 0.92;
 }
 
 .detailCard {

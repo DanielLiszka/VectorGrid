@@ -60,6 +60,8 @@ describe('VueWorkspaceShell', () => {
     expect(document.querySelectorAll('.contextStrip > .contextCard')).toHaveLength(5)
     expect(document.querySelector('.contextOverflowSummary')?.textContent).toContain('Rows')
     expect(document.querySelector('.contextOverflowSummary')?.textContent).toContain('Loaded ID')
+    expect(document.querySelector('img.shellPostureIcon')).not.toBeNull()
+    expect(document.body.textContent || '').toContain('Build posture')
 
     await wrapper.get('.taskCenterLauncher').trigger('click')
     await flushUi()

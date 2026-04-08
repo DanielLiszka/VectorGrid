@@ -159,6 +159,7 @@ describe('MetaWorkspacePanel', () => {
       String(button.textContent || '').trim() === 'Load',
     )
     expect(loadButtons).toHaveLength(1)
+    expect(document.querySelector('button.buttonWithIcon img.actionIcon')).not.toBeNull()
 
     menuTriggers[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPanel()
@@ -167,6 +168,7 @@ describe('MetaWorkspacePanel', () => {
       (item) => String(item.textContent || '').trim() === 'Open report',
     )
     expect(reportItem).toBeTruthy()
+    expect(document.querySelector('img.contextActionMenuIcon')).not.toBeNull()
 
     reportItem?.click()
     await flushPanel()

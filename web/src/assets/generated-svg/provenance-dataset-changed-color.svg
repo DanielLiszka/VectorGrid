@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="currentColor">
+  <title>Dataset changed</title>
+  <desc>Stacked data layers with one shifted indicating source context change</desc>
+
+  <!-- Layer 1: original -->
+  <rect x="3" y="5" width="14" height="3.5" rx="0.75" opacity="0.4"/>
+  <!-- Layer 2: shifted, amber — the changed source -->
+  <rect x="7" y="10.25" width="14" height="3.5" rx="0.75" fill="#BA7517" opacity="0.65"/>
+  <!-- Layer 3: original -->
+  <rect x="3" y="15.5" width="14" height="3.5" rx="0.75" opacity="0.4"/>
+</svg>

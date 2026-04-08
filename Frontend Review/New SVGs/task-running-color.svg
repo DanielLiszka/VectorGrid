@@ -2,10 +2,9 @@
   <title>Task running</title>
   <desc>A task being actively processed with remaining items queued</desc>
 
-  <!-- Remaining queue blocks -->
   <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.18"/>
   <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.25"/>
 
-  <!-- 270° processing arc — amber -->
-  <path d="M15.5 19 A3.5 3.5 0 1 1 12 15.5" fill="none" stroke="#BA7517" stroke-width="2.25" opacity="0.65"/>
+  <path d="M15.9 19.1A3.9 3.9 0 1 1 12 15.2" fill="none" stroke="#0D84D8" stroke-width="2.25" opacity="0.9"/>
+  <circle cx="15.9" cy="19.1" r="1.1" fill="#0D84D8" stroke="none"/>
 </svg>

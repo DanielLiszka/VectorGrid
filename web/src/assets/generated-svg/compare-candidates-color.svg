@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="currentColor" stroke="currentColor" stroke-linecap="round">
+  <title>Compare candidates</title>
+  <desc>Two aligned analysis cards prepared for side-by-side review</desc>
+
+  <rect x="3.25" y="4.5" width="6.75" height="10.5" rx="1.1" fill="currentColor" stroke="none" opacity="0.18"/>
+  <rect x="14" y="4.5" width="6.75" height="10.5" rx="1.1" fill="currentColor" stroke="none" opacity="0.18"/>
+
+  <rect x="5.2" y="7.25" width="1.4" height="5" rx="0.7" fill="#BA7517" stroke="none" opacity="0.72"/>
+  <rect x="16.65" y="7.25" width="1.4" height="5" rx="0.7" fill="#BA7517" stroke="none" opacity="0.72"/>
+
+  <line x1="5" y1="18.25" x2="19" y2="18.25" stroke="currentColor" stroke-width="1.35" opacity="0.18"/>
+  <line x1="12" y1="16.5" x2="12" y2="19.75" stroke="#BA7517" stroke-width="1.6" opacity="0.55"/>
+</svg>

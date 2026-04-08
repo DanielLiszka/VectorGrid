@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import AppVisualIcon from './AppVisualIcon.vue'
 import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useHistoryStore } from '../stores/historyStore'
 import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import {
+  artifactExportSnapshotIcon,
+  compareCandidatesIcon,
+  emptyResultsWorkspaceIllustration,
+} from '../utils/appSvgAssets'
 import { describeExecutionRisk } from '../utils/executionRisk'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
@@ -116,6 +122,7 @@ function reviewTopResults(): void {
       </div>
 
       <section v-if="overviewEmptyVisible" class="emptyState">
+        <img class="emptyStateIllustration" :src="emptyResultsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
         <div class="emptyTitle">{{ overviewEmptyTitle }}</div>
         <div class="emptyBody">{{ overviewEmptyBody }}</div>
         <div class="emptyActions">
@@ -140,6 +147,7 @@ function reviewTopResults(): void {
       </section>
 
       <section v-else-if="showPendingOverview" class="emptyState overviewPendingState">
+        <img class="emptyStateIllustration" :src="emptyResultsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
         <div class="emptyTitle">No analyzed winner yet.</div>
         <div class="emptyBody">
           Results will appear here after an optimization run is scored or an existing run library result is loaded.
@@ -189,8 +197,14 @@ function reviewTopResults(): void {
           <div class="actions bestUtilityActions">
             <button type="button" class="primary" @click="reviewTopResults">Review Top results</button>
             <button type="button" :disabled="!canCopyBest" @click="analysisStore.copyBest()">Copy</button>
-            <button type="button" :disabled="!canExportCsv" @click="analysisStore.exportTopCsv()">Export top CSV</button>
-            <button type="button" :disabled="!canExportJson" @click="analysisStore.exportTopJson()">Export JSON</button>
+            <button type="button" class="buttonWithIcon" :disabled="!canExportCsv" @click="analysisStore.exportTopCsv()">
+              <AppVisualIcon :icon="artifactExportSnapshotIcon" class="actionIcon" />
+              <span>Export top CSV</span>
+            </button>
+            <button type="button" class="buttonWithIcon" :disabled="!canExportJson" @click="analysisStore.exportTopJson()">
+              <AppVisualIcon :icon="artifactExportSnapshotIcon" class="actionIcon" />
+              <span>Export JSON</span>
+            </button>
           </div>
         </div>
       </section>
@@ -199,7 +213,10 @@ function reviewTopResults(): void {
         <div class="panelSectionHeader">
           <div class="panelHeadCopy">
             <div class="panelEyebrow">Comparison</div>
-            <h3 class="panelPaneTitle">Baseline review</h3>
+            <h3 class="panelPaneTitle sectionHeadingWithIcon">
+              <AppVisualIcon :icon="compareCandidatesIcon" class="sectionGlyph" />
+              <span>Baseline review</span>
+            </h3>
             <div class="panelSectionLead">
               Compare the current winner against a saved run before promoting it to execution review.
             </div>
@@ -261,6 +278,13 @@ function reviewTopResults(): void {
   min-width: 0;
 }
 
+.emptyStateIllustration {
+  width: clamp(88px, 18vw, 124px);
+  height: auto;
+  margin-bottom: 0.2rem;
+  opacity: 0.92;
+}
+
 .riskNotice {
   border: 1px solid color-mix(in oklab, var(--warning-ink) 34%, var(--border));
   border-radius: 12px;
@@ -312,6 +336,20 @@ function reviewTopResults(): void {
 
 .bestUtilityActions {
   margin-top: 0;
+}
+
+.buttonWithIcon,
+.sectionHeadingWithIcon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.actionIcon,
+.sectionGlyph {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .summaryDetails {

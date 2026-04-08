@@ -1,29 +1,42 @@
 import type { FunctionalComponent, SVGAttributes } from 'vue'
 import {
-  ArrowRightLeft,
   CircleAlert,
   CircleCheckBig,
-  Clock3,
-  FileSpreadsheet,
-  FolderOpen,
   FolderOpenDot,
   Info,
-  LoaderCircle,
-  Pin,
   RefreshCcw,
-  Square,
   Trash2,
 } from 'lucide-vue-next'
+import {
+  artifactReopenReportIcon,
+  artifactReportWorkbookIcon,
+  artifactRevealPathIcon,
+  compareCandidatesIcon,
+  comparePinCandidateIcon,
+  compareRemoveFromSetIcon,
+  compareReplacePinnedIcon,
+  taskCancelledIcon,
+  taskCancellingIcon,
+  taskCompletedIcon,
+  taskFailedIcon,
+  taskQueuedIcon,
+  taskRunningIcon,
+  type AssetIconSpec,
+} from './appSvgAssets'
 
-export type AppIcon = FunctionalComponent<SVGAttributes>
+export type AppIcon = FunctionalComponent<SVGAttributes> | AssetIconSpec
+
+export function isAssetIcon(icon: AppIcon | null | undefined): icon is AssetIconSpec {
+  return !!icon && typeof icon === 'object' && 'kind' in icon && icon.kind === 'asset'
+}
 
 const TASK_STATUS_ICONS: Record<string, AppIcon> = {
-  queued: Clock3,
-  running: LoaderCircle,
-  cancelling: CircleAlert,
-  success: CircleCheckBig,
-  failed: CircleAlert,
-  cancelled: Square,
+  queued: taskQueuedIcon,
+  running: taskRunningIcon,
+  cancelling: taskCancellingIcon,
+  success: taskCompletedIcon,
+  failed: taskFailedIcon,
+  cancelled: taskCancelledIcon,
   idle: Info,
 }
 
@@ -35,18 +48,18 @@ const TASK_LEVEL_ICONS: Record<string, AppIcon> = {
 }
 
 const ARTIFACT_ACTION_ICONS: Record<string, AppIcon> = {
-  load: FolderOpenDot,
+  load: artifactReopenReportIcon,
   refresh: RefreshCcw,
-  report: FileSpreadsheet,
-  reveal: FolderOpen,
+  report: artifactReportWorkbookIcon,
+  reveal: artifactRevealPathIcon,
   delete: Trash2,
 }
 
 const COMPARE_ACTION_ICONS: Record<string, AppIcon> = {
-  pin: Pin,
-  compare: ArrowRightLeft,
-  replace: ArrowRightLeft,
-  remove: Trash2,
+  pin: comparePinCandidateIcon,
+  compare: compareCandidatesIcon,
+  replace: compareReplacePinnedIcon,
+  remove: compareRemoveFromSetIcon,
   clear: Trash2,
 }
 
@@ -65,5 +78,5 @@ export function artifactActionIcon(action: 'load' | 'refresh' | 'report' | 'reve
 }
 
 export function compareActionIcon(action: 'pin' | 'compare' | 'replace' | 'remove' | 'clear'): AppIcon {
-  return (COMPARE_ACTION_ICONS[action] ?? ArrowRightLeft) as AppIcon
+  return (COMPARE_ACTION_ICONS[action] ?? compareCandidatesIcon) as AppIcon
 }

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <title>Validation stale</title>
+  <desc>A clock cue indicating validation has aged and needs rerun</desc>
+
+  <circle cx="12" cy="12" r="6.4" stroke="currentColor" stroke-width="1.5" opacity="0.22"/>
+  <path d="M12 8.55V12.1L14.75 13.85" stroke="#A06A1E" stroke-width="2"/>
+</svg>

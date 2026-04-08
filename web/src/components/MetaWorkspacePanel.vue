@@ -11,12 +11,19 @@ import { useShellMount } from '../composables/useShellMount'
 import { useUiReadiness } from '../composables/useUiReadiness'
 import { useVirtualTableRows } from '../composables/useVirtualTableRows'
 import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
+import AppVisualIcon from './AppVisualIcon.vue'
 import ConfirmationDialog from './ConfirmationDialog.vue'
 import ContextHelpTip from './ContextHelpTip.vue'
 import ContextActionMenu from './ContextActionMenu.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { META_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
+import {
+  artifactBundleIcon,
+  emptyArtifactLibraryIllustration,
+  emptyCompareWorkspaceIllustration,
+  emptyResultsWorkspaceIllustration,
+} from '../utils/appSvgAssets'
 import { artifactActionIcon, type AppIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
@@ -77,6 +84,7 @@ const savedArtifactFamilyItems = [
 const analysisStore = useAnalysisStore()
 const workflowStore = useWorkflowStore()
 const { metaCompareStage, metaStage } = useUiReadiness()
+const loadSavedArtifactIcon = artifactActionIcon('load')
 const {
   metaStrategyKind,
   metaStrategyOptions,
@@ -1032,6 +1040,7 @@ onBeforeUnmount(() => {
       </div>
 
       <section v-if="metaStage === 'no_data'" class="emptyState">
+        <img class="emptyStateIllustration" :src="emptyArtifactLibraryIllustration" alt="" aria-hidden="true" draggable="false" />
         <div class="emptyTitle">Meta Analysis needs saved runs first.</div>
         <div class="emptyBody">Build a run library by saving optimizations, then use this workspace to generate meta artifacts, compare groups, and rank robust candidates.</div>
         <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
@@ -1044,6 +1053,7 @@ onBeforeUnmount(() => {
         role="tabpanel"
         :aria-labelledby="aggregateTabId('meta')"
       >
+        <img class="emptyStateIllustration" :src="emptyResultsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
         <div class="emptyTitle">Saved runs are available, but no meta artifact is active yet.</div>
         <div class="emptyBody">Configure the selection criteria below, then run meta analysis to generate grouped recommendations and reports.</div>
         <div class="panelMuted mono panelNumeric">{{ aggregateSummarySavedRuns }} saved runs available</div>
@@ -1056,6 +1066,7 @@ onBeforeUnmount(() => {
         role="tabpanel"
         :aria-labelledby="aggregateTabId('compare')"
       >
+        <img class="emptyStateIllustration" :src="emptyCompareWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
         <div class="emptyTitle">Select a baseline meta artifact to compare.</div>
         <div class="emptyBody">Comparison results appear here once you choose a saved meta artifact from the compare selector.</div>
         <div class="panelStatus mono panelNumeric" role="status" aria-live="polite">{{ statusLine }}</div>
@@ -1280,7 +1291,10 @@ onBeforeUnmount(() => {
           <div class="panelSectionHeader">
             <div class="panelHeadCopy">
               <div class="panelEyebrow">Aggregate library</div>
-              <h3 class="panelPaneTitle">{{ savedArtifactFamilyConfig.title }}</h3>
+              <h3 class="panelPaneTitle savedArtifactHeading">
+                <AppVisualIcon :icon="artifactBundleIcon" class="sectionGlyph" />
+                <span>{{ savedArtifactFamilyConfig.title }}</span>
+              </h3>
               <div class="panelSectionLead">
                 {{ savedArtifactFamilyConfig.lead }}
               </div>
@@ -1363,10 +1377,12 @@ onBeforeUnmount(() => {
           <div class="actions savedArtifactActions">
             <button
               type="button"
+              class="buttonWithIcon"
               :disabled="!savedArtifactFamilyConfig.canLoad"
               @click="loadSelectedArtifact"
             >
-              Load
+              <AppVisualIcon :icon="loadSavedArtifactIcon" class="actionIcon" />
+              <span>Load</span>
             </button>
             <ContextActionMenu
               :aria-label="savedArtifactFamilyConfig.actionMenuLabel"
@@ -2070,6 +2086,12 @@ onBeforeUnmount(() => {
   margin-bottom: 0.1rem;
 }
 
+.savedArtifactHeading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .summaryGrid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -2113,8 +2135,21 @@ onBeforeUnmount(() => {
   font-size: 0.76rem;
 }
 
+.buttonWithIcon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
 .actions .primary {
   border-color: color-mix(in oklab, var(--accent) 70%, var(--border));
+}
+
+.actionIcon,
+.sectionGlyph {
+  width: 0.98rem;
+  height: 0.98rem;
+  flex: 0 0 auto;
 }
 
 .checks {
@@ -2276,6 +2311,13 @@ onBeforeUnmount(() => {
   margin-top: 0.45rem;
   max-height: 220px;
   overflow: auto;
+}
+
+.emptyStateIllustration {
+  width: clamp(88px, 16vw, 124px);
+  height: auto;
+  margin-bottom: 0.2rem;
+  opacity: 0.92;
 }
 
 .mono {

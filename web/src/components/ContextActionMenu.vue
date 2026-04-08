@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import AppVisualIcon from './AppVisualIcon.vue'
 import type { AppIcon } from '../utils/iconography'
 import {
   DropdownMenuContent,
@@ -107,7 +108,7 @@ watch(
             :disabled="!!item.disabled"
             @select="handleSelect(item.key)"
           >
-            <component :is="item.icon" v-if="item.icon" class="contextActionMenuIcon" aria-hidden="true" />
+            <AppVisualIcon v-if="item.icon" :icon="item.icon" class="contextActionMenuIcon" />
             <span class="contextActionMenuLabel">{{ item.label }}</span>
           </DropdownMenuItem>
         </template>

@@ -63,6 +63,8 @@ describe('OverviewWorkspacePanel', () => {
     expect(text).toContain('Baseline review')
     expect(text).toContain('Set baseline = current')
     expect(text).toContain('Comparison details')
+    expect(document.querySelectorAll('img.actionIcon')).toHaveLength(2)
+    expect(document.querySelector('img.sectionGlyph')).not.toBeNull()
 
     const reviewTopButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
       String(button.textContent || '').includes('Review Top results'),

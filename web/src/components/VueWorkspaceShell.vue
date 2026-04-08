@@ -2,12 +2,14 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ChevronDown, ListTodo } from 'lucide-vue-next'
+import AppVisualIcon from './AppVisualIcon.vue'
 import { TASK_CENTER_PANEL_ID, openTaskCenter as requestTaskCenterOpen, useTaskCenterVisibility } from '../composables/useTaskCenterVisibility'
 import { useTaskLifecycleSummary } from '../composables/useTaskLifecycleSummary'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { shellPostureIcon, shellPostureLabel } from '../utils/appSvgAssets'
 
 const workflowStore = useWorkflowStore()
 const dataStore = useDataStore()
@@ -118,6 +120,8 @@ const shellSubtitle = computed(() => {
   const text = String(workflowSubtitle.value || '').trim()
   return text || '—'
 })
+const shellPostureVisual = computed(() => shellPostureIcon(currentWorkspace.value, currentWorkflowStep.value))
+const shellPostureText = computed(() => shellPostureLabel(currentWorkspace.value, currentWorkflowStep.value))
 const layoutKey = computed(() => `${currentWorkspace.value}:${currentWorkflowStep.value}`)
 
 const visibleControlsItems = computed(() => {
@@ -450,7 +454,13 @@ onBeforeUnmount(() => {
         <div class="brandBlock">
           <h1>VectorGrid</h1>
         </div>
-        <div class="subtitle mono">{{ shellSubtitle }}</div>
+        <div class="brandMeta">
+          <div class="subtitle mono">{{ shellSubtitle }}</div>
+          <div class="shellPostureChip" :aria-label="shellPostureText">
+            <AppVisualIcon :icon="shellPostureVisual" class="shellPostureIcon" />
+            <span>{{ shellPostureText }}</span>
+          </div>
+        </div>
       </div>
 
       <div class="workspaceBarRow">
@@ -867,13 +877,21 @@ onBeforeUnmount(() => {
 .brandRow {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 0.35rem 0.95rem;
 }
 
 .brandBlock {
   display: grid;
   gap: 0.12rem;
+}
+
+.brandMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.65rem;
+  min-width: 0;
 }
 
 .brandRow h1 {
@@ -915,6 +933,25 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   max-width: min(48rem, 100%);
   padding: 0.08rem 0;
+}
+
+.shellPostureChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid color-mix(in oklab, var(--panel-focus-edge) 42%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface-working) 88%, var(--panel));
+  padding: 0.2rem 0.55rem;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  color: var(--muted-strong);
+}
+
+.shellPostureIcon {
+  width: 0.92rem;
+  height: 0.92rem;
+  flex: 0 0 auto;
 }
 
 .taskCenterLauncher {

@@ -28,6 +28,7 @@ import {
 import { taskLevelIcon, taskStatusIcon } from '../utils/iconography'
 import { searchPerspectives } from '../utils/perspectiveSearch'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import AppVisualIcon from './AppVisualIcon.vue'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
 
 type DesktopLogFilter = 'all' | 'attention' | 'errors'
@@ -907,7 +908,7 @@ onBeforeUnmount(() => {
               </div>
               <div v-if="latestTask" class="diagnosticsEntryMeta">
                 <span class="mono diagnosticsBadge" :class="latestTaskTone">
-                  <component :is="diagnosticsStatusIcon(latestTask?.status)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                  <AppVisualIcon :icon="diagnosticsStatusIcon(latestTask?.status)" class="diagnosticsBadgeIcon" />
                   <span>{{ latestTaskStatusLabel }}</span>
                 </span>
               </div>
@@ -975,7 +976,7 @@ onBeforeUnmount(() => {
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
                     <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">
-                      <component :is="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                      <AppVisualIcon :icon="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" />
                       <span>{{ diagnosticsLevelLabel(entry.level) }}</span>
                     </span>
                   </div>
@@ -1003,7 +1004,7 @@ onBeforeUnmount(() => {
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(entry.atUnixMs) }}</span>
                     <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(entry.level)">
-                      <component :is="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                      <AppVisualIcon :icon="diagnosticsLevelIcon(entry.level)" class="diagnosticsBadgeIcon" />
                       <span>{{ diagnosticsLevelLabel(entry.level) }}</span>
                     </span>
                     <span class="mono diagnosticsBadge">{{ diagnosticsPhaseLabel(entry.phase) }}</span>
@@ -1032,7 +1033,7 @@ onBeforeUnmount(() => {
                   <div class="diagnosticsEntryMeta">
                     <span class="mono diagnosticsTime">{{ formatUiTimeFromUnixMs(toast.atUnixMs) }}</span>
                     <span class="mono diagnosticsBadge" :class="diagnosticsLevelTone(toast.level)">
-                      <component :is="diagnosticsLevelIcon(toast.level)" class="diagnosticsBadgeIcon" aria-hidden="true" />
+                      <AppVisualIcon :icon="diagnosticsLevelIcon(toast.level)" class="diagnosticsBadgeIcon" />
                       <span>{{ diagnosticsLevelLabel(toast.level) }}</span>
                     </span>
                   </div>

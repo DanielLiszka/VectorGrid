@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import AppVisualIcon from './AppVisualIcon.vue'
 import { useRuntimeStore } from '../stores/runtimeStore'
+import { runtimeReadyIcon } from '../utils/appSvgAssets'
+import { taskLevelIcon } from '../utils/iconography'
 import { describeRuntimePhase, runtimePhaseLabel } from '../utils/statusPresentation'
 
 const runtime = useRuntimeStore()
@@ -27,12 +30,19 @@ const errorDetail = computed(() => {
   if (bootPhase.value !== 'error') return ''
   return String(bootErrorDetail.value || '').trim()
 })
+
+const bannerIcon = computed(() => (bootPhase.value === 'error' ? taskLevelIcon('error') : runtimeReadyIcon))
 </script>
 
 <template>
   <div v-if="visible" class="runtimeBanner" :class="bootPhase">
-    <div class="runtimeLabel">{{ phaseLabel }}</div>
-    <div class="runtimeDetail">{{ detail }}</div>
+    <div class="runtimeLead">
+      <AppVisualIcon :icon="bannerIcon" class="runtimeIcon" />
+      <div class="runtimeCopy">
+        <div class="runtimeLabel">{{ phaseLabel }}</div>
+        <div class="runtimeDetail">{{ detail }}</div>
+      </div>
+    </div>
     <details v-if="errorDetail" class="runtimeErrorTrace">
       <summary>Stack trace</summary>
       <pre>{{ errorDetail }}</pre>
@@ -59,6 +69,23 @@ const errorDetail = computed(() => {
   color: var(--runtime-text);
   box-shadow: var(--shadow-focus);
   backdrop-filter: blur(8px);
+}
+
+.runtimeLead {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.runtimeCopy {
+  min-width: 0;
+}
+
+.runtimeIcon {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 
 .runtimeBanner.error {

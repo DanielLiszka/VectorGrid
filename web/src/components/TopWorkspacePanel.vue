@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { type Cell, type Header } from '@tanstack/vue-table'
+import AppVisualIcon from './AppVisualIcon.vue'
 import {
   useHeadlessMatrixTable,
   type MatrixColumnMeta,
@@ -14,6 +15,12 @@ import { useQueuedInputWriter } from '../composables/useQueuedInputWriter'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { TOP_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
+import {
+  compareCandidateFocusIcon,
+  compareCandidatesIcon,
+  emptyResultsWorkspaceIllustration,
+  provenanceIconForText,
+} from '../utils/appSvgAssets'
 import { compareActionIcon } from '../utils/iconography'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
@@ -288,6 +295,10 @@ function pinCellLabel(rowId: string | undefined): string {
   return rowPinned(rowId) ? 'Pinned' : 'Pin'
 }
 
+function provenanceIcon(label: string | null | undefined) {
+  return provenanceIconForText(label)
+}
+
 function reviewOverview(): void {
   workflowStore.selectResultsTab('overview')
 }
@@ -523,15 +534,19 @@ onBeforeUnmount(() => {
           aria-live="polite"
           aria-atomic="true"
         >
-          <div class="stickySelectionSummaryTitle">Current candidate</div>
+          <div class="stickySelectionSummaryTitleRow">
+            <AppVisualIcon :icon="compareCandidateFocusIcon" class="sectionGlyph" />
+            <div class="stickySelectionSummaryTitle">Current candidate</div>
+          </div>
           <div class="compareCardTitle">{{ displayedSelectedTopTitle }}</div>
           <div class="stickySelectionSummaryBody">{{ displayedSelectedTopSummary }}</div>
           <div class="panelSummaryChips" aria-label="Current candidate provenance">
             <span
               v-for="chip in displayedSelectedTopProvenanceChips"
               :key="`top_provenance_${chip}`"
-              class="panelSummaryChip mono"
+              class="panelSummaryChip mono withIcon"
             >
+              <AppVisualIcon v-if="provenanceIcon(chip)" :icon="provenanceIcon(chip)" class="chipIcon" />
               {{ chip }}
             </span>
           </div>
@@ -547,19 +562,29 @@ onBeforeUnmount(() => {
               <span>Review Overview</span>
             </button>
             <button type="button" :disabled="!canPinSelectedTopCandidate" @click="analysisStore.pinSelectedTopRow()">
-              <component :is="pinCompareIcon" class="actionIcon" aria-hidden="true" />
+              <AppVisualIcon :icon="pinCompareIcon" class="actionIcon" />
               <span>Pin current candidate</span>
             </button>
             <button type="button" :disabled="pinnedTopCandidates.length === 0" @click="analysisStore.clearPinnedTopCandidates()">
-              <component :is="clearCompareIcon" class="actionIcon" aria-hidden="true" />
+              <AppVisualIcon :icon="clearCompareIcon" class="actionIcon" />
               <span>Clear compare</span>
             </button>
           </div>
         </div>
         <div v-if="displayedTopStaleCues.length > 0" class="staleCueStack">
-          <div v-for="cue in displayedTopStaleCues" :key="cue" class="panelAdvisory surfaceWarning mono">{{ cue }}</div>
+          <div v-for="cue in displayedTopStaleCues" :key="cue" class="panelAdvisory surfaceWarning mono staleCueRow">
+            <AppVisualIcon v-if="provenanceIcon(cue)" :icon="provenanceIcon(cue)" class="chipIcon" />
+            <span>{{ cue }}</span>
+          </div>
         </div>
         <div v-if="topStage !== 'ready' || !hasTopResults" class="emptyState topEmptyState">
+          <img
+            class="emptyStateIllustration"
+            :src="emptyResultsWorkspaceIllustration"
+            alt=""
+            aria-hidden="true"
+            draggable="false"
+          />
           <div class="emptyTitle">{{ emptyTitle }}</div>
           <div class="emptyBody">{{ emptyBody }}</div>
           <div v-if="topStage === 'ready' && (filtersActive || canClearTopFilters)" class="emptyActions">
@@ -686,7 +711,10 @@ onBeforeUnmount(() => {
           <div class="panelSectionHeader">
             <div class="panelHeadCopy">
               <div class="panelEyebrow">Compare</div>
-              <h4 class="panelPaneTitle">Pinned candidates</h4>
+              <h4 class="panelPaneTitle compareHeading">
+                <AppVisualIcon :icon="compareCandidatesIcon" class="sectionGlyph" />
+                <span>Pinned candidates</span>
+              </h4>
               <div class="panelSectionLead">
                 Keep comparison available without letting it outweigh shortlist scanning and candidate choice.
               </div>
@@ -701,8 +729,9 @@ onBeforeUnmount(() => {
                 <span
                   v-for="badge in candidate.badges"
                   :key="`${candidate.id}_${badge}`"
-                  class="panelSummaryChip mono"
+                  class="panelSummaryChip mono withIcon"
                 >
+                  <AppVisualIcon v-if="provenanceIcon(badge)" :icon="provenanceIcon(badge)" class="chipIcon" />
                   {{ badge }}
                 </span>
               </div>
@@ -710,11 +739,11 @@ onBeforeUnmount(() => {
               <div v-if="candidate.staleReason" class="panelAdvisory surfaceWarning mono">{{ candidate.staleReason }}</div>
               <div class="actions">
                 <button type="button" :disabled="!canReplaceWithCurrent" @click="analysisStore.replacePinnedTopCandidate(candidate.id)">
-                  <component :is="replaceCompareIcon" class="actionIcon" aria-hidden="true" />
+                  <AppVisualIcon :icon="replaceCompareIcon" class="actionIcon" />
                   <span>Replace with current</span>
                 </button>
                 <button type="button" @click="analysisStore.unpinTopCandidate(candidate.id)">
-                  <component :is="removeCompareIcon" class="actionIcon" aria-hidden="true" />
+                  <AppVisualIcon :icon="removeCompareIcon" class="actionIcon" />
                   <span>Remove</span>
                 </button>
               </div>
@@ -857,6 +886,13 @@ onBeforeUnmount(() => {
   gap: 0.65rem;
 }
 
+.emptyStateIllustration {
+  width: clamp(88px, 18vw, 124px);
+  height: auto;
+  justify-self: start;
+  opacity: 0.92;
+}
+
 .topTableVue {
   width: 100%;
   border-collapse: collapse;
@@ -943,10 +979,23 @@ onBeforeUnmount(() => {
   margin-top: 0.15rem;
 }
 
+.stickySelectionSummaryTitleRow,
+.compareHeading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .staleCueStack {
   display: grid;
   gap: 0.5rem;
   margin-bottom: 0;
+}
+
+.staleCueRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
 }
 
 .compareTray {
@@ -988,6 +1037,24 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
   line-height: var(--leading-compact);
   color: var(--muted-strong);
+}
+
+.panelSummaryChip.withIcon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chipIcon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+}
+
+.sectionGlyph {
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
 }
 
 .sortGlyph {

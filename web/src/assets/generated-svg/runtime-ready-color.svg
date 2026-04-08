@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <title>Runtime ready</title>
+  <desc>Desktop runtime is healthy and ready for work</desc>
+
+  <rect x="4" y="17.25" width="16" height="2.25" rx="1.125" fill="currentColor" stroke="none" opacity="0.18"/>
+  <path d="M5 12.25H8.6L10.6 8.5L12.45 14.2L14.45 10.8H19" stroke="#16A34A" stroke-width="1.9"/>
+  <circle cx="19" cy="10.8" r="1.35" fill="#16A34A" stroke="none"/>
+</svg>

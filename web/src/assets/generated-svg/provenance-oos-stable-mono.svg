@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Out-of-Sample Stable</title>
+  <desc>Two calm evaluation lanes resolving into one shared stable end state</desc>
+
+  <!-- In-sample lane -->
+  <polyline
+    points="3.25,9.25 7.25,10.05 11.25,8.95 15.25,9.8 18.25,9.25"
+    stroke-width="1.9"
+  />
+
+  <!-- Out-of-sample lane -->
+  <polyline
+    points="3.25,14.75 7.25,15.55 11.25,14.45 15.25,15.3 18.25,14.75"
+    stroke-width="1.9"
+    opacity="0.7"
+  />
+
+  <!-- Shared endcap reads as agreement between the two review lanes -->
+  <rect x="18.25" y="8.1" width="2.7" height="7.8" rx="1.35" fill="currentColor" stroke="none" opacity="0.88"/>
+</svg>

@@ -243,7 +243,7 @@ describe('TaskCenterOverlay', () => {
     expect(text).toContain('Recent outcomes')
     expect(text).toContain('Attention')
     expect(text).toContain('Completed')
-    expect(document.querySelector('.taskStatus svg')).not.toBeNull()
+    expect(document.querySelector('.taskStatus img, .taskStatus svg')).not.toBeNull()
 
     const action = Array.from(document.querySelectorAll<HTMLButtonElement>('.relatedBtn')).find((button) =>
       String(button.textContent || '').includes('Open validation'),

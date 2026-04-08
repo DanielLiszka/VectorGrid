@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Task failed</title>
+  <desc>A task that failed and needs investigation</desc>
+
+  <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.18"/>
+  <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.25"/>
+
+  <circle cx="12" cy="18.9" r="3.45" fill="#E11D48" stroke="none" opacity="0.12"/>
+  <line x1="9.7" y1="16.55" x2="14.3" y2="21.15" stroke="#E11D48" stroke-width="2.05"/>
+  <line x1="14.3" y1="16.55" x2="9.7" y2="21.15" stroke="#E11D48" stroke-width="2.05"/>
+</svg>

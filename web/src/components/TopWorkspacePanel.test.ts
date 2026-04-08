@@ -257,7 +257,7 @@ describe('TopWorkspacePanel', () => {
         title: 'Rank #1 · row 1',
         summary: 'Return 12% · Sharpe 1.8',
         detail: 'Strategy DoubleMa · Objective Sharpe',
-        badges: ['Current leader', 'Filtered shortlist'],
+        badges: ['Validation stale', 'Filtered shortlist'],
         staleReason: 'Hidden by the current shortlist filters.',
       },
     ]
@@ -276,6 +276,8 @@ describe('TopWorkspacePanel', () => {
     expect(text).toContain('Pinned candidates')
     expect(text).toContain('Filtered shortlist')
     expect(text).toContain('Hidden by the current shortlist filters.')
+    expect(document.querySelectorAll('img.actionIcon').length).toBeGreaterThanOrEqual(2)
+    expect(document.querySelector('img.chipIcon')).not.toBeNull()
 
     const replaceButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
       String(button.textContent || '').includes('Replace with current'),

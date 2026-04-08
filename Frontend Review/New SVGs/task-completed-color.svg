@@ -2,10 +2,9 @@
   <title>Task completed</title>
   <desc>A task that completed successfully</desc>
 
-  <!-- Processed blocks -->
-  <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.3"/>
-  <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.3"/>
+  <rect x="8" y="2.5" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.18"/>
+  <rect x="8" y="9" width="8" height="4.5" rx="1" fill="currentColor" stroke="none" opacity="0.25"/>
 
-  <!-- Completion check — amber -->
-  <path d="M9 19 L11 21 L15.5 16.5" stroke="#BA7517" stroke-width="2" opacity="0.65"/>
+  <circle cx="12" cy="18.3" r="3.35" fill="#16A34A" stroke="none" opacity="0.12"/>
+  <path d="M9.55 18.25L11.2 19.95L14.95 16.15" stroke="#16A34A" stroke-width="2.05"/>
 </svg>

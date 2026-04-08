@@ -12,8 +12,8 @@ Current repo evidence already says:
 - supported parent families already include `DoubleMa`, `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum`
 - supported structure families already include `long_single`, `debit_vertical`, and `long_pair`
 - the compiled-tensor GPU scorer path is real, benchmarked, and already usable on bounded canonical workloads
-- the canonical SPY DTE7 aggregate workload now clears the live auto-GPU gates in code
-- the remaining uncertainty is mostly about next-step ROI inside the current full-GPU lane, not about whether the feature exists at all
+- two bounded provider-backed aggregate slices (`SPY` DTE7 and `QQQ` DTE7) now clear the live auto-GPU gates in code
+- the remaining uncertainty is mostly about next-step ROI inside the current full-GPU lane, especially the GPU/CPU finalist boundary, not about whether the feature exists at all
 
 ## How To Use This Pack
 
@@ -50,9 +50,8 @@ Attach these to every prompt:
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
 - `src-tauri/src/commands_options_expression.rs`
-- `src-tauri/src/commands_options_data.rs`
-- `src-tauri/src/options_parent_adapters.rs`
 - `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json`
 - `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
 
 Note on file lists:
@@ -65,10 +64,12 @@ Note on file lists:
 Recommended shared framing for every thread:
 
 - the current shipped slice already includes saved artifacts, tuple drilldown, event replay, holdout/sealed/stress reporting, and a compiled-tensor GPU scorer
+- the current GPU route is still hybrid at the finalist boundary: broad tuple ranking happens on GPU, then `top_k` exactification, sealed evaluation, and extreme-stress outputs still flow through CPU replay
 - direct provider download is still bounded to `1m` aggregate datasets; quote-aware and derived-mid realism lanes are currently CSV-import paths
 - live code now uses more permissive auto-GPU gates than some older docs; if docs and code disagree, prefer current code plus latest local artifacts
+- the latest provider-backed evidence is no longer single-root: use both the shipped `SPY` and bounded `QQQ` phase-0.5 outputs before declaring a GPU direction "proven"
 - the latest canonical artifacts show useful GPU viability, but still only middling compiled density and materially non-zero invalid-slot rates
-- the dominant invalid reasons in the latest canonical artifact are `entry_past_cutoff` and `no_strike_in_tolerance`
+- the dominant recurring invalid reasons across the current provider-backed artifacts are `entry_past_cutoff`, `no_strike_in_tolerance`, and slice-overlap / eligibility failures such as `contract_not_eligible_as_of_event`
 
 ## Shared Answer Shape
 
@@ -151,6 +152,9 @@ These are:
 - Prompt 1
 - Prompt 2
 - Prompt 3
+- Prompt 12
+- Prompt 13
+- Prompt 14
 
 Use them when the question is:
 
@@ -161,8 +165,11 @@ These prompts overlap heavily.
 Treat them as a decision tree, not as independent parallel work:
 
 - run Prompt 1 first
-- then run **either** Prompt 2 **or** Prompt 3 if Prompt 1 says one of those lanes is still genuinely unresolved
+- then run **one of** Prompt 13, Prompt 12, Prompt 2, Prompt 3, or Prompt 14 if Prompt 1 says one of those lanes is still genuinely unresolved
 - do not run Prompt 2 and Prompt 3 as equal-priority first-pass prompts at the same time
+- do not run Prompt 12 in parallel with Prompt 1; Prompt 12 is for the narrower GPU/CPU finalist-boundary question after Prompt 1
+- do not run Prompt 13 in parallel with Prompt 1; Prompt 13 is for the narrower end-to-end cost-decomposition question after Prompt 1
+- do not run Prompt 14 before Prompt 13; Prompt 14 is only for the narrower CUDA-runtime / kernel / SASS micro-architecture question after cost decomposition says that layer is worth pursuing
 
 ### B. Scope-Depth Prompts
 
@@ -206,6 +213,30 @@ These prompts are for harder mathematical reasoning about:
 
 They should not be used for generic quant ideation. Their job is to translate mathematical reasoning into concrete repo decisions about what can be added at near-constant marginal cost.
 
+## Current CUDA-First Review Order
+
+If the actual goal is to maximize CUDA/GPU usage and performance inside the existing options optimization + embedded validation lane, use this order:
+
+1. Prompt 1
+2. Prompt 13
+3. Prompt 12
+4. Prompt 14 only if Prompt 13 says runtime micro-architecture is the real next bottleneck
+5. Prompt 9
+6. Prompt 10 and/or Prompt 11
+7. Prompt 2 or Prompt 3 only if Prompt 1 says density or product-promotion policy is still the real blocker
+8. Prompt 5 or Prompt 6 only after the CUDA-first questions above are settled
+9. Prompt 4, Prompt 7, and Prompt 8 only if they materially affect density, compiled coverage, or GPU economics
+
+Why this order:
+
+- Prompt 1 decides whether there is any real full-GPU productization work left at all
+- Prompt 13 asks where the next performance dollar actually belongs once GPU scoring is already viable: replay build, preparation/cache amortization, lane duplication, or runtime micro-architecture
+- Prompt 12 targets the biggest current unresolved runtime boundary in code: GPU broad ranking versus CPU finalist exactification and embedded validation replay
+- Prompt 14 is deliberately later because SASS-level or micro-architecture work is only worth it if the kernel/runtime layer is actually first-order after Prompt 13
+- Prompt 9 asks what additional useful work can be added by enriching small per-tuple aggregate state rather than by replaying more paths on CPU
+- Prompt 10 and Prompt 11 become more valuable after Prompt 9 clarifies what extra low-cost state is actually plausible
+- Prompt 5 and Prompt 6 are still useful, but they are more product/reporting-oriented than CUDA-first
+
 ## Parallel vs Serial Use
 
 ### Safe serial default
@@ -213,10 +244,13 @@ They should not be used for generic quant ideation. Their job is to translate ma
 If you want the lowest-confusion workflow, do this:
 
 1. run Prompt 1
-2. if needed, run Prompt 2 or Prompt 3
-3. then run one or two relevant scope-depth prompts from Prompts 4-8
-4. then run the final cross-prompt consolidation prompt
-5. only then make implementation changes
+2. if needed, run Prompt 13 or Prompt 12 or Prompt 2 or Prompt 3
+3. run Prompt 14 only if Prompt 13 says the CUDA runtime / kernel layer is the real next target
+4. if needed, run Prompt 9
+5. then run Prompt 10 or Prompt 11 if the remaining question is mathematical rather than architectural
+6. then run one or two relevant scope-depth prompts from Prompts 4-8
+7. then run the final cross-prompt consolidation prompt
+8. only then make implementation changes
 
 That is the safest pattern.
 
@@ -411,8 +445,11 @@ Current repo evidence already says:
 - the invalid-slot rate is still materially non-zero
 - `entry_past_cutoff` dominates the current invalid breakdown
 - `no_strike_in_tolerance` is the secondary recurring invalid reason
+- bounded provider-backed slices can also surface overlap/eligibility failures such as `contract_not_eligible_as_of_event`
 
 That makes density, invalid-slot causes, and search-shape design a real implementation question. Another generic GPU optimization pass is not.
+
+It also means split-assignment policy is not just a validation afterthought. In the shipped repo, `event_chronological` versus `session_chronological` can materially change whether holdout and sealed folds receive any executable candidates at all.
 
 ### Attach These Files
 
@@ -447,10 +484,13 @@ Constraints:
 - do not recommend raw-chain GPU simulation
 - keep compiled-tensor scoring as the hot path
 - use the latest invalid-reason evidence rather than generic options intuition
+- explicitly consider whether split-assignment policy is part of the real search-quality / validation-quality solution rather than a separate workflow concern
+- explicitly consider whether provider-slice overlap / as-of eligibility is part of the real problem rather than treating every invalid as a pure tuple-grid issue
 - distinguish clearly between:
   - search-space default changes
   - tuple-grid or axis redesign
   - parent-event filtering
+  - split-assignment or fold-policy changes
   - dataset curation or lane constraints
   - ideas that should be rejected
 
@@ -460,12 +500,14 @@ Deliverables:
    - productively reducible
    - better handled by search-space defaults
    - signals that a profile should be constrained or filtered
+   - signals that the provider-backed slice itself is not representative enough for this test
    - or not worth "fixing"
-3. Propose the single best next intervention.
-4. Explain why it is better than at least one narrower default tweak and one broader search-space redesign.
-5. Identify concrete code touch points by file and symbol.
-6. Define the smallest ablation and benchmark plan needed to validate or reject the idea.
-7. State the exact measurements that would cause you to reject the intervention before or after implementation.
+3. State explicitly whether split-assignment mode should be treated as a first-class search/coverage lever for this repo now.
+4. Propose the single best next intervention.
+5. Explain why it is better than at least one narrower default tweak and one broader search-space redesign.
+6. Identify concrete code touch points by file and symbol.
+7. Define the smallest ablation and benchmark plan needed to validate or reject the idea.
+8. State the exact measurements that would cause you to reject the intervention before or after implementation.
 
 Be concrete, repo-specific, and hostile to fake progress.
 ```
@@ -847,6 +889,8 @@ The analogous open question for options is:
 
 This is the most direct way to make the options optimizer more decision-useful without widening scope.
 
+If the question is specifically about mathematically justified single-pass metric expansion from the current GPU/aggregate state, prefer Prompt 9. Prompt 5 is for the broader product/reporting layer that still stays cheap.
+
 ### Attach These Files
 
 Required:
@@ -952,6 +996,8 @@ So the remaining question is:
 
 This is about stronger decision-grade validation inside the current host, not creating “options validation mode.”
 
+If the question is specifically about mathematically justified derived validation statistics from the current lane outputs, prefer Prompt 11. Prompt 6 is for deciding how much more validation depth should be surfaced as product behavior inside the current host.
+
 ### Attach These Files
 
 Required:
@@ -959,12 +1005,10 @@ Required:
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
 - `src-tauri/src/commands_options_expression.rs`
 - `web/src/components/OptionsExpressionPanel.vue`
 - `web/src/stores/optionsExpressionStore.ts`
-
-Optional:
-
 - `web/src/services/optionsExpressionService.ts`
 
 ### Prompt
@@ -981,6 +1025,10 @@ Constraints:
 - Do not propose a separate validation mode.
 - Do not add new parent strategy families.
 - Focus on decision-grade validation depth, not dashboard sprawl.
+- Force yourself to analyze:
+  - shortlist and finalist-budget economics (`top_k`, `sealed_finalist_count`)
+  - validation adequacy / sufficiency cues (event count, trade count, split coverage)
+  - tuple-coherent artifact and frontier surfacing versus summary mixes that splice different tuples together
 - Distinguish clearly between:
   - validation improvements worth adding now
   - validation improvements worth deferring
@@ -990,9 +1038,11 @@ Deliverables:
 1. Summarize what validation depth the repo already ships.
 2. Identify what is still genuinely missing for decision-grade use.
 3. Propose the best next validation-depth additions, if any.
-4. Explain where the repo should stop before this becomes a separate product branch.
-5. Identify concrete code touch points by file.
-6. Define acceptance and rejection criteria.
+4. Explicitly state whether the current shortlist / finalist-budget policy can hide robust winners outside the retained tuples, and if so, whether that should change.
+5. Explain where the repo should stop before this becomes a separate product branch.
+6. Identify whether artifact-level validation/frontier summaries should remain scalar maxima or become more tuple-coherent.
+7. Identify concrete code touch points by file.
+8. Define acceptance and rejection criteria.
 ```
 
 ### Second-Pass Prompt
@@ -1063,6 +1113,7 @@ Required:
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
 - `src-tauri/src/commands_options_expression.rs`
 - `web/src/components/OptionsExpressionPanel.vue`
 
@@ -1247,6 +1298,43 @@ These prompts should still obey the same repo rules:
 - no generic simulator expansion
 - no proposals that require replaying raw paths in the hot loop just to get a prettier statistic
 
+## Math-Heavy Prompt Discipline
+
+For Prompts 9-11, prefer answers that are mathematically explicit rather than verbally clever.
+
+The best answers should usually do most of the following:
+
+- write proposed metrics or ranking rules as explicit formulas, not only prose
+- state the implied per-tuple state vector or accumulator set
+- say whether the proposal is:
+  - exact from current state
+  - exact with a few extra mergeable accumulators
+  - approximate from a bounded sketch
+  - or not realistically compatible with the current pass
+- state whether the proposed state is mergeable / associative enough for the current GPU-first compiled evaluation shape
+- estimate whether the proposal changes tuple-output width, device-memory pressure, or CPU exactification pressure
+- separate:
+  - mathematically elegant ideas
+  - mathematically admissible ideas
+  - actually worth-implementing ideas
+
+Relevant math lenses that are welcome when they stay repo-grounded:
+
+- finite sufficient statistics and mergeable accumulator design
+- first/second moments, downside moments, and partial expectations
+- bounded quantile or histogram sketches only if the state budget stays very small
+- empirical-Bayes or shrinkage-style estimators
+- lower-confidence-bound or uncertainty-penalized ranking
+- monotone stress-deterioration penalties
+- regret, dominance, skyline, or frontier geometry from already-computed lanes
+
+What to avoid:
+
+- asymptotic-statistics showmanship that ignores the current state budget
+- proposals that need pathwise replay but hide that fact behind notation
+- mathematically pretty ranking schemes that users will not be able to reason about
+- sketch-heavy ideas that silently widen the hot-path device state too much
+
 ## Prompt 9: Single-Pass Sufficient Statistics Expansion
 
 ### Why This Prompt Still Looks Worth Doing
@@ -1267,6 +1355,14 @@ See [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/o
 That leaves a mathematically interesting question:
 
 **what additional decision-useful statistics can be computed from a small set of per-trade sufficient statistics or cheap aggregate states, without materially changing the pass cost or forcing replay-heavy post-processing?**
+
+This prompt matters even more because the current GPU tuple aggregate is thinner than the CPU exact metric path:
+
+- `compute_metrics(...)` can produce the full `OptionsExpressionMetrics`
+- `OptionsGpuTupleAggregate` currently retains only `valid_trades`, `wins`, `total_pnl`, and `total_premium`
+- `metrics_from_aggregate(...)` currently reconstructs a reduced metric surface and necessarily zeros `median_return_on_premium`
+
+So this prompt should pressure-test whether the next worthwhile CUDA-first improvement is a richer small aggregate state rather than more CPU exactification.
 
 This is the closest options analogue to the earlier conventional backtest expansion from `10` to `17` and `22` metric rows at low marginal cost.
 
@@ -1300,22 +1396,30 @@ Constraints:
 - Do not propose metrics that require full path replay in the hot loop.
 - Prefer algebraically decomposable or small-state statistics.
 - Keep GPU-first execution as the target.
+- When useful, reason in terms of explicit accumulator families such as counts, first/second moments, positive/negative-part sums, downside moments, bounded histograms, or other mergeable small-state summaries.
+- For each serious candidate metric, explicitly say whether it is usable:
+  - in broad pre-`top_k` GPU ranking
+  - only after exactification on retained tuples
+  - or only for sealed finalists
 - Distinguish clearly between:
   - truly single-pass or aggregate-friendly metrics
   - metrics that need small extra state but are still plausible
   - metrics that look attractive but should be rejected because they are not cheap enough
 
 Deliverables:
-1. Summarize what the repo already computes and what aggregate state that already implies.
+1. Summarize what the repo already computes, explicitly comparing `compute_metrics(...)`, `OptionsGpuTupleAggregate`, and `metrics_from_aggregate(...)`, and state what aggregate state that already implies.
 2. Identify the best additional metrics that are mathematically compatible with the current pass shape.
 3. For each candidate metric, classify it as:
    - free from current state
    - cheap with one or two extra accumulators
    - too expensive / wrong shape
-4. Propose the single best expansion set for this repo now.
-5. Explain why it is likely near-constant-cost enough to be worth it.
-6. Identify concrete code touch points by file and symbol.
-7. Define rejection criteria if the metric set turns out to widen tuple state or GPU output too much.
+4. For the metrics you keep alive, state whether they are exact, approximate, or sketch-based, and give the minimal accumulator/state vector they require.
+5. Quantify the extra per-tuple per-lane state budget and say whether the change widens `OptionsGpuTupleAggregate`, `OptionsExpressionMetrics`, or both.
+6. State explicitly what this repo should do about `median_return_on_premium`: keep it exactified-only, approximate it with a bounded sketch, or reduce its importance.
+7. Propose the single best expansion set for this repo now.
+8. Explain why it is likely near-constant-cost enough to be worth it.
+9. Identify concrete code touch points by file and symbol.
+10. Define rejection criteria if the metric set turns out to widen tuple state or GPU output too much.
 
 Think of this as a sufficient-statistics and low-dimensional-aggregate design problem, not a generic feature ideation exercise.
 ```
@@ -1358,13 +1462,14 @@ The document must contain:
 1. Executive summary
 2. Current metrics and implied aggregate state
 3. Final recommended metric expansion
-4. Metrics that should remain unchanged
-5. Deferred metric ideas
-6. Rejected metric ideas
-7. Concrete code touch points by file and symbol
-8. Verification order
-9. Cost-risk checklist
-10. Stop conditions
+4. Required accumulator/state vector for the adopted metrics
+5. Metrics that should remain unchanged
+6. Deferred metric ideas
+7. Rejected metric ideas
+8. Concrete code touch points by file and symbol
+9. Verification order
+10. Cost-risk checklist
+11. Stop conditions
 ```
 
 ## Prompt 10: Robust Ranking Functional And Scalarization Math
@@ -1392,6 +1497,7 @@ Required:
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
 - `src-tauri/src/commands_options_expression.rs`
 - `web/src/components/OptionsExpressionPanel.vue`
 
@@ -1414,6 +1520,12 @@ Constraints:
 - Do not add new workflow stages.
 - Keep sealed metrics out of first-pass tuple ranking unless the attached files justify changing that.
 - Prefer formulations that can be computed from already-available metrics or very small additional state.
+- When useful, explicitly consider shrinkage, lower-confidence-bound, coverage-aware, and monotone stress-penalized scalarizations.
+- Treat these as separate decision points unless the attached files prove otherwise:
+  - broad pre-`top_k` ranking
+  - exactified reranking on retained tuples
+  - sealed-finalist ordering
+- Explicitly analyze the current missing-lane fallback rules and the fact that `robust_score` uses only search-lane coverage in its current coverage term.
 - Distinguish clearly between:
   - ranking function improvements that are plausible now
   - mathematically elegant but product-wrong ideas
@@ -1425,11 +1537,15 @@ Deliverables:
    - one conservative alternative
    - one shrinkage-aware or stability-aware alternative
    - one more ambitious dominance-aware alternative
-3. State the single best ranking functional for this repo now.
-4. Explain why it is better than the current one without widening the product.
-5. Identify concrete code touch points by file and symbol.
-6. Define verification and regression criteria.
-7. State explicit reasons to reject a replacement even if it looks mathematically cleaner.
+3. Write the leading candidate functionals explicitly enough that an engineer could implement them without inventing the math, including any normalization, penalties, or shrinkage terms.
+4. State the single best ranking functional for this repo now.
+5. Explain why it is better than the current one without widening the product.
+6. State whether the same functional should govern all three ranking/ordering points or whether the repo should deliberately keep them different.
+7. Identify exactly which existing metrics it consumes and whether any extra state is required.
+8. State whether any shrinkage, confidence, or dispersion term can be built from current `valid_trades`, `invalid_events`, and `invalid_rate`, or whether Prompt 9-style extra state would be required first.
+9. Identify concrete code touch points by file and symbol.
+10. Define verification and regression criteria.
+11. State explicit reasons to reject a replacement even if it looks mathematically cleaner.
 
 Treat this as a scalarization and robustness-math problem grounded in this repo, not a generic portfolio-theory exercise.
 ```
@@ -1473,13 +1589,14 @@ The document must contain:
 1. Executive summary
 2. Current ranking math
 3. Final recommended functional
-4. What remains unchanged
-5. Deferred alternatives
-6. Rejected alternatives
-7. Concrete code touch points by file and symbol
-8. Verification order
-9. Regression risks
-10. Stop conditions
+4. Required inputs / state for that functional
+5. What remains unchanged
+6. Deferred alternatives
+7. Rejected alternatives
+8. Concrete code touch points by file and symbol
+9. Verification order
+10. Regression risks
+11. Stop conditions
 ```
 
 ## Prompt 11: Validation Frontier And Confidence Math Without Extra Stages
@@ -1500,6 +1617,13 @@ That creates another useful math-heavy question:
 
 This prompt is about extracting more decision quality from the validation math already present.
 
+It should also explicitly test whether the next useful derived statistics are cross-lane frontier / regret geometry signals rather than more dashboard-style metrics:
+
+- search winner vs validated winner gaps
+- search-to-holdout or holdout-to-sealed degradation
+- monotone stress deterioration flags
+- dominance / non-dominance summaries across search, holdout, sealed, and stressed lanes
+
 ### Attach These Files
 
 Required:
@@ -1507,12 +1631,10 @@ Required:
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
 - `src-tauri/src/commands_options_expression.rs`
 - `web/src/components/OptionsExpressionPanel.vue`
 - `web/src/stores/optionsExpressionStore.ts`
-
-Optional:
-
 - `web/src/services/optionsExpressionService.ts`
 
 ### Prompt
@@ -1529,6 +1651,16 @@ Constraints:
 - Do not add a new validation stage.
 - Prefer statistics that can be derived from existing lane metrics or very small additional aggregate state.
 - Do not suggest heavyweight bootstrap or resampling unless you can justify it inside the current runtime philosophy.
+- Force yourself to analyze:
+  - adequacy / sufficiency signals from split event counts, valid-trade counts, and coverage
+  - whether shortlist and finalist-budget policy distort the frontier the user actually sees
+  - whether derived statistics should stay tuple-coherent rather than mixing per-lane leaders from different tuples
+- When useful, explicitly consider regret vectors, dominance tags, shrinkage between lanes, lower-confidence-bound style acceptance math, and monotone stress-deterioration summaries.
+- Ground the answer against the current `inferred_validation_verdict()` / `is_stress_fragile()` semantics and say whether your proposal complements them or changes them.
+- For each serious candidate statistic, say whether it is trustworthy:
+  - globally across all tuples
+  - only within retained `top_k`
+  - or only within sealed finalists
 - Distinguish clearly between:
   - useful derived validation statistics
   - statistics that need small extra state and may still be worth it
@@ -1539,12 +1671,14 @@ Deliverables:
 2. Identify the best mathematically defensible derived validation statistics for this repo now.
 3. Compare:
    - one conservative confidence/stability addition
-   - one recommended frontier-style addition
+   - one recommended frontier-style or regret-style addition
    - one more ambitious but likely-too-costly addition
-4. State the winning direction.
-5. Explain why it improves decision quality without widening the workflow.
-6. Identify concrete code touch points by file and symbol.
-7. Define verification and rejection criteria.
+4. For the finalists you recommend, say whether they are zero-extra-state, require a few extra accumulators, or are only possible with a heavier runtime change.
+5. State the winning direction.
+6. Explain why it improves decision quality without widening the workflow.
+7. State whether each adopted statistic belongs on `OptionsExpressionTupleResult`, in verdict derivation, in `OptionsExpressionArtifactSummary`, or only in frontend-derived reporting.
+8. Identify concrete code touch points by file and symbol.
+9. Define verification and rejection criteria.
 
 Treat this as a confidence and frontier-math problem grounded in the repo's current validation surfaces, not as generic statistical wishlist building.
 ```
@@ -1586,13 +1720,436 @@ The document must contain:
 1. Executive summary
 2. Current validation frontier surface
 3. Final recommended derived validation statistics
+4. Zero-extra-state vs extra-state classification
+5. What remains unchanged
+6. Deferred ideas
+7. Rejected ideas
+8. Concrete code touch points by file and symbol
+9. Verification order
+10. Interpretability risks
+11. Stop conditions
+```
+
+## Prompt 12: GPU-Resident Finalist Exactification And Embedded Validation Boundary
+
+### Why This Prompt Still Looks Worth Doing
+
+The current options GPU route is not "GPU everywhere."
+
+Today the repo already does all of the following on GPU for the broad tuple set:
+
+- search-lane ranking aggregates
+- holdout-lane aggregates
+- conservative stress aggregates
+- harsher stress aggregates
+
+But after that it still truncates to `top_k` and calls CPU-side finalist replay:
+
+- `finalize_ranked_results(...)`
+- `exactify_ranked_results(...)`
+- `apply_sealed_finalist_stage(...)`
+- exact `extreme` stress evaluation
+
+That makes the current unresolved CUDA-first question very concrete:
+
+**what is the single best next way to reduce the remaining CPU finalist-validation boundary without widening scope or damaging correctness?**
+
+This prompt is intentionally narrower than Prompt 1. Use it when the repo-specific question is the hybrid boundary itself.
+
+### Attach These Files
+
+Required:
+
+- `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `crates/app_core/src/options_types.rs`
+- `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
+- `src-tauri/src/commands_options_expression.rs`
+- `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json`
+
+Optional:
+
+- `web/src/components/OptionsExpressionPanel.vue`
+- `web/src/stores/optionsExpressionStore.ts`
+- `web/src/services/optionsExpressionService.ts`
+
+### Prompt
+
+```text
+You are reviewing the current GPU/CPU execution boundary inside VectorGrid's options-expression optimizer and embedded validation flow.
+
+Using only the attached files, answer this repo-specific question:
+
+Given the current hybrid route, what is the single best next CUDA-first intervention to reduce CPU finalist exactification or embedded validation replay without widening scope or weakening correctness?
+
+The attached code already implies this current boundary:
+
+- broad tuple ranking across search / holdout / stress / harsher lanes is GPU-accelerated
+- the repo then truncates to top_k
+- CPU exactification and sealed finalist work still happen through finalist replay
+- extreme stress is still exact CPU-side evaluation
+
+Constraints:
+- stay inside the current options optimization + embedded validation workflow
+- do not propose a new workflow stage
+- do not broaden parent families or structure families
+- do not suggest raw full-path replay on GPU unless the attached files make that obviously defensible
+- keep CPU fallback and correctness-oracle behavior intact
+- preserve the current artifact-driven workflow
+- explicitly analyze whether the current `top_k` and `sealed_finalist_count` are already the right containment boundary for CPU replay work
+- distinguish clearly between:
+  - a GPU-boundary improvement worth implementing now
+  - a change worth deferring
+  - an aggressive full-device idea that should be rejected
+
+Deliverables:
+1. Summarize the current GPU vs CPU responsibility split by file and symbol.
+2. Identify the largest remaining CPU finalist-validation work after GPU ranking and explain why it still exists.
+3. Compare at least:
+   - keep the current hybrid boundary
+   - one targeted GPU-boundary reduction
+   - one more aggressive near-full-device finalist-validation design
+4. State the single best direction for this repo now.
+5. Explain why it improves CUDA usage and performance without creating semantic drift or bloating device state.
+6. Identify concrete code touch points by file and symbol.
+7. Define the smallest benchmark, parity, and regression plan needed before and after implementation.
+8. State exact stop conditions that would cause the repo to keep the current hybrid boundary.
+
+Be repo-specific. Treat this as a current-runtime-boundary problem, not as generic CUDA ideation.
+```
+
+### Second-Pass Prompt
+
+```text
+Review your prior answer to Prompt 12 as a critical second pass.
+
+I want you to pressure-test whether your proposed CUDA-first boundary change actually helps the repo rather than merely moving work around.
+
+Tasks:
+1. Identify where your recommendation may overstate the cost of the current CPU finalist stage or understate the complexity of GPU-side parity.
+2. Identify any hidden dependence on:
+   - richer per-tuple device output state
+   - extra kernel launches
+   - memory-pressure growth
+   - approximate metrics that stop matching CPU exactification semantics
+   - or sealed/finalist logic that becomes harder to reason about
+3. Compare:
+   - keep current hybrid boundary
+   - your recommended targeted GPU-boundary reduction
+   - a more aggressive full-device finalist-validation alternative
+4. Decide which direction should actually win for this repo now.
+
+Deliverables:
+1. `Keep / revise / reject` verdict on your first-pass recommendation
+2. Refined winning direction
+3. The strongest semantic-parity objection
+4. The strongest CUDA/product argument in favor
+5. Exact evidence that would make the repo stop before implementation
+
+Stay repo-specific. Do not turn this into a generic GPU-everything argument.
+```
+
+### Final Consolidation Prompt
+
+```text
+Using your first-pass and second-pass answers for Prompt 12, produce one final implementation-ready markdown document for this repo.
+
+Write the output as if it will become:
+`options_research/options_gpu_finalist_boundary_direction_FINAL.md`
+
+The document must contain:
+1. Executive summary
+2. Current GPU vs CPU boundary
+3. Final recommendation
 4. What remains unchanged
 5. Deferred ideas
 6. Rejected ideas
 7. Concrete code touch points by file and symbol
-8. Verification order
-9. Interpretability risks
+8. Benchmark and parity plan
+9. Regression risks
 10. Stop conditions
+
+Make one coherent decision for this repo.
+```
+
+## Prompt 13: End-To-End Cost Decomposition And Replay/Prepare Amortization
+
+### Why This Prompt Still Looks Worth Doing
+
+Once the GPU scorer is already viable, raw scorer throughput is no longer the only thing that matters.
+
+The shipped repo now exposes timing for:
+
+- replay/build input work
+- tuple / candidate / summary preparation
+- GPU tensor scoring
+- GPU exactify and sealed-stage post-pass
+- total preview wall time
+
+That creates a more practical performance question:
+
+**where does the next performance dollar actually belong now: replay build, preparation/cache amortization, lane duplication, GPU runtime micro-architecture, or nowhere meaningful yet?**
+
+This prompt is valuable because it can explicitly reject "more CUDA work" if the measured bottleneck is still elsewhere, or identify the exact non-scorer runtime surface that deserves optimization next.
+
+### Attach These Files
+
+Required:
+
+- `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `crates/app_core/src/options_types.rs`
+- `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
+- `src-tauri/src/commands_options_expression.rs`
+- `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json`
+
+Optional:
+
+- `src-tauri/src/commands_options_data.rs`
+- `web/src/components/OptionsExpressionPanel.vue`
+- `web/src/stores/optionsExpressionStore.ts`
+- `web/src/services/optionsExpressionService.ts`
+
+### Prompt
+
+```text
+You are reviewing the next performance direction for VectorGrid's current options-expression workflow as an end-to-end cost-decomposition problem.
+
+Using only the attached files, answer this repo-specific question:
+
+Now that the compiled-tensor GPU scorer is already viable, where does the next performance dollar actually belong if the repo wants faster real previews/runs rather than just faster scorer microbenchmarks?
+
+Force yourself to decompose cost across at least these buckets:
+
+- replay/build input work
+- candidate and summary preparation / cache amortization
+- baseline/conservative/harsher lane duplication
+- GPU runtime internals (chunking, uploads, output copies, kernel count)
+- finalist exactification / sealed post-pass
+
+Constraints:
+- stay inside the current options optimization + embedded validation workflow
+- do not suggest broad feature expansion
+- do not assume more CUDA automatically means better end-to-end performance
+- keep CPU fallback correctness intact
+- use the attached timing artifacts rather than generic accelerator intuition
+- distinguish clearly between:
+  - one implement-now performance direction
+  - one plausible but defer-worthy direction
+  - one direction that should be rejected as fake progress
+
+Deliverables:
+1. Summarize what the attached evidence already proves about cold vs warm cost, replay/build cost, preparation cost, and GPU scorer cost.
+2. State where the next performance dollar should actually go now.
+3. Compare at least:
+   - replay/prepare amortization or caching work
+   - GPU runtime micro-architecture work
+   - "do nothing major yet"
+4. Explain why the winning direction beats the others for this repo now.
+5. Identify concrete code touch points by file and symbol.
+6. Define the smallest benchmark and verification plan needed to validate or reject the recommendation.
+7. State exact measurements that would cause the repo to stop before implementation.
+
+Be repo-specific and hostile to fake performance wins.
+```
+
+### Second-Pass Prompt
+
+```text
+Review your prior answer to Prompt 13 as a critical second pass.
+
+Tasks:
+1. Identify where your recommendation may be overfitting cold-preview evidence or underweighting warm-cache behavior.
+2. Identify any places where you are treating currently separate costs as if they were independently removable when the code suggests they are coupled.
+3. Compare:
+   - replay/prepare amortization first
+   - GPU runtime micro-architecture first
+   - keep current implementation and stop
+4. Collapse the answer toward one winning direction.
+
+Deliverables:
+1. `Keep / revise / reject` verdict on the first-pass recommendation
+2. Refined winning direction
+3. The strongest alternative explanation for where the time really goes
+4. The biggest implementation-risk or fake-win risk
+5. Exact evidence that would change the recommendation
+
+Stay repo-specific. Do not turn this into a generic caching lecture.
+```
+
+### Final Consolidation Prompt
+
+```text
+Using your first-pass and second-pass answers for Prompt 13, produce one final implementation-ready markdown document for this repo.
+
+Write the output as if it will become:
+`options_research/options_end_to_end_cost_direction_FINAL.md`
+
+The document must contain:
+1. Executive summary
+2. Current end-to-end cost decomposition
+3. Final recommendation
+4. What remains unchanged
+5. Deferred ideas
+6. Rejected ideas
+7. Concrete code touch points by file and symbol
+8. Benchmark order
+9. Verification order
+10. Stop conditions
+
+Make one coherent decision for this repo.
+```
+
+## Prompt 14: CUDA Runtime And SASS-Level Micro-Architecture Audit
+
+### Why This Prompt Still Looks Worth Doing
+
+This prompt exists for one narrow reason:
+
+sometimes the remaining performance question really is inside the CUDA runtime or kernel layer, but sometimes SASS-level curiosity is just a distraction from larger replay/build or CPU-bound costs.
+
+For the current options workflow, that means this prompt should only be used after Prompt 13 if the evidence says the next meaningful bottleneck is actually in:
+
+- kernel launch shape
+- tuple chunking
+- upload / output-copy strategy
+- instruction mix
+- memory access pattern
+- or PTX/SASS-level code generation quality
+
+If the current end-to-end bottleneck is still replay/build, preparation, or CPU finalist work, this prompt should be able to say “do not spend time on SASS now.”
+
+### Attach These Files
+
+Required:
+
+- `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
+- `crates/app_core/src/kernels/options_expression.cu`
+- `crates/app_core/src/options_types.rs`
+- `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json`
+- `scripts/run_gpu_perf_gate.ps1`
+
+Optional:
+
+- `ARCHITECTURE_NOTES.md`
+- `RELEASE.md`
+
+### Prompt
+
+```text
+You are reviewing VectorGrid's current options-expression CUDA runtime as a narrow kernel/runtime economics problem.
+
+Using only the attached files, answer this repo-specific question:
+
+Is SASS-level or CUDA-runtime micro-architecture work actually worth doing now for the current options-expression workflow, or should the repo explicitly defer it in favor of larger end-to-end bottlenecks?
+
+You must treat this as a gated decision, not as an excuse to always recommend lower-level GPU tuning.
+
+Force yourself to analyze at least these layers separately:
+
+- end-to-end preview / run wall time
+- replay/build and preparation work
+- GPU scorer runtime share
+- finalist exactify / sealed post-pass share
+- CUDA runtime shape:
+  - tuple chunking
+  - launch count
+  - outcome tensor uploads
+  - host/device copy behavior
+  - output-buffer reuse
+- kernel micro-architecture:
+  - thread-to-tuple mapping
+  - loop structure
+  - memory access pattern
+  - likely occupancy / latency-hiding limits
+  - whether SASS/PTX inspection is likely to change a repo decision
+
+Constraints:
+- stay inside the current options optimization + embedded validation workflow
+- do not recommend generic CUDA heroics
+- do not recommend SASS work unless the attached evidence makes it genuinely high-ROI
+- keep CPU fallback and correctness intact
+- keep the current artifact-driven workflow intact
+- if current evidence is insufficient for a SASS-level decision, say so explicitly
+- distinguish clearly between:
+  - implement-now runtime work
+  - measure-first profiling work
+  - reject/defer SASS-level work
+
+Deliverables:
+1. Summarize what the attached evidence already proves about end-to-end cost share versus pure CUDA scorer cost.
+2. State whether SASS-level or lower-level CUDA-runtime work is justified now.
+3. Compare at least:
+   - do nothing at the SASS layer
+   - runtime-structure work without SASS (chunking, uploads, copies, launch shape)
+   - true SASS/PTX-level investigation
+4. State the single best direction for this repo now.
+5. Explain why it beats the other two options.
+6. Identify concrete code touch points by file and symbol.
+7. Define the exact profiling evidence required before any SASS-level implementation work should begin.
+8. State explicit stop conditions that would make the repo reject SASS-level work for the current options lane.
+
+Be repo-specific and skeptical. Treat “assembly-level tuning” as guilty until proven valuable.
+```
+
+### Second-Pass Prompt
+
+```text
+Review your prior answer to Prompt 14 as a critical second pass.
+
+Tasks:
+1. Identify where your recommendation may be overreacting to microbenchmark-style CUDA numbers while underweighting end-to-end product timings.
+2. Identify any ways your answer may be confusing:
+   - runtime-structure tuning
+   - profiler-guided measurement
+   - and true SASS-level hand optimization
+3. Compare:
+   - defer SASS entirely
+   - measure-first with Nsight / profiler evidence but no implementation yet
+   - proceed directly into CUDA-runtime or SASS work
+4. Collapse the answer toward one winning direction.
+
+Deliverables:
+1. `Keep / revise / reject` verdict on the first-pass recommendation
+2. Refined winning direction
+3. The strongest anti-SASS argument for this repo right now
+4. The strongest pro-SASS argument that could still become valid later
+5. Exact evidence that would change the recommendation
+
+Stay repo-specific. Do not answer with generic CUDA folklore.
+```
+
+### Final Consolidation Prompt
+
+```text
+Using your first-pass and second-pass answers for Prompt 14, produce one final implementation-ready markdown document for this repo.
+
+Write the output as if it will become:
+`options_research/options_cuda_runtime_sass_direction_FINAL.md`
+
+The document must contain:
+1. Executive summary
+2. Current CUDA/runtime evidence
+3. Final recommendation
+4. What remains unchanged
+5. Deferred ideas
+6. Rejected ideas
+7. Concrete code touch points by file and symbol
+8. Profiling / measurement order
+9. Verification order
+10. Stop conditions
+
+Make one coherent decision for this repo.
 ```
 
 ## Final Cross-Prompt Consolidation Prompt
