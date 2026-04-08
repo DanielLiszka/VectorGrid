@@ -876,14 +876,15 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
       }
     },
 
-    exportActiveCsv(): void {
+    async exportActiveCsv(): Promise<void> {
       const tuples = this.activeRankedResults
       if (!tuples.length) {
         this.statusLine = 'No ranked tuples are available to export yet.'
         return
       }
 
-      const exported = exportOptionsExpressionCsv({
+      try {
+        const exported = await exportOptionsExpressionCsv({
         filenameStem: normalizeText(this.parentArtifactId)
           ? `${this.parentArtifactId}_options_expression`
           : `vectorgrid_options_expression_${normalizeText(this.activeDiagnostics?.rootSymbol || this.parentRootHint).toLowerCase() || 'results'}`,
@@ -893,12 +894,25 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         tuples,
       })
 
-      this.statusLine = exported
-        ? `Exported ${tuples.length} ranked tuple${tuples.length === 1 ? '' : 's'} to CSV.`
-        : 'CSV export is unavailable in the current environment.'
+        if (exported.mode === 'saved' && exported.path) {
+          this.statusLine = `${exported.revealed ? 'Saved and revealed' : 'Saved'} ${tuples.length} ranked tuple${tuples.length === 1 ? '' : 's'} to ${exported.path}.`
+          return
+        }
+        if (exported.mode === 'downloaded') {
+          this.statusLine = `Exported ${tuples.length} ranked tuple${tuples.length === 1 ? '' : 's'} as a file download.`
+          return
+        }
+        if (exported.mode === 'cancelled') {
+          this.statusLine = 'CSV export cancelled.'
+          return
+        }
+        this.statusLine = 'CSV export is unavailable in the current environment.'
+      } catch (error) {
+        this.statusLine = String(error || '').trim() || 'Failed to export ranked tuples to CSV.'
+      }
     },
 
-    exportActiveInspectionCsv(): void {
+    async exportActiveInspectionCsv(): Promise<void> {
       const inspection = this.activeTupleInspection
       const rows = inspection?.rows ?? []
       if (!inspection || !rows.length) {
@@ -910,19 +924,33 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         ? normalizeText(this.activeArtifactPath).split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'vectorgrid_options_expression'
         : 'vectorgrid_options_expression'
 
-      const exported = exportOptionsExpressionInspectionCsv({
+      try {
+        const exported = await exportOptionsExpressionInspectionCsv({
         filenameStem: `${artifactStem}_tuple_${inspection.tupleIndex + 1}_inspection`,
         artifactPath: this.activeArtifactPath,
         tupleIndex: inspection.tupleIndex,
         rows,
       })
 
-      this.statusLine = exported
-        ? `Exported ${rows.length} inspection row${rows.length === 1 ? '' : 's'} to CSV.`
-        : 'CSV export is unavailable in the current environment.'
+        if (exported.mode === 'saved' && exported.path) {
+          this.statusLine = `${exported.revealed ? 'Saved and revealed' : 'Saved'} ${rows.length} inspection row${rows.length === 1 ? '' : 's'} to ${exported.path}.`
+          return
+        }
+        if (exported.mode === 'downloaded') {
+          this.statusLine = `Exported ${rows.length} inspection row${rows.length === 1 ? '' : 's'} as a file download.`
+          return
+        }
+        if (exported.mode === 'cancelled') {
+          this.statusLine = 'CSV export cancelled.'
+          return
+        }
+        this.statusLine = 'CSV export is unavailable in the current environment.'
+      } catch (error) {
+        this.statusLine = String(error || '').trim() || 'Failed to export tuple inspection rows.'
+      }
     },
 
-    exportActiveEventPathCsv(): void {
+    async exportActiveEventPathCsv(): Promise<void> {
       const inspection = this.activeEventPathInspection
       const points = inspection?.points ?? []
       if (!inspection || !points.length) {
@@ -934,7 +962,8 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         ? normalizeText(this.activeArtifactPath).split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') || 'vectorgrid_options_expression'
         : 'vectorgrid_options_expression'
 
-      const exported = exportOptionsExpressionEventPathCsv({
+      try {
+        const exported = await exportOptionsExpressionEventPathCsv({
         filenameStem: `${artifactStem}_tuple_${inspection.tupleIndex + 1}_${normalizeText(inspection.eventId) || `event_${inspection.eventIndex + 1}`}_path`,
         artifactPath: this.activeArtifactPath,
         tupleIndex: inspection.tupleIndex,
@@ -942,9 +971,22 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         points,
       })
 
-      this.statusLine = exported
-        ? `Exported ${points.length} replay point${points.length === 1 ? '' : 's'} for event ${inspection.eventId}.`
-        : 'CSV export is unavailable in the current environment.'
+        if (exported.mode === 'saved' && exported.path) {
+          this.statusLine = `${exported.revealed ? 'Saved and revealed' : 'Saved'} ${points.length} replay point${points.length === 1 ? '' : 's'} for event ${inspection.eventId} to ${exported.path}.`
+          return
+        }
+        if (exported.mode === 'downloaded') {
+          this.statusLine = `Exported ${points.length} replay point${points.length === 1 ? '' : 's'} for event ${inspection.eventId} as a file download.`
+          return
+        }
+        if (exported.mode === 'cancelled') {
+          this.statusLine = 'CSV export cancelled.'
+          return
+        }
+        this.statusLine = 'CSV export is unavailable in the current environment.'
+      } catch (error) {
+        this.statusLine = String(error || '').trim() || 'Failed to export event path replay points.'
+      }
     },
 
     clearTupleInspection(): void {

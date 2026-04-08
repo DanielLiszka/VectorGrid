@@ -2,14 +2,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import StartupAnimationOverlay from './StartupAnimationOverlay.vue'
+import AppRuntimeBanner from './AppRuntimeBanner.vue'
 import { useRuntimeStore } from '../stores/runtimeStore'
 
-const MIN_VISIBLE_MS = 5000
-const SIGNATURE_MS = 5000
+const MIN_VISIBLE_MS = 360
+const SIGNATURE_MS = 900
 const EXIT_MS = 180
-const SKIP_UNLOCK_MS = 600
+const SKIP_UNLOCK_MS = MIN_VISIBLE_MS
+
+const StartupHarness = defineComponent({
+  components: {
+    AppRuntimeBanner,
+    StartupAnimationOverlay,
+  },
+  template: `
+    <div>
+      <StartupAnimationOverlay />
+      <AppRuntimeBanner />
+    </div>
+  `,
+})
 
 function stubMatchMedia(reducedMotion = false): void {
   Object.defineProperty(window, 'matchMedia', {
@@ -63,6 +77,10 @@ describe('StartupAnimationOverlay', () => {
 
     expect(document.querySelector('#startupAnimationOverlay')?.getAttribute('data-stage')).toBe('intro')
     expect(wrapper.text()).toContain('Restoring workspace state')
+    expect(wrapper.find('.startupRail').exists()).toBe(true)
+    expect(wrapper.find('.startupPhaseTag').text()).toBe('Booting')
+    expect(wrapper.find('.startupGridField').exists()).toBe(false)
+    expect(wrapper.find('.startupResultRail').exists()).toBe(false)
 
     runtimeStore.markReady()
     await nextTick()
@@ -82,7 +100,7 @@ describe('StartupAnimationOverlay', () => {
     const runtimeStore = useRuntimeStore(pinia)
     runtimeStore.markBooting('Initializing desktop services')
 
-    const wrapper = mount(StartupAnimationOverlay, {
+    const wrapper = mount(StartupHarness, {
       global: { plugins: [pinia] },
       attachTo: document.body,
     })
@@ -93,6 +111,8 @@ describe('StartupAnimationOverlay', () => {
     await flushTimers(EXIT_MS)
     expect(document.querySelector('#startupAnimationOverlay')).toBeNull()
     expect(runtimeStore.bootPhase).toBe('booting')
+    expect(wrapper.find('.runtimeBanner').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Initializing desktop services')
 
     wrapper.unmount()
   })
@@ -124,7 +144,7 @@ describe('StartupAnimationOverlay', () => {
     const runtimeStore = useRuntimeStore(pinia)
     runtimeStore.markBooting('Initializing desktop services')
 
-    const wrapper = mount(StartupAnimationOverlay, {
+    const wrapper = mount(StartupHarness, {
       global: { plugins: [pinia] },
       attachTo: document.body,
     })
@@ -136,11 +156,13 @@ describe('StartupAnimationOverlay', () => {
     expect(document.querySelector('#startupAnimationOverlay')?.getAttribute('data-stage')).toBe('exiting')
     await flushTimers(EXIT_MS)
     expect(document.querySelector('#startupAnimationOverlay')).toBeNull()
+    expect(wrapper.find('.runtimeBanner.error').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Runtime Error')
 
     wrapper.unmount()
   })
 
-  it('switches to the static mark when reduced motion is preferred', async () => {
+  it('applies the reduced-motion posture when reduced motion is preferred', async () => {
     stubMatchMedia(true)
     const runtimeStore = useRuntimeStore(pinia)
     runtimeStore.markBooting('Restoring workspace state')
@@ -151,8 +173,8 @@ describe('StartupAnimationOverlay', () => {
     })
     await nextTick()
 
-    expect(document.querySelector('.startupLogoStatic')).not.toBeNull()
-    expect(document.querySelector('.startupLogoAnimated')).toBeNull()
+    expect(document.querySelector('#startupAnimationOverlay')?.classList.contains('reduced')).toBe(true)
+    expect(wrapper.find('.startupMarkLogo').exists()).toBe(true)
 
     wrapper.unmount()
   })

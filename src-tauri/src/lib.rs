@@ -132,6 +132,7 @@ pub fn run_tauri() {
             analyze_options_expression_feasibility,
             list_options_expression_artifacts,
             load_options_expression_artifact,
+            save_options_csv,
             inspect_options_expression_tuple,
             inspect_options_expression_event_path,
             get_price_bars,

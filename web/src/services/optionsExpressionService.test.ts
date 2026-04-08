@@ -6,6 +6,7 @@ import {
   downloadPolygonOptionsDataset,
   exportOptionsExpressionCsv,
   exportOptionsExpressionEventPathCsv,
+  exportOptionsExpressionInspectionCsv,
   importOptionsDataset,
   inspectOptionsExpressionTuple,
   listOptionsDatasets,
@@ -26,6 +27,7 @@ const invokeCommandMock = vi.mocked(invokeCommand)
 describe('optionsExpressionService', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    invokeCommandMock.mockImplementation(async () => ({}))
   })
 
   it('normalizes imported dataset manifests', async () => {
@@ -758,7 +760,7 @@ describe('optionsExpressionService', () => {
     })
   })
 
-  it('exports ranked tuples to CSV', async () => {
+  it('falls back to a browser download when desktop CSV save is unavailable', async () => {
     const createObjectURL = vi
       .spyOn(URL, 'createObjectURL')
       .mockImplementation(() => 'blob:options-expression')
@@ -778,7 +780,12 @@ describe('optionsExpressionService', () => {
       return element
     }) as typeof document.createElement)
 
-    const exported = exportOptionsExpressionCsv({
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === 'pick_save_csv') throw new Error('save dialog unavailable')
+      return {}
+    })
+
+    const exported = await exportOptionsExpressionCsv({
       filenameStem: 'vectorgrid_options_expression_spy',
       rootSymbol: 'SPY',
       backendUsed: 'cpu_reference',
@@ -842,7 +849,8 @@ describe('optionsExpressionService', () => {
       ],
     })
 
-    expect(exported).toBe(true)
+    expect(exported.mode).toBe('downloaded')
+    expect(exported.path).toBeNull()
     expect(clicked).toBe(1)
     expect(createObjectURL).toHaveBeenCalledTimes(1)
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:options-expression')
@@ -861,7 +869,134 @@ describe('optionsExpressionService', () => {
     expect(csvText).toContain(',-0.05,-0.08,')
   })
 
-  it('exports event path replays to CSV', async () => {
+  it('saves ranked tuples through the desktop picker and reveals the saved file', async () => {
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === 'pick_save_csv') return 'C:/exports/vectorgrid_options_expression_spy.csv'
+      if (command === 'save_options_csv') {
+        return {
+          path: 'C:/exports/vectorgrid_options_expression_spy.csv',
+          bytes: 256,
+        }
+      }
+      if (command === 'reveal_path') return true
+      return {}
+    })
+
+    const exported = await exportOptionsExpressionCsv({
+      filenameStem: 'vectorgrid_options_expression_spy',
+      rootSymbol: 'SPY',
+      backendUsed: 'gpu_compiled_tensor',
+      priceSemantics: 'minute_aggregate',
+      tuples: [
+        {
+          structureFamily: 'long_single',
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          robustScore: 0.3,
+          selectionMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 10,
+            expectancyPerPremium: 0.2,
+            medianReturnOnPremium: 0.12,
+            winRate: 0.67,
+            totalPnlPerContract: 30,
+          },
+          holdoutMetrics: null,
+          sealedEvaluationMetrics: null,
+          stressMetrics: null,
+        },
+      ],
+    })
+
+    expect(exported).toEqual({
+      mode: 'saved',
+      filename: 'vectorgrid_options_expression_spy.csv',
+      path: 'C:/exports/vectorgrid_options_expression_spy.csv',
+      bytes: 256,
+      revealed: true,
+    })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'pick_save_csv', {
+      defaultName: 'vectorgrid_options_expression_spy.csv',
+    })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'save_options_csv', {
+      req: {
+        path: 'C:/exports/vectorgrid_options_expression_spy.csv',
+        csv_text: expect.stringContaining('delay_minutes,dte_days,structure_family,moneyness_bucket'),
+      },
+    })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'reveal_path', {
+      path: 'C:/exports/vectorgrid_options_expression_spy.csv',
+    })
+  })
+
+  it('treats a cancelled desktop save as a cancelled export', async () => {
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === 'pick_save_csv') return null
+      return {}
+    })
+
+    const exported = await exportOptionsExpressionInspectionCsv({
+      filenameStem: 'vectorgrid_tuple_1_inspection',
+      artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+      tupleIndex: 0,
+      rows: [
+        {
+          eventIndex: 0,
+          eventId: 'evt-1',
+          split: 'search',
+          side: 'bullish',
+          decisionTimestamp: 100,
+          earliestTradableTimestamp: 160,
+          requestedEntryTimestamp: 160,
+          rawUnderlierPrice: 500,
+          baseExitTimestamp: null,
+          status: 'executed',
+          candidateInvalidReason: '',
+          contractId: 'SPY_C_1',
+          companionContractId: '',
+          expirationDate: '2026-04-12',
+          strike: 505,
+          companionStrike: null,
+          multiplier: 100,
+          entryTimestamp: 160,
+          entryOptionPrice: 1.2,
+          companionEntryOptionPrice: null,
+          entryUnderlierPrice: 500.1,
+          exitTimestamp: 220,
+          exitOptionPrice: 1.5,
+          companionExitOptionPrice: null,
+          premiumPaid: 120,
+          pnlPerContract: 30,
+          returnOnPremium: 0.25,
+          entryLagMinutes: 0,
+          minutesToExpiryAtEntry: 1440,
+          realizedHoldMinutes: 60,
+          pathOptionHigh: 1.6,
+          pathOptionLow: 1.1,
+          pathUnderlierHigh: 501.5,
+          pathUnderlierLow: 499.8,
+          exitReason: 'target_hit',
+        },
+      ],
+    })
+
+    expect(exported.mode).toBe('cancelled')
+    expect(exported.path).toBeNull()
+    expect(invokeCommandMock).toHaveBeenCalledTimes(1)
+    expect(invokeCommandMock).toHaveBeenCalledWith('pick_save_csv', {
+      defaultName: 'vectorgrid_tuple_1_inspection.csv',
+    })
+  })
+
+  it('falls back to a browser download for event path replay exports when desktop save is unavailable', async () => {
     let clicked = 0
     const createObjectURL = vi
       .spyOn(URL, 'createObjectURL')
@@ -880,7 +1015,12 @@ describe('optionsExpressionService', () => {
       return element
     }) as typeof document.createElement)
 
-    const exported = exportOptionsExpressionEventPathCsv({
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === 'pick_save_csv') throw new Error('save dialog unavailable')
+      return {}
+    })
+
+    const exported = await exportOptionsExpressionEventPathCsv({
       filenameStem: 'vectorgrid_event_path',
       artifactPath: 'C:/runs/vectorgrid_options_expression.json',
       tupleIndex: 0,
@@ -897,7 +1037,7 @@ describe('optionsExpressionService', () => {
       ],
     })
 
-    expect(exported).toBe(true)
+    expect(exported.mode).toBe('downloaded')
     expect(clicked).toBe(1)
     expect(createObjectURL).toHaveBeenCalledTimes(1)
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:event-path')

@@ -224,6 +224,11 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('The selected realism lane controls the expected CSV semantics for this import.')
     expect(wrapper.find('option[value="quote_conservative"]').attributes('disabled')).toBeDefined()
     expect(wrapper.find('option[value="quote_mid"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Lane product status')
+    expect(wrapper.text()).toContain('Saved datasets')
+    expect(wrapper.text()).toContain('Saved artifacts')
+    expect(wrapper.text()).toContain('Avg validation EV')
+    expect(wrapper.text()).toContain('Avg stressed EV')
     expect(wrapper.text()).toContain('This download is options-only and stays separate from the normal stock data workflow.')
     expect(wrapper.text()).toContain('Dataset manifest')
     expect(wrapper.text()).toContain('options_business')
@@ -231,7 +236,9 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('spy_options')
     expect(wrapper.text()).toContain('massive | minute_aggregate | 1m | close | 2026-04-05T00:00:00Z')
     expect(wrapper.text()).toContain('Saved artifact comparison')
+    expect(wrapper.text()).toContain('Artifact frontier leaders')
     expect(wrapper.text()).toContain('Options artifact meta-analysis')
+    expect(wrapper.text()).toContain('Reopened artifact validation frontier')
     expect(wrapper.text()).toContain('By parent family')
     expect(wrapper.text()).toContain('CompositeTrend')
     expect(wrapper.text()).toContain('By root')
@@ -245,11 +252,17 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Aggregate -> Quote-aware')
     expect(wrapper.text()).toContain('Lane')
     expect(wrapper.text()).toContain('Validation')
+    expect(wrapper.text()).toContain('Validated %')
+    expect(wrapper.text()).toContain('Stress %')
+    expect(wrapper.text()).toContain('Val Δ')
+    expect(wrapper.text()).toContain('Stress Δ')
     expect(wrapper.text()).toContain('Diff vs selected')
     expect(wrapper.text()).toContain('auto -> cpu_reference')
+    expect(wrapper.text()).toContain('gpu_compiled_tensor')
     expect(wrapper.text()).toContain('Aggregate lane')
     expect(wrapper.text()).toContain('aggregate_research')
     expect(wrapper.text()).toContain('validation Stress-fragile')
+    expect(wrapper.text()).toContain('quote_conservative')
     expect(wrapper.text()).toContain('robust 0.180')
     expect(wrapper.text()).toContain('hold 0.100')
     expect(wrapper.text()).toContain('sealed 0.070')
@@ -258,6 +271,11 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('sealed harsher 0.010')
     expect(wrapper.text()).toContain('extreme -0.010')
     expect(wrapper.text()).toContain('sealed extreme -0.020')
+    expect(wrapper.text()).toContain('Validated ratio')
+    expect(wrapper.text()).toContain('Fragility ratio')
+    expect(wrapper.text()).toContain('Selection')
+    expect(wrapper.text()).toContain('Holdout')
+    expect(wrapper.text()).toContain('Best validated artifact')
     expect(useOptionsExpressionStore().splitAssignmentMode).toBe('event_chronological')
   })
 
@@ -300,6 +318,9 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Quote-aware realism is currently a CSV-import lane.')
     expect(wrapper.text()).toContain('Direct provider download in this panel is currently available only for the Aggregate lane.')
     expect(wrapper.text()).toContain('Select Quote-aware Polygon/Massive dataset…')
+    expect(wrapper.text()).toContain('Lane product status')
+    expect(wrapper.text()).toContain('Saved datasets')
+    expect(wrapper.text()).toContain('No saved artifacts currently match the selected Quote-aware lane for this parent run.')
   })
 
   it('downloads a bounded Polygon/Massive dataset from the options panel', async () => {
@@ -420,7 +441,13 @@ describe('OptionsExpressionPanel', () => {
       },
     ])
     listOptionsExpressionArtifactsMock.mockResolvedValue([])
-    exportOptionsExpressionCsvMock.mockReturnValue(true)
+    exportOptionsExpressionCsvMock.mockResolvedValue({
+      mode: 'saved',
+      filename: 'vectorgrid_run_1_options_expression.csv',
+      path: 'C:/exports/vectorgrid_run_1_options_expression.csv',
+      bytes: 512,
+      revealed: true,
+    })
 
     const wrapper = mount(OptionsExpressionPanel, {
       props: {
@@ -501,12 +528,14 @@ describe('OptionsExpressionPanel', () => {
     expect(exportButton).toBeTruthy()
     await exportButton!.trigger('click')
 
-    expect(exportOptionsExpressionCsvMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        filenameStem: 'vectorgrid_run_1_options_expression',
-        rootSymbol: 'SPY',
-      }),
-    )
+    await vi.waitFor(() => {
+      expect(exportOptionsExpressionCsvMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filenameStem: 'vectorgrid_run_1_options_expression',
+          rootSymbol: 'SPY',
+        }),
+      )
+    })
   })
 
   it('shows backend fallback details in the request summary when available', async () => {

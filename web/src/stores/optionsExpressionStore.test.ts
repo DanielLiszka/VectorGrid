@@ -8,6 +8,7 @@ const {
   analyzeOptionsExpressionFeasibilityMock,
   downloadPolygonOptionsDatasetMock,
   exportOptionsExpressionCsvMock,
+  exportOptionsExpressionEventPathCsvMock,
   exportOptionsExpressionInspectionCsvMock,
   importOptionsDatasetMock,
   inspectOptionsExpressionEventPathMock,
@@ -22,6 +23,7 @@ const {
   analyzeOptionsExpressionFeasibilityMock: vi.fn(),
   downloadPolygonOptionsDatasetMock: vi.fn(),
   exportOptionsExpressionCsvMock: vi.fn(),
+  exportOptionsExpressionEventPathCsvMock: vi.fn(),
   exportOptionsExpressionInspectionCsvMock: vi.fn(),
   importOptionsDatasetMock: vi.fn(),
   inspectOptionsExpressionEventPathMock: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock('../services/optionsExpressionService', () => ({
   analyzeOptionsExpressionFeasibility: analyzeOptionsExpressionFeasibilityMock,
   downloadPolygonOptionsDataset: downloadPolygonOptionsDatasetMock,
   exportOptionsExpressionCsv: exportOptionsExpressionCsvMock,
+  exportOptionsExpressionEventPathCsv: exportOptionsExpressionEventPathCsvMock,
   exportOptionsExpressionInspectionCsv: exportOptionsExpressionInspectionCsvMock,
   importOptionsDataset: importOptionsDatasetMock,
   inspectOptionsExpressionEventPath: inspectOptionsExpressionEventPathMock,
@@ -943,8 +946,14 @@ describe('optionsExpressionStore', () => {
     expect(store.statusLine).toContain('Loaded 2 path points')
   })
 
-  it('exports the active ranked tuples to CSV', () => {
-    exportOptionsExpressionCsvMock.mockReturnValue(true)
+  it('exports the active ranked tuples to CSV with a desktop save path', async () => {
+    exportOptionsExpressionCsvMock.mockResolvedValue({
+      mode: 'saved',
+      filename: 'vectorgrid_run_1_options_expression.csv',
+      path: 'C:/exports/vectorgrid_run_1_options_expression.csv',
+      bytes: 512,
+      revealed: true,
+    })
     const rankedResults = Array.from({ length: 12 }, (_, index) => ({
       delayMinutes: index % 3,
       dteDays: 1 + (index % 2),
@@ -1006,7 +1015,7 @@ describe('optionsExpressionStore', () => {
       rankedResults,
     }
 
-    store.exportActiveCsv()
+    await store.exportActiveCsv()
 
     const exportInput = exportOptionsExpressionCsvMock.mock.calls[0]?.[0]
     expect(exportOptionsExpressionCsvMock).toHaveBeenCalledWith(
@@ -1018,7 +1027,8 @@ describe('optionsExpressionStore', () => {
       }),
     )
     expect(exportInput?.tuples).toHaveLength(12)
-    expect(store.statusLine).toContain('Exported 12 ranked tuples')
+    expect(store.statusLine).toContain('Saved and revealed 12 ranked tuples')
+    expect(store.statusLine).toContain('C:/exports/vectorgrid_run_1_options_expression.csv')
   })
 
   it('resets active selection when the parent artifact changes', () => {
@@ -1128,8 +1138,14 @@ describe('optionsExpressionStore', () => {
     expect(store.latestRun).toBeNull()
   })
 
-  it('exports active tuple inspection rows to CSV', () => {
-    exportOptionsExpressionInspectionCsvMock.mockReturnValue(true)
+  it('exports active tuple inspection rows to CSV with a desktop save path', async () => {
+    exportOptionsExpressionInspectionCsvMock.mockResolvedValue({
+      mode: 'saved',
+      filename: 'vectorgrid_options_expression_1_tuple_1_inspection.csv',
+      path: 'C:/exports/vectorgrid_options_expression_1_tuple_1_inspection.csv',
+      bytes: 384,
+      revealed: true,
+    })
 
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
@@ -1228,7 +1244,7 @@ describe('optionsExpressionStore', () => {
       ],
     }
 
-    store.exportActiveInspectionCsv()
+    await store.exportActiveInspectionCsv()
 
     expect(exportOptionsExpressionInspectionCsvMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1237,6 +1253,189 @@ describe('optionsExpressionStore', () => {
         tupleIndex: 0,
       }),
     )
-    expect(store.statusLine).toContain('Exported 1 inspection row')
+    expect(store.statusLine).toContain('Saved and revealed 1 inspection row')
+    expect(store.statusLine).toContain('C:/exports/vectorgrid_options_expression_1_tuple_1_inspection.csv')
+  })
+
+  it('treats a cancelled ranked-tuple export as a non-error', async () => {
+    exportOptionsExpressionCsvMock.mockResolvedValue({
+      mode: 'cancelled',
+      filename: 'vectorgrid_run_1_options_expression.csv',
+      path: null,
+      bytes: 256,
+      revealed: false,
+    })
+    const store = useOptionsExpressionStore()
+    store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
+    store.latestRun = {
+      artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+      artifactTs: '',
+      parentArtifactId: '',
+      optionsDatasetHash: '',
+      backendUsed: 'cpu_reference',
+      priceSemantics: 'minute_aggregate',
+      tupleCount: 1,
+      request: null,
+      staging: null,
+      diagnostics: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        totalEvents: 1,
+        bullishEvents: 1,
+        bearishEvents: 0,
+        searchEvents: 1,
+        holdoutEvents: 0,
+        sealedTestEvents: 0,
+        datasetContracts: 3,
+        datasetRows: 42,
+        coverageStart: null,
+        coverageEnd: null,
+      },
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          robustScore: 0.18,
+          selectionMetrics: {
+            validTrades: 1,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 12,
+            expectancyPerPremium: 0.2,
+            medianReturnOnPremium: 0.15,
+            winRate: 1,
+            totalPnlPerContract: 24,
+          },
+          holdoutMetrics: null,
+          sealedEvaluationMetrics: null,
+          stressMetrics: null,
+        },
+      ],
+    }
+
+    await store.exportActiveCsv()
+
+    expect(store.statusLine).toBe('CSV export cancelled.')
+  })
+
+  it('exports active event path rows to CSV with a desktop save path', async () => {
+    exportOptionsExpressionEventPathCsvMock.mockResolvedValue({
+      mode: 'saved',
+      filename: 'vectorgrid_options_expression_1_tuple_1_evt-1_path.csv',
+      path: 'C:/exports/vectorgrid_options_expression_1_tuple_1_evt-1_path.csv',
+      bytes: 320,
+      revealed: false,
+    })
+
+    const store = useOptionsExpressionStore()
+    store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
+    store.latestRun = {
+      artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+      artifactTs: '',
+      parentArtifactId: '',
+      optionsDatasetHash: '',
+      backendUsed: 'cpu_reference',
+      priceSemantics: 'minute_aggregate',
+      tupleCount: 1,
+      request: null,
+      staging: null,
+      diagnostics: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        totalEvents: 2,
+        bullishEvents: 1,
+        bearishEvents: 1,
+        searchEvents: 1,
+        holdoutEvents: 1,
+        sealedTestEvents: 0,
+        datasetContracts: 3,
+        datasetRows: 42,
+        coverageStart: null,
+        coverageEnd: null,
+      },
+      rankedResults: [],
+    }
+    store.activeEventPathInspection = {
+      tupleIndex: 0,
+      eventIndex: 0,
+      eventId: 'evt-1',
+      row: {
+        eventIndex: 0,
+        eventId: 'evt-1',
+        split: 'search',
+        side: 'bullish',
+        decisionTimestamp: 100,
+        earliestTradableTimestamp: 160,
+        requestedEntryTimestamp: 160,
+        rawUnderlierPrice: 500,
+        baseExitTimestamp: null,
+        status: 'executed',
+        candidateInvalidReason: '',
+        contractId: 'SPY_C_1',
+        companionContractId: '',
+        expirationDate: '2026-04-12',
+        strike: 505,
+        companionStrike: null,
+        multiplier: 100,
+        entryTimestamp: 160,
+        entryOptionPrice: 1.2,
+        companionEntryOptionPrice: null,
+        entryUnderlierPrice: 500.1,
+        exitTimestamp: 220,
+        exitOptionPrice: 1.5,
+        companionExitOptionPrice: null,
+        premiumPaid: 120,
+        pnlPerContract: 30,
+        returnOnPremium: 0.25,
+        entryLagMinutes: 0,
+        minutesToExpiryAtEntry: 1440,
+        realizedHoldMinutes: 60,
+        pathOptionHigh: 1.6,
+        pathOptionLow: 1.1,
+        pathUnderlierHigh: 501.5,
+        pathUnderlierLow: 499.8,
+        exitReason: 'target_hit',
+      },
+      pointCount: 2,
+      points: [
+        {
+          timestampMs: 1700000000000,
+          optionOpen: 1.2,
+          optionHigh: 1.3,
+          optionLow: 1.1,
+          optionClose: 1.25,
+          underlyingPrice: 500.5,
+        },
+        {
+          timestampMs: 1700000060000,
+          optionOpen: 1.25,
+          optionHigh: 1.5,
+          optionLow: 1.2,
+          optionClose: 1.45,
+          underlyingPrice: 501.2,
+        },
+      ],
+    }
+
+    await store.exportActiveEventPathCsv()
+
+    expect(exportOptionsExpressionEventPathCsvMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filenameStem: 'vectorgrid_options_expression_1_tuple_1_evt-1_path',
+        artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+        tupleIndex: 0,
+        eventId: 'evt-1',
+      }),
+    )
+    expect(store.statusLine).toContain('Saved 2 replay points for event evt-1')
+    expect(store.statusLine).toContain('C:/exports/vectorgrid_options_expression_1_tuple_1_evt-1_path.csv')
   })
 })

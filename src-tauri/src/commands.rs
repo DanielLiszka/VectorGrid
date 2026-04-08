@@ -117,9 +117,10 @@ pub use commands_options_expression::{
     list_options_expression_artifacts, list_options_expression_artifacts_blocking_headless,
     load_options_expression_artifact, load_options_expression_artifact_blocking_headless,
     run_options_expression, run_options_expression_blocking_headless,
+    save_options_csv, save_options_csv_blocking_headless,
     AnalyzeOptionsExpressionFeasibilityResponse, InspectOptionsExpressionEventPathRequest,
     InspectOptionsExpressionTupleRequest, OptionsExpressionArtifactSummary,
-    RunOptionsExpressionResponse,
+    RunOptionsExpressionResponse, SaveOptionsCsvRequest, SaveOptionsCsvResponse,
 };
 pub use commands_reports::build_report_xlsx_bytes_headless;
 pub(crate) use commands_reports::{

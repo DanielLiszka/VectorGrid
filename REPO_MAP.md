@@ -34,6 +34,8 @@ Do not treat this as the full implementation spec. Use it together with:
 - `Frontend Review/startup_animation_plan_2026-03-30.md` for the implemented first-wave in-window startup animation record, verification notes, and remaining optional follow-ups using the existing VectorAlpha brand assets
 - `Frontend Review/Unfinished/mlsignal_mode_separation_plan_2026-03-31.md` for the deferred plan to split `MlSignal` into a discrete user mode while keeping the conventional optimization workflow as the default shell mode
 - `Frontend Review/svg_generation_prompts_2026-03-28.md` for the paste-ready GPT-5.4 Pro prompts used to generate the proposed custom SVG asset set
+- `options_research/options_expression_optimizer_viable_plan_2026-04-02.md` for the current shipped-slice options-expression tracker, current checklist, and repo-fit implementation status
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md` for the refocused future roadmap that is now limited to improving the existing options optimization + embedded validation workflow
 
 ## How To Use This Map
 
@@ -64,6 +66,7 @@ The repo is large, but the real execution families are fewer than the file count
 - Composite/advanced family
 - CompositeMo
 - MlSignal
+- Options expression follow-up workflow
 
 ## Stable Entry Points
 
@@ -92,6 +95,32 @@ Open these first before broad search:
 - `web/src/preflight.ts`
 - `web/src/utils/strategyOptimizationCapabilities.ts`
 - `web/src/strategies/compositeProfileGpuPolicy.ts`
+
+## Options Expression Workflow
+
+If the task is about the current options backtest optimization / embedded validation lane, open these first before broad search:
+
+- planning / tracking
+  - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
+  - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- frontend host / request shaping
+  - `web/src/components/OptionsExpressionPanel.vue`
+  - `web/src/stores/optionsExpressionStore.ts`
+  - `web/src/services/optionsExpressionService.ts`
+- Tauri command boundary
+  - `src-tauri/src/commands_options_expression.rs`
+  - `src-tauri/src/commands_options_data.rs`
+- app-core data / evaluation
+  - `crates/app_core/src/options_types.rs`
+  - `crates/app_core/src/options_signal_manifest.rs`
+  - `crates/app_core/src/options_data_store.rs`
+  - `crates/app_core/src/options_expression.rs`
+  - `crates/app_core/src/options_expression_gpu.rs`
+  - `crates/app_core/src/kernels/options_expression.cu`
+- representative tests
+  - `web/src/components/OptionsExpressionPanel.test.ts`
+  - `web/src/stores/optionsExpressionStore.test.ts`
+  - `web/src/services/optionsExpressionService.test.ts`
 
 ## Top-Level Workspace Map
 

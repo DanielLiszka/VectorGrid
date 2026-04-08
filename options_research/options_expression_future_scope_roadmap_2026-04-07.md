@@ -18,6 +18,12 @@ The split between the documents is:
 - `options_expression_future_scope_roadmap_2026-04-07.md`
   - how to extend the feature into a fuller, world-class options optimizer without losing the repo’s performance edge
 
+Quick pointers:
+
+- current future-scope checklist: [Comprehensive Future Checklist](#14-comprehensive-future-checklist)
+- file ownership / routing guide: [Implementation Surface Map](#18-implementation-surface-map)
+- current shipped-slice tracker: [options_expression_optimizer_viable_plan_2026-04-02.md](/C:/Rust%20Projects/ta_desktop_demo/options_research/options_expression_optimizer_viable_plan_2026-04-02.md)
+
 ---
 
 ## 1. Strategic Target
@@ -610,7 +616,7 @@ Status key:
 - `[x]` Turn options post-search validation into a first-class product surface
 - `[x]` Add explicit options validation verdicts and acceptance cues
 - `[x]` Add stronger finalist validation comparison views
-- `[~]` Promote quote-aware realism from supported import semantics to a clearly first-class product lane
+- `[x]` Promote quote-aware realism from supported import semantics to a clearly first-class product lane
 - `[x]` Add stronger fill-model guidance and guardrails by dataset price semantics
 - `[x]` Add clearer result labeling for aggregate vs derived-mid vs quote-aware runs
 - `[x]` Finish GPU-first productization of `auto`
@@ -622,16 +628,16 @@ Status key:
 
 - `[x]` Add stronger artifact comparison / provenance diffing for options-expression runs
 - `[x]` Add first-wave robustness-frontier reporting for live run result review
-- `[ ]` Add deeper robustness-frontier reporting for reopened artifacts and saved-artifact comparison
+- `[x]` Add deeper robustness-frontier reporting for reopened artifacts and saved-artifact comparison
 - `[x]` Add clearer search-winner vs robust-winner disagreement reporting
 - `[x]` Add aggregate vs derived-mid vs quote-aware disagreement summaries where matching datasets/artifacts exist
-- `[ ]` Add additional useful metrics only when they can be gathered with little incremental hot-path cost
+- `[x]` Add additional useful metrics only when they can be gathered with little incremental hot-path cost
 
 ### C. Already-Shipped Secondary Context
 
 - `[x]` First-wave options meta-analysis over saved options-expression artifacts exists
 - `[x]` First-wave cross-root and cross-parent-family comparison surfaces already exist
-- `[ ]` Deepen cross-artifact comparison only when it directly improves optimization/validation decisions
+- `[x]` Deepen cross-artifact comparison only when it directly improves optimization/validation decisions
 
 ### D. Intentionally Deferred Expansion
 

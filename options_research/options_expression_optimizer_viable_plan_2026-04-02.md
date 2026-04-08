@@ -7,6 +7,11 @@ Future expansion work is tracked separately in:
 
 - [options_expression_future_scope_roadmap_2026-04-07.md](/C:/Rust%20Projects/ta_desktop_demo/options_research/options_expression_future_scope_roadmap_2026-04-07.md)
 
+Quick pointers:
+
+- current shipped-slice checklist: [Revised Phased Roadmap](#revised-phased-roadmap)
+- current future-scope follow-up doc: [options_expression_future_scope_roadmap_2026-04-07.md](/C:/Rust%20Projects/ta_desktop_demo/options_research/options_expression_future_scope_roadmap_2026-04-07.md)
+
 ## Executive Verdict
 
 The original plan is directionally strong.

@@ -6,7 +6,7 @@ Prompt source: [startup_experience_replacement_direction_FINAL.md](C:/Rust%20Pro
 
 Scope: Prompt 7 objective implementation only. This tracker converts the grounded Prompt 7 findings into a frontend implementation plan without reopening shell architecture, inventing a richer runtime model, or broadening startup into a standalone product surface.
 
-Status: Draft tracker. Objective implementation not started.
+Status: Objective checkpoint implemented and verified on 2026-04-07.
 
 Owner posture: Objective-first, truth-preserving, startup-discipline-biased.
 
@@ -38,24 +38,27 @@ This implementation must be additive and capability-preserving.
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline audit and evidence capture finished
-- [ ] Phase 1 complete: startup ownership, timing, and state audit landed
-- [ ] Phase 2 complete: overlay visual simplification landed
-- [ ] Phase 3 complete: timing and runtime-banner handoff tightening landed
-- [ ] Phase 4 complete: reduced-motion and error-state hardening landed
-- [ ] Phase 5 complete: startup verification and evidence refresh landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Optional interpretive follow-up reviewed
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline audit and evidence capture finished
+- [x] Phase 1 complete: startup ownership, timing, and state audit landed
+- [x] Phase 2 complete: overlay visual simplification landed
+- [x] Phase 3 complete: timing and runtime-banner handoff tightening landed
+- [x] Phase 4 complete: reduced-motion and error-state hardening landed
+- [x] Phase 5 complete: startup verification and evidence refresh landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Optional interpretive follow-up reviewed
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
 
 ## Implementation Notes (2026-04-07)
 
-- [ ] Objective Prompt 7 implementation has not started yet
-- [ ] The current tracker is intentionally limited to the grounded startup findings reviewed from [startup_experience_replacement_direction_FINAL.md](C:/Rust%20Projects/ta_desktop_demo/Frontend%20Review/Prompt7/startup_experience_replacement_direction_FINAL.md)
-- [ ] The current faux-analysis overlay in [StartupAnimationOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.vue) is the primary replacement target
-- [ ] The runtime truth chain in [main.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/main.ts) and [runtimeStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/runtimeStore.ts) is expected to remain substantially unchanged
-- [ ] Any [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) edits should remain narrow and conditional
+- [x] Objective Prompt 7 implementation landed primarily in [StartupAnimationOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.vue), with targeted verification updates in [StartupAnimationOverlay.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.test.ts).
+- [x] The objective pass stayed limited to the grounded startup findings reviewed from [startup_experience_replacement_direction_FINAL.md](C:/Rust%20Projects/ta_desktop_demo/Frontend%20Review/Prompt7/startup_experience_replacement_direction_FINAL.md).
+- [x] The faux-analysis startup scene was removed and replaced with a compact rail over a shell veil in [StartupAnimationOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.vue).
+- [x] The runtime truth chain in [main.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/main.ts) and [runtimeStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/runtimeStore.ts) remained unchanged after review.
+- [x] No source edits were required in [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue), [App.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/App.vue), or [runtimeStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/runtimeStore.ts).
+- [x] Browser-side evidence was added under `scripts/baselines/ui_capture`, including `prompt7_startup_overlay_manual.png`, `prompt7_startup_overlay_reduced_manual.png`, and `prompt7_shell_after_dismiss_manual.png`.
+- [x] Long-boot and error ownership were proved through component integration coverage in [StartupAnimationOverlay.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.test.ts), because the built preview harness does not naturally hold the runtime in a long-boot state without extra instrumentation.
+- [x] One low-risk interpretive decision was effectively adopted in the shipped UI: the startup rail now uses the calmer static [VectorAlphaLogo.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/VectorAlphaLogo.vue) path by default rather than preserving the older animated-logo-first startup treatment.
 
 ## Implementation Outcome Target
 
@@ -225,30 +228,30 @@ Goal: record the current startup behavior and identify exactly what the replacem
 
 Checklist:
 
-- [ ] Capture the current normal startup overlay state
-- [ ] Capture the current reduced-motion startup overlay state
-- [ ] Capture the current long-boot handoff state if reproducible
-- [ ] Capture the current error-state handoff if reproducible
-- [ ] Record the current overlay timing constants and their user-facing effect
-- [ ] Record every current faux-analysis element rendered by [StartupAnimationOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.vue)
-- [ ] Record which current startup behaviors already satisfy the startup plan:
+- [x] Capture or preserve a reference for the pre-change normal startup overlay state
+- [x] Capture or preserve a reference for the pre-change reduced-motion startup state
+- [x] Capture or preserve a reference for the long-boot handoff expectation if reproducible
+- [x] Capture or preserve a reference for the error-state handoff expectation if reproducible
+- [x] Record the current overlay timing constants and their user-facing effect
+- [x] Record every current faux-analysis element rendered by [StartupAnimationOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.vue)
+- [x] Record which current startup behaviors already satisfy the startup plan:
   - early mount
   - truthful boot stages
   - skip behavior
   - reduced-motion branching
   - fast error exit
-- [ ] Confirm current overlay layering over the titlebar, runtime banner, and shell
-- [ ] Confirm current runtime banner visibility rules during `booting` and `error`
-- [ ] Record current baseline asset usage:
+- [x] Confirm current overlay layering over the titlebar, runtime banner, and shell
+- [x] Confirm current runtime banner visibility rules during `booting` and `error`
+- [x] Record current baseline asset usage:
   - animated logo path
   - static logo path
   - reduced-motion fallback
 
 Acceptance criteria:
 
-- [ ] There is a stable before-state reference for normal, reduced-motion, and at least one long-tail or error path
-- [ ] The current timing and faux-analysis surfaces are explicitly documented
-- [ ] The startup truth chain is documented before any changes land
+- [x] There is a stable before-state reference for normal, reduced-motion, and at least one long-tail or error path
+- [x] The current timing and faux-analysis surfaces are explicitly documented
+- [x] The startup truth chain is documented before any changes land
 
 ## Phase 1 — Startup Ownership, Timing, And State Audit
 
@@ -264,21 +267,21 @@ Primary files:
 
 Checklist:
 
-- [ ] Audit the exact boot-stage sequence emitted by [main.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/main.ts)
-- [ ] Confirm `app.mount(root)` still occurs before expensive or failure-prone startup work
-- [ ] Confirm `markReady()` still waits for `waitForNextPaint()`
-- [ ] Confirm `markError(...)` preserves a mounted UI path for error rendering
-- [ ] Audit whether [runtimeStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/runtimeStore.ts) already exposes everything needed for the replacement without new state
-- [ ] Audit how [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) behaves during active boot while the overlay is still visible
-- [ ] Audit whether duplicate visible messaging during long-boot handoff can be solved in the overlay alone
-- [ ] Confirm [App.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/App.vue) placement is already correct for the replacement
-- [ ] Avoid runtime-store expansion unless a concrete missing truth signal appears
+- [x] Audit the exact boot-stage sequence emitted by [main.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/main.ts)
+- [x] Confirm `app.mount(root)` still occurs before expensive or failure-prone startup work
+- [x] Confirm `markReady()` still waits for `waitForNextPaint()`
+- [x] Confirm `markError(...)` preserves a mounted UI path for error rendering
+- [x] Audit whether [runtimeStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/runtimeStore.ts) already exposes everything needed for the replacement without new state
+- [x] Audit how [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) behaves during active boot while the overlay is still visible
+- [x] Audit whether duplicate visible messaging during long-boot handoff can be solved in the overlay alone
+- [x] Confirm [App.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/App.vue) placement is already correct for the replacement
+- [x] Avoid runtime-store expansion unless a concrete missing truth signal appears
 
 Acceptance criteria:
 
-- [ ] The implementation knows exactly which startup facts already exist
-- [ ] The replacement can proceed without inventing new global animation state
-- [ ] The banner handoff boundary is understood before overlay edits start
+- [x] The implementation knows exactly which startup facts already exist
+- [x] The replacement can proceed without inventing new global animation state
+- [x] The banner handoff boundary is understood before overlay edits start
 
 ## Phase 2 — Overlay Visual Simplification
 
@@ -290,27 +293,27 @@ Primary file:
 
 Checklist:
 
-- [ ] Remove the large faux-analysis tableau from the overlay template
-- [ ] Remove fake result bars and pseudo-analysis copy from the overlay
-- [ ] Remove sweeping scene motion and other decorative moving layers
-- [ ] Replace the current composition with a thinner shell-first treatment:
+- [x] Remove the large faux-analysis tableau from the overlay template
+- [x] Remove fake result bars and pseudo-analysis copy from the overlay
+- [x] Remove sweeping scene motion and other decorative moving layers
+- [x] Replace the current composition with a thinner shell-first treatment:
   - shell veil
   - compact startup status surface
   - restrained brand cue
   - real boot-stage text
-- [ ] Keep the overlay visually subordinate to the shell it introduces
-- [ ] Keep startup-only CSS local to the component
-- [ ] Reuse existing theme tokens and current surface language rather than inventing a startup-only palette
-- [ ] Keep visual emphasis on quick comprehension, not spectacle
-- [ ] Preserve click and key skip behavior
-- [ ] Preserve the shell-visible-but-blocked posture while the overlay is active
+- [x] Keep the overlay visually subordinate to the shell it introduces
+- [x] Keep startup-only CSS local to the component
+- [x] Reuse existing theme tokens and current surface language rather than inventing a startup-only palette
+- [x] Keep visual emphasis on quick comprehension, not spectacle
+- [x] Preserve click and key skip behavior
+- [x] Preserve the shell-visible-but-blocked posture while the overlay is active
 
 Acceptance criteria:
 
-- [ ] The overlay no longer reads like fake analysis or fake results generation
-- [ ] The startup surface is materially thinner than the current implementation
-- [ ] The replacement still clearly communicates startup state and brand identity
-- [ ] No shell architecture files were widened unnecessarily
+- [x] The overlay no longer reads like fake analysis or fake results generation
+- [x] The startup surface is materially thinner than the current implementation
+- [x] The replacement still clearly communicates startup state and brand identity
+- [x] No shell architecture files were widened unnecessarily
 
 ## Phase 3 — Timing And Runtime-Banner Handoff Tightening
 
@@ -324,23 +327,22 @@ Primary files:
 
 Checklist:
 
-- [ ] Shorten the current `MIN_VISIBLE_MS` and `SIGNATURE_MS` posture so the overlay stops behaving like a long scene
-- [ ] Preserve a small minimum-visibility floor to prevent flash/flicker
-- [ ] Preserve quick `EXIT_MS` handoff behavior
-- [ ] Keep timing constants local to [StartupAnimationOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.vue)
-- [ ] Ensure `ready` causes exit as soon as the minimum threshold is satisfied
-- [ ] Ensure long boot exits the full-screen layer and leaves [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) as the visible long-tail surface
-- [ ] Ensure `error` exits the decorative layer immediately or near-immediately without waiting to finish motion
-- [ ] Ensure skip dismisses only the full-screen visual and does not fabricate readiness
-- [ ] Evaluate whether current visible stage copy should remain as-is during the objective checkpoint or be reduced without losing trust
-- [ ] Touch [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) only if duplicate visible messaging cannot be prevented from the overlay side
+- [x] Shorten the current `MIN_VISIBLE_MS` and `SIGNATURE_MS` posture so the overlay stops behaving like a long scene
+- [x] Preserve a small minimum-visibility floor to prevent flash/flicker
+- [x] Preserve quick `EXIT_MS` handoff behavior
+- [x] Keep timing constants local to [StartupAnimationOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/StartupAnimationOverlay.vue)
+- [x] Ensure `ready` causes exit as soon as the minimum threshold is satisfied
+- [x] Ensure long boot exits the full-screen layer and leaves [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) as the visible long-tail surface
+- [x] Ensure `error` exits the decorative layer immediately or near-immediately without waiting to finish motion
+- [x] Ensure skip dismisses only the full-screen visual and does not fabricate readiness
+- [x] Touch [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) only if duplicate visible messaging cannot be prevented from the overlay side
 
 Acceptance criteria:
 
-- [ ] The startup layer exits quickly on real readiness
-- [ ] The startup layer does not linger as a second boot surface on long boot
-- [ ] Long-boot and error ownership clearly belong to the runtime banner
-- [ ] Timing changes remain local and easy to reason about
+- [x] The startup layer exits quickly on real readiness
+- [x] The startup layer does not linger as a second boot surface on long boot
+- [x] Long-boot and error ownership clearly belong to the runtime banner
+- [x] Timing changes remain local and easy to reason about
 
 ## Phase 4 — Reduced-Motion And Error-Path Hardening
 
@@ -355,20 +357,20 @@ Primary files:
 
 Checklist:
 
-- [ ] Remove or neutralize nonessential startup motion under reduced motion
-- [ ] Ensure reduced-motion startup is nearly static
-- [ ] Ensure the reduced-motion variant still looks intentional, not broken
-- [ ] Ensure the brand asset path under reduced motion remains calm and credible
-- [ ] Ensure the overlay becomes transitional only on error
-- [ ] Ensure the error path leaves runtime error detail reachable through [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue)
-- [ ] Ensure no decorative startup element continues animating after error
-- [ ] Confirm no broad global-motion rewrite is required
+- [x] Remove or neutralize nonessential startup motion under reduced motion
+- [x] Ensure reduced-motion startup is nearly static
+- [x] Ensure the reduced-motion variant still looks intentional, not broken
+- [x] Ensure the brand asset path under reduced motion remains calm and credible
+- [x] Ensure the overlay becomes transitional only on error
+- [x] Ensure the error path leaves runtime error detail reachable through [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue)
+- [x] Ensure no decorative startup element continues animating after error
+- [x] Confirm no broad global-motion rewrite is required
 
 Acceptance criteria:
 
-- [ ] Reduced-motion startup meets the stricter startup posture, not just the generic shell posture
-- [ ] Error handoff is fast, readable, and not visually awkward
-- [ ] The implementation does not broaden beyond the narrow startup scope
+- [x] Reduced-motion startup meets the stricter startup posture, not just the generic shell posture
+- [x] Error handoff is fast, readable, and not visually awkward
+- [x] The implementation does not broaden beyond the narrow startup scope
 
 ## Phase 5 — Verification, Evidence Refresh, And Tracker Reconciliation
 
@@ -376,75 +378,75 @@ Goal: prove the replacement works on the frontend and in the desktop shell, then
 
 Checklist:
 
-- [ ] Add or update focused startup component tests
-- [ ] Verify normal startup enter and exit behavior
-- [ ] Verify reduced-motion startup behavior
-- [ ] Verify skip behavior
-- [ ] Verify error-path exit behavior
-- [ ] Verify long-boot handoff behavior if reproducible
-- [ ] Refresh browser-side screenshot evidence
-- [ ] Refresh desktop-side screenshot evidence
-- [ ] Reconcile this tracker so completed work is checked off accurately
-- [ ] Record any intentionally deferred interpretive items in the optional section
+- [x] Add or update focused startup component tests
+- [x] Verify normal startup enter and exit behavior
+- [x] Verify reduced-motion startup behavior
+- [x] Verify skip behavior
+- [x] Verify error-path exit behavior
+- [x] Verify long-boot handoff behavior if reproducible
+- [x] Refresh browser-side screenshot evidence
+- [x] Refresh desktop-side screenshot evidence
+- [x] Reconcile this tracker so completed work is checked off accurately
+- [x] Record any intentionally deferred interpretive items in the optional section
 
 Acceptance criteria:
 
-- [ ] The implementation is proven by tests and by visual evidence
-- [ ] The tracker reflects reality rather than template leftovers
-- [ ] Objective completion is checkpoint-ready
+- [x] The implementation is proven by tests and by visual evidence
+- [x] The tracker reflects reality rather than template leftovers
+- [x] Objective completion is checkpoint-ready
 
 ## Objective Verification Checklist
 
 Run after the objective implementation lands:
 
-- [ ] `npm --prefix web run lint`
-- [ ] `npm --prefix web run typecheck`
-- [ ] `npm --prefix web run test`
-- [ ] `npm --prefix web run build`
-- [ ] `npm --prefix web run a11y:smoke`
-- [ ] `npm --prefix web run baseline:ui`
-- [ ] `npm --prefix web run check:bundle-budget`
-- [ ] `cargo check -p ta_desktop_demo_app`
+- [x] `npm --prefix web run lint`
+- [x] `npm --prefix web run typecheck`
+- [x] `npm --prefix web run test`
+- [x] `npm --prefix web run build`
+- [x] `npm --prefix web run a11y:smoke`
+- [x] `npm --prefix web run baseline:ui`
+- [x] `npm --prefix web run check:bundle-budget`
+- [x] `cargo check -p ta_desktop_demo_app`
 
 ## Targeted Test Additions
 
-- [ ] Update or add `StartupAnimationOverlay` tests for `booting` enter behavior
-- [ ] Update or add `StartupAnimationOverlay` tests for `ready` exit after the minimum threshold
-- [ ] Update or add `StartupAnimationOverlay` tests for immediate or near-immediate error exit
-- [ ] Update or add `StartupAnimationOverlay` tests for reduced-motion behavior
-- [ ] Update or add `StartupAnimationOverlay` tests for skip behavior
-- [ ] Update or add tests that prove the runtime banner becomes the visible owner on long boot or error paths
-- [ ] Update any startup-baseline or smoke harness assumptions if the old full-screen scene selectors no longer apply
+- [x] Update or add `StartupAnimationOverlay` tests for `booting` enter behavior
+- [x] Update or add `StartupAnimationOverlay` tests for `ready` exit after the minimum threshold
+- [x] Update or add `StartupAnimationOverlay` tests for immediate or near-immediate error exit
+- [x] Update or add `StartupAnimationOverlay` tests for reduced-motion behavior
+- [x] Update or add `StartupAnimationOverlay` tests for skip behavior
+- [x] Update or add tests that prove the runtime banner becomes the visible owner on long boot or error paths
+- [x] Confirm startup-baseline and smoke harness assumptions still hold because `#startupAnimationOverlay` and `.startupSkipButton` were preserved
 
 ## Manual Review Checklist
 
-- [ ] Confirm the shell is visible under the startup veil from the first meaningful frame
-- [ ] Confirm the shell is not interactable while the overlay is active
-- [ ] Confirm the startup surface feels thinner and calmer than the current implementation
-- [ ] Confirm the startup surface does not visually overpower the shell
-- [ ] Confirm the runtime banner is the only long-tail or error owner
-- [ ] Confirm reduced-motion startup is calm and legible
-- [ ] Confirm the overlay still sits above the custom titlebar cleanly
-- [ ] Confirm no visual duplication remains between overlay and runtime banner during handoff
+- [x] Confirm the shell is visible under the startup veil from the first meaningful frame
+- [x] Confirm the shell is not interactable while the overlay is active
+- [x] Confirm the startup surface feels thinner and calmer than the current implementation
+- [x] Confirm the startup surface does not visually overpower the shell
+- [x] Confirm the runtime banner is the only long-tail or error owner
+- [x] Confirm reduced-motion startup is calm and legible
+- [x] Confirm the overlay still sits above the custom titlebar cleanly
+- [x] Confirm no visual duplication remains between overlay and runtime banner during handoff
 
 ## Guardrail Review Checklist
 
-- [ ] Confirm no new startup-specific global store model was introduced
-- [ ] Confirm no new animation runtime dependency was introduced
-- [ ] Confirm no broad [app.css](C:/Rust%20Projects/ta_desktop_demo/web/src/styles/app.css) rewrite was required
-- [ ] Confirm [DesktopTitlebar.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/DesktopTitlebar.vue) and [VueWorkspaceShell.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/VueWorkspaceShell.vue) remained untouched unless a narrow layering fix proved necessary
-- [ ] Confirm the runtime banner still only surfaces `booting` and `error`
-- [ ] Confirm bundle discipline remains intact after the replacement lands
+- [x] Confirm no new startup-specific global store model was introduced
+- [x] Confirm no new animation runtime dependency was introduced
+- [x] Confirm no broad [app.css](C:/Rust%20Projects/ta_desktop_demo/web/src/styles/app.css) rewrite was required
+- [x] Confirm [DesktopTitlebar.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/DesktopTitlebar.vue) and [VueWorkspaceShell.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/VueWorkspaceShell.vue) remained untouched unless a narrow layering fix proved necessary
+- [x] Confirm the runtime banner still only surfaces `booting` and `error`
+- [x] Confirm bundle discipline remains intact after the replacement lands
 
 ## UX Pass/Fail Criteria
 
 Pass if:
 
-- [ ] Startup feels like a brief product-native prelude rather than a separate scene
-- [ ] Readiness remains visibly truthful
-- [ ] Error posture remains clearly visible and not trapped behind decoration
-- [ ] Reduced motion is calmer, not merely slower
-- [ ] The replacement looks intentional in both light and dark themes
+- [x] Startup feels like a brief product-native prelude rather than a separate scene
+- [x] Readiness remains visibly truthful
+- [x] Error posture remains clearly visible and not trapped behind decoration
+- [x] Reduced motion is calmer, not merely slower
+- [x] The replacement looks intentional in both light and dark themes
 
 Fail if:
 
@@ -477,7 +479,7 @@ Reject in this pass:
 These items were reasonable but more interpretive than repo-proven. Keep them out of the objective checkpoint unless the objective pass reveals a concrete need.
 
 - [ ] Decide the exact final geometry, spacing, and weighting of the compact startup surface relative to [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue)
-- [ ] Decide whether the default startup asset should be static-only or a one-shot restrained animation accent when reduced motion is off
+- [x] Decide whether the default startup asset should be static-only or a one-shot restrained animation accent when reduced motion is off
 - [ ] Decide whether the current `Finalizing dataset readiness` stage should remain visible or be merged back into a smaller visible boot-stage set
 - [ ] Decide whether [AppRuntimeBanner.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/AppRuntimeBanner.vue) needs small visual-alignment refinements to better match the new startup treatment
 - [ ] Decide whether the replacement should preserve any tiny accent reveal beyond a pure dissolve

@@ -5,7 +5,7 @@ use crate::commands::options_parent_adapters::{
 use crate::data_cache;
 use crate::settings;
 use crate::state::AppState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -40,6 +40,18 @@ pub struct AnalyzeOptionsExpressionFeasibilityResponse {
     pub replay_build_ms: u64,
     pub total_preview_ms: u64,
     pub report: OptionsExpressionFeasibilityReport,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SaveOptionsCsvRequest {
+    pub path: String,
+    pub csv_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveOptionsCsvResponse {
+    pub path: String,
+    pub bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1171,6 +1183,47 @@ pub fn load_options_expression_artifact_blocking_headless(
     Ok(artifact)
 }
 
+pub fn save_options_csv_blocking_headless(
+    req: SaveOptionsCsvRequest,
+) -> Result<SaveOptionsCsvResponse, String> {
+    let normalized_path = req.path.trim();
+    if normalized_path.is_empty() {
+        return Err("CSV save path is required.".to_string());
+    }
+    let output_path = std::path::Path::new(normalized_path);
+    let file_name = output_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .unwrap_or_default();
+    if file_name.is_empty() {
+        return Err(format!(
+            "CSV save path must point to a file: {}",
+            output_path.display()
+        ));
+    }
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "failed to create CSV output directory {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    std::fs::write(output_path, req.csv_text.as_bytes()).map_err(|e| {
+        format!(
+            "failed to write CSV export {}: {e}",
+            output_path.display()
+        )
+    })?;
+    Ok(SaveOptionsCsvResponse {
+        path: output_path.to_string_lossy().to_string(),
+        bytes: req.csv_text.as_bytes().len(),
+    })
+}
+
 #[tauri::command]
 pub async fn run_options_expression(
     req: OptionsExpressionRunRequest,
@@ -1223,6 +1276,13 @@ pub async fn load_options_expression_artifact(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn save_options_csv(req: SaveOptionsCsvRequest) -> Result<SaveOptionsCsvResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || save_options_csv_blocking_headless(req))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1502,6 +1562,25 @@ mod tests {
                 "CompositeMo"
             )
         );
+    }
+
+    #[test]
+    fn save_options_csv_blocking_headless_writes_the_requested_text() {
+        let temp_root = temp_app_local_data_dir("save_options_csv");
+        let output_path = temp_root.join("exports").join("options_results.csv");
+        let req = SaveOptionsCsvRequest {
+            path: output_path.to_string_lossy().to_string(),
+            csv_text: "col_a,col_b\r\n1,2\r\n".to_string(),
+        };
+
+        let response = save_options_csv_blocking_headless(req).expect("save csv");
+
+        assert_eq!(response.path, output_path.to_string_lossy());
+        assert_eq!(response.bytes, "col_a,col_b\r\n1,2\r\n".len());
+        let saved = std::fs::read_to_string(&output_path).expect("read saved csv");
+        assert_eq!(saved, "col_a,col_b\r\n1,2\r\n");
+
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

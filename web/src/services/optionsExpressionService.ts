@@ -487,6 +487,20 @@ export interface OptionsExpressionEventPathCsvExportInput {
   points: OptionsExpressionEventPathPointSummary[]
 }
 
+export type OptionsExpressionCsvExportMode =
+  | 'saved'
+  | 'downloaded'
+  | 'cancelled'
+  | 'unavailable'
+
+export interface OptionsExpressionCsvExportResult {
+  mode: OptionsExpressionCsvExportMode
+  filename: string
+  path: string | null
+  bytes: number
+  revealed: boolean
+}
+
 function normalizeOptionsDatasetManifest(raw: unknown): OptionsDatasetManifestSummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   return {
@@ -1077,6 +1091,13 @@ function downloadText(filename: string, text: string, mime: string): boolean {
   }
 }
 
+function csvByteLength(text: string): number {
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(text).length
+  }
+  return text.length
+}
+
 export async function importOptionsDataset(req: Record<string, unknown>): Promise<OptionsDatasetManifestSummary> {
   const raw = await invokeCommand('import_options_dataset', { req })
   return normalizeOptionsDatasetManifest(raw)
@@ -1204,9 +1225,9 @@ export function normalizeOptionsDatasetIds(value: unknown): string[] {
   return normalizeStringList(value)
 }
 
-export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInput): boolean {
+function buildOptionsExpressionCsvText(input: OptionsExpressionCsvExportInput): { filename: string, text: string } | null {
   const tuples = Array.isArray(input.tuples) ? input.tuples : []
-  if (tuples.length === 0) return false
+  if (tuples.length === 0) return null
   const stem = normalizeText(input.filenameStem)
     || `vectorgrid_options_expression_${normalizeText(input.rootSymbol).toLowerCase() || 'results'}`
   const header = [
@@ -1280,12 +1301,17 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
       normalizeText(input.priceSemantics),
     ].map((value) => csvCell(value)).join(',')),
   ]
-  return downloadText(`${stem}.csv`, lines.join('\r\n'), 'text/csv;charset=utf-8')
+  return {
+    filename: `${stem}.csv`,
+    text: lines.join('\r\n'),
+  }
 }
 
-export function exportOptionsExpressionInspectionCsv(input: OptionsExpressionInspectionCsvExportInput): boolean {
+function buildOptionsExpressionInspectionCsvText(
+  input: OptionsExpressionInspectionCsvExportInput,
+): { filename: string, text: string } | null {
   const rows = Array.isArray(input.rows) ? input.rows : []
-  if (rows.length === 0) return false
+  if (rows.length === 0) return null
   const stem = normalizeText(input.filenameStem)
     || `vectorgrid_options_expression_tuple_${Math.max(0, Math.floor(normalizeNumber(input.tupleIndex))) + 1}`
   const header = [
@@ -1367,12 +1393,17 @@ export function exportOptionsExpressionInspectionCsv(input: OptionsExpressionIns
       normalizeText(input.artifactPath),
     ].map((value) => csvCell(value)).join(',')),
   ]
-  return downloadText(`${stem}.csv`, lines.join('\r\n'), 'text/csv;charset=utf-8')
+  return {
+    filename: `${stem}.csv`,
+    text: lines.join('\r\n'),
+  }
 }
 
-export function exportOptionsExpressionEventPathCsv(input: OptionsExpressionEventPathCsvExportInput): boolean {
+function buildOptionsExpressionEventPathCsvText(
+  input: OptionsExpressionEventPathCsvExportInput,
+): { filename: string, text: string } | null {
   const points = Array.isArray(input.points) ? input.points : []
-  if (points.length === 0) return false
+  if (points.length === 0) return null
   const stem = normalizeText(input.filenameStem)
     || `vectorgrid_options_expression_tuple_${Math.max(0, Math.floor(normalizeNumber(input.tupleIndex))) + 1}_event_path`
   const header = [
@@ -1400,5 +1431,109 @@ export function exportOptionsExpressionEventPathCsv(input: OptionsExpressionEven
       normalizeText(input.eventId),
     ].map((value) => csvCell(value)).join(',')),
   ]
-  return downloadText(`${stem}.csv`, lines.join('\r\n'), 'text/csv;charset=utf-8')
+  return {
+    filename: `${stem}.csv`,
+    text: lines.join('\r\n'),
+  }
+}
+
+async function saveOptionsCsvTextDesktop(
+  filename: string,
+  text: string,
+): Promise<OptionsExpressionCsvExportResult> {
+  const bytes = csvByteLength(text)
+  let pickedPath: string | null
+  try {
+    const raw = await invokeCommand<string | null>('pick_save_csv', { defaultName: filename })
+    pickedPath = normalizeText(raw) || null
+  } catch {
+    const downloaded = downloadText(filename, text, 'text/csv;charset=utf-8')
+    return {
+      mode: downloaded ? 'downloaded' : 'unavailable',
+      filename,
+      path: null,
+      bytes,
+      revealed: false,
+    }
+  }
+
+  if (!pickedPath) {
+    return {
+      mode: 'cancelled',
+      filename,
+      path: null,
+      bytes,
+      revealed: false,
+    }
+  }
+
+  const raw = await invokeCommand<{ path?: string, bytes?: number }>('save_options_csv', {
+    req: {
+      path: pickedPath,
+      csv_text: text,
+    },
+  })
+  const savedPath = normalizeText(raw?.path) || pickedPath
+  let revealed = false
+  try {
+    await invokeCommand('reveal_path', { path: savedPath })
+    revealed = true
+  } catch {
+    revealed = false
+  }
+  return {
+    mode: 'saved',
+    filename,
+    path: savedPath,
+    bytes: normalizeNumber(raw?.bytes, bytes),
+    revealed,
+  }
+}
+
+export async function exportOptionsExpressionCsv(
+  input: OptionsExpressionCsvExportInput,
+): Promise<OptionsExpressionCsvExportResult> {
+  const built = buildOptionsExpressionCsvText(input)
+  if (!built) {
+    return {
+      mode: 'unavailable',
+      filename: '',
+      path: null,
+      bytes: 0,
+      revealed: false,
+    }
+  }
+  return saveOptionsCsvTextDesktop(built.filename, built.text)
+}
+
+export async function exportOptionsExpressionInspectionCsv(
+  input: OptionsExpressionInspectionCsvExportInput,
+): Promise<OptionsExpressionCsvExportResult> {
+  const built = buildOptionsExpressionInspectionCsvText(input)
+  if (!built) {
+    return {
+      mode: 'unavailable',
+      filename: '',
+      path: null,
+      bytes: 0,
+      revealed: false,
+    }
+  }
+  return saveOptionsCsvTextDesktop(built.filename, built.text)
+}
+
+export async function exportOptionsExpressionEventPathCsv(
+  input: OptionsExpressionEventPathCsvExportInput,
+): Promise<OptionsExpressionCsvExportResult> {
+  const built = buildOptionsExpressionEventPathCsvText(input)
+  if (!built) {
+    return {
+      mode: 'unavailable',
+      filename: '',
+      path: null,
+      bytes: 0,
+      revealed: false,
+    }
+  }
+  return saveOptionsCsvTextDesktop(built.filename, built.text)
 }
