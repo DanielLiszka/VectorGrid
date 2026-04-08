@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Export snapshot</title>
+  <desc>A reviewed analysis panel being frozen into an outbound snapshot</desc>
+
+  <rect x="3.25" y="5" width="11.5" height="10.5" rx="1.2" fill="currentColor" stroke="none" opacity="0.12"/>
+  <rect x="4.75" y="6.75" width="8.5" height="4" rx="0.75" stroke="currentColor" stroke-width="1.1" opacity="0.45"/>
+  <line x1="5.5" y1="13.2" x2="10.75" y2="13.2" stroke="currentColor" stroke-width="1" opacity="0.24"/>
+
+  <path d="M11.8 17.25H17.4" stroke="currentColor" stroke-width="1.25" opacity="0.38"/>
+  <path d="M16.3 9.25H20.5V13.45" stroke="#3B82F6" stroke-width="1.7" opacity="0.72"/>
+  <path d="M12.2 13.55L20.25 5.5" stroke="#3B82F6" stroke-width="1.7" opacity="0.72"/>
+</svg>

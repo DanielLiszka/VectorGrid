@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Reveal path</title>
+  <desc>An artifact tray revealing its containing location on disk</desc>
+
+  <path d="M4 8.5H9.2L11 10.5H20V18.75H4Z" fill="currentColor" opacity="0.1" stroke="none"/>
+  <path d="M4 10.5H20V18.75H4Z" stroke="currentColor" stroke-width="1.25"/>
+
+  <path d="M7 14.5H12.2L14.1 12.6H17.4" stroke="currentColor" stroke-width="1.4" opacity="0.5"/>
+  <rect x="17.8" y="11.2" width="2.7" height="5.5" rx="0.8" fill="#3B82F6" stroke="none" opacity="0.72"/>
+</svg>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Empty artifact library</title>
+  <desc>An orderly artifact shelf waiting for saved outputs to occupy its slots</desc>
+
+  <rect x="16" y="20" width="64" height="52" rx="6" stroke="currentColor" stroke-width="3" opacity="0.3"/>
+  <line x1="22" y1="46" x2="74" y2="46" stroke="currentColor" stroke-width="2.4" opacity="0.18"/>
+
+  <rect x="24" y="30" width="18" height="12" rx="2" stroke="currentColor" stroke-width="2" opacity="0.24"/>
+  <rect x="54" y="30" width="18" height="12" rx="2" stroke="currentColor" stroke-width="2" opacity="0.24"/>
+  <rect x="39" y="50" width="18" height="14" rx="2.5" stroke="#3B82F6" stroke-width="2.6" opacity="0.78"/>
+</svg>

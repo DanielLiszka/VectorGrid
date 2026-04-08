@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+  <title>Empty compare workspace</title>
+  <desc>Two prepared comparison panels waiting for pinned candidates</desc>
+
+  <rect x="14" y="24" width="24" height="36" rx="4" stroke="currentColor" stroke-width="3" opacity="0.3"/>
+  <rect x="58" y="24" width="24" height="36" rx="4" stroke="currentColor" stroke-width="3" opacity="0.3"/>
+
+  <line x1="22" y1="34" x2="30" y2="34" stroke="currentColor" stroke-width="2" opacity="0.14"/>
+  <line x1="66" y1="34" x2="74" y2="34" stroke="currentColor" stroke-width="2" opacity="0.14"/>
+  <line x1="26" y1="70" x2="70" y2="70" stroke="currentColor" stroke-width="2.4" opacity="0.2"/>
+
+  <rect x="44" y="46" width="8" height="8" rx="2" fill="currentColor" stroke="none" opacity="0.42"/>
+</svg>
