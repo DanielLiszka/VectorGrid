@@ -146,7 +146,10 @@ fn usable_memory_bytes_from_free(free_memory_bytes: u64) -> u64 {
     free_memory_bytes / 2
 }
 
-fn tuple_budget_bytes(total_memory_bytes: u64, usable_memory_bytes: Option<u64>) -> (usize, String) {
+fn tuple_budget_bytes(
+    total_memory_bytes: u64,
+    usable_memory_bytes: Option<u64>,
+) -> (usize, String) {
     let fraction = total_memory_bytes / GPU_TUPLE_CHUNK_BUDGET_TOTAL_MEMORY_DIVISOR;
     let clamped = fraction
         .max(GPU_TUPLE_CHUNK_BUDGET_FLOOR_BYTES)
@@ -195,8 +198,10 @@ impl OptionsGpuChunkPlan {
             .map(usable_memory_bytes_from_free)
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(0);
-        let (mut tuple_budget, gpu_memory_budget_source) =
-            tuple_budget_bytes(total_memory_bytes, free_memory_bytes.map(usable_memory_bytes_from_free));
+        let (mut tuple_budget, gpu_memory_budget_source) = tuple_budget_bytes(
+            total_memory_bytes,
+            free_memory_bytes.map(usable_memory_bytes_from_free),
+        );
         if free_memory_bytes.is_none() {
             gpu_plan_notes.push(
                 "GPU free-memory probe was unavailable; tuple chunk planning fell back to total device memory heuristics."
@@ -237,7 +242,9 @@ impl OptionsGpuChunkPlan {
             .saturating_add(gpu_shared_input_bytes_per_chunk)
             .saturating_add(gpu_output_bytes_per_chunk);
         let gpu_chunk_plan_fits_in_memory = free_memory_bytes
-            .map(|free| gpu_total_device_bytes_per_chunk <= usable_memory_bytes_from_free(free) as usize)
+            .map(|free| {
+                gpu_total_device_bytes_per_chunk <= usable_memory_bytes_from_free(free) as usize
+            })
             .unwrap_or(true);
         if !gpu_chunk_plan_fits_in_memory {
             return Err(format!(
@@ -254,7 +261,8 @@ impl OptionsGpuChunkPlan {
             gpu_shared_input_bytes_per_chunk,
             gpu_output_bytes_per_chunk,
             gpu_total_device_bytes_per_chunk,
-            gpu_device_total_memory_bytes: usize::try_from(total_memory_bytes).unwrap_or(usize::MAX),
+            gpu_device_total_memory_bytes: usize::try_from(total_memory_bytes)
+                .unwrap_or(usize::MAX),
             gpu_device_free_memory_bytes,
             gpu_device_usable_memory_bytes,
             gpu_memory_budget_source,
@@ -522,9 +530,7 @@ impl OptionsExpressionGpuRuntime {
             return Err("GPU options-expression tuple offset lengths do not match".to_string());
         }
         let tuple_count = inputs.tuple_candidate_offsets.len();
-        let free_memory_bytes = mem_get_info()
-            .ok()
-            .map(|(free, _total)| free as u64);
+        let free_memory_bytes = mem_get_info().ok().map(|(free, _total)| free as u64);
         let chunk_plan = OptionsGpuChunkPlan::for_inputs(
             tuple_count,
             self.device_total_memory_bytes,
@@ -535,11 +541,9 @@ impl OptionsExpressionGpuRuntime {
         cache_usage.tuple_chunk_size = chunk_plan.tuple_chunk_size;
         cache_usage.gpu_tuple_budget_bytes = chunk_plan.gpu_tuple_budget_bytes;
         cache_usage.gpu_outcome_tensor_bytes = chunk_plan.gpu_outcome_tensor_bytes;
-        cache_usage.gpu_shared_input_bytes_per_chunk =
-            chunk_plan.gpu_shared_input_bytes_per_chunk;
+        cache_usage.gpu_shared_input_bytes_per_chunk = chunk_plan.gpu_shared_input_bytes_per_chunk;
         cache_usage.gpu_output_bytes_per_chunk = chunk_plan.gpu_output_bytes_per_chunk;
-        cache_usage.gpu_total_device_bytes_per_chunk =
-            chunk_plan.gpu_total_device_bytes_per_chunk;
+        cache_usage.gpu_total_device_bytes_per_chunk = chunk_plan.gpu_total_device_bytes_per_chunk;
         cache_usage.gpu_device_total_memory_bytes = chunk_plan.gpu_device_total_memory_bytes;
         cache_usage.gpu_device_free_memory_bytes = chunk_plan.gpu_device_free_memory_bytes;
         cache_usage.gpu_device_usable_memory_bytes = chunk_plan.gpu_device_usable_memory_bytes;
@@ -570,8 +574,12 @@ impl OptionsExpressionGpuRuntime {
             for chunk_index in 0..chunk_plan.tuple_chunk_count.max(1) {
                 let tuple_start = chunk_index.saturating_mul(chunk_plan.tuple_chunk_size);
                 let tuple_end = (tuple_start + chunk_plan.tuple_chunk_size).min(tuple_count);
-                let shared_key =
-                    self.ensure_shared_inputs_chunk(inputs, tuple_start, tuple_end, &mut cache_usage)?;
+                let shared_key = self.ensure_shared_inputs_chunk(
+                    inputs,
+                    tuple_start,
+                    tuple_end,
+                    &mut cache_usage,
+                )?;
                 let shared_args = self
                     .shared_inputs_cache
                     .get(&shared_key)
@@ -580,7 +588,9 @@ impl OptionsExpressionGpuRuntime {
                         tuple_count_u32: shared.tuple_count_u32,
                         candidate_slot_stride_u32: shared.candidate_slot_stride_u32,
                         summary_stride_u32: shared.summary_stride_u32,
-                        tuple_candidate_offsets_ptr: shared.d_tuple_candidate_offsets.as_device_ptr(),
+                        tuple_candidate_offsets_ptr: shared
+                            .d_tuple_candidate_offsets
+                            .as_device_ptr(),
                         tuple_summary_offsets_ptr: shared.d_tuple_summary_offsets.as_device_ptr(),
                     })
                     .ok_or_else(|| "missing cached GPU shared inputs".to_string())?;
@@ -805,8 +815,9 @@ mod tests {
     #[test]
     fn chunk_plan_respects_free_memory_without_minimum_tuple_floor() {
         let inputs = sample_inputs(5_000);
-        let plan = OptionsGpuChunkPlan::for_inputs(5_000, 8 * 1024 * 1024 * 1024, Some(4_096), &inputs)
-            .expect("plan");
+        let plan =
+            OptionsGpuChunkPlan::for_inputs(5_000, 8 * 1024 * 1024 * 1024, Some(4_096), &inputs)
+                .expect("plan");
 
         assert!(plan.tuple_chunk_size < 512);
         assert!(plan.gpu_chunk_plan_fits_in_memory);
@@ -820,8 +831,9 @@ mod tests {
         inputs.outcome_pnl = vec![1.0; 16_384];
         inputs.outcome_premium = vec![1.0; 16_384];
 
-        let err = OptionsGpuChunkPlan::for_inputs(128, 8 * 1024 * 1024 * 1024, Some(1_024), &inputs)
-            .expect_err("expected free-memory fit failure");
+        let err =
+            OptionsGpuChunkPlan::for_inputs(128, 8 * 1024 * 1024 * 1024, Some(1_024), &inputs)
+                .expect_err("expected free-memory fit failure");
         assert!(err.contains("outcome tensor"));
     }
 

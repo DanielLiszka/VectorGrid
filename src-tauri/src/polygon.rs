@@ -265,7 +265,11 @@ fn parse_polygon_key_from_dotenv_line(line: &str) -> Option<String> {
     let value = value
         .strip_prefix('"')
         .and_then(|inner| inner.strip_suffix('"'))
-        .or_else(|| value.strip_prefix('\'').and_then(|inner| inner.strip_suffix('\'')))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|inner| inner.strip_suffix('\''))
+        })
         .unwrap_or(value)
         .trim();
     if value.is_empty() {

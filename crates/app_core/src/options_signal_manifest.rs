@@ -30,7 +30,7 @@ fn session_id_from_timestamp(timestamp_ms: i64) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn build_options_signal_manifest_from_double_ma(
+fn build_options_signal_manifest_from_double_like_curves(
     parent_artifact_id: &str,
     parent_run_kind: &str,
     source_dataset_identity_hash: &str,
@@ -134,6 +134,130 @@ pub fn build_options_signal_manifest_from_double_ma(
         runtime_dataset_id: None,
         events,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_options_signal_manifest_from_double_ma(
+    parent_artifact_id: &str,
+    parent_run_kind: &str,
+    source_dataset_identity_hash: &str,
+    source_content_fingerprint: &str,
+    dataset_hash: &str,
+    timeframe: &str,
+    resample_spec_hash: Option<String>,
+    adjustment_mode: &str,
+    symbol_root: &str,
+    trade_on_next_bar: bool,
+    candles: &Candles,
+    curves: &DoubleMaCurves,
+) -> Result<OptionsSignalEventManifestV1, String> {
+    build_options_signal_manifest_from_double_like_curves(
+        parent_artifact_id,
+        parent_run_kind,
+        source_dataset_identity_hash,
+        source_content_fingerprint,
+        dataset_hash,
+        timeframe,
+        resample_spec_hash,
+        adjustment_mode,
+        symbol_root,
+        trade_on_next_bar,
+        candles,
+        curves,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_options_signal_manifest_from_composite_trend(
+    parent_artifact_id: &str,
+    parent_run_kind: &str,
+    source_dataset_identity_hash: &str,
+    source_content_fingerprint: &str,
+    dataset_hash: &str,
+    timeframe: &str,
+    resample_spec_hash: Option<String>,
+    adjustment_mode: &str,
+    symbol_root: &str,
+    trade_on_next_bar: bool,
+    candles: &Candles,
+    curves: &DoubleMaCurves,
+) -> Result<OptionsSignalEventManifestV1, String> {
+    build_options_signal_manifest_from_double_like_curves(
+        parent_artifact_id,
+        parent_run_kind,
+        source_dataset_identity_hash,
+        source_content_fingerprint,
+        dataset_hash,
+        timeframe,
+        resample_spec_hash,
+        adjustment_mode,
+        symbol_root,
+        trade_on_next_bar,
+        candles,
+        curves,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_options_signal_manifest_from_regime_hybrid(
+    parent_artifact_id: &str,
+    parent_run_kind: &str,
+    source_dataset_identity_hash: &str,
+    source_content_fingerprint: &str,
+    dataset_hash: &str,
+    timeframe: &str,
+    resample_spec_hash: Option<String>,
+    adjustment_mode: &str,
+    symbol_root: &str,
+    trade_on_next_bar: bool,
+    candles: &Candles,
+    curves: &DoubleMaCurves,
+) -> Result<OptionsSignalEventManifestV1, String> {
+    build_options_signal_manifest_from_double_like_curves(
+        parent_artifact_id,
+        parent_run_kind,
+        source_dataset_identity_hash,
+        source_content_fingerprint,
+        dataset_hash,
+        timeframe,
+        resample_spec_hash,
+        adjustment_mode,
+        symbol_root,
+        trade_on_next_bar,
+        candles,
+        curves,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_options_signal_manifest_from_breakout_momentum(
+    parent_artifact_id: &str,
+    parent_run_kind: &str,
+    source_dataset_identity_hash: &str,
+    source_content_fingerprint: &str,
+    dataset_hash: &str,
+    timeframe: &str,
+    resample_spec_hash: Option<String>,
+    adjustment_mode: &str,
+    symbol_root: &str,
+    trade_on_next_bar: bool,
+    candles: &Candles,
+    curves: &DoubleMaCurves,
+) -> Result<OptionsSignalEventManifestV1, String> {
+    build_options_signal_manifest_from_double_like_curves(
+        parent_artifact_id,
+        parent_run_kind,
+        source_dataset_identity_hash,
+        source_content_fingerprint,
+        dataset_hash,
+        timeframe,
+        resample_spec_hash,
+        adjustment_mode,
+        symbol_root,
+        trade_on_next_bar,
+        candles,
+        curves,
+    )
 }
 
 #[cfg(test)]

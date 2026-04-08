@@ -2,10 +2,9 @@ use crate::options_types::{
     ImportedOptionsDataset, OptionType, OptionsCandidateAxisCoverage,
     OptionsCandidateInvalidReason, OptionsCandidateInvalidReasonCount, OptionsContractSeries,
     OptionsDelayBucketCoverage, OptionsDteBucketCoverage, OptionsEvaluationSplit,
-    OptionsExitTemplateFamily, OptionsExpressionDiagnostics, OptionsExpressionEventDetailRow,
-    OptionsExpressionAutoBackendDecision,
-    OptionsExpressionEventPathInspectionResult, OptionsExpressionEventPathPoint,
-    OptionsExpressionEventStatus, OptionsExpressionExitReason,
+    OptionsExitTemplateFamily, OptionsExpressionAutoBackendDecision, OptionsExpressionDiagnostics,
+    OptionsExpressionEventDetailRow, OptionsExpressionEventPathInspectionResult,
+    OptionsExpressionEventPathPoint, OptionsExpressionEventStatus, OptionsExpressionExitReason,
     OptionsExpressionFeasibilityCacheStats, OptionsExpressionFeasibilityEventCoverage,
     OptionsExpressionFeasibilityReport, OptionsExpressionFeasibilityTimingStats,
     OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionRunResult,
@@ -397,17 +396,13 @@ fn validate_fill_model(
     price_semantics: OptionsPriceSemantics,
     fill_model: OptionsFillModelFamily,
 ) -> Result<(), String> {
-    match (price_semantics, fill_model) {
-        (OptionsPriceSemantics::MinuteAggregate, OptionsFillModelFamily::AggregateResearch) => {
-            Ok(())
-        }
-        (OptionsPriceSemantics::DerivedMidSnapshot, OptionsFillModelFamily::AggregateResearch) => {
-            Ok(())
-        }
-        (OptionsPriceSemantics::TopOfBookQuote, _) => Ok(()),
-        _ => Err(format!(
-            "fill model '{fill_model:?}' is incompatible with price semantics '{price_semantics:?}'"
-        )),
+    if price_semantics.supports_fill_model(fill_model) {
+        Ok(())
+    } else {
+        Err(format!(
+            "fill model '{fill_model:?}' is incompatible with price semantics '{price_semantics:?}'. allowed fill models: {}",
+            price_semantics.allowed_fill_models_label()
+        ))
     }
 }
 
@@ -946,7 +941,8 @@ fn select_candidate(
     let contract = index.contract(contract_index);
     let (entry_index, companion_leg, premium_paid) = match tuple.structure_family {
         OptionsStructureFamily::LongSingle => {
-            let Some(entry_index) = lower_bound_timestamp(&contract.rows, requested_entry_ts) else {
+            let Some(entry_index) = lower_bound_timestamp(&contract.rows, requested_entry_ts)
+            else {
                 return Err(OptionsCandidateInvalidReason::NoPriceRowAfterEntry);
             };
             let Some(entry_row) = contract.rows.get(entry_index) else {
@@ -1528,7 +1524,10 @@ impl StructuralCandidateCache {
             .collect()
     }
 
-    fn invalid_reason_counts_for_slots<I>(&self, slot_indexes: I) -> Vec<OptionsCandidateInvalidReasonCount>
+    fn invalid_reason_counts_for_slots<I>(
+        &self,
+        slot_indexes: I,
+    ) -> Vec<OptionsCandidateInvalidReasonCount>
     where
         I: IntoIterator<Item = usize>,
     {
@@ -1894,7 +1893,10 @@ fn projected_event_tuple_evaluations(prepared: &PreparedOptionsExpressionRun) ->
     (prepared.compiled_tuples.len() as u64).saturating_mul(prepared.events.len() as u64)
 }
 
-fn measured_best_available_backend(cpu_ranking_us: u64, gpu_ranking_us: Option<u64>) -> &'static str {
+fn measured_best_available_backend(
+    cpu_ranking_us: u64,
+    gpu_ranking_us: Option<u64>,
+) -> &'static str {
     if let Some(gpu_us) = gpu_ranking_us {
         if gpu_us > 0 && gpu_us < cpu_ranking_us {
             return "gpu_compiled_tensor_hybrid";
@@ -1942,23 +1944,20 @@ fn evaluate_auto_backend_decision(
     if prepared.diagnostics.search_events < OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS {
         reasons.push(format!(
             "Search-event count {} is below the current auto-GPU floor of {}.",
-            prepared.diagnostics.search_events,
-            OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS
+            prepared.diagnostics.search_events, OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS
         ));
     }
     if projected_event_tuple_evals < OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES {
         reasons.push(format!(
             "Projected event-tuple work {} is below the current auto-GPU floor of {}.",
-            projected_event_tuple_evals,
-            OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES
+            projected_event_tuple_evals, OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES
         ));
     }
     if let Some(speedup) = measured_gpu_speedup_vs_cpu {
         if speedup < OPTIONS_AUTO_GPU_MIN_MEASURED_SPEEDUP {
             reasons.push(format!(
                 "Measured GPU hybrid speedup {:.2}x is below the current promotion gate of {:.1}x.",
-                speedup,
-                OPTIONS_AUTO_GPU_MIN_MEASURED_SPEEDUP
+                speedup, OPTIONS_AUTO_GPU_MIN_MEASURED_SPEEDUP
             ));
         }
     }
@@ -1997,7 +1996,9 @@ fn accumulate_cache_usage(
     target.kernel_launch_count += usage.kernel_launch_count;
     target.tuple_chunk_count = target.tuple_chunk_count.max(usage.tuple_chunk_count);
     target.tuple_chunk_size = target.tuple_chunk_size.max(usage.tuple_chunk_size);
-    target.gpu_tuple_budget_bytes = target.gpu_tuple_budget_bytes.max(usage.gpu_tuple_budget_bytes);
+    target.gpu_tuple_budget_bytes = target
+        .gpu_tuple_budget_bytes
+        .max(usage.gpu_tuple_budget_bytes);
     target.gpu_outcome_tensor_bytes = target
         .gpu_outcome_tensor_bytes
         .max(usage.gpu_outcome_tensor_bytes);
@@ -2475,6 +2476,12 @@ fn apply_sealed_finalist_stage(
     assign_sealed_final_ranks(ranked_results);
 }
 
+fn refresh_validation_verdicts(ranked_results: &mut [RankedCompiledTuple]) {
+    for ranked in ranked_results.iter_mut() {
+        ranked.result.validation_verdict = ranked.result.inferred_validation_verdict();
+    }
+}
+
 fn exactify_ranked_results(
     prepared: &PreparedOptionsExpressionRun,
     dataset: &ImportedOptionsDataset,
@@ -2482,7 +2489,7 @@ fn exactify_ranked_results(
 ) {
     let holdout_events = prepared.diagnostics.holdout_events;
     let index = IndexedOptionsDataset::from_dataset(dataset, &dataset.manifest.root_symbol);
-    for ranked in ranked_results {
+    for ranked in ranked_results.iter_mut() {
         ranked.result.selection_metrics = evaluate_compiled_tuple_for_split(
             &ranked.compiled,
             &prepared.events,
@@ -2545,6 +2552,7 @@ fn exactify_ranked_results(
             ranked.result.extreme_stress_metrics.as_ref(),
         );
     }
+    refresh_validation_verdicts(ranked_results);
 }
 
 fn finalize_ranked_results(
@@ -2561,6 +2569,7 @@ fn finalize_ranked_results(
     sort_ranked_results(ranked_results);
     resequence_pre_sealed_ranks(ranked_results);
     apply_sealed_finalist_stage(req, prepared, dataset, ranked_results);
+    refresh_validation_verdicts(ranked_results);
     let sealed_stage_us = elapsed_us(sealed_stage_start);
 
     (exactify_us, sealed_stage_us)
@@ -2750,6 +2759,7 @@ mod gpu_scoring {
                     sealed_harsher_stress_metrics: None,
                     extreme_stress_metrics: None,
                     sealed_extreme_stress_metrics: None,
+                    validation_verdict: Default::default(),
                     robust_score: robust,
                 },
             });
@@ -2874,6 +2884,7 @@ fn rank_compiled_tuples_cpu(
                 sealed_harsher_stress_metrics: None,
                 extreme_stress_metrics: None,
                 sealed_extreme_stress_metrics: None,
+                validation_verdict: Default::default(),
                 robust_score: robust,
             },
         });
@@ -3768,7 +3779,9 @@ pub fn analyze_options_expression_feasibility_blocking(
             .as_ref()
             .map(|stats| stats.timing.tensor_score_us);
         timings.gpu_tensor_score_ms = timings.gpu_tensor_score_us.map(|value| value / 1_000);
-        timings.gpu_exactify_us = gpu_ranking_stats.as_ref().map(|stats| stats.timing.exactify_us);
+        timings.gpu_exactify_us = gpu_ranking_stats
+            .as_ref()
+            .map(|stats| stats.timing.exactify_us);
         timings.gpu_exactify_ms = timings.gpu_exactify_us.map(|value| value / 1_000);
         timings.gpu_sealed_stage_us = gpu_ranking_stats
             .as_ref()
@@ -3802,10 +3815,7 @@ pub fn analyze_options_expression_feasibility_blocking(
             accumulate_cache_usage(&mut observed_gpu_cache_usage, usage);
         }
         if let Some(gpu_stats) = gpu_ranking_stats.as_ref() {
-            accumulate_cache_usage(
-                &mut observed_gpu_cache_usage,
-                gpu_stats.cache_usage.clone(),
-            );
+            accumulate_cache_usage(&mut observed_gpu_cache_usage, gpu_stats.cache_usage.clone());
         }
         if let Some(err) = gpu_probe_error.as_ref() {
             push_unique_gpu_note(
@@ -3846,8 +3856,7 @@ pub fn analyze_options_expression_feasibility_blocking(
             observed_gpu_cache_usage.gpu_device_free_memory_bytes;
         cache_stats.gpu_device_usable_memory_bytes =
             observed_gpu_cache_usage.gpu_device_usable_memory_bytes;
-        cache_stats.gpu_memory_budget_source =
-            observed_gpu_cache_usage.gpu_memory_budget_source;
+        cache_stats.gpu_memory_budget_source = observed_gpu_cache_usage.gpu_memory_budget_source;
         cache_stats.gpu_outcome_tensor_fits_in_memory =
             observed_gpu_cache_usage.gpu_outcome_tensor_fits_in_memory;
         cache_stats.gpu_chunk_plan_fits_in_memory =
@@ -4728,7 +4737,8 @@ mod tests {
         assert_eq!(report.axis_coverage.delay_minutes.len(), 1);
         assert_eq!(report.axis_coverage.dte_days.len(), 2);
         assert_eq!(
-            report.axis_coverage.dte_days[0].slot_count + report.axis_coverage.dte_days[1].slot_count,
+            report.axis_coverage.dte_days[0].slot_count
+                + report.axis_coverage.dte_days[1].slot_count,
             report.candidate_slot_count
         );
         assert_eq!(report.axis_coverage.dte_days[0].dte_days, 1);
@@ -4847,7 +4857,10 @@ mod tests {
             analyze_options_expression_feasibility_blocking(req, &test_manifest(), &test_dataset())
                 .expect("report");
 
-        assert_eq!(report.auto_backend_decision.recommended_backend, "cpu_reference");
+        assert_eq!(
+            report.auto_backend_decision.recommended_backend,
+            "cpu_reference"
+        );
         assert!(!report.auto_backend_decision.gpu_eligible);
         assert!(report
             .auto_backend_decision
@@ -4886,8 +4899,8 @@ mod tests {
             sealed_finalist_count: 2,
         };
 
-        let prepared =
-            prepare_options_expression_run(&req, &test_manifest(), &test_dataset()).expect("prepared");
+        let prepared = prepare_options_expression_run(&req, &test_manifest(), &test_dataset())
+            .expect("prepared");
         let decision = evaluate_auto_backend_decision(&prepared, true, Some(4.0));
 
         assert!(!decision.gpu_eligible);
@@ -4914,7 +4927,8 @@ mod tests {
                 event.decision_timestamp = template_event.earliest_tradable_timestamp - MINUTE_MS;
                 event.earliest_tradable_timestamp = template_event.earliest_tradable_timestamp;
                 event.base_entry_timestamp = Some(template_event.earliest_tradable_timestamp);
-                event.base_exit_timestamp = Some(template_event.earliest_tradable_timestamp + MINUTE_MS);
+                event.base_exit_timestamp =
+                    Some(template_event.earliest_tradable_timestamp + MINUTE_MS);
                 event.side = if idx % 2 == 0 {
                     SignalSide::Bullish
                 } else {
@@ -4947,8 +4961,8 @@ mod tests {
             sealed_finalist_count: 5,
         };
 
-        let prepared =
-            prepare_options_expression_run(&req, &dense_manifest, &test_dataset()).expect("prepared");
+        let prepared = prepare_options_expression_run(&req, &dense_manifest, &test_dataset())
+            .expect("prepared");
         let decision = evaluate_auto_backend_decision(&prepared, true, Some(4.0));
 
         assert!(decision.gpu_eligible);
@@ -5004,7 +5018,8 @@ mod tests {
             sealed_finalist_count: 5,
         };
 
-        let prepared = prepare_options_expression_run(&req, &manifest, &test_dataset()).expect("prepared");
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &test_dataset()).expect("prepared");
         let decision = evaluate_auto_backend_decision(&prepared, true, None);
 
         assert!(decision.gpu_eligible);
@@ -5113,6 +5128,7 @@ mod tests {
                     sealed_harsher_stress_metrics: Some(metrics(4, 0.03, 0.02, 0.50)),
                     extreme_stress_metrics: None,
                     sealed_extreme_stress_metrics: Some(metrics(4, 0.02, 0.01, 0.50)),
+                    validation_verdict: Default::default(),
                     robust_score: 0.30,
                 },
             },
@@ -5132,6 +5148,7 @@ mod tests {
                     sealed_harsher_stress_metrics: Some(metrics(4, 0.08, 0.06, 0.50)),
                     extreme_stress_metrics: None,
                     sealed_extreme_stress_metrics: Some(metrics(4, 0.07, 0.05, 0.50)),
+                    validation_verdict: Default::default(),
                     robust_score: 0.20,
                 },
             },
@@ -5273,7 +5290,8 @@ mod tests {
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::DebitVertical,
-            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            backend_preference:
+                crate::options_types::OptionsExpressionBackendPreference::CpuReference,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -5308,7 +5326,8 @@ mod tests {
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongPair,
-            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            backend_preference:
+                crate::options_types::OptionsExpressionBackendPreference::CpuReference,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -5349,7 +5368,8 @@ mod tests {
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::DebitVertical,
-            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            backend_preference:
+                crate::options_types::OptionsExpressionBackendPreference::CpuReference,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
@@ -5388,7 +5408,8 @@ mod tests {
             parent_candidate_index: None,
             options_dataset_id: "spy".to_string(),
             structure_family: OptionsStructureFamily::LongPair,
-            backend_preference: crate::options_types::OptionsExpressionBackendPreference::CpuReference,
+            backend_preference:
+                crate::options_types::OptionsExpressionBackendPreference::CpuReference,
             delay_minutes: vec![0],
             dte_buckets: vec![1],
             moneyness_buckets: vec![OptionsMoneynessBucket::Atm],

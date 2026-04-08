@@ -57,6 +57,11 @@ export const OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS = [
   'top_of_book_quote',
   'derived_mid_snapshot',
 ] as const
+export const OPTIONS_REALISM_LANE_OPTIONS = [
+  'aggregate',
+  'derived_mid',
+  'quote_aware',
+] as const
 export const OPTIONS_SUPPORTED_PARENT_STRATEGIES = [
   'DoubleMa',
   'CompositeTrend',
@@ -73,6 +78,110 @@ function isSupportedParentStrategyKind(value: unknown): boolean {
   return (
     OPTIONS_SUPPORTED_PARENT_STRATEGIES as readonly string[]
   ).includes(normalized)
+}
+
+export function isQuoteAwareOptionsPriceSemantics(value: unknown): boolean {
+  return normalizeText(value) === 'top_of_book_quote'
+}
+
+export function priceSemanticsForRealismLane(value: unknown): string {
+  switch (normalizeText(value)) {
+    case 'derived_mid':
+      return 'derived_mid_snapshot'
+    case 'quote_aware':
+      return 'top_of_book_quote'
+    case 'aggregate':
+    default:
+      return 'minute_aggregate'
+  }
+}
+
+export function realismLaneForPriceSemantics(value: unknown): string {
+  switch (normalizeText(value)) {
+    case 'derived_mid_snapshot':
+      return 'derived_mid'
+    case 'top_of_book_quote':
+      return 'quote_aware'
+    case 'minute_aggregate':
+    default:
+      return 'aggregate'
+  }
+}
+
+export function isFillModelCompatibleWithPriceSemantics(
+  fillModel: unknown,
+  priceSemantics: unknown,
+): boolean {
+  const normalizedFill = normalizeText(fillModel)
+  const normalizedSemantics = normalizeText(priceSemantics)
+  if (!normalizedFill) return false
+  switch (normalizedSemantics) {
+    case 'top_of_book_quote':
+      return (
+        OPTIONS_FILL_MODEL_OPTIONS as readonly string[]
+      ).includes(normalizedFill)
+    case 'minute_aggregate':
+    case 'derived_mid_snapshot':
+    default:
+      return normalizedFill === 'aggregate_research'
+  }
+}
+
+export function recommendedFillModelForPriceSemantics(priceSemantics: unknown): string {
+  return isQuoteAwareOptionsPriceSemantics(priceSemantics)
+    ? 'quote_conservative'
+    : 'aggregate_research'
+}
+
+export function fillModelGuidanceForPriceSemantics(priceSemantics: unknown): {
+  laneLabel: string
+  detail: string
+} {
+  if (isQuoteAwareOptionsPriceSemantics(priceSemantics)) {
+    return {
+      laneLabel: 'Quote-aware lane',
+      detail:
+        'Top-of-book quote datasets allow quote_conservative and quote_mid. quote_conservative is the realistic default; quote_mid is research-only; aggregate_research falls back to the row close.',
+    }
+  }
+  const normalizedSemantics = normalizeText(priceSemantics) || 'minute_aggregate'
+  return {
+    laneLabel: normalizedSemantics === 'derived_mid_snapshot' ? 'Derived-mid lane' : 'Aggregate lane',
+    detail:
+      `${normalizedSemantics} datasets only support aggregate_research in the backend. Quote fill models are reserved for top_of_book_quote datasets.`,
+  }
+}
+
+function coerceFillModelForPriceSemantics(fillModel: unknown, priceSemantics: unknown): string {
+  const normalized = pickSupported(
+    normalizeText(fillModel),
+    OPTIONS_FILL_MODEL_OPTIONS,
+    recommendedFillModelForPriceSemantics(priceSemantics),
+  )
+  return isFillModelCompatibleWithPriceSemantics(normalized, priceSemantics)
+    ? normalized
+    : recommendedFillModelForPriceSemantics(priceSemantics)
+}
+
+function selectPreferredDatasetIdForRealismLane(
+  datasets: OptionsDatasetManifestSummary[],
+  currentSelectedId: string,
+  realismLane: string,
+  parentRootHint: string,
+): string {
+  const targetSemantics = priceSemanticsForRealismLane(realismLane)
+  const matching = datasets.filter(
+    (entry) => normalizeText(entry.priceSemantics) === targetSemantics,
+  )
+  if (matching.length === 0) return ''
+  if (matching.some((entry) => entry.optionsDatasetId === currentSelectedId)) {
+    return currentSelectedId
+  }
+  const rootHint = normalizeText(parentRootHint).toUpperCase()
+  const preferred = matching.find(
+    (entry) => normalizeText(entry.rootSymbol).toUpperCase() === rootHint,
+  )
+  return preferred?.optionsDatasetId || matching[0]?.optionsDatasetId || ''
 }
 
 function normalizeNumber(value: unknown, fallback = 0): number {
@@ -146,6 +255,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     parentDatasetLabel: '',
     parentRootHint: '',
     importRootSymbol: '',
+    realismLane: 'aggregate',
     importPriceSemantics: 'minute_aggregate',
     downloadDatasetIdInput: '',
     downloadFromDateInput: '',
@@ -203,6 +313,15 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
   getters: {
     supportedParent: (state) => isSupportedParentStrategyKind(state.parentStrategyKind),
 
+    realismLanePriceSemantics(state): string {
+      return priceSemanticsForRealismLane(state.realismLane)
+    },
+
+    realismLaneDatasets(state): OptionsDatasetManifestSummary[] {
+      const targetSemantics = priceSemanticsForRealismLane(state.realismLane)
+      return state.datasets.filter((entry) => normalizeText(entry.priceSemantics) === targetSemantics)
+    },
+
     filteredArtifacts(state): OptionsExpressionArtifactSummary[] {
       const parentId = normalizeText(state.parentArtifactId)
       if (!parentId) return []
@@ -256,6 +375,45 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
   },
 
   actions: {
+    ensureCompatibleFillModel(notify = false): void {
+      const semantics = normalizeText(this.selectedDataset?.priceSemantics)
+      if (!semantics) return
+      const nextFillModel = coerceFillModelForPriceSemantics(this.fillModel, semantics)
+      if (nextFillModel === this.fillModel) return
+      this.fillModel = nextFillModel
+      if (notify) {
+        const guidance = fillModelGuidanceForPriceSemantics(semantics)
+        this.statusLine = `${guidance.laneLabel}: fill model reset to ${nextFillModel} for ${semantics}.`
+      }
+    },
+
+    setRealismLane(nextLane: string, notify = false): void {
+      const normalizedLane = pickSupported(
+        nextLane,
+        OPTIONS_REALISM_LANE_OPTIONS,
+        'aggregate',
+      )
+      this.realismLane = normalizedLane
+      this.importPriceSemantics = priceSemanticsForRealismLane(normalizedLane)
+      this.selectedDatasetId = selectPreferredDatasetIdForRealismLane(
+        this.datasets,
+        this.selectedDatasetId,
+        this.realismLane,
+        this.parentRootHint,
+      )
+      const nextFillModel = coerceFillModelForPriceSemantics(
+        this.fillModel,
+        this.importPriceSemantics,
+      )
+      if (nextFillModel !== this.fillModel) {
+        this.fillModel = nextFillModel
+      }
+      if (notify) {
+        const guidance = fillModelGuidanceForPriceSemantics(this.importPriceSemantics)
+        this.statusLine = `${guidance.laneLabel}: workflow lane set to ${normalizedLane}.`
+      }
+    },
+
     attachParent(parentArtifactPath: string, parentStrategyKind: string, parentDatasetLabel: string): void {
       const nextPath = normalizeText(parentArtifactPath)
       const nextStrategy = normalizeText(parentStrategyKind)
@@ -274,6 +432,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
       this.parentRootHint = nextRootHint
       if (changed) {
         this.importRootSymbol = nextRootHint
+        this.realismLane = 'aggregate'
         this.importPriceSemantics = 'minute_aggregate'
         this.downloadDatasetIdInput = ''
         this.downloadFromDateInput = ''
@@ -320,15 +479,26 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
           return normalizeText(left.optionsDatasetId).localeCompare(normalizeText(right.optionsDatasetId))
         })
         const selectedExists = this.datasets.some((entry) => entry.optionsDatasetId === this.selectedDatasetId)
-        if (!selectedExists) {
-          const preferred = this.datasets.find(
-            (entry) =>
-              normalizeText(entry.rootSymbol).toUpperCase() === normalizeText(this.parentRootHint).toUpperCase(),
-          )
-          this.selectedDatasetId = preferred?.optionsDatasetId || this.datasets[0]?.optionsDatasetId || ''
-        }
+        const nextSelectedDatasetId = selectedExists
+          ? selectPreferredDatasetIdForRealismLane(
+              this.datasets,
+              this.selectedDatasetId,
+              this.realismLane,
+              this.parentRootHint,
+            )
+          : selectPreferredDatasetIdForRealismLane(
+              this.datasets,
+              '',
+              this.realismLane,
+              this.parentRootHint,
+            )
+        this.selectedDatasetId = nextSelectedDatasetId
+        this.ensureCompatibleFillModel()
+        const laneMatchCount = this.realismLaneDatasets.length
         this.statusLine = this.datasets.length
-          ? `Loaded ${this.datasets.length} options dataset${this.datasets.length === 1 ? '' : 's'}.`
+          ? laneMatchCount > 0
+            ? `Loaded ${this.datasets.length} options dataset${this.datasets.length === 1 ? '' : 's'}; ${laneMatchCount} match the current ${this.realismLane.replace('_', '-')} lane.`
+            : `Loaded ${this.datasets.length} options dataset${this.datasets.length === 1 ? '' : 's'}, but none match the current ${this.realismLane.replace('_', '-')} lane yet.`
           : 'No imported options datasets yet. Import a normalized CSV to continue.'
       } catch (error) {
         this.statusLine = String(error || '').trim() || 'Failed to refresh options datasets.'
@@ -361,6 +531,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         })
         await this.refreshDatasets()
         this.selectedDatasetId = imported.optionsDatasetId
+        this.ensureCompatibleFillModel()
         this.latestDatasetDownload = null
         this.statusLine = `Imported options dataset ${imported.optionsDatasetId}.`
       } catch (error) {
@@ -371,6 +542,11 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
     },
 
     async downloadDatasetFromPolygon(): Promise<void> {
+      if (this.realismLane !== 'aggregate') {
+        this.statusLine =
+          'Direct Polygon/Massive download in this panel is aggregate-lane only. Switch the realism lane to Aggregate to use provider download.'
+        return
+      }
       const rootSymbol = normalizeText(this.importRootSymbol || this.parentRootHint).toUpperCase()
       const from = normalizeText(this.downloadFromDateInput)
       const to = normalizeText(this.downloadToDateInput)
@@ -422,6 +598,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         const downloaded: PolygonOptionsDatasetDownloadSummary = await downloadPolygonOptionsDataset(request)
         await this.refreshDatasets()
         this.selectedDatasetId = downloaded.manifest.optionsDatasetId
+        this.ensureCompatibleFillModel()
         this.latestDatasetDownload = downloaded
         this.statusLine =
           `Downloaded Polygon/Massive options dataset ${downloaded.manifest.optionsDatasetId} ` +
@@ -507,6 +684,9 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         return
       }
 
+      const datasetPriceSemantics = normalizeText(this.selectedDataset?.priceSemantics) || 'minute_aggregate'
+      const fillModel = coerceFillModelForPriceSemantics(this.fillModel, datasetPriceSemantics)
+      this.fillModel = fillModel
       const request = {
         parent_artifact_path: this.parentArtifactPath,
         options_dataset_id: this.selectedDatasetId,
@@ -524,7 +704,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
           OPTIONS_EXIT_TEMPLATE_OPTIONS,
           'fixed_hold_or_target_stop',
         ),
-        fill_model: pickSupported(this.fillModel, OPTIONS_FILL_MODEL_OPTIONS, 'aggregate_research'),
+        fill_model: fillModel,
         structure_family: pickSupported(
           this.structureFamily,
           OPTIONS_STRUCTURE_FAMILY_OPTIONS,
@@ -600,6 +780,9 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
 
       this.feasibilityBusy = true
       try {
+        const datasetPriceSemantics = normalizeText(this.selectedDataset?.priceSemantics) || 'minute_aggregate'
+        const fillModel = coerceFillModelForPriceSemantics(this.fillModel, datasetPriceSemantics)
+        this.fillModel = fillModel
         const preview = await analyzeOptionsExpressionFeasibility({
           parent_artifact_path: this.parentArtifactPath,
           options_dataset_id: this.selectedDatasetId,
@@ -617,7 +800,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
             OPTIONS_EXIT_TEMPLATE_OPTIONS,
             'fixed_hold_or_target_stop',
           ),
-          fill_model: pickSupported(this.fillModel, OPTIONS_FILL_MODEL_OPTIONS, 'aggregate_research'),
+          fill_model: fillModel,
           structure_family: pickSupported(
             this.structureFamily,
             OPTIONS_STRUCTURE_FAMILY_OPTIONS,
@@ -666,6 +849,7 @@ export const useOptionsExpressionStore = defineStore('optionsExpression', {
         const artifact = await loadOptionsExpressionArtifact(nextPath)
         this.selectedArtifactPath = nextPath
         this.activeArtifact = artifact
+        this.setRealismLane(realismLaneForPriceSemantics(artifact.priceSemantics))
         this.latestRun = null
         this.latestFeasibility = null
         this.activeTupleInspection = null

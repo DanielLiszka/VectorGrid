@@ -188,6 +188,7 @@ describe('optionsExpressionService', () => {
               pre_sealed_rank: 0,
               sealed_finalist: false,
               sealed_final_rank: 0,
+              validation_verdict: 'stress_fragile',
               selection_metrics: {
                 valid_trades: 5,
                 invalid_events: 1,
@@ -260,11 +261,16 @@ describe('optionsExpressionService', () => {
             path: 'C:/runs/vectorgrid_options_expression_1.json',
             bytes: 2048,
             parent_artifact_id: 'vectorgrid_run_1',
+            parent_strategy_kind: 'DoubleMa',
             root_symbol: 'SPY',
             options_dataset_id: 'spy_options',
             backend_used: 'cpu_reference',
             backend_fallback_reason: 'GPU planner probe failed; using CPU.',
             price_semantics: 'minute_aggregate',
+            request_backend_preference: 'auto',
+            request_fill_model: 'aggregate_research',
+            request_structure_family: 'long_single',
+            request_split_assignment_mode: 'event_chronological',
             tuple_count: 2,
             best_robust_score: 0.18,
             best_selection_expectancy_per_premium: 0.2,
@@ -276,6 +282,9 @@ describe('optionsExpressionService', () => {
             best_sealed_harsher_stress_expectancy_per_premium: 0.01,
             best_extreme_stress_expectancy_per_premium: -0.01,
             best_sealed_extreme_stress_expectancy_per_premium: -0.02,
+            top_validation_verdict: 'stress_fragile',
+            validated_tuple_count: 1,
+            stress_fragile_tuple_count: 1,
             has_holdout_metrics: true,
             has_sealed_evaluation_metrics: true,
             has_stress_metrics: true,
@@ -300,12 +309,14 @@ describe('optionsExpressionService', () => {
     expect(run.request?.sealedFinalistCount).toBe(5)
     expect(run.rankedResults[0]?.preSealedRank).toBe(0)
     expect(run.rankedResults[0]?.sealedFinalist).toBe(false)
+    expect(run.rankedResults[0]?.validationVerdict).toBe('stress_fragile')
     expect(run.rankedResults[0]?.sealedStressMetrics?.expectancyPerPremium).toBe(0.03)
     expect(run.rankedResults[0]?.harsherStressMetrics?.expectancyPerPremium).toBe(0.02)
     expect(run.rankedResults[0]?.sealedHarsherStressMetrics?.expectancyPerPremium).toBe(0.01)
     expect(run.rankedResults[0]?.extremeStressMetrics?.expectancyPerPremium).toBe(-0.01)
     expect(run.rankedResults[0]?.sealedExtremeStressMetrics?.expectancyPerPremium).toBe(-0.02)
     expect(artifacts[0]?.optionsDatasetId).toBe('spy_options')
+    expect(artifacts[0]?.parentStrategyKind).toBe('DoubleMa')
     expect(artifacts[0]?.tupleCount).toBe(2)
     expect(artifacts[0]?.bestRobustScore).toBe(0.18)
     expect(artifacts[0]?.bestHoldoutExpectancyPerPremium).toBe(0.1)
@@ -314,12 +325,19 @@ describe('optionsExpressionService', () => {
     expect(artifacts[0]?.bestSealedHarsherStressExpectancyPerPremium).toBe(0.01)
     expect(artifacts[0]?.bestExtremeStressExpectancyPerPremium).toBe(-0.01)
     expect(artifacts[0]?.bestSealedExtremeStressExpectancyPerPremium).toBe(-0.02)
+    expect(artifacts[0]?.topValidationVerdict).toBe('stress_fragile')
     expect(artifacts[0]?.sealedFinalistBudget).toBe(0)
     expect(artifacts[0]?.sealedEvaluatedTupleCount).toBe(0)
+    expect(artifacts[0]?.validatedTupleCount).toBe(1)
+    expect(artifacts[0]?.stressFragileTupleCount).toBe(1)
     expect(artifacts[0]?.hasSealedEvaluationMetrics).toBe(true)
     expect(artifacts[0]?.hasHarsherStressMetrics).toBe(true)
     expect(artifacts[0]?.hasExtremeStressMetrics).toBe(true)
     expect(artifacts[0]?.backendFallbackReason).toBe('GPU planner probe failed; using CPU.')
+    expect(artifacts[0]?.requestBackendPreference).toBe('auto')
+    expect(artifacts[0]?.requestFillModel).toBe('aggregate_research')
+    expect(artifacts[0]?.requestStructureFamily).toBe('long_single')
+    expect(artifacts[0]?.requestSplitAssignmentMode).toBe('event_chronological')
     expect(invokeCommandMock).toHaveBeenCalledWith('list_artifact_library')
   })
 
@@ -776,6 +794,7 @@ describe('optionsExpressionService', () => {
           stopReturn: 0.25,
           exitTemplate: 'fixed_hold_or_target_stop',
           fillModel: 'aggregate_research',
+          validationVerdict: 'stress_fragile',
           robustScore: 0.42,
           selectionMetrics: {
             validTrades: 12,
@@ -833,8 +852,10 @@ describe('optionsExpressionService', () => {
     const csvBlob = blobArg instanceof Blob ? blobArg : null
     const csvText = await csvBlob?.text()
     expect(csvText).toContain('delay_minutes,dte_days,structure_family,moneyness_bucket')
+    expect(csvText).toContain('validation_verdict')
     expect(csvText).toContain('extreme_stress_expectancy_per_premium')
     expect(csvText).toContain('sealed_extreme_stress_expectancy_per_premium')
+    expect(csvText).toContain('stress_fragile')
     expect(csvText).toContain('cpu_reference,minute_aggregate')
     expect(csvText).toContain('1,3,debit_vertical,otm_1,15,0.5,0.25')
     expect(csvText).toContain(',-0.05,-0.08,')

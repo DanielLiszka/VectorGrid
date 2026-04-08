@@ -1,7 +1,7 @@
 # Options Expression Optimizer — Repo-Fit Viable Implementation Plan
 
 Date: 2026-04-02
-Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice, CUDA scorer path, current History follow-up reporting/drilldown slice, broadened double-like parent-artifact support, quote-aware CSV import support, and the first bounded fixed-geometry two-leg expansion now landed in the repo while broader non-double-like parent coverage remains future work.
+Status: revised implementation plan aligned to the current VectorGrid product shape, with the backend staged-compiler slice, CUDA scorer path, current History follow-up reporting/drilldown slice, broadened double-like parent-artifact support, quote-aware CSV import support, and the first bounded fixed-geometry two-leg expansion now landed in the repo while future work is now primarily focused on improving the current options optimization and embedded validation workflow rather than adding new strategy families or workflow stages.
 
 Future expansion work is tracked separately in:
 
@@ -1676,7 +1676,7 @@ Status key:
 
 - `[x]` Run the documented Phase `0.5` compiled-tensor feasibility spike and capture real density/cache metrics
   Current measured status:
-  real SPY `1m` slices executed on April 6-7, 2026 using provider-downloaded contract-reference + minute aggregates, bounded saved `DoubleMa` parent artifacts, and the headless feasibility harness. The first under-centered strike window (`500-560`) failed density/invalid gates and exposed that the strike band was misaligned with live SPY levels. The corrected near-spot strike window (`645-665`) produced real slices that pass the density/cache gates. The current authoritative product-promotion evidence is the broader expiry-covered DTE7 slice (`2026-03-31` through `2026-04-02`, strikes `645-665`, `max_dte_days=7`, `105` contracts, `54,985` option rows) captured after the newer GPU-planner/fit telemetry work and rerun quietly with the updated feasibility summary surfaces. On that slice the current measured result is: valid-slot density `0.5247`, invalid-slot rate `0.4753`, structural-cache reuse `1.0000`, summary-cache reuse `1.0000`, repeated hybrid-ranking GPU speedup vs CPU `5.3197x`, and estimated backend-only preview wall speedup vs CPU `1.3333x`. That means the density/cache gates and the scorer-speed gate are now met on the authoritative DTE7 slice, but the bounded preview still auto-recommends CPU because the search-event count and projected event-tuple work remain below the current auto thresholds. Earlier compare runs remain useful as exploratory profiler evidence, but the `_cuda_features` DTE7 pair below is the authoritative proof set for current promotion decisions. Concrete evidence:
+  real SPY `1m` slices executed on April 6-7, 2026 using provider-downloaded contract-reference + minute aggregates, bounded saved `DoubleMa` parent artifacts, and the headless feasibility harness. The first under-centered strike window (`500-560`) failed density/invalid gates and exposed that the strike band was misaligned with live SPY levels. The corrected near-spot strike window (`645-665`) produced real slices that pass the density/cache gates. The current authoritative product-promotion evidence is the broader expiry-covered DTE7 slice (`2026-03-31` through `2026-04-02`, strikes `645-665`, `max_dte_days=7`, `105` contracts, `54,985` option rows) captured after the newer GPU-planner/fit telemetry work and rerun quietly with the updated feasibility summary surfaces. On that slice the current measured result is: valid-slot density `0.5247`, invalid-slot rate `0.4753`, structural-cache reuse `1.0000`, summary-cache reuse `1.0000`, repeated hybrid-ranking GPU speedup vs CPU `5.3197x`, and estimated backend-only preview wall speedup vs CPU `1.3333x`. A clean follow-up GPU-promotion gate rerun on the same DTE7 dataset now also records `auto_backend_decision.recommended_backend = gpu_compiled_tensor_hybrid`, with search events `10`, projected event-tuples `15,552`, hybrid-ranking speedup `3.36x`, and preview-wall speedup `1.33x`. That means the density/cache/scorer/wall-speed gates are now met on the authoritative DTE7 slice and the gate-driven `auto` policy recommends GPU on the current canonical workload. Earlier compare runs remain useful as exploratory profiler evidence, but the DTE7 evidence set below is the authoritative proof set for current promotion decisions. Concrete evidence:
   - sparse first pass: `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed.{json,md}`
   - corrected dense pass: `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665.{json,md}`
   - CUDA compare pass: `output/options_expression_phase05/spy_phase05_overlap_trimmed_relaxed_645_665_compare.{json,md}`
@@ -1687,6 +1687,7 @@ Status key:
   - multi-day large-grid cached-upload CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached.{json,md}`
   - multi-day large-grid replay-cache CUDA compare pass: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_replaycache.{json,md}`
 - authoritative DTE7 promotion evidence with current telemetry: `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.{json,md}`
+- clean DTE7 promotion-gate rerun with current `auto` recommendation: `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.{json,md}`
 - `[x]` Prove the GPU scorer materially beats CPU on representative large jobs before product promotion
 - `[x]` Promote `Auto` toward GPU-first productization while retaining CPU as the correctness oracle and explicit fallback/debug lane
   Current shipped posture:
@@ -1703,8 +1704,17 @@ Status key:
   Current shipped scope:
   tuple drilldown now includes split/status rollups, invalid-reason rollups, row-level selection, companion-leg detail where applicable, event-path replay, event-path analytics, and CSV export for both tuple rows and replay paths.
 - `[x]` Add broader reporting surfaces beyond the current CSV export path
+- `[x]` Add a first-wave options artifact meta-analysis surface across all saved options-expression artifacts, grouped by root, parent family, structure family, realism lane, and top validation verdict
+- `[x]` Add a first-wave validation-winners frontier table so live run results expose who wins selection, holdout, sealed, and stress lanes without forcing manual tuple-by-tuple inspection
 - `[x]` Broaden parent artifact support from `DoubleMa` to the current double-like saved-run families (`DoubleMa`, `CompositeTrend`, `RegimeHybrid`, `BreakoutMomentum`) while keeping non-double-like strategies read-only
 - `[x]` Expose quote-aware Polygon/Massive CSV import semantics in the current options UI while keeping direct provider download on the bounded `1m` aggregate lane
+- `[x]` Surface explicit validation verdicts for live options runs and reopened artifact comparison so holdout / sealed / stress status is not inferred only from EV columns
+- `[x]` Add a selected-tuple validation-frontier view plus row-level validation/stress-drop columns so finalist comparison is not reduced to raw EV cells
+- `[x]` Carry explicit realism-lane and backend-route labeling through saved artifact summaries, compare tables, and run provenance so reopened artifacts remain interpretable without full reload
+- `[x]` Add an explicit top-level realism-lane chooser so aggregate, derived-mid, and quote-aware workflows are intentional user choices rather than inferred import side effects
+- `[x]` Add saved-artifact provenance diffing against the currently selected artifact so compare rows expose what changed without forcing a full artifact reload
+- `[x]` Surface active dataset-lane and fill-model compatibility guidance in the current options panel, and coerce incompatible fill models before preview/run while retaining backend-side compatibility checks
+- `[x]` Replace the implicit shared double-like replay path with explicit family-local adapter wrappers for the currently supported parent families while keeping the shared replay helper underneath
 - `[~]` Add optional post-v1 multi-leg fixed-geometry expression families only if tensor density remains acceptable
   Current shipped scope:
   `long_single` remains the default structure family, and two bounded same-expiry fixed-geometry two-leg families are now implemented: `debit_vertical` and `long_pair`. Any broader ladders, additional bundles, or more general multi-leg geometry remain post-v1.
@@ -1714,6 +1724,8 @@ Status key:
 
 - `[~]` Parent artifact support is currently limited to the current double-like saved-run families (`DoubleMa`, `CompositeTrend`, `RegimeHybrid`, `BreakoutMomentum`)
 - `[~]` Direct provider download remains limited to the constrained `1m` minute-aggregate path, while quote-aware realism currently enters through imported Polygon/Massive CSV datasets
+  Current shipped scope:
+  the options panel now exposes an explicit realism-lane chooser that filters datasets and gates the direct provider-download path to the aggregate lane, but direct quote-aware provider download still remains unimplemented.
 - `[~]` The canonical first-wave options resolution is Polygon/Massive `1m`; coarser or quote-aware surfaces remain secondary lanes
 - `[~]` Current Polygon/Massive support is bounded `1m` import/download inside the options follow-up path, not a generic live-connected provider workflow or a reuse of the main stock-data panel
 - `[~]` CPU remains the correctness oracle and the retained-finalist exactifier; the CUDA scorer is implemented and now has representative provider-backed proof, but CPU remains the explicit fallback/debug lane
@@ -1817,14 +1829,14 @@ Current measured baseline, corrected real-data runs:
 - measured notes from the corrected provider-backed slices:
   - candidate compilation and exit-summary density are now high enough to justify further GPU proof work
   - the broader DTE-covered representative slice now meets the density/cache gates and clears the documented `3x` scorer-speed threshold on the authoritative quiet rerun
-  - replay/process-local cache reuse is strong enough to justify retaining a gate-driven `auto` mode, but the current bounded preview still recommends CPU on the measured DTE7 job because workload size remains below the auto-promotion floors even though scorer speed is now favorable
+  - replay/process-local cache reuse is strong enough to justify retaining a gate-driven `auto` mode, and the clean April 7 DTE7 promotion-gate rerun now recommends the GPU path on the canonical representative workload
   - late-session `entry_past_cutoff` invalidations are still a real factor on multi-session runs, but the new session-aware split mode materially improves holdout coverage without changing the default path yet
 
 Interpretation:
 
 - the backend/provider path is now real and functional
 - the candidate/compiler path is viable on a real liquid-root slice when the downloaded strike window matches the actual underlier regime
-- the next engineering step is further GPU productization work and larger quiet-environment representative compares before treating the GPU scorer as promotion-ready
+- the scorer and gate-driven `auto` policy are now promotion-ready for the current canonical DTE7 workload, while broader quote-aware lanes, additional families, and deeper dedicated meta-analysis/ML layers remain future expansion work
 
 ### Phase 1 — Artifact handoff and diagnostics shell
 

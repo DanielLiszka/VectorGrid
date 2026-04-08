@@ -89,6 +89,70 @@ describe('optionsExpressionStore', () => {
     expect(store.backendPreference).toBe('auto')
   })
 
+  it('coerces incompatible fill models back to aggregate_research for aggregate datasets', () => {
+    const store = useOptionsExpressionStore()
+    store.datasets = [
+      {
+        version: 1,
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        providerName: 'massive',
+        providerSourceSurface: 'minute_aggregate',
+        providerEntitlementProfile: '',
+        quoteResolution: '1m',
+        priceSemantics: 'minute_aggregate',
+        calendarId: 'market_hours_utc',
+        timezone: 'UTC',
+        coverageStart: 0,
+        coverageEnd: 0,
+        normalizationVersion: 1,
+        quoteSemanticsVersion: 1,
+        corporateActionMappingVersion: 1,
+        contractReferenceSource: 'massive_contract_reference',
+        contractReferenceAsOfUtc: '',
+        underlierReferenceSource: '',
+        datasetPath: '',
+        contractCount: 3,
+        rowCount: 42,
+        aggregatePriceField: 'close',
+      },
+      {
+        version: 1,
+        optionsDatasetId: 'spy_quotes',
+        rootSymbol: 'SPY',
+        providerName: 'massive',
+        providerSourceSurface: 'top_of_book_quote',
+        providerEntitlementProfile: '',
+        quoteResolution: '1m',
+        priceSemantics: 'top_of_book_quote',
+        calendarId: 'market_hours_utc',
+        timezone: 'UTC',
+        coverageStart: 0,
+        coverageEnd: 0,
+        normalizationVersion: 1,
+        quoteSemanticsVersion: 1,
+        corporateActionMappingVersion: 1,
+        contractReferenceSource: 'massive_contract_reference',
+        contractReferenceAsOfUtc: '',
+        underlierReferenceSource: '',
+        datasetPath: '',
+        contractCount: 3,
+        rowCount: 42,
+        aggregatePriceField: '',
+      },
+    ]
+
+    store.selectedDatasetId = 'spy_options'
+    store.fillModel = 'quote_mid'
+    store.ensureCompatibleFillModel()
+    expect(store.fillModel).toBe('aggregate_research')
+
+    store.selectedDatasetId = 'spy_quotes'
+    store.fillModel = 'quote_mid'
+    store.ensureCompatibleFillModel()
+    expect(store.fillModel).toBe('quote_mid')
+  })
+
   it('treats the current double-like parent families as supported follow-up inputs', () => {
     const store = useOptionsExpressionStore()
 
@@ -150,6 +214,7 @@ describe('optionsExpressionStore', () => {
     store.delayMinutesInput = '0, 5, 1'
     store.selectedMoneynessBuckets = ['atm', 'otm_1']
     store.backendPreference = 'gpu_compiled_tensor'
+    store.fillModel = 'quote_mid'
     store.splitAssignmentMode = 'session_chronological'
     store.topKInput = '12'
     store.sealedFinalistCountInput = '7'
@@ -160,6 +225,7 @@ describe('optionsExpressionStore', () => {
         parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
         options_dataset_id: 'spy_options',
         backend_preference: 'gpu_compiled_tensor',
+        fill_model: 'aggregate_research',
         split_assignment_mode: 'session_chronological',
         delay_minutes: [0, 1, 5],
         moneyness_buckets: ['atm', 'otm_1'],
@@ -407,7 +473,7 @@ describe('optionsExpressionStore', () => {
 
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'CompositeTrend', 'SPY.csv')
-    store.importPriceSemantics = 'top_of_book_quote'
+    store.setRealismLane('quote_aware')
 
     await store.importDatasetFromPicker()
 
@@ -420,6 +486,19 @@ describe('optionsExpressionStore', () => {
       }),
     )
     expect(store.selectedDatasetId).toBe('spy_quotes')
+  })
+
+  it('blocks direct provider download outside the aggregate lane', async () => {
+    const store = useOptionsExpressionStore()
+    store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
+    store.setRealismLane('quote_aware')
+    store.downloadFromDateInput = '2026-04-01'
+    store.downloadToDateInput = '2026-04-02'
+
+    await store.downloadDatasetFromPolygon()
+
+    expect(downloadPolygonOptionsDatasetMock).not.toHaveBeenCalled()
+    expect(store.statusLine).toContain('aggregate-lane only')
   })
 
   it('downloads Polygon/Massive datasets through the bounded options flow', async () => {

@@ -9,8 +9,8 @@ use super::{
     commands_options_expression::{
         summarize_options_expression_artifact, OptionsExpressionArtifactSummary,
     },
-    metric_surface::build_optimization_metric_surface_artifact_value, reveal_path_blocking,
-    sanitize_filename_component,
+    metric_surface::build_optimization_metric_surface_artifact_value,
+    reveal_path_blocking, sanitize_filename_component,
 };
 
 const DATASET_META_SCHEMA_VERSION: u64 = 2;
@@ -1324,7 +1324,9 @@ fn build_options_expression_artifact_summary(
     }
 
     let artifact = serde_json::from_value::<OptionsExpressionArtifactV1>(v.clone()).ok()?;
-    Some(summarize_options_expression_artifact(path, bytes, &artifact))
+    Some(summarize_options_expression_artifact(
+        path, bytes, &artifact,
+    ))
 }
 
 fn build_meta_artifact_summary(path: &Path, bytes: u64, v: &Value) -> Option<MetaArtifactSummary> {
@@ -2108,7 +2110,9 @@ mod tests {
         assert!(is_options_expression_artifact_kind(
             "vectorgrid_options_expression_v1"
         ));
-        assert!(!is_options_expression_artifact_kind("vectorgrid_run_artifact"));
+        assert!(!is_options_expression_artifact_kind(
+            "vectorgrid_run_artifact"
+        ));
     }
 
     #[test]

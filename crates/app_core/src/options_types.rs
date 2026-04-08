@@ -109,6 +109,42 @@ pub enum OptionsPriceSemantics {
     DerivedMidSnapshot,
 }
 
+impl OptionsPriceSemantics {
+    pub fn supports_fill_model(self, fill_model: OptionsFillModelFamily) -> bool {
+        match (self, fill_model) {
+            (OptionsPriceSemantics::MinuteAggregate, OptionsFillModelFamily::AggregateResearch) => {
+                true
+            }
+            (
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch,
+            ) => true,
+            (OptionsPriceSemantics::TopOfBookQuote, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn recommended_fill_model(self) -> OptionsFillModelFamily {
+        match self {
+            OptionsPriceSemantics::TopOfBookQuote => OptionsFillModelFamily::QuoteConservative,
+            OptionsPriceSemantics::MinuteAggregate | OptionsPriceSemantics::DerivedMidSnapshot => {
+                OptionsFillModelFamily::AggregateResearch
+            }
+        }
+    }
+
+    pub fn allowed_fill_models_label(self) -> &'static str {
+        match self {
+            OptionsPriceSemantics::MinuteAggregate | OptionsPriceSemantics::DerivedMidSnapshot => {
+                "aggregate_research"
+            }
+            OptionsPriceSemantics::TopOfBookQuote => {
+                "aggregate_research, quote_conservative, quote_mid"
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum OptionsFillModelFamily {
@@ -443,6 +479,18 @@ pub struct OptionsExpressionMetrics {
     pub total_pnl_per_contract: f64,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExpressionValidationVerdict {
+    #[default]
+    SearchOnly,
+    HoldoutSupported,
+    SealedFinalist,
+    StressFragile,
+}
+
+pub const OPTIONS_VALIDATION_STRESS_DROP_THRESHOLD: f64 = 0.03;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OptionsExpressionTupleResult {
     pub tuple: OptionsTupleSpec,
@@ -470,7 +518,60 @@ pub struct OptionsExpressionTupleResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed_extreme_stress_metrics: Option<OptionsExpressionMetrics>,
     #[serde(default)]
+    pub validation_verdict: OptionsExpressionValidationVerdict,
+    #[serde(default)]
     pub robust_score: f64,
+}
+
+impl OptionsExpressionTupleResult {
+    pub fn strongest_validation_metrics(&self) -> Option<&OptionsExpressionMetrics> {
+        self.sealed_evaluation_metrics
+            .as_ref()
+            .or(self.holdout_metrics.as_ref())
+    }
+
+    pub fn strongest_validation_stress_metrics(&self) -> Option<&OptionsExpressionMetrics> {
+        self.sealed_extreme_stress_metrics
+            .as_ref()
+            .or(self.sealed_harsher_stress_metrics.as_ref())
+            .or(self.sealed_stress_metrics.as_ref())
+            .or(self.extreme_stress_metrics.as_ref())
+            .or(self.harsher_stress_metrics.as_ref())
+            .or(self.stress_metrics.as_ref())
+    }
+
+    pub fn inferred_validation_verdict(&self) -> OptionsExpressionValidationVerdict {
+        let has_sealed_validation =
+            self.sealed_finalist || self.sealed_evaluation_metrics.is_some();
+        let has_holdout_validation = self.holdout_metrics.is_some();
+        if has_sealed_validation {
+            if self.is_stress_fragile() {
+                OptionsExpressionValidationVerdict::StressFragile
+            } else {
+                OptionsExpressionValidationVerdict::SealedFinalist
+            }
+        } else if has_holdout_validation {
+            if self.is_stress_fragile() {
+                OptionsExpressionValidationVerdict::StressFragile
+            } else {
+                OptionsExpressionValidationVerdict::HoldoutSupported
+            }
+        } else {
+            OptionsExpressionValidationVerdict::SearchOnly
+        }
+    }
+
+    pub fn is_stress_fragile(&self) -> bool {
+        let Some(base) = self.strongest_validation_metrics() else {
+            return false;
+        };
+        let Some(stressed) = self.strongest_validation_stress_metrics() else {
+            return false;
+        };
+        stressed.expectancy_per_premium < 0.0
+            || (base.expectancy_per_premium - stressed.expectancy_per_premium)
+                >= OPTIONS_VALIDATION_STRESS_DROP_THRESHOLD
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -850,6 +951,49 @@ pub struct OptionsExpressionArtifactV1 {
 mod tests {
     use super::*;
 
+    fn metrics(ev_per_premium: f64) -> OptionsExpressionMetrics {
+        OptionsExpressionMetrics {
+            valid_trades: 4,
+            invalid_events: 0,
+            invalid_rate: 0.0,
+            expectancy_per_trade: ev_per_premium * 10.0,
+            expectancy_per_premium: ev_per_premium,
+            median_return_on_premium: ev_per_premium * 0.8,
+            win_rate: 0.5,
+            total_pnl_per_contract: ev_per_premium * 100.0,
+        }
+    }
+
+    fn sample_tuple_result() -> OptionsExpressionTupleResult {
+        OptionsExpressionTupleResult {
+            tuple: OptionsTupleSpec {
+                structure_family: OptionsStructureFamily::LongSingle,
+                delay_minutes: 0,
+                dte_days: 1,
+                moneyness_bucket: OptionsMoneynessBucket::Atm,
+                hold_minutes: 15,
+                target_return: Some(0.25),
+                stop_return: Some(0.25),
+                exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+                fill_model: OptionsFillModelFamily::AggregateResearch,
+            },
+            pre_sealed_rank: 0,
+            sealed_finalist: false,
+            sealed_final_rank: 0,
+            selection_metrics: metrics(0.20),
+            holdout_metrics: None,
+            sealed_evaluation_metrics: None,
+            stress_metrics: None,
+            sealed_stress_metrics: None,
+            harsher_stress_metrics: None,
+            sealed_harsher_stress_metrics: None,
+            extreme_stress_metrics: None,
+            sealed_extreme_stress_metrics: None,
+            validation_verdict: OptionsExpressionValidationVerdict::SearchOnly,
+            robust_score: 0.0,
+        }
+    }
+
     #[test]
     fn default_fill_model_is_aggregate_research() {
         let req: OptionsExpressionRunRequest =
@@ -871,5 +1015,80 @@ mod tests {
         assert_eq!(req.sealed_finalist_count, 5);
         assert_eq!(req.structure_family, OptionsStructureFamily::LongSingle);
         assert!(!req.delay_minutes.is_empty());
+    }
+
+    #[test]
+    fn inferred_validation_verdict_defaults_to_search_only_without_holdout() {
+        let tuple = sample_tuple_result();
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+    }
+
+    #[test]
+    fn inferred_validation_verdict_promotes_holdout_supported_rows() {
+        let mut tuple = sample_tuple_result();
+        tuple.holdout_metrics = Some(metrics(0.12));
+        tuple.stress_metrics = Some(metrics(0.10));
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::HoldoutSupported
+        );
+    }
+
+    #[test]
+    fn inferred_validation_verdict_promotes_non_fragile_sealed_finalists() {
+        let mut tuple = sample_tuple_result();
+        tuple.sealed_finalist = true;
+        tuple.sealed_evaluation_metrics = Some(metrics(0.11));
+        tuple.sealed_stress_metrics = Some(metrics(0.10));
+        tuple.sealed_harsher_stress_metrics = Some(metrics(0.09));
+        tuple.sealed_extreme_stress_metrics = Some(metrics(0.09));
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::SealedFinalist
+        );
+    }
+
+    #[test]
+    fn inferred_validation_verdict_marks_material_stress_drop_as_fragile() {
+        let mut tuple = sample_tuple_result();
+        tuple.sealed_finalist = true;
+        tuple.sealed_evaluation_metrics = Some(metrics(0.09));
+        tuple.sealed_stress_metrics = Some(metrics(0.05));
+        tuple.sealed_harsher_stress_metrics = Some(metrics(0.04));
+        tuple.sealed_extreme_stress_metrics = Some(metrics(0.03));
+        assert!(tuple.is_stress_fragile());
+        assert_eq!(
+            tuple.inferred_validation_verdict(),
+            OptionsExpressionValidationVerdict::StressFragile
+        );
+    }
+
+    #[test]
+    fn price_semantics_fill_model_compatibility_matches_current_product_matrix() {
+        assert!(OptionsPriceSemantics::MinuteAggregate
+            .supports_fill_model(OptionsFillModelFamily::AggregateResearch));
+        assert!(!OptionsPriceSemantics::MinuteAggregate
+            .supports_fill_model(OptionsFillModelFamily::QuoteConservative));
+        assert!(!OptionsPriceSemantics::MinuteAggregate
+            .supports_fill_model(OptionsFillModelFamily::QuoteMid));
+
+        assert!(OptionsPriceSemantics::DerivedMidSnapshot
+            .supports_fill_model(OptionsFillModelFamily::AggregateResearch));
+        assert!(!OptionsPriceSemantics::DerivedMidSnapshot
+            .supports_fill_model(OptionsFillModelFamily::QuoteConservative));
+
+        assert!(OptionsPriceSemantics::TopOfBookQuote
+            .supports_fill_model(OptionsFillModelFamily::AggregateResearch));
+        assert!(OptionsPriceSemantics::TopOfBookQuote
+            .supports_fill_model(OptionsFillModelFamily::QuoteConservative));
+        assert!(OptionsPriceSemantics::TopOfBookQuote
+            .supports_fill_model(OptionsFillModelFamily::QuoteMid));
+        assert_eq!(
+            OptionsPriceSemantics::TopOfBookQuote.recommended_fill_model(),
+            OptionsFillModelFamily::QuoteConservative
+        );
     }
 }

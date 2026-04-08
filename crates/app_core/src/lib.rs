@@ -217,7 +217,11 @@ pub use options_expression::{
     inspect_options_expression_event_path_blocking, inspect_options_expression_tuple_blocking,
     run_options_expression_blocking,
 };
-pub use options_signal_manifest::build_options_signal_manifest_from_double_ma;
+pub use options_signal_manifest::{
+    build_options_signal_manifest_from_breakout_momentum,
+    build_options_signal_manifest_from_composite_trend,
+    build_options_signal_manifest_from_double_ma, build_options_signal_manifest_from_regime_hybrid,
+};
 pub use options_types::{
     ImportedOptionsDataset, OptionType, OptionsCandidateInvalidReason,
     OptionsCandidateInvalidReasonCount, OptionsContractSeries, OptionsDatasetManifestV1,

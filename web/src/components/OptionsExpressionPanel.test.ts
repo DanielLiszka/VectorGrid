@@ -97,11 +97,16 @@ describe('OptionsExpressionPanel', () => {
         path: 'C:/runs/vectorgrid_options_expression_1.json',
         bytes: 2048,
         parentArtifactId: 'vectorgrid_run_1',
+        parentStrategyKind: 'DoubleMa',
         rootSymbol: 'SPY',
         optionsDatasetId: 'spy_options',
         backendUsed: 'cpu_reference',
         backendFallbackReason: 'GPU planner probe failed; using CPU.',
         priceSemantics: 'minute_aggregate',
+        requestBackendPreference: 'auto',
+        requestFillModel: 'aggregate_research',
+        requestStructureFamily: 'long_single',
+        requestSplitAssignmentMode: 'event_chronological',
         tupleCount: 2,
         bestRobustScore: 0.18,
         bestSelectionExpectancyPerPremium: 0.2,
@@ -113,11 +118,82 @@ describe('OptionsExpressionPanel', () => {
         bestSealedHarsherStressExpectancyPerPremium: 0.01,
         bestExtremeStressExpectancyPerPremium: -0.01,
         bestSealedExtremeStressExpectancyPerPremium: -0.02,
+        topValidationVerdict: 'stress_fragile',
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
         hasStressMetrics: true,
         hasHarsherStressMetrics: true,
         hasExtremeStressMetrics: true,
+        validatedTupleCount: 2,
+        stressFragileTupleCount: 1,
+      },
+      {
+        ts: '2026-04-05T12:30:00Z',
+        path: 'C:/runs/vectorgrid_options_expression_1_quotes.json',
+        bytes: 2048,
+        parentArtifactId: 'vectorgrid_run_3',
+        parentStrategyKind: 'DoubleMa',
+        rootSymbol: 'SPY',
+        optionsDatasetId: 'spy_quotes',
+        backendUsed: 'gpu_compiled_tensor',
+        priceSemantics: 'top_of_book_quote',
+        requestBackendPreference: 'auto',
+        requestFillModel: 'quote_conservative',
+        requestStructureFamily: 'long_single',
+        requestSplitAssignmentMode: 'event_chronological',
+        tupleCount: 2,
+        bestRobustScore: 0.19,
+        bestSelectionExpectancyPerPremium: 0.18,
+        bestHoldoutExpectancyPerPremium: 0.14,
+        bestSealedExpectancyPerPremium: 0.15,
+        bestStressExpectancyPerPremium: 0.12,
+        bestSealedStressExpectancyPerPremium: 0.1,
+        bestHarsherStressExpectancyPerPremium: 0.09,
+        bestSealedHarsherStressExpectancyPerPremium: 0.08,
+        bestExtremeStressExpectancyPerPremium: 0.07,
+        bestSealedExtremeStressExpectancyPerPremium: 0.06,
+        topValidationVerdict: 'sealed_finalist',
+        hasHoldoutMetrics: true,
+        hasSealedEvaluationMetrics: true,
+        hasStressMetrics: true,
+        hasHarsherStressMetrics: true,
+        hasExtremeStressMetrics: true,
+        validatedTupleCount: 2,
+        stressFragileTupleCount: 0,
+      },
+      {
+        ts: '2026-04-05T13:00:00Z',
+        path: 'C:/runs/vectorgrid_options_expression_2.json',
+        bytes: 2048,
+        parentArtifactId: 'vectorgrid_run_2',
+        parentStrategyKind: 'CompositeTrend',
+        rootSymbol: 'QQQ',
+        optionsDatasetId: 'qqq_quotes',
+        backendUsed: 'gpu_compiled_tensor',
+        priceSemantics: 'top_of_book_quote',
+        requestBackendPreference: 'gpu_compiled_tensor',
+        requestFillModel: 'quote_conservative',
+        requestStructureFamily: 'debit_vertical',
+        requestSplitAssignmentMode: 'session_chronological',
+        tupleCount: 3,
+        bestRobustScore: 0.24,
+        bestSelectionExpectancyPerPremium: 0.22,
+        bestHoldoutExpectancyPerPremium: 0.15,
+        bestSealedExpectancyPerPremium: 0.13,
+        bestStressExpectancyPerPremium: 0.11,
+        bestSealedStressExpectancyPerPremium: 0.1,
+        bestHarsherStressExpectancyPerPremium: 0.08,
+        bestSealedHarsherStressExpectancyPerPremium: 0.07,
+        bestExtremeStressExpectancyPerPremium: 0.05,
+        bestSealedExtremeStressExpectancyPerPremium: 0.04,
+        topValidationVerdict: 'sealed_finalist',
+        hasHoldoutMetrics: true,
+        hasSealedEvaluationMetrics: true,
+        hasStressMetrics: true,
+        hasHarsherStressMetrics: true,
+        hasExtremeStressMetrics: true,
+        validatedTupleCount: 3,
+        stressFragileTupleCount: 0,
       },
     ])
 
@@ -137,11 +213,17 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Options Expression')
     expect(wrapper.text()).toContain('This is an options follow-up surface.')
     expect(wrapper.text()).toContain('Optimize expression')
+    expect(wrapper.text()).toContain('Realism lane')
     expect(wrapper.text()).toContain('Split assignment')
     expect(wrapper.find('option[value="session_chronological"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Polygon/Massive 1m options download')
+    expect(wrapper.text()).toContain('Aggregate lane')
+    expect(wrapper.text()).toContain('only support aggregate_research in the backend')
+    expect(wrapper.find('#optionsRealismLane').exists()).toBe(true)
     expect(wrapper.find('#optionsImportPriceSemantics').exists()).toBe(true)
-    expect(wrapper.text()).toContain('quote-aware realism currently enters through CSV import')
+    expect(wrapper.text()).toContain('The selected realism lane controls the expected CSV semantics for this import.')
+    expect(wrapper.find('option[value="quote_conservative"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('option[value="quote_mid"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('This download is options-only and stays separate from the normal stock data workflow.')
     expect(wrapper.text()).toContain('Dataset manifest')
     expect(wrapper.text()).toContain('options_business')
@@ -149,7 +231,25 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('spy_options')
     expect(wrapper.text()).toContain('massive | minute_aggregate | 1m | close | 2026-04-05T00:00:00Z')
     expect(wrapper.text()).toContain('Saved artifact comparison')
-    expect(wrapper.text()).toContain('cpu_reference · fallback')
+    expect(wrapper.text()).toContain('Options artifact meta-analysis')
+    expect(wrapper.text()).toContain('By parent family')
+    expect(wrapper.text()).toContain('CompositeTrend')
+    expect(wrapper.text()).toContain('By root')
+    expect(wrapper.text()).toContain('QQQ')
+    expect(wrapper.text()).toContain('By structure family')
+    expect(wrapper.text()).toContain('debit_vertical')
+    expect(wrapper.text()).toContain('By realism lane')
+    expect(wrapper.text()).toContain('Quote-aware · quote_conservative')
+    expect(wrapper.text()).toContain('Realism lane disagreement')
+    expect(wrapper.text()).toContain('SPY · DoubleMa · long_single')
+    expect(wrapper.text()).toContain('Aggregate -> Quote-aware')
+    expect(wrapper.text()).toContain('Lane')
+    expect(wrapper.text()).toContain('Validation')
+    expect(wrapper.text()).toContain('Diff vs selected')
+    expect(wrapper.text()).toContain('auto -> cpu_reference')
+    expect(wrapper.text()).toContain('Aggregate lane')
+    expect(wrapper.text()).toContain('aggregate_research')
+    expect(wrapper.text()).toContain('validation Stress-fragile')
     expect(wrapper.text()).toContain('robust 0.180')
     expect(wrapper.text()).toContain('hold 0.100')
     expect(wrapper.text()).toContain('sealed 0.070')
@@ -159,6 +259,47 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('extreme -0.010')
     expect(wrapper.text()).toContain('sealed extreme -0.020')
     expect(useOptionsExpressionStore().splitAssignmentMode).toBe('event_chronological')
+  })
+
+  it('switches the workflow into the quote-aware lane and disables direct provider download', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+      {
+        optionsDatasetId: 'spy_quotes',
+        rootSymbol: 'SPY',
+        priceSemantics: 'top_of_book_quote',
+        contractCount: 2,
+        rowCount: 24,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+    })
+
+    await wrapper.find('#optionsRealismLane').setValue('quote_aware')
+
+    const downloadButton = wrapper.findAll('button').find((entry) => entry.text() === 'Download Polygon/Massive 1m data')
+    expect(downloadButton).toBeTruthy()
+    expect(downloadButton!.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('Quote-aware realism is currently a CSV-import lane.')
+    expect(wrapper.text()).toContain('Direct provider download in this panel is currently available only for the Aggregate lane.')
+    expect(wrapper.text()).toContain('Select Quote-aware Polygon/Massive dataset…')
   })
 
   it('downloads a bounded Polygon/Massive dataset from the options panel', async () => {
@@ -457,7 +598,7 @@ describe('OptionsExpressionPanel', () => {
 
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.text()).toContain('Backend fallback')
+    expect(wrapper.text()).toContain('Backend detail')
     expect(wrapper.text()).toContain('GPU planner probe failed; using CPU.')
   })
 
@@ -1170,7 +1311,7 @@ describe('OptionsExpressionPanel', () => {
     await finalistsOnly.setValue(true)
     await wrapper.vm.$nextTick()
 
-    let rows = wrapper.findAll('.resultTable tbody tr')
+    let rows = wrapper.findAll('.resultCard > .tableWrap .resultTable tbody tr')
     expect(rows).toHaveLength(1)
     expect(wrapper.text()).toContain('#1')
     expect(wrapper.text()).toContain('0.320')
@@ -1180,7 +1321,7 @@ describe('OptionsExpressionPanel', () => {
     await maxInvalidInput.setValue('0.15')
     await wrapper.vm.$nextTick()
 
-    rows = wrapper.findAll('.resultTable tbody tr')
+    rows = wrapper.findAll('.resultCard > .tableWrap .resultTable tbody tr')
     expect(rows).toHaveLength(1)
     expect(wrapper.text()).toContain('0.3100')
 
@@ -1189,7 +1330,7 @@ describe('OptionsExpressionPanel', () => {
     await maxStressDropInput.setValue('0.08')
     await wrapper.vm.$nextTick()
 
-    rows = wrapper.findAll('.resultTable tbody tr')
+    rows = wrapper.findAll('.resultCard > .tableWrap .resultTable tbody tr')
     expect(rows).toHaveLength(1)
     expect(wrapper.text()).toContain('0.2200')
   })
@@ -1309,7 +1450,7 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('fixed_hold_or_target_stop')
     expect(wrapper.text()).toContain('aggregate_research')
 
-    const rows = wrapper.findAll('tbody tr')
+    const rows = wrapper.findAll('.resultCard > .tableWrap .resultTable tbody tr')
     expect(rows).toHaveLength(2)
     const promotedRow = rows.find((entry) => entry.text().includes('otm_1'))
     expect(promotedRow).toBeTruthy()
@@ -1321,6 +1462,499 @@ describe('OptionsExpressionPanel', () => {
       expect(wrapper.text()).toContain('quote_mid')
       expect(wrapper.text()).toContain('126.0000')
     })
+  })
+
+  it('surfaces explicit validation verdicts for selected tuples', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = {
+      artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+      artifactTs: '',
+      parentArtifactId: '',
+      optionsDatasetHash: '',
+      backendUsed: 'cpu_reference',
+      priceSemantics: 'minute_aggregate',
+      tupleCount: 4,
+      request: null,
+      staging: null,
+      diagnostics: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        totalEvents: 10,
+        bullishEvents: 6,
+        bearishEvents: 4,
+        searchEvents: 6,
+        holdoutEvents: 2,
+        sealedTestEvents: 2,
+        datasetContracts: 3,
+        datasetRows: 42,
+        coverageStart: null,
+        coverageEnd: null,
+      },
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          validationVerdict: 'search_only',
+          robustScore: 0.18,
+          selectionMetrics: {
+            validTrades: 5,
+            invalidEvents: 1,
+            invalidRate: 0.1667,
+            expectancyPerTrade: 12,
+            expectancyPerPremium: 0.2,
+            medianReturnOnPremium: 0.15,
+            winRate: 0.6,
+            totalPnlPerContract: 60,
+          },
+          holdoutMetrics: null,
+          sealedEvaluationMetrics: null,
+          stressMetrics: null,
+        },
+        {
+          delayMinutes: 5,
+          dteDays: 3,
+          moneynessBucket: 'otm_1',
+          holdMinutes: 30,
+          targetReturn: 0.5,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          validationVerdict: 'holdout_supported',
+          robustScore: 0.28,
+          selectionMetrics: {
+            validTrades: 7,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 18,
+            expectancyPerPremium: 0.31,
+            medianReturnOnPremium: 0.22,
+            winRate: 0.71,
+            totalPnlPerContract: 126,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.12,
+            medianReturnOnPremium: 0.09,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          sealedEvaluationMetrics: null,
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.10,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+        },
+        {
+          delayMinutes: 10,
+          dteDays: 5,
+          moneynessBucket: 'itm_1',
+          holdMinutes: 45,
+          targetReturn: 0.75,
+          stopReturn: 0.5,
+          exitTemplate: 'base_exit_or_target_stop',
+          fillModel: 'quote_mid',
+          validationVerdict: 'sealed_finalist',
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          robustScore: 0.35,
+          selectionMetrics: {
+            validTrades: 9,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 20,
+            expectancyPerPremium: 0.34,
+            medianReturnOnPremium: 0.25,
+            winRate: 0.73,
+            totalPnlPerContract: 180,
+          },
+          holdoutMetrics: {
+            validTrades: 3,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 7,
+            expectancyPerPremium: 0.15,
+            medianReturnOnPremium: 0.12,
+            winRate: 0.67,
+            totalPnlPerContract: 21,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.11,
+            medianReturnOnPremium: 0.09,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.10,
+            medianReturnOnPremium: 0.08,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.09,
+            medianReturnOnPremium: 0.07,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          sealedExtremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.08,
+            medianReturnOnPremium: 0.06,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+        },
+        {
+          delayMinutes: 15,
+          dteDays: 7,
+          moneynessBucket: 'otm_2',
+          holdMinutes: 60,
+          targetReturn: 1,
+          stopReturn: 0.5,
+          exitTemplate: 'base_exit_or_target_stop',
+          fillModel: 'quote_mid',
+          validationVerdict: 'stress_fragile',
+          sealedFinalist: true,
+          sealedFinalRank: 2,
+          robustScore: 0.14,
+          selectionMetrics: {
+            validTrades: 8,
+            invalidEvents: 1,
+            invalidRate: 0.1111,
+            expectancyPerTrade: 16,
+            expectancyPerPremium: 0.28,
+            medianReturnOnPremium: 0.19,
+            winRate: 0.62,
+            totalPnlPerContract: 128,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.09,
+            medianReturnOnPremium: 0.06,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.09,
+            medianReturnOnPremium: 0.06,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 3,
+            expectancyPerPremium: 0.04,
+            medianReturnOnPremium: 0.02,
+            winRate: 0.5,
+            totalPnlPerContract: 6,
+          },
+          sealedStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 2,
+            expectancyPerPremium: 0.03,
+            medianReturnOnPremium: 0.02,
+            winRate: 0.5,
+            totalPnlPerContract: 4,
+          },
+          sealedExtremeStressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: -1,
+            expectancyPerPremium: -0.02,
+            medianReturnOnPremium: -0.01,
+            winRate: 0.5,
+            totalPnlPerContract: -2,
+          },
+        },
+      ],
+    }
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Selected tuple validation · Search only')
+    expect(wrapper.text()).toContain('Validation winners')
+    expect(wrapper.text()).toContain('Best sealed EV')
+    expect(wrapper.text()).toContain('Best sealed extreme EV')
+    expect(wrapper.text()).toContain('Ranked tuples remain search-stage candidates')
+
+    const rows = wrapper.findAll('.resultCard > .tableWrap .resultTable tbody tr')
+    expect(rows).toHaveLength(4)
+
+    const holdoutRow = rows.find((entry) => entry.text().includes('otm_1'))
+    expect(holdoutRow).toBeTruthy()
+    await holdoutRow!.trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Selected tuple validation · Holdout-supported')
+
+    const sealedRow = rows.find((entry) => entry.text().includes('itm_1'))
+    expect(sealedRow).toBeTruthy()
+    await sealedRow!.trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Selected tuple validation · Sealed finalist')
+    expect(wrapper.text()).toContain('Promoted into the sealed finalist set (#1)')
+    expect(wrapper.text()).toContain('Validation frontier')
+    expect(wrapper.text()).toContain('Sealed finalist')
+
+    const fragileRow = rows.find((entry) => entry.text().includes('otm_2'))
+    expect(fragileRow).toBeTruthy()
+    await fragileRow!.trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Selected tuple validation · Stress-fragile')
+    expect(wrapper.text()).toContain('EV / premium falls from 0.0900 to -0.0200')
+  })
+
+  it('surfaces search-winner vs validation-winner disagreement in the current frontier', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = {
+      artifactPath: 'C:/runs/vectorgrid_options_expression_disagreement.json',
+      artifactTs: '',
+      parentArtifactId: '',
+      optionsDatasetHash: '',
+      backendUsed: 'cpu_reference',
+      priceSemantics: 'minute_aggregate',
+      tupleCount: 3,
+      request: null,
+      staging: null,
+      diagnostics: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        totalEvents: 8,
+        bullishEvents: 5,
+        bearishEvents: 3,
+        searchEvents: 4,
+        holdoutEvents: 2,
+        sealedTestEvents: 2,
+        datasetContracts: 3,
+        datasetRows: 42,
+        coverageStart: null,
+        coverageEnd: null,
+      },
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          validationVerdict: 'search_only',
+          robustScore: 0.14,
+          selectionMetrics: {
+            validTrades: 5,
+            invalidEvents: 1,
+            invalidRate: 0.1667,
+            expectancyPerTrade: 14,
+            expectancyPerPremium: 0.42,
+            medianReturnOnPremium: 0.18,
+            winRate: 0.6,
+            totalPnlPerContract: 70,
+          },
+          holdoutMetrics: null,
+          sealedEvaluationMetrics: null,
+          stressMetrics: null,
+        },
+        {
+          delayMinutes: 5,
+          dteDays: 3,
+          moneynessBucket: 'otm_1',
+          holdMinutes: 30,
+          targetReturn: 0.5,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          validationVerdict: 'holdout_supported',
+          robustScore: 0.38,
+          selectionMetrics: {
+            validTrades: 6,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 16,
+            expectancyPerPremium: 0.31,
+            medianReturnOnPremium: 0.20,
+            winRate: 0.66,
+            totalPnlPerContract: 96,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 7,
+            expectancyPerPremium: 0.24,
+            medianReturnOnPremium: 0.12,
+            winRate: 0.5,
+            totalPnlPerContract: 14,
+          },
+          sealedEvaluationMetrics: null,
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.20,
+            medianReturnOnPremium: 0.11,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+        },
+        {
+          delayMinutes: 10,
+          dteDays: 5,
+          moneynessBucket: 'itm_1',
+          holdMinutes: 45,
+          targetReturn: 0.75,
+          stopReturn: 0.5,
+          exitTemplate: 'base_exit_or_target_stop',
+          fillModel: 'quote_mid',
+          validationVerdict: 'sealed_finalist',
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          robustScore: 0.34,
+          selectionMetrics: {
+            validTrades: 7,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 15,
+            expectancyPerPremium: 0.29,
+            medianReturnOnPremium: 0.21,
+            winRate: 0.71,
+            totalPnlPerContract: 105,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 6,
+            expectancyPerPremium: 0.21,
+            medianReturnOnPremium: 0.11,
+            winRate: 0.5,
+            totalPnlPerContract: 12,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.27,
+            medianReturnOnPremium: 0.13,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.16,
+            medianReturnOnPremium: 0.09,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+        },
+      ],
+    }
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('Winner alignment · Winner disagreement')
+    expect(wrapper.text()).toContain('Selection winner #1 does not fully survive validation.')
+    expect(wrapper.text()).toContain('holdout winner #2')
+    expect(wrapper.text()).toContain('sealed winner #3')
+    expect(wrapper.text()).toContain('Search baseline')
+    expect(wrapper.text()).toContain('Same as robust')
+    expect(wrapper.text()).toContain('Different tuple')
   })
 
   it('loads lazy event drilldown for the selected tuple', async () => {

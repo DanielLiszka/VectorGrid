@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import type {
+  OptionsExpressionArtifactSummary,
+  OptionsExpressionMetricsSummary,
+  OptionsExpressionTupleSummary,
+  OptionsExpressionValidationVerdict,
+} from '../services/optionsExpressionService'
 import {
+  fillModelGuidanceForPriceSemantics,
+  isFillModelCompatibleWithPriceSemantics,
+  recommendedFillModelForPriceSemantics,
   useOptionsExpressionStore,
   OPTIONS_BACKEND_PREFERENCE_OPTIONS,
   OPTIONS_EXIT_TEMPLATE_OPTIONS,
@@ -11,6 +20,8 @@ import {
   OPTIONS_SPLIT_ASSIGNMENT_MODE_OPTIONS,
   OPTIONS_STRUCTURE_FAMILY_OPTIONS,
   OPTIONS_SUPPORTED_PARENT_STRATEGIES,
+  OPTIONS_REALISM_LANE_OPTIONS,
+  priceSemanticsForRealismLane,
 } from '../stores/optionsExpressionStore'
 
 const props = defineProps<{
@@ -27,6 +38,7 @@ const {
   activeBackendFallbackReason,
   activeEventPathInspection,
   activePriceSemantics,
+  artifacts,
   datasets,
   datasetsBusy,
   eventPathBusy,
@@ -37,6 +49,9 @@ const {
   importBusy,
   importRootSymbol,
   importPriceSemantics,
+  realismLane,
+  realismLaneDatasets,
+  realismLanePriceSemantics,
   downloadDatasetIdInput,
   downloadFromDateInput,
   downloadToDateInput,
@@ -143,12 +158,81 @@ function formatSplitAssignmentMode(value: string | null | undefined): string {
   }
 }
 
+function formatRealismLaneLabel(value: string | null | undefined): string {
+  switch (normalizeText(value)) {
+    case 'derived_mid':
+      return 'Derived-mid'
+    case 'quote_aware':
+      return 'Quote-aware'
+    case 'aggregate':
+    default:
+      return 'Aggregate'
+  }
+}
+
 function formatBytes(value: number | null | undefined): string {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < 0) return '—'
   if (parsed >= 1024 * 1024) return `${(parsed / (1024 * 1024)).toFixed(2)} MiB`
   if (parsed >= 1024) return `${(parsed / 1024).toFixed(1)} KiB`
   return `${parsed.toFixed(0)} B`
+}
+
+const VALIDATION_STRESS_DROP_THRESHOLD = 0.03
+
+type ValidationTone = 'pass' | 'pending' | 'mixed'
+
+interface ValidationPresentationSummary {
+  verdict: OptionsExpressionValidationVerdict
+  label: string
+  tone: ValidationTone
+  detail: string
+}
+
+interface RealismLanePresentationSummary {
+  label: string
+  shortLabel: string
+  detail: string
+}
+
+interface WinnerDisagreementPresentationSummary {
+  label: string
+  tone: ValidationTone
+  detail: string
+}
+
+interface BackendRoutePresentationSummary {
+  label: string
+  detail: string
+}
+
+interface ArtifactMetaOverviewRow {
+  key: string
+  label: string
+  value: string
+}
+
+interface ArtifactMetaGroupRow {
+  key: string
+  label: string
+  artifactCount: number
+  validatedCount: number
+  fragileCount: number
+  avgRobust: number | null
+  avgSelectionEv: number | null
+  avgValidationEv: number | null
+  avgStressDrop: number | null
+}
+
+interface ArtifactLaneDisagreementRow {
+  key: string
+  label: string
+  laneCount: number
+  selectionWinnerLane: string
+  validationWinnerLane: string
+  driftLabel: string
+  validationSpread: number | null
+  laneSummary: string
 }
 
 function pushUniqueRecommendation(target: string[], message: string): void {
@@ -172,6 +256,465 @@ function formatMoneynessBucketLabel(value: string | null | undefined): string {
   return normalized.length > 0 ? normalized.split('_').join(' ') : '—'
 }
 
+function strongestTupleValidationBaseMetrics(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+): OptionsExpressionMetricsSummary | null {
+  return tuple?.sealedEvaluationMetrics ?? tuple?.holdoutMetrics ?? null
+}
+
+function strongestTupleValidationStressMetrics(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+): OptionsExpressionMetricsSummary | null {
+  return (
+    tuple?.sealedExtremeStressMetrics
+    ?? tuple?.sealedHarsherStressMetrics
+    ?? tuple?.sealedStressMetrics
+    ?? tuple?.extremeStressMetrics
+    ?? tuple?.harsherStressMetrics
+    ?? tuple?.stressMetrics
+    ?? null
+  )
+}
+
+function strongestArtifactValidationBaseExpectancy(
+  artifact: OptionsExpressionArtifactSummary | null | undefined,
+): number | null {
+  return artifact?.bestSealedExpectancyPerPremium ?? artifact?.bestHoldoutExpectancyPerPremium ?? null
+}
+
+function strongestArtifactValidationStressExpectancy(
+  artifact: OptionsExpressionArtifactSummary | null | undefined,
+): number | null {
+  return (
+    artifact?.bestSealedExtremeStressExpectancyPerPremium
+    ?? artifact?.bestSealedHarsherStressExpectancyPerPremium
+    ?? artifact?.bestSealedStressExpectancyPerPremium
+    ?? artifact?.bestExtremeStressExpectancyPerPremium
+    ?? artifact?.bestHarsherStressExpectancyPerPremium
+    ?? artifact?.bestStressExpectancyPerPremium
+    ?? null
+  )
+}
+
+function formatMetaGroupKey(value: string | null | undefined, fallback: string): string {
+  const normalized = normalizeText(value)
+  return normalized || fallback
+}
+
+function averageNumbers(values: Array<number | null | undefined>): number | null {
+  const filtered = values.filter((value): value is number => Number.isFinite(Number(value)))
+  if (filtered.length === 0) return null
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length
+}
+
+function buildArtifactLaneDisagreementRows(
+  entries: OptionsExpressionArtifactSummary[],
+): ArtifactLaneDisagreementRow[] {
+  const grouped = new Map<string, OptionsExpressionArtifactSummary[]>()
+  for (const entry of entries) {
+    const key = [
+      formatMetaGroupKey(entry.rootSymbol, 'Unknown root'),
+      formatMetaGroupKey(entry.parentStrategyKind, 'Unknown parent family'),
+      formatMetaGroupKey(entry.requestStructureFamily, 'Unknown structure'),
+    ].join(' · ')
+    const bucket = grouped.get(key)
+    if (bucket) {
+      bucket.push(entry)
+    } else {
+      grouped.set(key, [entry])
+    }
+  }
+
+  return [...grouped.entries()]
+    .map(([label, rows]) => {
+      const bestByLane = new Map<string, OptionsExpressionArtifactSummary>()
+      for (const entry of rows) {
+        const lane = describeRealismLane(entry.priceSemantics, entry.requestFillModel).shortLabel
+        const existing = bestByLane.get(lane)
+        const candidateScore = strongestArtifactValidationBaseExpectancy(entry) ?? entry.bestSelectionExpectancyPerPremium
+        const existingScore = existing
+          ? strongestArtifactValidationBaseExpectancy(existing) ?? existing.bestSelectionExpectancyPerPremium
+          : Number.NEGATIVE_INFINITY
+        if (!existing || candidateScore > existingScore) {
+          bestByLane.set(lane, entry)
+        }
+      }
+
+      if (bestByLane.size < 2) return null
+
+      const laneRows = [...bestByLane.entries()].map(([lane, artifact]) => ({
+        lane,
+        selection: artifact.bestSelectionExpectancyPerPremium,
+        validation: strongestArtifactValidationBaseExpectancy(artifact),
+        artifact,
+      }))
+      const selectionWinner = laneRows.reduce((best, entry) =>
+        entry.selection > best.selection ? entry : best,
+      )
+      const validationRows = laneRows.filter((entry) => Number.isFinite(Number(entry.validation)))
+      const validationWinner = validationRows.length > 0
+        ? validationRows.reduce((best, entry) =>
+          Number(entry.validation) > Number(best.validation) ? entry : best,
+        )
+        : null
+      const validationValues = validationRows.map((entry) => Number(entry.validation))
+      const validationSpread = validationValues.length >= 2
+        ? Math.max(...validationValues) - Math.min(...validationValues)
+        : null
+      const driftLabel = validationWinner
+        ? (validationWinner.lane === selectionWinner.lane
+          ? 'Aligned'
+          : `${selectionWinner.lane} -> ${validationWinner.lane}`)
+        : 'Search only'
+      const laneSummary = laneRows
+        .map((entry) =>
+          `${entry.lane} sel ${formatOptionalDecimal(entry.selection, 3)}${entry.validation != null ? ` / val ${formatOptionalDecimal(entry.validation, 3)}` : ''}`,
+        )
+        .join(' | ')
+      return {
+        key: label,
+        label,
+        laneCount: laneRows.length,
+        selectionWinnerLane: selectionWinner.lane,
+        validationWinnerLane: validationWinner?.lane ?? '—',
+        driftLabel,
+        validationSpread,
+        laneSummary,
+      }
+    })
+    .filter((entry): entry is ArtifactLaneDisagreementRow => Boolean(entry))
+    .sort((left, right) => {
+      const leftSpread = left.validationSpread ?? Number.NEGATIVE_INFINITY
+      const rightSpread = right.validationSpread ?? Number.NEGATIVE_INFINITY
+      if (rightSpread !== leftSpread) return rightSpread - leftSpread
+      return left.label.localeCompare(right.label)
+    })
+}
+
+function artifactValidationLabel(
+  artifact: OptionsExpressionArtifactSummary | null | undefined,
+): string {
+  return describeArtifactValidation(artifact)?.label ?? 'Search only'
+}
+
+function artifactValidationVerdict(
+  artifact: OptionsExpressionArtifactSummary | null | undefined,
+): string {
+  return normalizeText(artifact?.topValidationVerdict) || 'search_only'
+}
+
+function artifactStressDrop(
+  artifact: OptionsExpressionArtifactSummary | null | undefined,
+): number | null {
+  const base = strongestArtifactValidationBaseExpectancy(artifact)
+  const stressed = strongestArtifactValidationStressExpectancy(artifact)
+  if (!Number.isFinite(Number(base)) || !Number.isFinite(Number(stressed))) return null
+  return Number(base) - Number(stressed)
+}
+
+function buildArtifactMetaGroupRows(
+  entries: OptionsExpressionArtifactSummary[],
+  groupKey: (entry: OptionsExpressionArtifactSummary) => string,
+): ArtifactMetaGroupRow[] {
+  const grouped = new Map<string, OptionsExpressionArtifactSummary[]>()
+  for (const entry of entries) {
+    const key = groupKey(entry)
+    const bucket = grouped.get(key)
+    if (bucket) {
+      bucket.push(entry)
+    } else {
+      grouped.set(key, [entry])
+    }
+  }
+  return [...grouped.entries()]
+    .map(([label, rows]) => ({
+      key: label,
+      label,
+      artifactCount: rows.length,
+      validatedCount: rows.filter((entry) => artifactValidationVerdict(entry) !== 'search_only').length,
+      fragileCount: rows.filter((entry) => artifactValidationVerdict(entry) === 'stress_fragile').length,
+      avgRobust: averageNumbers(rows.map((entry) => entry.bestRobustScore)),
+      avgSelectionEv: averageNumbers(rows.map((entry) => entry.bestSelectionExpectancyPerPremium)),
+      avgValidationEv: averageNumbers(rows.map((entry) => strongestArtifactValidationBaseExpectancy(entry))),
+      avgStressDrop: averageNumbers(rows.map((entry) => artifactStressDrop(entry))),
+    }))
+    .sort((left, right) => {
+      if (right.artifactCount !== left.artifactCount) return right.artifactCount - left.artifactCount
+      const rightRobust = right.avgRobust ?? Number.NEGATIVE_INFINITY
+      const leftRobust = left.avgRobust ?? Number.NEGATIVE_INFINITY
+      if (rightRobust !== leftRobust) return rightRobust - leftRobust
+      return left.label.localeCompare(right.label)
+    })
+}
+
+function isStressFragile(baseExpectancy: number | null | undefined, stressedExpectancy: number | null | undefined): boolean {
+  const base = Number(baseExpectancy)
+  const stressed = Number(stressedExpectancy)
+  if (!Number.isFinite(base) || !Number.isFinite(stressed)) return false
+  return stressed < 0 || base - stressed >= VALIDATION_STRESS_DROP_THRESHOLD
+}
+
+function resolveTupleValidationVerdict(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+): OptionsExpressionValidationVerdict {
+  if (!tuple) return 'search_only'
+  if (tuple.validationVerdict) return tuple.validationVerdict
+  const hasSealed = Boolean(tuple.sealedFinalist || tuple.sealedEvaluationMetrics)
+  const hasHoldout = Boolean(tuple.holdoutMetrics)
+  const fragile = isStressFragile(
+    strongestTupleValidationBaseMetrics(tuple)?.expectancyPerPremium,
+    strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium,
+  )
+  if (hasSealed) return fragile ? 'stress_fragile' : 'sealed_finalist'
+  if (hasHoldout) return fragile ? 'stress_fragile' : 'holdout_supported'
+  return 'search_only'
+}
+
+function resolveArtifactValidationVerdict(
+  artifact: OptionsExpressionArtifactSummary | null | undefined,
+): OptionsExpressionValidationVerdict {
+  if (!artifact) return 'search_only'
+  if (artifact.topValidationVerdict) return artifact.topValidationVerdict
+  const hasSealed = Boolean(artifact.hasSealedEvaluationMetrics)
+  const hasHoldout = Boolean(artifact.hasHoldoutMetrics)
+  const fragile = isStressFragile(
+    strongestArtifactValidationBaseExpectancy(artifact),
+    strongestArtifactValidationStressExpectancy(artifact),
+  )
+  if (hasSealed) return fragile ? 'stress_fragile' : 'sealed_finalist'
+  if (hasHoldout) return fragile ? 'stress_fragile' : 'holdout_supported'
+  return 'search_only'
+}
+
+function formatValidationVerdictLabel(verdict: OptionsExpressionValidationVerdict): string {
+  switch (verdict) {
+    case 'holdout_supported':
+      return 'Holdout-supported'
+    case 'sealed_finalist':
+      return 'Sealed finalist'
+    case 'stress_fragile':
+      return 'Stress-fragile'
+    case 'search_only':
+    default:
+      return 'Search only'
+  }
+}
+
+function validationToneForVerdict(verdict: OptionsExpressionValidationVerdict): ValidationTone {
+  switch (verdict) {
+    case 'sealed_finalist':
+      return 'pass'
+    case 'stress_fragile':
+      return 'mixed'
+    case 'holdout_supported':
+    case 'search_only':
+    default:
+      return 'pending'
+  }
+}
+
+function describeTupleValidation(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+): ValidationPresentationSummary | null {
+  if (!tuple) return null
+  const verdict = resolveTupleValidationVerdict(tuple)
+  const baseExpectancy = strongestTupleValidationBaseMetrics(tuple)?.expectancyPerPremium ?? null
+  const stressedExpectancy = strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium ?? null
+  let detail = 'No holdout metrics are present yet; this tuple is still a search-stage candidate.'
+  switch (verdict) {
+    case 'holdout_supported':
+      detail = 'Holdout metrics are present, but this tuple has not yet been promoted into the sealed finalist set.'
+      break
+    case 'sealed_finalist':
+      detail = tuple.sealedFinalRank
+        ? `Promoted into the sealed finalist set (#${tuple.sealedFinalRank}) and still holding up under the current stress lanes.`
+        : 'Promoted into the sealed finalist set and still holding up under the current stress lanes.'
+      break
+    case 'stress_fragile':
+      detail = Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
+        ? `Validation exists, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under the current stress lanes.`
+        : 'Validation exists, but the tuple degrades materially under the current stress lanes.'
+      break
+    case 'search_only':
+    default:
+      break
+  }
+  return {
+    verdict,
+    label: formatValidationVerdictLabel(verdict),
+    tone: validationToneForVerdict(verdict),
+    detail,
+  }
+}
+
+function describeArtifactValidation(
+  artifact: OptionsExpressionArtifactSummary | null | undefined,
+): ValidationPresentationSummary | null {
+  if (!artifact) return null
+  const verdict = resolveArtifactValidationVerdict(artifact)
+  const baseExpectancy = strongestArtifactValidationBaseExpectancy(artifact)
+  const stressedExpectancy = strongestArtifactValidationStressExpectancy(artifact)
+  let detail = 'This artifact currently reads as search-stage only.'
+  switch (verdict) {
+    case 'holdout_supported':
+      detail = `Top tuple has holdout metrics across ${artifact.validatedTupleCount ?? 0} validated tuple${(artifact.validatedTupleCount ?? 0) === 1 ? '' : 's'}, but no sealed finalist confirmation yet.`
+      break
+    case 'sealed_finalist':
+      detail = `Top tuple cleared sealed finalist evaluation. ${artifact.sealedEvaluatedTupleCount ?? 0}/${artifact.sealedFinalistBudget ?? 0} tuple${(artifact.sealedEvaluatedTupleCount ?? 0) === 1 ? '' : 's'} were evaluated in the sealed stage.`
+      break
+    case 'stress_fragile':
+      detail = Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
+        ? `Top tuple validates, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under stress.`
+        : `Top tuple validates, but ${artifact.stressFragileTupleCount ?? 0} tuple${(artifact.stressFragileTupleCount ?? 0) === 1 ? '' : 's'} degrade materially under stress.`
+      break
+    case 'search_only':
+    default:
+      break
+  }
+  return {
+    verdict,
+    label: formatValidationVerdictLabel(verdict),
+    tone: validationToneForVerdict(verdict),
+    detail,
+  }
+}
+
+function describeRealismLane(
+  priceSemantics: string | null | undefined,
+  fillModel: string | null | undefined,
+): RealismLanePresentationSummary {
+  const semantics = normalizeText(priceSemantics) || 'minute_aggregate'
+  const activeFillModel = normalizeText(fillModel) || recommendedFillModelForPriceSemantics(semantics)
+  switch (semantics) {
+    case 'top_of_book_quote':
+      return {
+        label: 'Quote-aware lane',
+        shortLabel: 'Quote-aware',
+        detail: `${activeFillModel} over top_of_book_quote rows. This is the highest-realism lane currently surfaced in the options workflow.`,
+      }
+    case 'derived_mid_snapshot':
+      return {
+        label: 'Derived-mid lane',
+        shortLabel: 'Derived-mid',
+        detail: `${activeFillModel} over derived_mid_snapshot rows. This lane is more realism-aware than minute aggregates but still regular enough for compiled optimization.`,
+      }
+    case 'minute_aggregate':
+    default:
+      return {
+        label: 'Aggregate lane',
+        shortLabel: 'Aggregate',
+        detail: `${activeFillModel} over minute_aggregate rows. This remains the canonical fast Polygon/Massive 1m optimization lane.`,
+      }
+  }
+}
+
+function describeBackendRoute(
+  requestedBackend: string | null | undefined,
+  backendUsed: string | null | undefined,
+  fallbackReason: string | null | undefined,
+): BackendRoutePresentationSummary {
+  const requested = normalizeText(requestedBackend) || 'auto'
+  const used = normalizeText(backendUsed) || 'cpu_reference'
+  const fallback = normalizeText(fallbackReason)
+  const label = `${requested} -> ${used}`
+  if (fallback) {
+    return {
+      label,
+      detail: `Fallback or promotion override: ${fallback}`,
+    }
+  }
+  if (requested === 'auto') {
+    return {
+      label,
+      detail: `Automatic backend policy selected ${used} for this workload.`,
+    }
+  }
+  return {
+    label,
+    detail: `Explicit backend preference ${requested} executed without fallback.`,
+  }
+}
+
+function formatTupleIdentity(tuple: OptionsExpressionTupleSummary | null | undefined): string {
+  if (!tuple) return '—'
+  return `${tuple.structureFamily || 'long_single'} · ${tuple.dteDays}D · ${tuple.moneynessBucket} · ${tuple.delayMinutes}m/${tuple.holdMinutes}m`
+}
+
+function metricDeltaAgainstSelection(
+  selectionExpectancy: number | null | undefined,
+  candidateExpectancy: number | null | undefined,
+): number | null {
+  const base = Number(selectionExpectancy)
+  const candidate = Number(candidateExpectancy)
+  if (!Number.isFinite(base) || !Number.isFinite(candidate)) return null
+  return candidate - base
+}
+
+function strongestTupleStressDrop(
+  tuple: OptionsExpressionTupleSummary | null | undefined,
+): number | null {
+  const base = tuple?.selectionMetrics.expectancyPerPremium
+  const stressed = strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium
+  const delta = metricDeltaAgainstSelection(base, stressed)
+  return delta == null ? null : -delta
+}
+
+function bestTupleForMetric(
+  rows: OptionsExpressionTupleSummary[],
+  metric: (row: OptionsExpressionTupleSummary) => number | null | undefined,
+): { row: OptionsExpressionTupleSummary; index: number; value: number } | null {
+  let best: { row: OptionsExpressionTupleSummary; index: number; value: number } | null = null
+  rows.forEach((row, index) => {
+    const value = Number(metric(row))
+    if (!Number.isFinite(value)) return
+    if (!best || value > best.value) {
+      best = { row, index, value }
+    }
+  })
+  return best
+}
+
+function describeArtifactProvenanceDiff(
+  entry: OptionsExpressionArtifactSummary,
+  baseline: OptionsExpressionArtifactSummary | null | undefined,
+): string {
+  if (!baseline) return 'baseline'
+  if (normalizeText(entry.path) === normalizeText(baseline.path)) return 'selected baseline'
+  const diffs: string[] = []
+  if (normalizeText(entry.optionsDatasetId) !== normalizeText(baseline.optionsDatasetId)) {
+    diffs.push('dataset')
+  }
+  if (normalizeText(entry.priceSemantics) !== normalizeText(baseline.priceSemantics)) {
+    diffs.push('semantics')
+  }
+  if (normalizeText(entry.requestFillModel) !== normalizeText(baseline.requestFillModel)) {
+    diffs.push('fill')
+  }
+  if (
+    normalizeText(entry.requestStructureFamily)
+      !== normalizeText(baseline.requestStructureFamily)
+  ) {
+    diffs.push('structure')
+  }
+  if (
+    normalizeText(entry.requestSplitAssignmentMode)
+      !== normalizeText(baseline.requestSplitAssignmentMode)
+  ) {
+    diffs.push('split')
+  }
+  if (
+    normalizeText(entry.requestBackendPreference)
+      !== normalizeText(baseline.requestBackendPreference)
+    || normalizeText(entry.backendUsed) !== normalizeText(baseline.backendUsed)
+  ) {
+    diffs.push('backend')
+  }
+  if (normalizeText(entry.topValidationVerdict) !== normalizeText(baseline.topValidationVerdict)) {
+    diffs.push('validation')
+  }
+  return diffs.length > 0 ? diffs.join(' · ') : 'same request lane'
+}
+
 watch(
   () => [props.parentArtifactPath, props.parentStrategyKind, props.parentDatasetLabel] as const,
   ([path, strategyKind, datasetLabel]) => {
@@ -184,6 +727,27 @@ watch(
 )
 
 const hasParentSelection = computed(() => normalizeText(props.parentArtifactPath).length > 0)
+
+const selectedRealismLaneSemantics = computed(() => priceSemanticsForRealismLane(realismLane.value))
+const selectedRealismLaneGuidance = computed(() =>
+  fillModelGuidanceForPriceSemantics(selectedRealismLaneSemantics.value),
+)
+const realismLaneSummary = computed(() => {
+  const matching = realismLaneDatasets.value.length
+  const total = datasets.value.length
+  return `${formatRealismLaneLabel(realismLane.value)} lane · ${matching}/${total} saved dataset${total === 1 ? '' : 's'} match`
+})
+const realismLaneRouteNote = computed(() => {
+  switch (normalizeText(realismLane.value)) {
+    case 'quote_aware':
+      return 'Quote-aware realism is currently a CSV-import lane. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
+    case 'derived_mid':
+      return 'Derived-mid realism is currently a CSV-import lane. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
+    case 'aggregate':
+    default:
+      return 'Aggregate realism supports both normalized CSV import and direct bounded Polygon/Massive 1m provider download.'
+  }
+})
 
 const datasetSummary = computed(() => {
   const selected = selectedDataset.value
@@ -257,6 +821,28 @@ const activeDatasetProvenanceSummary = computed(() => {
     .filter((entry) => entry.length > 0)
     .join(' | ')
 })
+const selectedDatasetPriceSemantics = computed(
+  () => normalizeText(selectedDataset.value?.priceSemantics) || normalizeText(realismLanePriceSemantics.value) || 'minute_aggregate',
+)
+const fillModelGuidance = computed(() =>
+  fillModelGuidanceForPriceSemantics(selectedDatasetPriceSemantics.value),
+)
+const fillModelOptionRows = computed(() =>
+  OPTIONS_FILL_MODEL_OPTIONS.map((entry) => {
+    const disabled = !isFillModelCompatibleWithPriceSemantics(
+      entry,
+      selectedDatasetPriceSemantics.value,
+    )
+    return {
+      value: entry,
+      disabled,
+      label:
+        entry === recommendedFillModelForPriceSemantics(selectedDatasetPriceSemantics.value)
+          ? `${entry} (recommended)`
+          : entry,
+    }
+  }),
+)
 
 const rootMismatch = computed(() => {
   const selected = selectedDataset.value
@@ -281,6 +867,19 @@ const selectedTupleIndex = ref(0)
 const inspectionSplitFilter = ref<'all' | 'search' | 'holdout' | 'sealed_test'>('all')
 const showAllInspectionRows = ref(false)
 const selectedInspectionEventId = ref('')
+
+watch(
+  () => selectedDataset.value?.priceSemantics,
+  (priceSemantics, previous) => {
+    if (!normalizeText(priceSemantics)) return
+    if (normalizeText(priceSemantics) !== normalizeText(previous)) {
+      store.ensureCompatibleFillModel(true)
+    } else {
+      store.ensureCompatibleFillModel()
+    }
+  },
+  { immediate: true },
+)
 
 watch(
   activeRows,
@@ -383,6 +982,20 @@ const selectedArtifactSummary = computed(() => {
   const nextPath = normalizeText(selectedArtifactPath.value)
   return filteredArtifacts.value.find((entry) => normalizeText(entry.path) === nextPath) || null
 })
+const selectedArtifactValidation = computed(() => describeArtifactValidation(selectedArtifactSummary.value))
+const selectedArtifactRealismLane = computed(() =>
+  describeRealismLane(
+    selectedArtifactSummary.value?.priceSemantics,
+    selectedArtifactSummary.value?.requestFillModel,
+  ),
+)
+const selectedArtifactBackendRoute = computed(() =>
+  describeBackendRoute(
+    selectedArtifactSummary.value?.requestBackendPreference,
+    selectedArtifactSummary.value?.backendUsed,
+    selectedArtifactSummary.value?.backendFallbackReason,
+  ),
+)
 
 const artifactComparisonRows = computed(() =>
   [...filteredArtifacts.value].sort((left, right) => {
@@ -391,6 +1004,84 @@ const artifactComparisonRows = computed(() =>
     return normalizeText(right.ts).localeCompare(normalizeText(left.ts))
   }),
 )
+const artifactMetaEntries = computed(() =>
+  [...artifacts.value].sort((left, right) => normalizeText(right.ts).localeCompare(normalizeText(left.ts))),
+)
+const artifactMetaOverviewRows = computed<ArtifactMetaOverviewRow[]>(() => {
+  const rows = artifactMetaEntries.value
+  const uniqueRoots = new Set(rows.map((entry) => formatMetaGroupKey(entry.rootSymbol, 'Unknown root')))
+  const uniqueParents = new Set(
+    rows.map((entry) => formatMetaGroupKey(entry.parentStrategyKind, 'Unknown parent family')),
+  )
+  const uniqueStructures = new Set(
+    rows.map((entry) => formatMetaGroupKey(entry.requestStructureFamily, 'Unknown structure')),
+  )
+  const uniqueDatasets = new Set(
+    rows.map((entry) => formatMetaGroupKey(entry.optionsDatasetId, 'Unknown dataset')),
+  )
+  const validatedCount = rows.filter((entry) => artifactValidationVerdict(entry) !== 'search_only').length
+  const fragileCount = rows.filter((entry) => artifactValidationVerdict(entry) === 'stress_fragile').length
+  return [
+    { key: 'artifacts', label: 'Saved artifacts', value: String(rows.length) },
+    { key: 'roots', label: 'Roots', value: String(uniqueRoots.size) },
+    { key: 'parents', label: 'Parent families', value: String(uniqueParents.size) },
+    { key: 'structures', label: 'Structure families', value: String(uniqueStructures.size) },
+    { key: 'datasets', label: 'Datasets', value: String(uniqueDatasets.size) },
+    {
+      key: 'validated',
+      label: 'Validated artifacts',
+      value: rows.length > 0 ? `${validatedCount}/${rows.length} (${formatPercent(validatedCount / rows.length)})` : '0',
+    },
+    {
+      key: 'fragile',
+      label: 'Stress-fragile artifacts',
+      value: rows.length > 0 ? `${fragileCount}/${rows.length} (${formatPercent(fragileCount / rows.length)})` : '0',
+    },
+  ]
+})
+const artifactMetaByRootRows = computed(() =>
+  buildArtifactMetaGroupRows(
+    artifactMetaEntries.value,
+    (entry) => formatMetaGroupKey(entry.rootSymbol, 'Unknown root'),
+  ),
+)
+const artifactMetaByParentRows = computed(() =>
+  buildArtifactMetaGroupRows(
+    artifactMetaEntries.value,
+    (entry) => formatMetaGroupKey(entry.parentStrategyKind, 'Unknown parent family'),
+  ),
+)
+const artifactMetaByStructureRows = computed(() =>
+  buildArtifactMetaGroupRows(
+    artifactMetaEntries.value,
+    (entry) => formatMetaGroupKey(entry.requestStructureFamily, 'Unknown structure'),
+  ),
+)
+const artifactMetaByLaneRows = computed(() =>
+  buildArtifactMetaGroupRows(
+    artifactMetaEntries.value,
+    (entry) => {
+      const lane = describeRealismLane(entry.priceSemantics, entry.requestFillModel)
+      return `${lane.shortLabel} · ${entry.requestFillModel || 'aggregate_research'}`
+    },
+  ),
+)
+const artifactMetaByVerdictRows = computed(() =>
+  buildArtifactMetaGroupRows(
+    artifactMetaEntries.value,
+    (entry) => artifactValidationLabel(entry),
+  ),
+)
+const artifactLaneDisagreementRows = computed(() =>
+  buildArtifactLaneDisagreementRows(artifactMetaEntries.value),
+)
+const artifactMetaSections = computed(() => [
+  { key: 'root', label: 'By root', rows: artifactMetaByRootRows.value },
+  { key: 'parent', label: 'By parent family', rows: artifactMetaByParentRows.value },
+  { key: 'structure', label: 'By structure family', rows: artifactMetaByStructureRows.value },
+  { key: 'lane', label: 'By realism lane', rows: artifactMetaByLaneRows.value },
+  { key: 'verdict', label: 'By top validation verdict', rows: artifactMetaByVerdictRows.value },
+])
 const resultSortKey = ref<'robust' | 'selection_ev' | 'holdout_ev' | 'stress_ev' | 'harsher_ev' | 'extreme_ev' | 'invalid_rate' | 'valid_trades' | 'sealed_rank'>('robust')
 const resultSortDirection = ref<'desc' | 'asc'>('desc')
 const finalistsOnly = ref(false)
@@ -403,6 +1094,279 @@ const selectedEventPathInspection = computed(() => {
   if (!inspection || !selectedRow) return null
   if (inspection.tupleIndex !== selectedTupleIndex.value) return null
   return inspection.eventIndex === selectedRow.eventIndex ? inspection : null
+})
+const selectedTupleValidation = computed(() => describeTupleValidation(selectedTuple.value))
+const activeRealismLane = computed(() =>
+  describeRealismLane(activePriceSemantics.value, activeRequest.value?.fillModel),
+)
+const activeBackendRoute = computed(() =>
+  describeBackendRoute(
+    activeRequest.value?.backendPreference,
+    activeBackendUsed.value,
+    activeBackendFallbackReason.value,
+  ),
+)
+const selectedTupleValidationFrontierRows = computed(() => {
+  const tuple = selectedTuple.value
+  if (!tuple) return []
+  const selectionExpectancy = tuple.selectionMetrics.expectancyPerPremium
+  const rows = [
+    {
+      key: 'selection',
+      label: 'Selection',
+      expectancy: tuple.selectionMetrics.expectancyPerPremium,
+      delta: 0,
+      status: 'baseline',
+    },
+    tuple.holdoutMetrics
+      ? {
+          key: 'holdout',
+          label: 'Holdout',
+          expectancy: tuple.holdoutMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(selectionExpectancy, tuple.holdoutMetrics.expectancyPerPremium) ?? 0,
+          status: 'validation',
+        }
+      : null,
+    tuple.sealedEvaluationMetrics
+      ? {
+          key: 'sealed',
+          label: 'Sealed finalist',
+          expectancy: tuple.sealedEvaluationMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(
+            selectionExpectancy,
+            tuple.sealedEvaluationMetrics.expectancyPerPremium,
+          ) ?? 0,
+          status: 'validation',
+        }
+      : null,
+    tuple.stressMetrics
+      ? {
+          key: 'stress',
+          label: 'Stress',
+          expectancy: tuple.stressMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(selectionExpectancy, tuple.stressMetrics.expectancyPerPremium) ?? 0,
+          status: 'stress',
+        }
+      : null,
+    tuple.sealedStressMetrics
+      ? {
+          key: 'sealed-stress',
+          label: 'Sealed stress',
+          expectancy: tuple.sealedStressMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(
+            selectionExpectancy,
+            tuple.sealedStressMetrics.expectancyPerPremium,
+          ) ?? 0,
+          status: 'stress',
+        }
+      : null,
+    tuple.harsherStressMetrics
+      ? {
+          key: 'harsher',
+          label: 'Harsher',
+          expectancy: tuple.harsherStressMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(
+            selectionExpectancy,
+            tuple.harsherStressMetrics.expectancyPerPremium,
+          ) ?? 0,
+          status: 'stress',
+        }
+      : null,
+    tuple.sealedHarsherStressMetrics
+      ? {
+          key: 'sealed-harsher',
+          label: 'Sealed harsher',
+          expectancy: tuple.sealedHarsherStressMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(
+            selectionExpectancy,
+            tuple.sealedHarsherStressMetrics.expectancyPerPremium,
+          ) ?? 0,
+          status: 'stress',
+        }
+      : null,
+    tuple.extremeStressMetrics
+      ? {
+          key: 'extreme',
+          label: 'Extreme',
+          expectancy: tuple.extremeStressMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(
+            selectionExpectancy,
+            tuple.extremeStressMetrics.expectancyPerPremium,
+          ) ?? 0,
+          status: 'stress',
+        }
+      : null,
+    tuple.sealedExtremeStressMetrics
+      ? {
+          key: 'sealed-extreme',
+          label: 'Sealed extreme',
+          expectancy: tuple.sealedExtremeStressMetrics.expectancyPerPremium,
+          delta: metricDeltaAgainstSelection(
+            selectionExpectancy,
+            tuple.sealedExtremeStressMetrics.expectancyPerPremium,
+          ) ?? 0,
+          status: 'stress',
+        }
+      : null,
+  ].filter((entry): entry is {
+    key: string
+    label: string
+    expectancy: number
+    delta: number
+    status: string
+  } => Boolean(entry))
+  return rows
+})
+const validationWinnersRows = computed(() => {
+  const rows = activeRows.value
+  if (!rows.length) return []
+  return [
+    {
+      key: 'robust',
+      label: 'Best robust score',
+      winner: bestTupleForMetric(rows, (row) => row.robustScore),
+      metricLabel: 'Robust',
+    },
+    {
+      key: 'selection',
+      label: 'Best selection EV',
+      winner: bestTupleForMetric(rows, (row) => row.selectionMetrics.expectancyPerPremium),
+      metricLabel: 'Sel EV',
+    },
+    {
+      key: 'holdout',
+      label: 'Best holdout EV',
+      winner: bestTupleForMetric(rows, (row) => row.holdoutMetrics?.expectancyPerPremium),
+      metricLabel: 'Hold EV',
+    },
+    {
+      key: 'sealed',
+      label: 'Best sealed EV',
+      winner: bestTupleForMetric(rows, (row) => row.sealedEvaluationMetrics?.expectancyPerPremium),
+      metricLabel: 'Sealed EV',
+    },
+    {
+      key: 'stress',
+      label: 'Best stress EV',
+      winner: bestTupleForMetric(rows, (row) => row.stressMetrics?.expectancyPerPremium),
+      metricLabel: 'Stress EV',
+    },
+    {
+      key: 'harsher',
+      label: 'Best harsher EV',
+      winner: bestTupleForMetric(rows, (row) => row.harsherStressMetrics?.expectancyPerPremium),
+      metricLabel: 'Harsher EV',
+    },
+    {
+      key: 'extreme',
+      label: 'Best extreme EV',
+      winner: bestTupleForMetric(rows, (row) => row.extremeStressMetrics?.expectancyPerPremium),
+      metricLabel: 'Extreme EV',
+    },
+    {
+      key: 'sealed-extreme',
+      label: 'Best sealed extreme EV',
+      winner: bestTupleForMetric(rows, (row) => row.sealedExtremeStressMetrics?.expectancyPerPremium),
+      metricLabel: 'Sealed extreme EV',
+    },
+  ]
+    .filter((entry) => entry.winner != null)
+    .map((entry) => {
+      const winner = entry.winner!
+      return {
+        key: entry.key,
+        label: entry.label,
+        metricLabel: entry.metricLabel,
+        tupleIndex: winner.index,
+        tuple: winner.row,
+        value: winner.value,
+        validation: describeTupleValidation(winner.row)?.label ?? 'Search only',
+        stressDrop: strongestTupleStressDrop(winner.row),
+      }
+    })
+})
+const winnerDisagreementRows = computed(() => {
+  const byKey = new Map(validationWinnersRows.value.map((row) => [row.key, row]))
+  const rows = ['selection', 'holdout', 'sealed', 'robust']
+    .map((key) => byKey.get(key))
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+  if (!rows.length) return []
+  const searchWinner = rows.find((row) => row.key === 'selection') ?? null
+  const robustWinner = rows.find((row) => row.key === 'robust') ?? null
+  return rows.map((row) => {
+    let relation = 'Different tuple'
+    if (row.key === 'selection') {
+      relation = 'Search baseline'
+    } else if (
+      searchWinner
+      && robustWinner
+      && row.tupleIndex === searchWinner.tupleIndex
+      && row.tupleIndex === robustWinner.tupleIndex
+    ) {
+      relation = 'Same as search & robust'
+    } else if (searchWinner && row.tupleIndex === searchWinner.tupleIndex) {
+      relation = 'Same as search'
+    } else if (robustWinner && row.tupleIndex === robustWinner.tupleIndex) {
+      relation = 'Same as robust'
+    }
+    return {
+      ...row,
+      tupleIdentity: formatTupleIdentity(row.tuple),
+      relation,
+    }
+  })
+})
+const winnerDisagreementSummary = computed<WinnerDisagreementPresentationSummary | null>(() => {
+  const rows = winnerDisagreementRows.value
+  if (!rows.length) return null
+  const searchWinner = rows.find((row) => row.key === 'selection') ?? null
+  const holdoutWinner = rows.find((row) => row.key === 'holdout') ?? null
+  const sealedWinner = rows.find((row) => row.key === 'sealed') ?? null
+  const robustWinner = rows.find((row) => row.key === 'robust') ?? null
+  if (!searchWinner) return null
+  if (!holdoutWinner && !sealedWinner && !robustWinner) {
+    return {
+      label: 'Search-stage only',
+      tone: 'pending',
+      detail: `Tuple #${searchWinner.tupleIndex + 1} is only the search winner so far. Holdout, sealed, and robust confirmation have not diverged because they do not exist yet.`,
+    }
+  }
+  const distinctTupleCount = new Set(rows.map((row) => row.tupleIndex)).size
+  if (distinctTupleCount <= 1) {
+    return {
+      label: 'Aligned winner',
+      tone: 'pass',
+      detail: `Tuple #${searchWinner.tupleIndex + 1} remains the search winner and still leads every currently available validation / robustness lane.`,
+    }
+  }
+
+  const driftParts: string[] = []
+  if (holdoutWinner && holdoutWinner.tupleIndex !== searchWinner.tupleIndex) {
+    driftParts.push(`holdout winner #${holdoutWinner.tupleIndex + 1}`)
+  }
+  if (
+    sealedWinner
+    && sealedWinner.tupleIndex !== searchWinner.tupleIndex
+    && (!holdoutWinner || sealedWinner.tupleIndex !== holdoutWinner.tupleIndex)
+  ) {
+    driftParts.push(`sealed winner #${sealedWinner.tupleIndex + 1}`)
+  }
+  if (
+    robustWinner
+    && robustWinner.tupleIndex !== searchWinner.tupleIndex
+    && (!sealedWinner || robustWinner.tupleIndex !== sealedWinner.tupleIndex)
+    && (!holdoutWinner || robustWinner.tupleIndex !== holdoutWinner.tupleIndex)
+  ) {
+    driftParts.push(`robust winner #${robustWinner.tupleIndex + 1}`)
+  }
+  const detailParts = driftParts.length > 0
+    ? driftParts.join(', ')
+    : `another validation lane favors tuple #${rows.find((row) => row.tupleIndex !== searchWinner.tupleIndex)?.tupleIndex! + 1}`
+  return {
+    label: 'Winner disagreement',
+    tone: 'mixed',
+    detail: `Selection winner #${searchWinner.tupleIndex + 1} does not fully survive validation. The current frontier shifts toward ${detailParts}.`,
+  }
 })
 const eventPathSummaryRows = computed(() => {
   const inspection = selectedEventPathInspection.value
@@ -1048,19 +2012,24 @@ const requestSummaryRows = computed(() => {
       value: `${normalizeText(request.exitTemplate) || '—'} | ${normalizeText(request.fillModel) || '—'}`,
     },
     {
+      key: 'realism-lane',
+      label: 'Realism lane',
+      value: `${activeRealismLane.value.label} | ${normalizeText(request.fillModel) || '—'} | ${normalizeText(activePriceSemantics.value) || '—'}`,
+    },
+    {
       key: 'structure-family',
       label: 'Structure',
       value: normalizeText(request.structureFamily) || 'long_single',
     },
     {
-      key: 'backend-preference',
-      label: 'Backend preference',
-      value: normalizeText(request.backendPreference) || 'auto',
+      key: 'backend-route',
+      label: 'Backend route',
+      value: activeBackendRoute.value.label,
     },
     {
-      key: 'backend-fallback',
-      label: 'Backend fallback',
-      value: normalizeText(activeBackendFallbackReason.value) || '—',
+      key: 'backend-detail',
+      label: 'Backend detail',
+      value: activeBackendRoute.value.detail,
     },
     {
       key: 'dataset-provenance',
@@ -1124,6 +2093,12 @@ function formatArtifactOptionLabel(entry: {
   ts: string
   path: string
   optionsDatasetId: string
+  backendUsed: string
+  priceSemantics: string
+  requestBackendPreference?: string
+  requestFillModel?: string
+  requestStructureFamily?: string
+  topValidationVerdict?: OptionsExpressionValidationVerdict | undefined
   backendFallbackReason?: string
   tupleCount: number
   bestRobustScore: number
@@ -1144,10 +2119,21 @@ function formatArtifactOptionLabel(entry: {
   hasHarsherStressMetrics: boolean
   hasExtremeStressMetrics: boolean
 }): string {
+  const validation = describeArtifactValidation(entry as OptionsExpressionArtifactSummary)
+  const lane = describeRealismLane(entry.priceSemantics, entry.requestFillModel)
+  const backendRoute = describeBackendRoute(
+    entry.requestBackendPreference,
+    (entry as OptionsExpressionArtifactSummary).backendUsed,
+    entry.backendFallbackReason,
+  )
   const parts = [
     normalizeText(entry.ts) || normalizeText(entry.path),
     normalizeText(entry.optionsDatasetId) || 'unknown dataset',
+    `${lane.shortLabel} · ${normalizeText(entry.requestFillModel) || 'aggregate_research'}`,
+    backendRoute.label,
+    normalizeText(entry.requestStructureFamily) || 'long_single',
     `${entry.tupleCount} tuples`,
+    `validation ${validation?.label ?? 'Search only'}`,
     `robust ${entry.bestRobustScore.toFixed(3)}`,
     `sel ${entry.bestSelectionExpectancyPerPremium.toFixed(3)}`,
   ]
@@ -1198,6 +2184,15 @@ function loadArtifactFromComparison(path: string): void {
   selectedArtifactPath.value = path
   void store.loadArtifact()
 }
+
+function handleRealismLaneChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement | null)?.value || 'aggregate'
+  store.setRealismLane(value, true)
+}
+
+function focusTupleIndex(index: number): void {
+  selectedTupleIndex.value = index
+}
 </script>
 
 <template>
@@ -1236,12 +2231,38 @@ function loadArtifactFromComparison(path: string): void {
 
       <div class="optionsGrid">
         <div class="controlBlock">
+          <label for="optionsRealismLane">Realism lane</label>
+          <div class="row inlineControls">
+            <select
+              id="optionsRealismLane"
+              :value="realismLane"
+              @change="handleRealismLaneChange"
+            >
+              <option
+                v-for="entry in OPTIONS_REALISM_LANE_OPTIONS"
+                :key="entry"
+                :value="entry"
+              >
+                {{ formatRealismLaneLabel(entry) }}
+              </option>
+            </select>
+          </div>
+          <div class="panelMuted">{{ realismLaneSummary }}</div>
+          <div class="panelMuted">
+            {{ selectedRealismLaneGuidance.laneLabel }} · {{ selectedRealismLaneGuidance.detail }}
+          </div>
+          <div class="panelMuted">
+            {{ realismLaneRouteNote }}
+          </div>
+        </div>
+
+        <div class="controlBlock">
           <label for="optionsDatasetSelect">Options dataset</label>
           <div class="row inlineControls">
             <select id="optionsDatasetSelect" v-model="selectedDatasetId">
-              <option value="">Select Polygon/Massive dataset…</option>
+              <option value="">Select {{ formatRealismLaneLabel(realismLane) }} Polygon/Massive dataset…</option>
               <option
-                v-for="entry in datasets"
+                v-for="entry in realismLaneDatasets"
                 :key="entry.optionsDatasetId"
                 :value="entry.optionsDatasetId"
               >
@@ -1252,15 +2273,21 @@ function loadArtifactFromComparison(path: string): void {
               Refresh
             </button>
           </div>
-          <div class="panelMuted">{{ datasetSummary || 'Import or select a Polygon/Massive options dataset.' }}</div>
+          <div class="panelMuted">{{ datasetSummary || `Import or select a ${formatRealismLaneLabel(realismLane)} Polygon/Massive options dataset.` }}</div>
           <div v-if="datasetProvenanceSummary" class="panelMuted mono">{{ datasetProvenanceSummary }}</div>
+          <div v-if="selectedDataset" class="panelMuted">
+            {{ fillModelGuidance.laneLabel }} · {{ fillModelGuidance.detail }}
+          </div>
+          <div v-else class="panelMuted">
+            No saved dataset currently matches the selected {{ formatRealismLaneLabel(realismLane) }} lane.
+          </div>
           <div v-if="rootMismatch" class="warningText">
             Selected dataset root does not match the current saved run root hint ({{ parentRootHint || 'unknown' }}). Continue only if that mismatch is intentional.
           </div>
         </div>
 
         <div class="controlBlock">
-          <label for="optionsImportRoot">Polygon/Massive root symbol</label>
+          <label for="optionsImportRoot">Polygon/Massive {{ formatRealismLaneLabel(realismLane) }} dataset import</label>
           <div class="downloadFieldGrid">
             <label>
               Root
@@ -1274,7 +2301,7 @@ function loadArtifactFromComparison(path: string): void {
             </label>
             <label>
               CSV semantics
-              <select id="optionsImportPriceSemantics" v-model="importPriceSemantics">
+              <select id="optionsImportPriceSemantics" v-model="importPriceSemantics" disabled>
                 <option
                   v-for="entry in OPTIONS_IMPORT_PRICE_SEMANTICS_OPTIONS"
                   :key="entry"
@@ -1291,7 +2318,7 @@ function loadArtifactFromComparison(path: string): void {
             </button>
           </div>
           <div class="panelMuted">
-            Uses the existing native CSV picker and stores a normalized Polygon/Massive options dataset under the app market-data root. Direct provider download in this panel remains the 1m aggregate lane; quote-aware realism currently enters through CSV import.
+            Uses the existing native CSV picker and stores a normalized Polygon/Massive options dataset under the app market-data root. The selected realism lane controls the expected CSV semantics for this import.
           </div>
         </div>
 
@@ -1344,12 +2371,19 @@ function loadArtifactFromComparison(path: string): void {
             </label>
           </div>
           <div class="row inlineControls">
-            <button type="button" :disabled="downloadBusy" @click="store.downloadDatasetFromPolygon()">
+            <button
+              type="button"
+              :disabled="downloadBusy || realismLane !== 'aggregate'"
+              @click="store.downloadDatasetFromPolygon()"
+            >
               Download Polygon/Massive 1m data
             </button>
           </div>
           <div class="panelMuted">
             This download is options-only and stays separate from the normal stock data workflow. Keep the date, expiry, strike, and contract windows bounded so the resulting 1m dataset remains usable for options-expression optimization.
+          </div>
+          <div v-if="realismLane !== 'aggregate'" class="warningText">
+            Direct provider download in this panel is currently available only for the Aggregate lane. Use CSV import for {{ formatRealismLaneLabel(realismLane) }} datasets.
           </div>
         </div>
       </div>
@@ -1422,8 +2456,13 @@ function loadArtifactFromComparison(path: string): void {
           <label>
             Fill model
             <select v-model="fillModel">
-              <option v-for="entry in OPTIONS_FILL_MODEL_OPTIONS" :key="entry" :value="entry">
-                {{ entry }}
+              <option
+                v-for="entry in fillModelOptionRows"
+                :key="entry.value"
+                :value="entry.value"
+                :disabled="entry.disabled"
+              >
+                {{ entry.label }}
               </option>
             </select>
           </label>
@@ -1499,6 +2538,11 @@ function loadArtifactFromComparison(path: string): void {
             </div>
           </div>
           <div class="full">
+            <div class="panelMuted">
+              {{ fillModelGuidance.laneLabel }} · {{ fillModelGuidance.detail }}
+            </div>
+          </div>
+          <div class="full">
             <div class="panelMetricKey">Moneyness buckets</div>
             <div class="moneynessList">
               <label v-for="entry in OPTIONS_MONEYNESS_BUCKET_OPTIONS" :key="entry" class="bucketToggle">
@@ -1571,7 +2615,16 @@ function loadArtifactFromComparison(path: string): void {
           Filtered to the currently selected saved run.
         </div>
         <div v-if="selectedArtifactSummary" class="panelMuted mono">
-          {{ selectedArtifactSummary.backendUsed }}<template v-if="normalizeText(selectedArtifactSummary.backendFallbackReason)"> · fallback {{ selectedArtifactSummary.backendFallbackReason }}</template> · {{ selectedArtifactSummary.priceSemantics }} · sel {{ selectedArtifactSummary.bestSelectionExpectancyPerPremium.toFixed(3) }}<template v-if="selectedArtifactSummary.bestHoldoutExpectancyPerPremium != null"> · hold {{ selectedArtifactSummary.bestHoldoutExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExpectancyPerPremium != null"> · sealed {{ selectedArtifactSummary.bestSealedExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestStressExpectancyPerPremium != null"> · stress {{ selectedArtifactSummary.bestStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedStressExpectancyPerPremium != null"> · sealed stress {{ selectedArtifactSummary.bestSealedStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestHarsherStressExpectancyPerPremium != null"> · harsher {{ selectedArtifactSummary.bestHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium != null"> · sealed harsher {{ selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestExtremeStressExpectancyPerPremium != null"> · extreme {{ selectedArtifactSummary.bestExtremeStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium != null"> · sealed extreme {{ selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium.toFixed(3) }}</template>
+          {{ selectedArtifactBackendRoute.label }} · {{ selectedArtifactRealismLane.label }} · {{ selectedArtifactSummary.requestFillModel || 'aggregate_research' }} · validation {{ selectedArtifactValidation?.label ?? 'Search only' }} · sel {{ selectedArtifactSummary.bestSelectionExpectancyPerPremium.toFixed(3) }}<template v-if="selectedArtifactSummary.bestHoldoutExpectancyPerPremium != null"> · hold {{ selectedArtifactSummary.bestHoldoutExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExpectancyPerPremium != null"> · sealed {{ selectedArtifactSummary.bestSealedExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestStressExpectancyPerPremium != null"> · stress {{ selectedArtifactSummary.bestStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedStressExpectancyPerPremium != null"> · sealed stress {{ selectedArtifactSummary.bestSealedStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestHarsherStressExpectancyPerPremium != null"> · harsher {{ selectedArtifactSummary.bestHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium != null"> · sealed harsher {{ selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestExtremeStressExpectancyPerPremium != null"> · extreme {{ selectedArtifactSummary.bestExtremeStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium != null"> · sealed extreme {{ selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium.toFixed(3) }}</template>
+        </div>
+        <div v-if="selectedArtifactValidation" class="panelMuted">
+          {{ selectedArtifactValidation.detail }}
+        </div>
+        <div v-if="selectedArtifactSummary" class="panelMuted">
+          {{ selectedArtifactRealismLane.detail }}
+        </div>
+        <div v-if="selectedArtifactSummary" class="panelMuted">
+          {{ selectedArtifactBackendRoute.detail }}
         </div>
       </div>
 
@@ -1584,7 +2637,11 @@ function loadArtifactFromComparison(path: string): void {
                 <tr>
                   <th>Artifact</th>
                   <th>Dataset</th>
+                  <th>Lane</th>
                   <th>Backend</th>
+                  <th>Validation</th>
+                  <th>Validated / Fragile</th>
+                  <th>Diff vs selected</th>
                   <th>Robust</th>
                   <th>Sel EV</th>
                   <th>Hold EV</th>
@@ -1605,7 +2662,19 @@ function loadArtifactFromComparison(path: string): void {
                   <td class="mono">{{ normalizeText(entry.ts) || '—' }}</td>
                   <td class="mono">{{ entry.optionsDatasetId }}</td>
                   <td class="mono">
-                    {{ entry.backendUsed }}<template v-if="normalizeText(entry.backendFallbackReason)"> · fallback</template>
+                    {{ describeRealismLane(entry.priceSemantics, entry.requestFillModel).shortLabel }} · {{ entry.requestFillModel || 'aggregate_research' }}
+                  </td>
+                  <td class="mono">
+                    {{ describeBackendRoute(entry.requestBackendPreference, entry.backendUsed, entry.backendFallbackReason).label }}
+                  </td>
+                  <td class="mono">
+                    {{ describeArtifactValidation(entry)?.label ?? 'Search only' }}
+                  </td>
+                  <td class="mono">
+                    {{ entry.validatedTupleCount ?? 0 }} / {{ entry.stressFragileTupleCount ?? 0 }}
+                  </td>
+                  <td class="mono">
+                    {{ describeArtifactProvenanceDiff(entry, selectedArtifactSummary) }}
                   </td>
                   <td class="mono">{{ entry.bestRobustScore.toFixed(3) }}</td>
                   <td class="mono">{{ entry.bestSelectionExpectancyPerPremium.toFixed(3) }}</td>
@@ -1623,6 +2692,85 @@ function loadArtifactFromComparison(path: string): void {
                 </tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      </details>
+
+      <details v-if="artifactMetaEntries.length > 0" class="panelDetails">
+        <summary>Options artifact meta-analysis</summary>
+        <div class="panelDetailsBody">
+          <div class="panelMuted">
+            Cross-artifact summary across all saved options-expression artifacts currently indexed in the app data store.
+          </div>
+          <div class="detailGrid detailGridTight">
+            <div v-for="row in artifactMetaOverviewRows" :key="row.key">
+              <span class="panelMetricKey">{{ row.label }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+            </div>
+          </div>
+          <div
+            v-for="section in artifactMetaSections"
+            :key="section.key"
+            class="coverageSection"
+          >
+            <div class="panelMuted">{{ section.label }}</div>
+            <div class="tableWrap">
+              <table class="resultTable">
+                <thead>
+                  <tr>
+                    <th>Group</th>
+                    <th>Artifacts</th>
+                    <th>Validated</th>
+                    <th>Fragile</th>
+                    <th>Avg robust</th>
+                    <th>Avg sel EV</th>
+                    <th>Avg validated EV</th>
+                    <th>Avg stress drop</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in section.rows" :key="row.key">
+                    <td class="mono">{{ row.label }}</td>
+                    <td class="mono">{{ row.artifactCount }}</td>
+                    <td class="mono">{{ row.validatedCount }}</td>
+                    <td class="mono">{{ row.fragileCount }}</td>
+                    <td class="mono">{{ formatOptionalDecimal(row.avgRobust, 3) }}</td>
+                    <td class="mono">{{ formatOptionalDecimal(row.avgSelectionEv, 3) }}</td>
+                    <td class="mono">{{ formatOptionalDecimal(row.avgValidationEv, 3) }}</td>
+                    <td class="mono">{{ formatOptionalDecimal(row.avgStressDrop, 3) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div v-if="artifactLaneDisagreementRows.length > 0" class="coverageSection">
+            <div class="panelMuted">Realism lane disagreement</div>
+            <div class="tableWrap">
+              <table class="resultTable">
+                <thead>
+                  <tr>
+                    <th>Group</th>
+                    <th>Lanes</th>
+                    <th>Selection winner</th>
+                    <th>Validation winner</th>
+                    <th>Drift</th>
+                    <th>Validation spread</th>
+                    <th>Lane summary</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in artifactLaneDisagreementRows" :key="row.key">
+                    <td class="mono">{{ row.label }}</td>
+                    <td class="mono">{{ row.laneCount }}</td>
+                    <td class="mono">{{ row.selectionWinnerLane }}</td>
+                    <td class="mono">{{ row.validationWinnerLane }}</td>
+                    <td class="mono">{{ row.driftLabel }}</td>
+                    <td class="mono">{{ formatOptionalDecimal(row.validationSpread, 3) }}</td>
+                    <td class="mono">{{ row.laneSummary }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </details>
@@ -1805,7 +2953,17 @@ function loadArtifactFromComparison(path: string): void {
             <span class="panelMetricKey">Rows</span>
             <span class="panelMetricValue mono panelNumeric">{{ activeDiagnostics.datasetRows }}</span>
           </div>
+          <div>
+            <span class="panelMetricKey">Realism lane</span>
+            <span class="panelMetricValue mono panelNumeric">{{ activeRealismLane.label }}</span>
+          </div>
+          <div>
+            <span class="panelMetricKey">Backend route</span>
+            <span class="panelMetricValue mono panelNumeric">{{ activeBackendRoute.label }}</span>
+          </div>
         </div>
+        <div class="panelMuted">{{ activeRealismLane.detail }}</div>
+        <div class="panelMuted">{{ activeBackendRoute.detail }}</div>
 
         <div class="detailGrid detailGridTight">
           <div v-for="card in reportingMetricCards" :key="card.key">
@@ -1813,6 +2971,99 @@ function loadArtifactFromComparison(path: string): void {
             <span class="panelMetricValue mono panelNumeric">{{ card.value }}</span>
           </div>
         </div>
+
+        <div v-if="selectedTupleValidation" class="gateBadgeRow">
+          <span
+            class="gateBadge"
+            :class="{
+              isPass: selectedTupleValidation.tone === 'pass',
+              isPending: selectedTupleValidation.tone === 'pending',
+              isMixed: selectedTupleValidation.tone === 'mixed',
+            }"
+          >
+            Selected tuple validation · {{ selectedTupleValidation.label }}
+          </span>
+        </div>
+        <div v-if="selectedTupleValidation" class="panelMuted">
+          {{ selectedTupleValidation.detail }}
+        </div>
+        <div v-if="winnerDisagreementSummary" class="gateBadgeRow">
+          <span
+            class="gateBadge"
+            :class="{
+              isPass: winnerDisagreementSummary.tone === 'pass',
+              isPending: winnerDisagreementSummary.tone === 'pending',
+              isMixed: winnerDisagreementSummary.tone === 'mixed',
+            }"
+          >
+            Winner alignment · {{ winnerDisagreementSummary.label }}
+          </span>
+        </div>
+        <div v-if="winnerDisagreementSummary" class="panelMuted">
+          {{ winnerDisagreementSummary.detail }}
+        </div>
+
+        <details v-if="winnerDisagreementRows.length > 0" class="panelDetails" open>
+          <summary>Winner disagreement</summary>
+          <div class="panelDetailsBody tableWrap">
+            <table class="resultTable">
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Tuple</th>
+                  <th>Shape</th>
+                  <th>Metric</th>
+                  <th>Relation</th>
+                  <th>Validation</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in winnerDisagreementRows" :key="row.key">
+                  <td class="mono">{{ row.label }}</td>
+                  <td class="mono">#{{ row.tupleIndex + 1 }}</td>
+                  <td class="mono">{{ row.tupleIdentity }}</td>
+                  <td class="mono">{{ row.metricLabel }} · {{ formatOptionalDecimal(row.value, 4) }}</td>
+                  <td class="mono">{{ row.relation }}</td>
+                  <td class="mono">{{ row.validation }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
+
+        <details v-if="validationWinnersRows.length > 0" class="panelDetails" open>
+          <summary>Validation winners</summary>
+          <div class="panelDetailsBody tableWrap">
+            <table class="resultTable">
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Tuple</th>
+                  <th>Structure</th>
+                  <th>Metric</th>
+                  <th>Validation</th>
+                  <th>Stress drop</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in validationWinnersRows" :key="row.key">
+                  <td class="mono">{{ row.label }}</td>
+                  <td class="mono">#{{ row.tupleIndex + 1 }}</td>
+                  <td class="mono">{{ row.tuple.structureFamily || activeRequest?.structureFamily || 'long_single' }}</td>
+                  <td class="mono">{{ row.metricLabel }} · {{ formatOptionalDecimal(row.value, 4) }}</td>
+                  <td class="mono">{{ row.validation }}</td>
+                  <td class="mono">{{ row.stressDrop == null ? '—' : row.stressDrop.toFixed(4) }}</td>
+                  <td>
+                    <button type="button" @click="focusTupleIndex(row.tupleIndex)">
+                      Focus
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
 
         <details v-if="requestSummaryRows.length > 0" class="panelDetails">
           <summary>Run provenance</summary>
@@ -1863,6 +3114,9 @@ function loadArtifactFromComparison(path: string): void {
             <input v-model="maxStressDropFilterInput" type="text" inputmode="decimal" spellcheck="false" placeholder="0.10" />
           </label>
         </div>
+        <div v-if="activeRows.length > 0" class="warningText">
+          Ranked tuples remain search-stage candidates unless the validation verdict below shows holdout or sealed support.
+        </div>
 
         <div v-if="activeRows.length > 0 && displayedRowsWithIndex.length > 0" class="tableWrap">
           <table class="resultTable">
@@ -1874,6 +3128,8 @@ function loadArtifactFromComparison(path: string): void {
                 <th>Hold</th>
                 <th>Target / Stop</th>
                 <th>Robust</th>
+                <th>Validation</th>
+                <th>Stress drop</th>
                 <th>EV / Premium</th>
                 <th>Invalid %</th>
                 <th v-if="hasHoldoutMetrics">Holdout EV / Premium</th>
@@ -1905,6 +3161,8 @@ function loadArtifactFromComparison(path: string): void {
                   {{ row.stopReturn == null ? '—' : row.stopReturn }}
                 </td>
                 <td class="mono">{{ row.robustScore.toFixed(3) }}</td>
+                <td class="mono">{{ describeTupleValidation(row)?.label ?? 'Search only' }}</td>
+                <td class="mono">{{ strongestTupleStressDrop(row) == null ? '—' : strongestTupleStressDrop(row)?.toFixed(4) }}</td>
                 <td class="mono">{{ row.selectionMetrics.expectancyPerPremium.toFixed(4) }}</td>
                 <td class="mono">{{ row.selectionMetrics.invalidRate.toFixed(3) }}</td>
                 <td v-if="hasHoldoutMetrics" class="mono">
@@ -1963,6 +3221,10 @@ function loadArtifactFromComparison(path: string): void {
           </div>
           <div class="detailGrid detailGridTight">
             <div>
+              <span class="panelMetricKey">Validation</span>
+              <span class="panelMetricValue mono panelNumeric">{{ selectedTupleValidation?.label ?? 'Search only' }}</span>
+            </div>
+            <div>
               <span class="panelMetricKey">Delay / DTE / Hold</span>
               <span class="panelMetricValue mono panelNumeric">
                 {{ selectedTuple.delayMinutes }} / {{ selectedTuple.dteDays }} / {{ selectedTuple.holdMinutes }}
@@ -2006,6 +3268,10 @@ function loadArtifactFromComparison(path: string): void {
             <div>
               <span class="panelMetricKey">Sealed finalist</span>
               <span class="panelMetricValue mono panelNumeric">{{ selectedTuple.sealedFinalist ? 'yes' : 'no' }}</span>
+            </div>
+            <div class="detailGridSpan2">
+              <span class="panelMetricKey">Validation note</span>
+              <span class="panelMetricValue">{{ selectedTupleValidation?.detail ?? 'No holdout metrics are present yet.' }}</span>
             </div>
             <div>
               <span class="panelMetricKey">EV / Trade</span>
@@ -2092,6 +3358,29 @@ function loadArtifactFromComparison(path: string): void {
               </span>
             </div>
           </div>
+          <details v-if="selectedTupleValidationFrontierRows.length > 0" class="panelDetails" open>
+            <summary>Validation frontier</summary>
+            <div class="panelDetailsBody tableWrap">
+              <table class="resultTable">
+                <thead>
+                  <tr>
+                    <th>Stage</th>
+                    <th>Status</th>
+                    <th>EV / Premium</th>
+                    <th>Delta vs selection</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in selectedTupleValidationFrontierRows" :key="row.key">
+                    <td class="mono">{{ row.label }}</td>
+                    <td class="mono">{{ row.status }}</td>
+                    <td class="mono">{{ row.expectancy.toFixed(4) }}</td>
+                    <td class="mono">{{ row.delta.toFixed(4) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
           <details v-if="selectedInspection" class="panelDetails" open>
             <summary>Tuple event drilldown</summary>
             <div class="panelDetailsBody">
@@ -2624,6 +3913,10 @@ function loadArtifactFromComparison(path: string): void {
 
 .detailGridTight {
   gap: 0.55rem;
+}
+
+.detailGridSpan2 {
+  grid-column: span 2;
 }
 
 .tableWrap {

@@ -30,6 +30,8 @@ mod commands_system;
 mod commands_validation;
 #[path = "metric_surface.rs"]
 mod metric_surface;
+#[path = "options_parent_adapters.rs"]
+mod options_parent_adapters;
 #[path = "run_artifacts.rs"]
 mod run_artifacts;
 #[path = "validation_common.rs"]

@@ -466,9 +466,7 @@ fn build_phase05_gate_evaluation(
 
     let gpu_speedup_observed = backend_comparison
         .and_then(|comparison| comparison.hybrid_ranking_speedup_vs_cpu)
-        .or_else(|| {
-            backend_comparison.and_then(|comparison| comparison.scorer_only_speedup_vs_cpu)
-        })
+        .or_else(|| backend_comparison.and_then(|comparison| comparison.scorer_only_speedup_vs_cpu))
         .or(response.report.timings.gpu_speedup_vs_cpu);
     let gpu_speedup_pass = gpu_speedup_observed.map(|value| value >= GPU_SPEEDUP_GATE_MIN);
 
@@ -756,7 +754,11 @@ fn render_markdown_summary(output: &FeasibilityHarnessOutput) -> String {
         let _ = writeln!(
             &mut out,
             "- Auto recommendation: `{}`",
-            output.response.report.auto_backend_decision.recommended_backend
+            output
+                .response
+                .report
+                .auto_backend_decision
+                .recommended_backend
         );
     }
     if !output
@@ -861,7 +863,9 @@ fn render_markdown_summary(output: &FeasibilityHarnessOutput) -> String {
             &mut out,
             "- CPU preview median wall ms: {} (estimated backend-only `{}` ms)",
             comparison.cpu_reference_preview.median_wall_ms,
-            comparison.cpu_reference_preview.median_estimated_backend_preview_ms
+            comparison
+                .cpu_reference_preview
+                .median_estimated_backend_preview_ms
         );
         let _ = writeln!(
             &mut out,
@@ -891,7 +895,9 @@ fn render_markdown_summary(output: &FeasibilityHarnessOutput) -> String {
             let _ = writeln!(
                 &mut out,
                 "- Accelerated auto recommendation: `{}`",
-                comparison.accelerated_preview.auto_backend_recommended_backend
+                comparison
+                    .accelerated_preview
+                    .auto_backend_recommended_backend
             );
         }
         let preview_speedup = comparison
@@ -909,7 +915,11 @@ fn render_markdown_summary(output: &FeasibilityHarnessOutput) -> String {
             .or(comparison.scorer_only_speedup_vs_cpu)
             .map(|value| format!("{value:.4}"))
             .unwrap_or_else(|| "n/a".to_string());
-        let _ = writeln!(&mut out, "- Hybrid-ranking speedup vs CPU: {}", scorer_speedup);
+        let _ = writeln!(
+            &mut out,
+            "- Hybrid-ranking speedup vs CPU: {}",
+            scorer_speedup
+        );
         if let (Some(cpu_run), Some(accelerated_run)) = (
             comparison.cpu_reference_run.as_ref(),
             comparison.accelerated_run.as_ref(),
@@ -1391,10 +1401,7 @@ fn main() -> Result<(), String> {
                 .report
                 .cache_stats
                 .gpu_outcome_tensor_fits_in_memory,
-            gpu_chunk_plan_fits_in_memory: warm
-                .report
-                .cache_stats
-                .gpu_chunk_plan_fits_in_memory,
+            gpu_chunk_plan_fits_in_memory: warm.report.cache_stats.gpu_chunk_plan_fits_in_memory,
             gpu_plan_notes: warm.report.cache_stats.gpu_plan_notes.clone(),
         });
     }

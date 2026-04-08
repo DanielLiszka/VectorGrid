@@ -114,6 +114,12 @@ export interface OptionsExpressionRequestSummary {
   sealedFinalistCount?: number
 }
 
+export type OptionsExpressionValidationVerdict =
+  | 'search_only'
+  | 'holdout_supported'
+  | 'sealed_finalist'
+  | 'stress_fragile'
+
 export interface OptionsExpressionTupleSummary {
   structureFamily?: string
   delayMinutes: number
@@ -127,6 +133,7 @@ export interface OptionsExpressionTupleSummary {
   preSealedRank?: number | undefined
   sealedFinalist?: boolean | undefined
   sealedFinalRank?: number | undefined
+  validationVerdict?: OptionsExpressionValidationVerdict | undefined
   robustScore: number
   selectionMetrics: OptionsExpressionMetricsSummary
   holdoutMetrics: OptionsExpressionMetricsSummary | null
@@ -334,11 +341,16 @@ export interface OptionsExpressionArtifactSummary {
   path: string
   bytes: number
   parentArtifactId: string
+  parentStrategyKind?: string
   rootSymbol: string
   optionsDatasetId: string
   backendUsed: string
   backendFallbackReason?: string
   priceSemantics: string
+  requestBackendPreference?: string
+  requestFillModel?: string
+  requestStructureFamily?: string
+  requestSplitAssignmentMode?: string
   tupleCount: number
   bestRobustScore: number
   bestSelectionExpectancyPerPremium: number
@@ -350,8 +362,11 @@ export interface OptionsExpressionArtifactSummary {
   bestSealedHarsherStressExpectancyPerPremium: number | null
   bestExtremeStressExpectancyPerPremium: number | null
   bestSealedExtremeStressExpectancyPerPremium: number | null
+  topValidationVerdict?: OptionsExpressionValidationVerdict | undefined
   sealedFinalistBudget?: number
   sealedEvaluatedTupleCount?: number
+  validatedTupleCount?: number
+  stressFragileTupleCount?: number
   hasHoldoutMetrics: boolean
   hasSealedEvaluationMetrics: boolean
   hasStressMetrics: boolean
@@ -528,6 +543,19 @@ function normalizeMetrics(raw: unknown): OptionsExpressionMetricsSummary {
   }
 }
 
+function normalizeValidationVerdict(raw: unknown): OptionsExpressionValidationVerdict {
+  const value = normalizeText(raw)
+  switch (value) {
+    case 'holdout_supported':
+    case 'sealed_finalist':
+    case 'stress_fragile':
+      return value
+    case 'search_only':
+    default:
+      return 'search_only'
+  }
+}
+
 function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const tuple = (row.tuple && typeof row.tuple === 'object' ? row.tuple : {}) as Record<string, unknown>
@@ -544,6 +572,7 @@ function normalizeTuple(raw: unknown): OptionsExpressionTupleSummary {
     preSealedRank: row.pre_sealed_rank == null ? undefined : normalizeNumber(row.pre_sealed_rank),
     sealedFinalist: Boolean(row.sealed_finalist),
     sealedFinalRank: row.sealed_final_rank == null ? undefined : normalizeNumber(row.sealed_final_rank),
+    validationVerdict: normalizeValidationVerdict(row.validation_verdict),
     robustScore: normalizeNumber(row.robust_score),
     selectionMetrics: normalizeMetrics(row.selection_metrics),
     holdoutMetrics: row.holdout_metrics ? normalizeMetrics(row.holdout_metrics) : null,
@@ -869,11 +898,16 @@ function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpress
     path: normalizeText(row.path),
     bytes: normalizeNumber(row.bytes),
     parentArtifactId: normalizeText(row.parent_artifact_id),
+    parentStrategyKind: normalizeText(row.parent_strategy_kind),
     rootSymbol: normalizeText(row.root_symbol),
     optionsDatasetId: normalizeText(row.options_dataset_id),
     backendUsed: normalizeText(row.backend_used),
     backendFallbackReason: normalizeText(row.backend_fallback_reason),
     priceSemantics: normalizeText(row.price_semantics),
+    requestBackendPreference: normalizeText(row.request_backend_preference),
+    requestFillModel: normalizeText(row.request_fill_model),
+    requestStructureFamily: normalizeText(row.request_structure_family),
+    requestSplitAssignmentMode: normalizeText(row.request_split_assignment_mode),
     tupleCount: normalizeNumber(row.tuple_count),
     bestRobustScore: normalizeNumber(row.best_robust_score),
     bestSelectionExpectancyPerPremium: normalizeNumber(row.best_selection_expectancy_per_premium),
@@ -893,8 +927,11 @@ function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpress
     bestSealedExtremeStressExpectancyPerPremium: normalizeOptionalNumber(
       row.best_sealed_extreme_stress_expectancy_per_premium,
     ),
+    topValidationVerdict: normalizeValidationVerdict(row.top_validation_verdict),
     sealedFinalistBudget: normalizeNumber(row.sealed_finalist_budget),
     sealedEvaluatedTupleCount: normalizeNumber(row.sealed_evaluated_tuple_count),
+    validatedTupleCount: normalizeNumber(row.validated_tuple_count),
+    stressFragileTupleCount: normalizeNumber(row.stress_fragile_tuple_count),
     hasHoldoutMetrics: Boolean(row.has_holdout_metrics),
     hasSealedEvaluationMetrics: Boolean(row.has_sealed_evaluation_metrics),
     hasStressMetrics: Boolean(row.has_stress_metrics),
@@ -1185,6 +1222,7 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
     'pre_sealed_rank',
     'sealed_finalist',
     'sealed_final_rank',
+    'validation_verdict',
     'robust_score',
     'selection_valid_trades',
     'selection_invalid_events',
@@ -1220,6 +1258,7 @@ export function exportOptionsExpressionCsv(input: OptionsExpressionCsvExportInpu
       row.preSealedRank,
       row.sealedFinalist ? 'yes' : '',
       row.sealedFinalRank ?? '',
+      row.validationVerdict ?? 'search_only',
       row.robustScore,
       row.selectionMetrics.validTrades,
       row.selectionMetrics.invalidEvents,
