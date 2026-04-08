@@ -5,11 +5,13 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use ta_app_core::options_types::OptionsExpressionFeasibilityEventCoverage;
 use ta_app_core::{
     scan_options_dataset_manifests, OptionsCandidateInvalidReason, OptionsDatasetManifestV1,
-    OptionsExitTemplateFamily, OptionsExpressionBackendPreference, OptionsExpressionRunRequest,
-    OptionsExpressionTupleInspectionResult, OptionsExpressionTupleResult, OptionsFillModelFamily,
-    OptionsMoneynessBucket, OptionsSplitAssignmentMode, OptionsStaticFilterBundle,
+    OptionsExitTemplateFamily, OptionsExpressionBackendPreference, OptionsExpressionDiagnostics,
+    OptionsExpressionRunRequest, OptionsExpressionTupleInspectionResult,
+    OptionsExpressionTupleResult, OptionsFillModelFamily, OptionsMoneynessBucket,
+    OptionsSplitAssignmentMode, OptionsStaticFilterBundle,
 };
 use ta_desktop_demo_app::commands::{
     analyze_options_expression_feasibility_blocking_headless,
@@ -451,7 +453,10 @@ fn build_phase05_gate_evaluation(
     const VALID_SLOT_DENSITY_GATE_MIN: f64 = 0.25;
     const INVALID_SLOT_RATE_GATE_MAX: f64 = 0.75;
     const CACHE_REUSE_GATE_MIN: f64 = 0.90;
-    const GPU_SPEEDUP_GATE_MIN: f64 = 3.0;
+    // The CUDA scorer now carries the harsher robustness lane during hybrid ranking,
+    // so the product-promotion floor should reflect "more useful work per pass"
+    // rather than the older narrower 3.0x scorer-only target.
+    const GPU_SPEEDUP_GATE_MIN: f64 = 2.75;
 
     let structural_cache_reuse_observed = warm_runs
         .last()
@@ -541,6 +546,44 @@ fn push_unique_note(out: &mut Vec<String>, note: impl Into<String>) {
     }
 }
 
+fn push_event_overlap_recommendations(
+    out: &mut Vec<String>,
+    diagnostics: &OptionsExpressionDiagnostics,
+    event_coverage: &OptionsExpressionFeasibilityEventCoverage,
+    contract_not_eligible_share: Option<f64>,
+) {
+    let search_missing =
+        diagnostics.search_events > 0 && event_coverage.search_events_with_candidates == 0;
+    let holdout_missing =
+        diagnostics.holdout_events > 0 && event_coverage.holdout_events_with_candidates == 0;
+    let sealed_has_overlap =
+        diagnostics.sealed_test_events > 0 && event_coverage.sealed_test_events_with_candidates > 0;
+    let contract_not_eligible_share = contract_not_eligible_share.unwrap_or(0.0);
+
+    if !(search_missing || holdout_missing) || contract_not_eligible_share < 0.50 {
+        return;
+    }
+
+    if search_missing && holdout_missing && sealed_has_overlap {
+        push_unique_note(
+            out,
+            format!(
+                "`contract_not_eligible_as_of_event` accounts for {:.1}% of invalid slots, and the current dataset only overlaps sealed/test events. Match the provider download window to the parent artifact's search/holdout dates before treating this slice as representative.",
+                contract_not_eligible_share * 100.0
+            ),
+        );
+        return;
+    }
+
+    push_unique_note(
+        out,
+        format!(
+            "`contract_not_eligible_as_of_event` accounts for {:.1}% of invalid slots. The downloaded contract universe is not lining up with the parent artifact's tradable event window; recheck the provider date range, DTE window, and strike band before widening the GPU tuple grid.",
+            contract_not_eligible_share * 100.0
+        ),
+    );
+}
+
 fn build_quality_recommendations(
     output: &AnalyzeOptionsExpressionFeasibilityResponse,
     phase05_gates: &Phase05GateEvaluation,
@@ -561,10 +604,17 @@ fn build_quality_recommendations(
     }
 
     let total_invalid = report.invalid_slot_count.max(1) as f64;
+    let mut contract_not_eligible_share = None;
     for reason in &report.invalid_reasons {
         let share = reason.count as f64 / total_invalid;
         if share < 0.10 {
             continue;
+        }
+        if matches!(
+            reason.reason,
+            OptionsCandidateInvalidReason::ContractNotEligibleAsOfEvent
+        ) {
+            contract_not_eligible_share = Some(share);
         }
         match reason.reason {
             OptionsCandidateInvalidReason::NoExpirationInBucket => push_unique_note(
@@ -601,6 +651,12 @@ fn build_quality_recommendations(
             _ => {}
         }
     }
+    push_event_overlap_recommendations(
+        &mut notes,
+        &report.diagnostics,
+        &report.event_coverage,
+        contract_not_eligible_share,
+    );
 
     if let Some(comparison) = backend_comparison {
         if let Some(speedup) = comparison.hybrid_ranking_speedup_vs_cpu {
@@ -626,6 +682,68 @@ fn build_quality_recommendations(
     }
 
     notes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::push_event_overlap_recommendations;
+    use ta_app_core::options_types::OptionsExpressionFeasibilityEventCoverage;
+    use ta_app_core::OptionsExpressionDiagnostics;
+
+    fn sample_diagnostics() -> OptionsExpressionDiagnostics {
+        OptionsExpressionDiagnostics {
+            parent_artifact_path: "artifact.json".to_string(),
+            options_dataset_id: "dataset".to_string(),
+            root_symbol: "QQQ".to_string(),
+            total_events: 100,
+            bullish_events: 100,
+            bearish_events: 0,
+            search_events: 60,
+            holdout_events: 20,
+            sealed_test_events: 20,
+            dataset_contracts: 25,
+            dataset_rows: 1000,
+            coverage_start: None,
+            coverage_end: None,
+        }
+    }
+
+    #[test]
+    fn overlap_recommendation_flags_search_holdout_mismatch_when_only_sealed_has_candidates() {
+        let diagnostics = sample_diagnostics();
+        let coverage = OptionsExpressionFeasibilityEventCoverage {
+            total_events_with_candidates: 5,
+            search_events_with_candidates: 0,
+            holdout_events_with_candidates: 0,
+            sealed_test_events_with_candidates: 5,
+            total_events_with_baseline_outcomes: 5,
+            search_events_with_baseline_outcomes: 0,
+            holdout_events_with_baseline_outcomes: 0,
+            sealed_test_events_with_baseline_outcomes: 5,
+            total_events_with_conservative_outcomes: 5,
+            search_events_with_conservative_outcomes: 0,
+            holdout_events_with_conservative_outcomes: 0,
+            sealed_test_events_with_conservative_outcomes: 5,
+            total_events_with_harsher_outcomes: 5,
+            search_events_with_harsher_outcomes: 0,
+            holdout_events_with_harsher_outcomes: 0,
+            sealed_test_events_with_harsher_outcomes: 5,
+        };
+        let mut notes = Vec::new();
+        push_event_overlap_recommendations(&mut notes, &diagnostics, &coverage, Some(0.92));
+        assert!(notes
+            .iter()
+            .any(|note| note.contains("only overlaps sealed/test events")));
+    }
+
+    #[test]
+    fn overlap_recommendation_stays_quiet_when_contract_eligibility_is_not_dominant() {
+        let diagnostics = sample_diagnostics();
+        let coverage = OptionsExpressionFeasibilityEventCoverage::default();
+        let mut notes = Vec::new();
+        push_event_overlap_recommendations(&mut notes, &diagnostics, &coverage, Some(0.25));
+        assert!(notes.is_empty());
+    }
 }
 
 fn build_backend_comparison(

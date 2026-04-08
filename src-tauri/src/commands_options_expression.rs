@@ -1212,12 +1212,8 @@ pub fn save_options_csv_blocking_headless(
             })?;
         }
     }
-    std::fs::write(output_path, req.csv_text.as_bytes()).map_err(|e| {
-        format!(
-            "failed to write CSV export {}: {e}",
-            output_path.display()
-        )
-    })?;
+    std::fs::write(output_path, req.csv_text.as_bytes())
+        .map_err(|e| format!("failed to write CSV export {}: {e}", output_path.display()))?;
     Ok(SaveOptionsCsvResponse {
         path: output_path.to_string_lossy().to_string(),
         bytes: req.csv_text.as_bytes().len(),
@@ -1279,7 +1275,9 @@ pub async fn load_options_expression_artifact(
 }
 
 #[tauri::command]
-pub async fn save_options_csv(req: SaveOptionsCsvRequest) -> Result<SaveOptionsCsvResponse, String> {
+pub async fn save_options_csv(
+    req: SaveOptionsCsvRequest,
+) -> Result<SaveOptionsCsvResponse, String> {
     tauri::async_runtime::spawn_blocking(move || save_options_csv_blocking_headless(req))
         .await
         .map_err(|e| e.to_string())?

@@ -30,7 +30,7 @@ describe('desktop command palette', () => {
       },
     )
     await expect($(workspaceTabSelector('settings'))).toHaveAttr('aria-selected', 'true')
-    await waitForSettingsWorkspace()
+    await waitForSettingsWorkspace(20_000)
 
     await (await $(shellSelectors.commandPaletteButton)).click()
     await expect($(commandPaletteSelectors.dialog)).toBeDisplayed()

@@ -664,8 +664,10 @@ Current shipped validation-surface scope:
 - the current options panel now includes a first-wave cross-artifact meta-analysis layer grouped by root, parent family, structure family, realism lane, and top validation verdict across all saved options-expression artifacts
 - the current options panel now exposes an explicit top-level realism-lane chooser that drives dataset filtering, import semantics, fill-model guidance, and aggregate-only provider-download gating
 - the current options panel now labels the active dataset lane and disables or coerces incompatible fill models before preview/run, while the backend still enforces the same compatibility matrix at the command/runtime boundary
+- the current options panel now uses desktop-native save/reveal flows for ranked-tuple CSV, tuple-inspection CSV, and event-path CSV exports, while retaining browser-download fallback for non-desktop contexts
 - supported parent families now flow through explicit family-local adapter wrappers before entering the shared double-like replay helper, so the current support surface is structurally visible instead of implicit
-- the current gate-driven `auto` policy has now been rechecked against a clean provider-backed SPY DTE7 promotion-gate run, and on that canonical slice it recommends the GPU path while clearing density/cache/scorer/wall-speed gates
+- the current gate-driven `auto` policy has now been rechecked against both the canonical SPY DTE7 slice and a second bounded QQQ provider-backed slice; on both workloads it now recommends the GPU path while clearing density/cache/scorer/wall-speed gates, and the feasibility-report `auto` recommendation matches the actual runtime `auto` route instead of mixing in the separate promotion-speed gate
+- the current hybrid CUDA ranking pass now carries the harsher holdout robustness lane before retained-finalist CPU exactification, so GPU ranking aligns more closely with the shipped robustness surface instead of treating the harsher lane as CPU-only ranking context
 - larger finalist-comparison workflows and broader acceptance dashboards remain future work, but the default direction is still to improve them inside the current unified options host
 
 ---

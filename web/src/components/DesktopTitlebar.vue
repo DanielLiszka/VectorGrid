@@ -2,11 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Maximize2, Minimize2, Play, Search, Settings2, Square, X } from 'lucide-vue-next'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { type CloseRequestedEvent, getCurrentWindow } from '@tauri-apps/api/window'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
+import ConfirmationDialog from './ConfirmationDialog.vue'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
+import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { type TrackedTask, shouldGuardDesktopCloseForTask, useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { tauriRuntimeAvailable } from '../tauri/invoke'
 import {
@@ -18,9 +21,12 @@ import {
 
 const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
+const executionStore = useExecutionStore()
 const optimizeStore = useOptimizeStore()
+const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 
+const { runnerActive } = storeToRefs(executionStore)
 const { canCancel, runDisabled } = storeToRefs(optimizeStore)
 const { workflowStep, workspace } = storeToRefs(workflowStore)
 
@@ -28,6 +34,8 @@ const desktopRuntimeAvailable = tauriRuntimeAvailable()
 const desktopWindow = desktopRuntimeAvailable ? getCurrentWindow() : null
 const isFocused = ref(true)
 const isMaximized = ref(false)
+const closeConfirmOpen = ref(false)
+const allowNextCloseRequest = ref(false)
 const unlisteners: Array<() => void> = []
 
 const workspaceLabel = computed(() => {
@@ -59,6 +67,34 @@ const subtitle = computed(() => {
 
 const actionLabel = computed(() => (canCancel.value ? 'Stop run' : 'Run optimization'))
 const actionDisabled = computed(() => !canCancel.value && !!runDisabled.value)
+const guardedActiveTasks = computed<TrackedTask[]>(() => {
+  const tasks: TrackedTask[] = []
+  for (const id of taskStore.activeOrder) {
+    const task = taskStore.activeById[id] ?? null
+    if (!task || !shouldGuardDesktopCloseForTask(task)) continue
+    tasks.push(task)
+  }
+  return tasks
+})
+const closeGuardTaskSummary = computed(() => {
+  const labels = Array.from(
+    new Set(guardedActiveTasks.value.map((task) => String(task.label || '').trim()).filter((value) => value.length > 0)),
+  )
+  if (labels.length === 0) return ''
+  if (labels.length === 1) return `${labels[0]} is still active.`
+  return `${labels[0]} and ${labels.length - 1} other long-running tasks are still active.`
+})
+const closeGuardReasons = computed(() => {
+  const reasons: string[] = []
+  if (closeGuardTaskSummary.value) reasons.push(closeGuardTaskSummary.value)
+  if (runnerActive.value) reasons.push('The live runner is active.')
+  return reasons
+})
+const shouldGuardClose = computed(() => closeGuardReasons.value.length > 0)
+const closeGuardBody = computed(() => {
+  if (!closeGuardReasons.value.length) return 'VectorGrid will exit immediately.'
+  return `${closeGuardReasons.value.join('\n')}\n\nClose exits VectorGrid instead of minimizing it.\nChoose Stay in app to keep the current session alive.`
+})
 
 async function syncWindowState(): Promise<void> {
   if (!desktopWindow) return
@@ -101,9 +137,41 @@ async function toggleMaximizeWindow(): Promise<void> {
   await syncWindowState()
 }
 
+async function requestClose(): Promise<void> {
+  if (!desktopWindow) return
+  allowNextCloseRequest.value = true
+  await desktopWindow.close().catch(() => undefined)
+  window.setTimeout(() => {
+    allowNextCloseRequest.value = false
+  }, 0)
+}
+
 async function closeWindow(): Promise<void> {
   if (!desktopWindow) return
-  await desktopWindow.close().catch(() => undefined)
+  if (shouldGuardClose.value) {
+    closeConfirmOpen.value = true
+    return
+  }
+  await requestClose()
+}
+
+async function confirmCloseWindow(): Promise<void> {
+  closeConfirmOpen.value = false
+  await requestClose()
+}
+
+function cancelCloseWindow(): void {
+  closeConfirmOpen.value = false
+}
+
+async function onWindowCloseRequested(event: CloseRequestedEvent): Promise<void> {
+  if (allowNextCloseRequest.value) {
+    allowNextCloseRequest.value = false
+    return
+  }
+  if (!shouldGuardClose.value) return
+  event.preventDefault()
+  closeConfirmOpen.value = true
 }
 
 async function startWindowDrag(event?: MouseEvent): Promise<void> {
@@ -126,11 +194,14 @@ onMounted(async () => {
   const focusOff = await desktopWindow.onFocusChanged(({ payload }) => {
     isFocused.value = !!payload
   })
-  unlisteners.push(resizeOff, focusOff)
+  const closeOff = await desktopWindow.onCloseRequested(onWindowCloseRequested)
+  unlisteners.push(resizeOff, focusOff, closeOff)
 })
 
 onBeforeUnmount(() => {
   for (const off of unlisteners.splice(0)) off()
+  closeConfirmOpen.value = false
+  allowNextCloseRequest.value = false
   delete document.documentElement.dataset.desktopChrome
 })
 </script>
@@ -232,6 +303,17 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
+    <ConfirmationDialog
+      id-base="desktop_close_confirm"
+      :open="closeConfirmOpen"
+      title="Exit VectorGrid now?"
+      :body="closeGuardBody"
+      confirm-label="Exit app"
+      cancel-label="Stay in app"
+      danger
+      @cancel="cancelCloseWindow"
+      @confirm="confirmCloseWindow"
+    />
   </div>
 </template>
 

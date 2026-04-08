@@ -113,6 +113,9 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Desktop logs')
     expect(text).toContain('Desktop runtime bridge ready.')
     expect(text).toContain('Window geometry persists to vectorgrid-window-state.json.')
+    expect(text).toContain('Desktop presence')
+    expect(text).toContain('Foreground-first workstation')
+    expect(text).toContain('Close exits the app by default.')
     expect(document.querySelector('.diagnosticsBadgeIcon')).not.toBeNull()
   })
 
@@ -211,6 +214,9 @@ describe('SettingsWorkspacePanel', () => {
     const text = document.body.textContent || ''
     expect(text).toContain('Desktop notifications')
     expect(text).toContain('Failures and cancellations')
+    expect(text).toContain('VectorGrid stays foreground-first')
+    expect(text).toContain('close exits by default')
+    expect(text).toContain('meaningful active work asks before closing')
 
     const requestButton = Array.from(document.querySelectorAll('button')).find((button) =>
       String(button.textContent || '').includes('Request OS notification permission'),
@@ -297,6 +303,8 @@ describe('SettingsWorkspacePanel', () => {
     expect(copiedPayload).toContain('VectorAlpha desktop diagnostics snapshot')
     expect(copiedPayload).toContain('Desktop bridge recovered from a transient failure.')
     expect(copiedPayload).toContain('Validation completed.')
+    expect(copiedPayload).toContain('Desktop presence')
+    expect(copiedPayload).toContain('Foreground-first workstation')
   })
 
   it('filters and clears desktop logs from diagnostics without affecting other task surfaces', async () => {

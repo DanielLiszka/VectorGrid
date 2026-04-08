@@ -6,7 +6,7 @@ Prompt source: [desktop_presence_chrome_direction_FINAL.md](C:/Rust%20Projects/t
 
 Scope: Prompt 8 grounded implementation only. This tracker converts the valid Prompt 8 findings into a constrained desktop implementation plan without expanding native surface area, reopening deferred tray/global-shortcut/updater decisions, or creating a second task/control system beside the current shell.
 
-Status: Drafted on 2026-04-08. Objective checkpoint not yet implemented.
+Status: Objective checkpoint implemented on 2026-04-08. Frontend verification, desktop smoke verification, and targeted Prompt 8 QA passed.
 
 Owner posture: Objective-first, desktop-restraint-biased, foreground-workstation-biased.
 
@@ -39,15 +39,48 @@ This implementation must be additive and capability-preserving.
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline desktop posture audit and evidence capture finished
-- [ ] Phase 1 complete: desktop presence decision record and user-facing copy landed
-- [ ] Phase 2 complete: narrow active-work close safety landed
-- [ ] Phase 3 complete: ownership alignment and no-expansion review landed
-- [ ] Phase 4 complete: desktop verification and evidence refresh landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Optional interpretive follow-up reviewed
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline desktop posture audit and evidence capture finished
+- [x] Phase 1 complete: desktop presence decision record and user-facing copy landed
+- [x] Phase 2 complete: narrow active-work close safety landed
+- [x] Phase 3 complete: ownership alignment and no-expansion review landed
+- [x] Phase 4 complete: desktop verification and evidence refresh landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Optional interpretive follow-up reviewed
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
+
+## Implementation Record
+
+Objective Prompt 8 work landed in:
+
+- [DesktopTitlebar.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/DesktopTitlebar.vue)
+- [taskStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/taskStore.ts)
+- [SettingsWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/SettingsWorkspacePanel.vue)
+- [DesktopTitlebar.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/DesktopTitlebar.test.ts)
+- [SettingsWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/SettingsWorkspacePanel.test.ts)
+- [desktop-settings-diagnostics.spec.ts](C:/Rust%20Projects/ta_desktop_demo/web/e2e/desktop/specs/desktop-settings-diagnostics.spec.ts)
+- [desktop_productization_plan_2026-03-28.md](C:/Rust%20Projects/ta_desktop_demo/Frontend%20Review/Unfinished/desktop_productization_plan_2026-03-28.md)
+- [desktop_ux_decisions_2026-03-28.md](C:/Rust%20Projects/ta_desktop_demo/Frontend%20Review/Unfinished/desktop_ux_decisions_2026-03-28.md)
+
+Evidence captured:
+
+- [prompt8_settings_desktop_presence_manual.png](C:/Rust%20Projects/ta_desktop_demo/scripts/baselines/ui_capture/prompt8_settings_desktop_presence_manual.png)
+- [prompt8_titlebar_manual.png](C:/Rust%20Projects/ta_desktop_demo/scripts/baselines/ui_capture/prompt8_titlebar_manual.png)
+
+Verification record:
+
+- `npm --prefix web run lint`
+- `npm --prefix web run typecheck`
+- `npm --prefix web run test`
+- `npm --prefix web run build`
+- `npm --prefix web run parity`
+- `npm --prefix web run a11y:smoke`
+- `npm --prefix web run baseline:ui`
+- `npm --prefix web run check:bundle-budget`
+- `npm --prefix web run test:desktop:smoke` with `VECTORGRID_DESKTOP_SMOKE_SKIP_BUILD=1`
+- `cargo check -p ta_desktop_demo_app`
+
+Guarded-close behavior was verified through targeted component tests, including the non-titlebar `onCloseRequested` path. The current desktop smoke pack proves the native titlebar, settings diagnostics surface, and shell responsiveness, but it does not yet seed an active long-running task or live runner state for an end-to-end guarded-close modal screenshot.
 
 ## Implementation Outcome Target
 
@@ -233,25 +266,29 @@ Goal: record the current desktop behavior and lock the grounded ownership bounda
 
 Checklist:
 
-- [ ] Record the current titlebar window-control behavior:
+- [x] Record the current titlebar window-control behavior:
   - minimize path
   - close path
   - absence of a close guard today
-- [ ] Record the current desktop presence baseline:
+- [x] Record any current non-titlebar close paths that reach the same window lifecycle:
+  - OS window close affordance
+  - keyboard close path such as `Alt+F4`, if applicable on the current desktop platform
+  - any desktop smoke-covered close behavior that bypasses the custom titlebar button
+- [x] Record the current desktop presence baseline:
   - one main product window
   - frameless custom titlebar
   - no tray behavior
   - no updater UI
   - no true global shortcuts
-- [ ] Confirm current notification routing behavior in [desktopProductization.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/services/desktopProductization.ts):
+- [x] Confirm current notification routing behavior in [desktopProductization.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/services/desktopProductization.ts):
   - permission-aware
   - visibility-aware
   - high-signal only
-- [ ] Confirm [TaskCenterOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/TaskCenterOverlay.vue) remains the authoritative in-app task surface
-- [ ] Confirm [SettingsWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/SettingsWorkspacePanel.vue) already owns desktop diagnostics and notification policy explanation
-- [ ] Confirm [GlobalShortcutBridge.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/GlobalShortcutBridge.vue) remains document-focused only
-- [ ] Confirm [src-tauri/tauri.conf.json](C:/Rust%20Projects/ta_desktop_demo/src-tauri/tauri.conf.json) still defines only the main window and does not add tray/updater posture
-- [ ] Capture before-state evidence for:
+- [x] Confirm [TaskCenterOverlay.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/TaskCenterOverlay.vue) remains the authoritative in-app task surface
+- [x] Confirm [SettingsWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/SettingsWorkspacePanel.vue) already owns desktop diagnostics and notification policy explanation
+- [x] Confirm [GlobalShortcutBridge.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/GlobalShortcutBridge.vue) remains document-focused only
+- [x] Confirm [src-tauri/tauri.conf.json](C:/Rust%20Projects/ta_desktop_demo/src-tauri/tauri.conf.json) still defines only the main window and does not add tray/updater posture
+- [x] Capture before-state evidence for:
   - titlebar controls
   - desktop diagnostics section
   - notifications settings section
@@ -259,9 +296,9 @@ Checklist:
 
 Acceptance criteria:
 
-- [ ] The current desktop baseline is explicitly documented before code changes land
-- [ ] The repo-backed ownership split between titlebar, Task Center, notifications, and Settings is written down
-- [ ] There is a stable before-state reference for titlebar and Settings desktop surfaces
+- [x] The current desktop baseline is explicitly documented before code changes land
+- [x] The repo-backed ownership split between titlebar, Task Center, notifications, and Settings is written down
+- [x] There is a stable before-state reference for titlebar and Settings desktop surfaces
 
 ## Phase 1 — Decision Record And Presence Copy
 
@@ -275,26 +312,26 @@ Primary files:
 
 Checklist:
 
-- [ ] Update the desktop productization plan to record the explicit foreground-first presence posture
-- [ ] Update the desktop UX decisions doc to record:
+- [x] Update the desktop productization plan to record the explicit foreground-first presence posture
+- [x] Update the desktop UX decisions doc to record:
   - standard minimize behavior
   - close exits by default
   - tray/global shortcuts/updater still deferred
-- [ ] Add concise Settings copy explaining:
+- [x] Add concise Settings copy explaining:
   - the app is foreground-first
   - Task Center is the source of truth
   - notifications are supplemental
   - minimize does not imply tray behavior
   - close exits the app by default
-- [ ] Keep the new copy informational rather than turning Settings into a new policy-control surface
-- [ ] Confirm the copy does not promise functionality that does not exist
-- [ ] Confirm the copy does not add speculative toggles for deferred native features
+- [x] Keep the new copy informational rather than turning Settings into a new policy-control surface
+- [x] Confirm the copy does not promise functionality that does not exist
+- [x] Confirm the copy does not add speculative toggles for deferred native features
 
 Acceptance criteria:
 
-- [ ] The desktop docs explicitly reflect the adopted presence posture
-- [ ] Settings explains the desktop posture without adding new feature controls
-- [ ] The in-app wording matches current behavior or clearly scoped near-term objective behavior
+- [x] The desktop docs explicitly reflect the adopted presence posture
+- [x] Settings explains the desktop posture without adding new feature controls
+- [x] The in-app wording matches current behavior or clearly scoped near-term objective behavior
 
 ## Phase 2 — Narrow Active-Work Close Safety
 
@@ -313,26 +350,27 @@ Potential narrow-touch files if needed:
 
 Checklist:
 
-- [ ] Define the minimal close-guard trigger set using current repo-backed live state
-- [ ] Start with the highest-confidence trigger conditions:
+- [x] Define the minimal close-guard trigger set using current repo-backed live state
+- [x] Start with the highest-confidence trigger conditions:
   - active meaningful long-running tracked work
   - active live execution runner
-- [ ] Keep idle close unguarded
-- [ ] Implement the close guard for the titlebar close control
-- [ ] If required to cover non-titlebar close requests, add a narrow desktop close-request hook rather than a broad desktop abstraction
-- [ ] Reuse an existing confirmation pattern if it fits the desktop close decision cleanly
-- [ ] Ensure close-guard copy is brief and explicit about the consequence of exiting now
-- [ ] Provide a clear primary exit action and a clear cancel/stay action
-- [ ] Keep minimize behavior unchanged
-- [ ] Do not add any “keep running in background” or “close to tray” option
-- [ ] Do not broaden the trigger set to minor or routine states just to look safer
+- [x] Keep idle close unguarded
+- [x] Implement the close guard for the titlebar close control
+- [x] Decide whether the titlebar close control is the only relevant close path in the shipped app
+- [x] If non-titlebar close requests are reachable in the shipped app, add a narrow desktop close-request hook rather than a broad desktop abstraction
+- [x] Reuse an existing confirmation pattern if it fits the desktop close decision cleanly
+- [x] Ensure close-guard copy is brief and explicit about the consequence of exiting now
+- [x] Provide a clear primary exit action and a clear cancel/stay action
+- [x] Keep minimize behavior unchanged
+- [x] Do not add any “keep running in background” or “close to tray” option
+- [x] Do not broaden the trigger set to minor or routine states just to look safer
 
 Acceptance criteria:
 
-- [ ] Ordinary close remains direct and unsurprising
-- [ ] Meaningful active-work close is no longer silent
-- [ ] The close guard does not appear during idle routine use
-- [ ] The implementation does not add tray semantics, multi-window semantics, or broader native complexity
+- [x] Ordinary close remains direct and unsurprising
+- [x] Meaningful active-work close is no longer silent
+- [x] The close guard does not appear during idle routine use
+- [x] The implementation does not add tray semantics, multi-window semantics, or broader native complexity
 
 ## Phase 3 — Ownership Alignment And No-Expansion Review
 
@@ -348,20 +386,20 @@ Primary files:
 
 Checklist:
 
-- [ ] Confirm the Task Center remains the authoritative task surface after the close-safety work
-- [ ] Confirm notifications remain bounded complements and are not turned into a richer control system
-- [ ] Confirm Settings remains the diagnostics/explanation surface rather than a parking lot for desktop toggles
-- [ ] Confirm [GlobalShortcutBridge.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/GlobalShortcutBridge.vue) remains focused-window only
-- [ ] Confirm no tray/menu surface was added
-- [ ] Confirm no updater/relaunch UI was added
-- [ ] Confirm no global-shortcut plugin or capability path was added
-- [ ] Confirm [src-tauri/tauri.conf.json](C:/Rust%20Projects/ta_desktop_demo/src-tauri/tauri.conf.json) did not gain speculative native surface additions
+- [x] Confirm the Task Center remains the authoritative task surface after the close-safety work
+- [x] Confirm notifications remain bounded complements and are not turned into a richer control system
+- [x] Confirm Settings remains the diagnostics/explanation surface rather than a parking lot for desktop toggles
+- [x] Confirm [GlobalShortcutBridge.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/GlobalShortcutBridge.vue) remains focused-window only
+- [x] Confirm no tray/menu surface was added
+- [x] Confirm no updater/relaunch UI was added
+- [x] Confirm no global-shortcut plugin or capability path was added
+- [x] Confirm [src-tauri/tauri.conf.json](C:/Rust%20Projects/ta_desktop_demo/src-tauri/tauri.conf.json) did not gain speculative native surface additions
 
 Acceptance criteria:
 
-- [ ] Ownership remains clear between titlebar, Task Center, notifications, and Settings
-- [ ] No deferred native feature leaked into the objective checkpoint
-- [ ] Desktop capability scope remains stable unless a concrete blocker required a narrowly justified change
+- [x] Ownership remains clear between titlebar, Task Center, notifications, and Settings
+- [x] No deferred native feature leaked into the objective checkpoint
+- [x] Desktop capability scope remains stable unless a concrete blocker required a narrowly justified change
 
 ## Phase 4 — Verification And Evidence Refresh
 
@@ -369,7 +407,7 @@ Goal: verify the objective desktop pass across frontend, desktop, and accessibil
 
 Checklist:
 
-- [ ] Run frontend verification:
+- [x] Run frontend verification:
   - `npm --prefix web run lint`
   - `npm --prefix web run typecheck`
   - `npm --prefix web run test`
@@ -378,14 +416,17 @@ Checklist:
   - `npm --prefix web run a11y:smoke`
   - `npm --prefix web run baseline:ui`
   - `npm --prefix web run check:bundle-budget`
-- [ ] Run desktop verification:
+- [x] Run desktop verification:
   - `npm --prefix web run test:desktop:smoke`
   - `cargo check -p ta_desktop_demo_app`
-- [ ] Verify ordinary close behavior when idle
-- [ ] Verify guarded close behavior when meaningful work is active
+- [x] Verify ordinary close behavior when idle
+- [x] Verify guarded close behavior when meaningful work is active
+- [x] Verify any reachable non-titlebar close path:
+  - idle behavior
+  - guarded behavior when meaningful work is active
 - [ ] Verify minimize behavior during idle and during long-running work
-- [ ] Verify the Task Center remains usable and authoritative after close/minimize policy updates
-- [ ] Verify desktop notification behavior remains background-only and visibility-aware
+- [x] Verify the Task Center remains usable and authoritative after close/minimize policy updates
+- [x] Verify desktop notification behavior remains background-only and visibility-aware
 - [ ] Capture refreshed evidence under `scripts/baselines/ui_capture` for:
   - titlebar desktop controls
   - Settings desktop-presence copy
@@ -394,26 +435,27 @@ Checklist:
 
 Acceptance criteria:
 
-- [ ] All required verification surfaces pass or any known failures are explicitly documented as unrelated
-- [ ] Desktop behavior matches the documented foreground-first posture
-- [ ] Screenshot evidence exists for the changed surfaces
+- [x] All required verification surfaces pass or any known failures are explicitly documented as unrelated
+- [x] Desktop behavior matches the documented foreground-first posture
+- [x] Screenshot evidence exists for the changed surfaces
 
 ## Objective Verification Checklist
 
-- [ ] Titlebar still exposes the expected shell and window-control actions
-- [ ] Close exits by default when idle
-- [ ] Meaningful active-work close is guarded
-- [ ] Minimize remains standard and unsurprising
-- [ ] Task Center remains the source of truth for task posture
-- [ ] Notifications remain bounded complements
-- [ ] Settings explains the desktop presence model without growing speculative controls
-- [ ] No tray/global-shortcut/updater surface was added
+- [x] Titlebar still exposes the expected shell and window-control actions
+- [x] Close exits by default when idle
+- [x] Meaningful active-work close is guarded
+- [x] Minimize remains standard and unsurprising
+- [x] Task Center remains the source of truth for task posture
+- [x] Notifications remain bounded complements
+- [x] Settings explains the desktop presence model without growing speculative controls
+- [x] No tray/global-shortcut/updater surface was added
 
 ## Targeted Test Additions Checklist
 
-- [ ] Add or update titlebar tests for ordinary close behavior
-- [ ] Add or update tests for guarded close behavior when a meaningful active state is present
-- [ ] Add or update tests for Settings desktop-presence copy if that copy is added
+- [x] Add or update titlebar tests for ordinary close behavior
+- [x] Add or update tests for guarded close behavior when a meaningful active state is present
+- [x] Add or update tests for any shipped non-titlebar close path if that path is reachable in frontend or desktop smoke coverage
+- [x] Add or update tests for Settings desktop-presence copy if that copy is added
 - [ ] Add or update any desktop smoke path necessary to prove idle-close versus guarded-close behavior
 
 ## Manual Review Checklist
@@ -422,28 +464,29 @@ Acceptance criteria:
 - [ ] Review minimize from the titlebar button
 - [ ] Review guarded close while a tracked long-running task is active
 - [ ] Review guarded close while the live runner is active
-- [ ] Review Settings desktop diagnostics and presence copy
+- [ ] Review any reachable non-titlebar close path, including keyboard or native window-close behavior
+- [x] Review Settings desktop diagnostics and presence copy
 - [ ] Review notification behavior while the window is visible versus backgrounded
-- [ ] Review that no new desktop clutter or speculative toggles appeared
+- [x] Review that no new desktop clutter or speculative toggles appeared
 
 ## Guardrail Review Checklist
 
-- [ ] No tray/menu implementation landed
-- [ ] No hide-to-tray-on-close behavior landed
-- [ ] No updater/relaunch UI landed
-- [ ] No true global shortcuts landed
-- [ ] No second task-status system appeared beside the Task Center
-- [ ] No capability expansion landed without narrow documented justification
-- [ ] No multi-window product posture was introduced
+- [x] No tray/menu implementation landed
+- [x] No hide-to-tray-on-close behavior landed
+- [x] No updater/relaunch UI landed
+- [x] No true global shortcuts landed
+- [x] No second task-status system appeared beside the Task Center
+- [x] No capability expansion landed without narrow documented justification
+- [x] No multi-window product posture was introduced
 
 ## Defers And Rejects
 
-- [ ] Defer tray/menu implementation until real operator evidence justifies it
-- [ ] Defer true global shortcuts outside the focused webview
-- [ ] Defer updater/relaunch UX until signed release topology exists
-- [ ] Reject hide-to-tray-on-close for the current product phase
-- [ ] Reject speculative Settings toggles for deferred native features
-- [ ] Reject notifications as a parallel task-management system
+- [x] Defer tray/menu implementation until real operator evidence justifies it
+- [x] Defer true global shortcuts outside the focused webview
+- [x] Defer updater/relaunch UX until signed release topology exists
+- [x] Reject hide-to-tray-on-close for the current product phase
+- [x] Reject speculative Settings toggles for deferred native features
+- [x] Reject notifications as a parallel task-management system
 
 ## Optional Interpretive Follow-Up Checklist
 

@@ -245,6 +245,10 @@ const desktopWindowStateDetail = computed(() => {
   const file = String(desktopWindowStateFile.value || '').trim()
   return file ? `Window geometry persists to ${file}.` : 'Window geometry persists between launches.'
 })
+const desktopPresenceTitle = 'Foreground-first workstation'
+const desktopPresenceMinimizeDetail = 'Minimize keeps the app alive in the standard desktop way.'
+const desktopPresenceCloseDetail = 'Close exits the app by default. If meaningful active work is still running, VectorGrid asks before closing.'
+const desktopPresenceTaskCenterDetail = 'Task Center remains the source of truth, and OS notifications stay supplemental when the window is not visible.'
 const desktopLogFilterLabel = computed(() => {
   if (desktopLogFilterDraft.value === 'errors') return 'Errors only'
   if (desktopLogFilterDraft.value === 'attention') return 'Warnings and errors'
@@ -276,6 +280,12 @@ const desktopDiagnosticsSnapshot = computed(() => {
     `- notifications: ${desktopNotificationPermissionLabel.value}`,
     `- window state: ${desktopWindowStateDetail.value}`,
     `- console mirroring: ${desktopLogConsoleAttached.value ? 'attached in dev' : 'buffered in-app only'}`,
+    '',
+    'Desktop presence',
+    `- posture: ${desktopPresenceTitle}`,
+    `- minimize: ${desktopPresenceMinimizeDetail}`,
+    `- close: ${desktopPresenceCloseDetail}`,
+    `- task center: ${desktopPresenceTaskCenterDetail}`,
     '',
     'Task posture',
     `- center: ${centerStatusLabel.value}`,
@@ -635,6 +645,9 @@ onBeforeUnmount(() => {
             <div class="panelMuted">
               OS notifications complement the in-app task center. They stay focused on high-signal outcomes and only route when the desktop window is not visible, so background work stays visible without routine spam.
             </div>
+            <div class="panelMuted">
+              VectorGrid stays foreground-first: minimize behaves like a normal window, close exits by default, and meaningful active work asks before closing instead of hiding the app to the tray.
+            </div>
             <div class="actions">
               <button type="button" :disabled="!canRequestDesktopNotifications" @click="requestDesktopNotifications">
                 Request OS notification permission
@@ -862,6 +875,17 @@ onBeforeUnmount(() => {
               <div class="panelMuted">
                 {{ desktopLogConsoleAttached ? 'Desktop log mirror is attached to the browser console in dev.' : 'Desktop log output stays buffered in-app outside dev console mirroring.' }}
               </div>
+            </section>
+
+            <section class="diagnosticsCard">
+              <header class="diagnosticsHead">
+                <div class="diagnosticsLabel">Desktop presence</div>
+                <div class="mono diagnosticsStamp">Foreground-first</div>
+              </header>
+              <div class="diagnosticsPrimary">{{ desktopPresenceTitle }}</div>
+              <div class="panelMuted">{{ desktopPresenceMinimizeDetail }}</div>
+              <div class="panelMuted">{{ desktopPresenceCloseDetail }}</div>
+              <div class="panelMuted">{{ desktopPresenceTaskCenterDetail }}</div>
             </section>
 
             <section class="diagnosticsCard">

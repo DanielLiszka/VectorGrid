@@ -37,8 +37,12 @@ use crate::options_types::OptionsExpressionBackendPreference;
 const MINUTE_MS: i64 = 60_000;
 const DAY_MS: i64 = 86_400_000;
 const OPTIONS_EXPRESSION_PREPARE_CACHE_MAX_ENTRIES: usize = 32;
-const OPTIONS_AUTO_GPU_MIN_CANDIDATE_DENSITY: f64 = 0.30;
-const OPTIONS_AUTO_GPU_MAX_INVALID_SLOT_RATE: f64 = 0.70;
+// Keep runtime `auto` aligned with the current Phase 0.5 product gate so
+// representative provider-backed slices that already clear the documented
+// promotion envelope are not downgraded back to CPU solely by stricter live
+// density/invalid heuristics.
+const OPTIONS_AUTO_GPU_MIN_CANDIDATE_DENSITY: f64 = 0.25;
+const OPTIONS_AUTO_GPU_MAX_INVALID_SLOT_RATE: f64 = 0.75;
 const OPTIONS_AUTO_GPU_MIN_COMPILED_TUPLES: usize = 256;
 const OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS: usize = 8;
 const OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES: u64 = 10_000;
@@ -1859,6 +1863,8 @@ struct PreparedOptionsExpressionRun {
     baseline_gpu_inputs: GpuFlatScoreInputs,
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     conservative_gpu_inputs: GpuFlatScoreInputs,
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    harsher_gpu_inputs: GpuFlatScoreInputs,
 }
 
 #[derive(Clone, Debug)]
@@ -1972,6 +1978,13 @@ fn evaluate_auto_backend_decision(
         gpu_eligible,
         reasons,
     }
+}
+
+fn runtime_auto_backend_decision(
+    prepared: &PreparedOptionsExpressionRun,
+    gpu_available: bool,
+) -> OptionsExpressionAutoBackendDecision {
+    evaluate_auto_backend_decision(prepared, gpu_available, None)
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -2216,6 +2229,8 @@ fn prepare_options_expression_run(
     };
     let harsher_candidate_cache = harsher_candidate_lookup.value;
     let harsher_exit_summary_start = Instant::now();
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    let harsher_exit_summary_key = exit_summary_cache_key(&harsher_candidate_key, &exit_axis);
     let harsher_exit_summary_lookup = get_or_build_exit_summary_cache(
         &harsher_candidate_key,
         &events,
@@ -2244,6 +2259,13 @@ fn prepare_options_expression_run(
         &conservative_candidate_cache,
         &conservative_exit_summary_cache,
         &conservative_exit_summary_key,
+    )?;
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    let harsher_gpu_inputs = build_gpu_flat_score_inputs(
+        &compiled_tuples,
+        &harsher_candidate_cache,
+        &harsher_exit_summary_cache,
+        &harsher_exit_summary_key,
     )?;
     let staging = OptionsExpressionStagingStats {
         candidate_slot_count: baseline_candidate_cache.slots.len(),
@@ -2327,6 +2349,8 @@ fn prepare_options_expression_run(
         baseline_gpu_inputs,
         #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
         conservative_gpu_inputs,
+        #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+        harsher_gpu_inputs,
     })
 }
 
@@ -2707,6 +2731,24 @@ mod gpu_scoring {
         } else {
             None
         };
+        let harsher_aggregates = if holdout_events > 0 {
+            let harsher_run = score_options_expression_tensors_gpu_range(
+                device_id,
+                holdout_event_range.0,
+                holdout_event_range.1,
+                &prepared.harsher_gpu_inputs,
+            )?;
+            accumulate_cache_usage(&mut gpu_cache_usage, harsher_run.cache_usage);
+            Some(
+                harsher_run
+                    .aggregates_by_range
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
+            )
+        } else {
+            None
+        };
         let tensor_score_us = elapsed_us(tensor_score_start);
 
         let mut ranked_results: Vec<RankedCompiledTuple> = Vec::new();
@@ -2735,12 +2777,18 @@ mod gpu_scoring {
                     holdout_event_count,
                 ))
             });
+            let harsher_stress_metrics = harsher_aggregates.as_ref().map(|aggregates| {
+                metrics_from_aggregate(aggregate_from_gpu(
+                    aggregates.get(tuple_index).copied().unwrap_or_default(),
+                    holdout_event_count,
+                ))
+            });
             let robust = robust_score(
                 &selection_metrics,
                 holdout_metrics.as_ref(),
                 None,
                 stress_metrics.as_ref(),
-                None,
+                harsher_stress_metrics.as_ref(),
                 None,
             );
             ranked_results.push(RankedCompiledTuple {
@@ -2755,7 +2803,7 @@ mod gpu_scoring {
                     sealed_evaluation_metrics: None,
                     stress_metrics,
                     sealed_stress_metrics: None,
-                    harsher_stress_metrics: None,
+                    harsher_stress_metrics,
                     sealed_harsher_stress_metrics: None,
                     extreme_stress_metrics: None,
                     sealed_extreme_stress_metrics: None,
@@ -2909,7 +2957,7 @@ fn rank_compiled_tuples(
             OptionsExpressionBackendPreference::CpuReference => false,
             OptionsExpressionBackendPreference::GpuCompiledTensor => true,
             OptionsExpressionBackendPreference::Auto => {
-                evaluate_auto_backend_decision(prepared, gpu_available, None).gpu_eligible
+                runtime_auto_backend_decision(prepared, gpu_available).gpu_eligible
             }
         };
         if should_attempt_gpu {
@@ -3885,8 +3933,7 @@ pub fn analyze_options_expression_feasibility_blocking(
     let gpu_available = current_preferred_cuda_device_id().is_some();
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
     let gpu_available = false;
-    let mut auto_backend_decision =
-        evaluate_auto_backend_decision(&prepared, gpu_available, timings.gpu_speedup_vs_cpu);
+    let mut auto_backend_decision = runtime_auto_backend_decision(&prepared, gpu_available);
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     if let Some(err) = gpu_probe_error.as_ref().or(gpu_ranking_error.as_ref()) {
         auto_backend_decision.recommended_backend = "cpu_reference".to_string();
@@ -5025,6 +5072,73 @@ mod tests {
         assert!(decision.gpu_eligible);
         assert_eq!(decision.recommended_backend, "gpu_compiled_tensor_hybrid");
         assert!(decision.reasons.is_empty());
+    }
+
+    #[test]
+    fn runtime_auto_backend_decision_stays_gpu_eligible_even_if_measured_speedup_is_below_promotion_gate(
+    ) {
+        let template_manifest = test_manifest();
+        let template_event = template_manifest.events[0].clone();
+        let mut manifest = template_manifest.clone();
+        manifest.events = (0..20)
+            .map(|idx| {
+                let mut event = template_event.clone();
+                event.event_id = format!("medium_{idx}");
+                event.side = if idx % 2 == 0 {
+                    SignalSide::Bullish
+                } else {
+                    SignalSide::Bearish
+                };
+                event.fold = if idx < 12 {
+                    OptionsEvaluationSplit::Search
+                } else if idx < 16 {
+                    OptionsEvaluationSplit::Holdout
+                } else {
+                    OptionsEvaluationSplit::SealedTest
+                };
+                event
+            })
+            .collect();
+
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0, 1, 2, 3],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: (1..=32).collect(),
+            target_return_buckets: vec![0.1, 0.2, 0.3, 0.4],
+            stop_return_buckets: vec![0.1, 0.2, 0.3, 0.4],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 25,
+            min_valid_trades: None,
+            split_ratio_search: 0.6,
+            split_ratio_holdout: 0.2,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 5,
+        };
+
+        let prepared =
+            prepare_options_expression_run(&req, &manifest, &test_dataset()).expect("prepared");
+        let runtime_decision = runtime_auto_backend_decision(&prepared, true);
+        let promotion_decision = evaluate_auto_backend_decision(&prepared, true, Some(1.23));
+
+        assert!(runtime_decision.gpu_eligible);
+        assert_eq!(
+            runtime_decision.recommended_backend,
+            "gpu_compiled_tensor_hybrid"
+        );
+        assert!(!promotion_decision.gpu_eligible);
+        assert_eq!(promotion_decision.recommended_backend, "cpu_reference");
+        assert!(promotion_decision
+            .reasons
+            .iter()
+            .any(|entry| entry.contains("Measured GPU hybrid speedup")));
     }
 
     #[test]

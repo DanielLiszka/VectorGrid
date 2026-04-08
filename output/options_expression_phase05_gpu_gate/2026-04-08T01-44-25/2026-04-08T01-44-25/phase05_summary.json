@@ -1,0 +1,540 @@
+{
+  "app_local_data_dir": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid",
+  "artifact_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\runs\\vectorgrid_run_2026-04-03T11-59-02.423520200_00-00.json",
+  "options_dataset_id": "qqq_phase05_2026_01_22_to_2026_01_28_calls_610_650_dte7_clean",
+  "dataset_manifest": {
+    "version": 1,
+    "options_dataset_id": "qqq_phase05_2026_01_22_to_2026_01_28_calls_610_650_dte7_clean",
+    "root_symbol": "QQQ",
+    "provider_name": "massive",
+    "provider_source_surface": "minute_aggregate",
+    "quote_resolution": "1m",
+    "price_semantics": "minute_aggregate",
+    "calendar_id": "market_hours_utc",
+    "timezone": "UTC",
+    "coverage_start": 1769092200000,
+    "coverage_end": 1769634840000,
+    "normalization_version": 1,
+    "quote_semantics_version": 1,
+    "corporate_action_mapping_version": 1,
+    "contract_reference_source": "massive_contract_reference",
+    "underlier_reference_source": "underlying_dataset",
+    "dataset_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\options_research\\datasets\\qqq_phase05_2026_01_22_to_2026_01_28_calls_610_650_dte7_clean\\rows.csv",
+    "row_count": 14171,
+    "contract_count": 25,
+    "aggregate_price_field": "close"
+  },
+  "response": {
+    "replay_build_ms": 769,
+    "total_preview_ms": 13891,
+    "report": {
+      "diagnostics": {
+        "parent_artifact_path": "C:\\Users\\dlisz\\AppData\\Local\\dev.vectoralpha.vectorgrid\\runs\\vectorgrid_run_2026-04-03T11-59-02.423520200_00-00.json",
+        "options_dataset_id": "qqq_phase05_2026_01_22_to_2026_01_28_calls_610_650_dte7_clean",
+        "root_symbol": "QQQ",
+        "total_events": 73766,
+        "bullish_events": 73766,
+        "bearish_events": 0,
+        "search_events": 44259,
+        "holdout_events": 14753,
+        "sealed_test_events": 14754,
+        "dataset_contracts": 25,
+        "dataset_rows": 14171,
+        "coverage_start": 1769092200000,
+        "coverage_end": 1769634840000
+      },
+      "price_semantics": "minute_aggregate",
+      "fill_model": "aggregate_research",
+      "best_available_backend": "gpu_compiled_tensor_hybrid",
+      "auto_backend_decision": {
+        "recommended_backend": "cpu_reference",
+        "gpu_eligible": false,
+        "reasons": [
+          "Candidate density 0.0% is below the current auto-GPU floor of 30.0%.",
+          "Invalid-slot rate 100.0% exceeds the current auto-GPU ceiling of 70.0%."
+        ]
+      },
+      "compiled_tuple_count": 864,
+      "per_event_candidate_slots": 36,
+      "per_candidate_exit_summaries": 24,
+      "candidate_slot_count": 2655576,
+      "compiled_candidate_count": 1030,
+      "candidate_density": 0.00038786312272742334,
+      "invalid_slot_count": 2654546,
+      "invalid_slot_rate": 0.9996121368772726,
+      "baseline_exit_summary_count": 63733824,
+      "baseline_compiled_exit_summary_count": 24720,
+      "baseline_exit_summary_density": 0.00038786312272742334,
+      "conservative_exit_summary_count": 63733824,
+      "conservative_compiled_exit_summary_count": 24720,
+      "conservative_exit_summary_density": 0.00038786312272742334,
+      "harsher_exit_summary_count": 63733824,
+      "harsher_compiled_exit_summary_count": 24720,
+      "harsher_exit_summary_density": 0.00038786312272742334,
+      "projected_event_tuple_evaluations": 63733824,
+      "structural_cache_bytes_estimate": 108878616,
+      "baseline_summary_bytes_estimate": 2039482368,
+      "conservative_summary_bytes_estimate": 2039482368,
+      "harsher_summary_bytes_estimate": 2039482368,
+      "timings": {
+        "tuple_compile_ms": 0,
+        "baseline_candidate_compile_ms": 474,
+        "baseline_exit_summary_compile_ms": 1158,
+        "conservative_candidate_compile_ms": 478,
+        "conservative_exit_summary_compile_ms": 1200,
+        "harsher_candidate_compile_ms": 510,
+        "harsher_exit_summary_compile_ms": 1425,
+        "cpu_ranking_ms": 2938,
+        "cpu_ranking_us": 2938656,
+        "gpu_ranking_ms": 694,
+        "gpu_ranking_us": 694004,
+        "gpu_tensor_score_ms": 209,
+        "gpu_tensor_score_us": 209669,
+        "gpu_exactify_ms": 441,
+        "gpu_exactify_us": 441924,
+        "gpu_sealed_stage_ms": 42,
+        "gpu_sealed_stage_us": 42411,
+        "gpu_speedup_vs_cpu": 4.234350234292598
+      },
+      "event_coverage": {
+        "total_events_with_candidates": 53,
+        "search_events_with_candidates": 0,
+        "holdout_events_with_candidates": 0,
+        "sealed_test_events_with_candidates": 53,
+        "total_events_with_baseline_outcomes": 53,
+        "search_events_with_baseline_outcomes": 0,
+        "holdout_events_with_baseline_outcomes": 0,
+        "sealed_test_events_with_baseline_outcomes": 53,
+        "total_events_with_conservative_outcomes": 53,
+        "search_events_with_conservative_outcomes": 0,
+        "holdout_events_with_conservative_outcomes": 0,
+        "sealed_test_events_with_conservative_outcomes": 53,
+        "total_events_with_harsher_outcomes": 53,
+        "search_events_with_harsher_outcomes": 0,
+        "holdout_events_with_harsher_outcomes": 0,
+        "sealed_test_events_with_harsher_outcomes": 53
+      },
+      "cache_stats": {
+        "structural_cache_hits": 0,
+        "structural_cache_misses": 3,
+        "structural_cache_entries": 3,
+        "summary_cache_hits": 0,
+        "summary_cache_misses": 3,
+        "summary_cache_entries": 3,
+        "gpu_shared_input_cache_hits": 3,
+        "gpu_shared_input_cache_misses": 1,
+        "gpu_outcome_input_cache_hits": 0,
+        "gpu_outcome_input_cache_misses": 3,
+        "gpu_output_buffer_reuses": 3,
+        "gpu_output_buffer_allocations": 1,
+        "gpu_tuple_chunk_count": 1,
+        "gpu_tuple_chunk_size": 864,
+        "gpu_kernel_launch_count": 4,
+        "gpu_tuple_budget_bytes": 67108864,
+        "gpu_outcome_tensor_bytes": 573604416,
+        "gpu_shared_input_bytes_per_chunk": 6912,
+        "gpu_output_bytes_per_chunk": 13824,
+        "gpu_total_device_bytes_per_chunk": 573625152,
+        "gpu_device_total_memory_bytes": 25756696576,
+        "gpu_device_free_memory_bytes": 24154996736,
+        "gpu_device_usable_memory_bytes": 23886561280,
+        "gpu_memory_budget_source": "free_memory_headroom",
+        "gpu_outcome_tensor_fits_in_memory": true,
+        "gpu_chunk_plan_fits_in_memory": true,
+        "gpu_plan_notes": []
+      },
+      "invalid_reasons": [
+        {
+          "reason": "no_expiration_in_bucket",
+          "count": 1192
+        },
+        {
+          "reason": "entry_past_cutoff",
+          "count": 1786
+        },
+        {
+          "reason": "contract_not_eligible_as_of_event",
+          "count": 2651568
+        }
+      ],
+      "axis_coverage": {
+        "delay_minutes": [
+          {
+            "delay_minutes": 0,
+            "slot_count": 885192,
+            "valid_slot_count": 328,
+            "invalid_slot_count": 884864,
+            "valid_rate": 0.0003705410803531889,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 396
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 608
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 883860
+              }
+            ]
+          },
+          {
+            "delay_minutes": 1,
+            "slot_count": 885192,
+            "valid_slot_count": 336,
+            "invalid_slot_count": 884856,
+            "valid_rate": 0.0003795786676788764,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 396
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 600
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 883860
+              }
+            ]
+          },
+          {
+            "delay_minutes": 5,
+            "slot_count": 885192,
+            "valid_slot_count": 366,
+            "invalid_slot_count": 884826,
+            "valid_rate": 0.0004134696201502047,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 400
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 578
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 883848
+              }
+            ]
+          }
+        ],
+        "dte_days": [
+          {
+            "dte_days": 1,
+            "slot_count": 885192,
+            "valid_slot_count": 499,
+            "invalid_slot_count": 884693,
+            "valid_rate": 0.00056371950943976,
+            "invalid_reasons": [
+              {
+                "reason": "entry_past_cutoff",
+                "count": 837
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 883856
+              }
+            ]
+          },
+          {
+            "dte_days": 3,
+            "slot_count": 885192,
+            "valid_slot_count": 335,
+            "invalid_slot_count": 884857,
+            "valid_rate": 0.00037844896926316553,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 412
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 589
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 883856
+              }
+            ]
+          },
+          {
+            "dte_days": 5,
+            "slot_count": 885192,
+            "valid_slot_count": 196,
+            "invalid_slot_count": 884996,
+            "valid_rate": 0.0002214208894793446,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 780
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 360
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 883856
+              }
+            ]
+          }
+        ],
+        "moneyness_buckets": [
+          {
+            "moneyness_bucket": "atm",
+            "slot_count": 663894,
+            "valid_slot_count": 333,
+            "invalid_slot_count": 663561,
+            "valid_rate": 0.0005015860965756582,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 298
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 371
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 662892
+              }
+            ]
+          },
+          {
+            "moneyness_bucket": "otm1",
+            "slot_count": 663894,
+            "valid_slot_count": 297,
+            "invalid_slot_count": 663597,
+            "valid_rate": 0.000447360572621533,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 298
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 407
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 662892
+              }
+            ]
+          },
+          {
+            "moneyness_bucket": "otm2",
+            "slot_count": 663894,
+            "valid_slot_count": 253,
+            "invalid_slot_count": 663641,
+            "valid_rate": 0.0003810849322331577,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 298
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 451
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 662892
+              }
+            ]
+          },
+          {
+            "moneyness_bucket": "itm1",
+            "slot_count": 663894,
+            "valid_slot_count": 147,
+            "invalid_slot_count": 663747,
+            "valid_rate": 0.0002214208894793446,
+            "invalid_reasons": [
+              {
+                "reason": "no_expiration_in_bucket",
+                "count": 298
+              },
+              {
+                "reason": "entry_past_cutoff",
+                "count": 557
+              },
+              {
+                "reason": "contract_not_eligible_as_of_event",
+                "count": 662892
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "phase05_gates": {
+    "valid_slot_density_gate_min": 0.25,
+    "valid_slot_density_observed": 0.00038786312272742334,
+    "valid_slot_density_pass": false,
+    "invalid_slot_rate_gate_max": 0.75,
+    "invalid_slot_rate_observed": 0.9996121368772726,
+    "invalid_slot_rate_pass": false,
+    "cache_reuse_gate_min": 0.9,
+    "structural_cache_reuse_observed": 1.0,
+    "structural_cache_reuse_pass": true,
+    "summary_cache_reuse_observed": 1.0,
+    "summary_cache_reuse_pass": true,
+    "gpu_speedup_gate_min": 2.75,
+    "gpu_speedup_observed": 4.311374116734356,
+    "gpu_speedup_pass": true,
+    "scorer_share_of_preview_observed": 0.04996040601828522,
+    "scorer_backend_used_for_share": "gpu_compiled_tensor_hybrid"
+  },
+  "recommendations": [
+    "The current representative grid is still quality-bound rather than scorer-bound: candidate density is 0.0% and invalid-slot rate is 100.0%. Narrow the search space before promoting GPU as the default backend.",
+    "`contract_not_eligible_as_of_event` accounts for 99.9% of invalid slots, and the current dataset only overlaps sealed/test events. Match the provider download window to the parent artifact's search/holdout dates before treating this slice as representative.",
+    "GPU hybrid ranking is now materially faster on this workload (4.31x median vs CPU). The next blocker is grid quality, not scorer throughput.",
+    "Estimated backend-only preview wall time now favors the accelerated path (1.34x vs CPU), but the large-grid defaults still need denser candidate coverage before product promotion."
+  ],
+  "warm_runs": [
+    {
+      "iteration": 1,
+      "replay_build_ms": 1,
+      "total_preview_ms": 10135,
+      "best_available_backend": "gpu_compiled_tensor_hybrid",
+      "auto_backend_recommended_backend": "cpu_reference",
+      "auto_backend_reasons": [
+        "Candidate density 0.0% is below the current auto-GPU floor of 30.0%.",
+        "Invalid-slot rate 100.0% exceeds the current auto-GPU ceiling of 70.0%."
+      ],
+      "structural_cache_hits": 3,
+      "structural_cache_misses": 0,
+      "summary_cache_hits": 3,
+      "summary_cache_misses": 0,
+      "gpu_memory_budget_source": "free_memory_headroom",
+      "gpu_outcome_tensor_fits_in_memory": true,
+      "gpu_chunk_plan_fits_in_memory": true
+    }
+  ],
+  "backend_comparison": {
+    "accelerated_backend_preference": "Auto",
+    "cpu_reference_preview": {
+      "backend_preference": "CpuReference",
+      "best_available_backend": "cpu_reference",
+      "auto_backend_recommended_backend": "cpu_reference",
+      "auto_backend_reasons": [
+        "Candidate density 0.0% is below the current auto-GPU floor of 30.0%.",
+        "Invalid-slot rate 100.0% exceeds the current auto-GPU ceiling of 70.0%."
+      ],
+      "iterations": 5,
+      "wall_ms_samples": [
+        9029,
+        8972,
+        8959,
+        9032,
+        8970
+      ],
+      "preview_ms_samples": [
+        9029,
+        8972,
+        8959,
+        9032,
+        8970
+      ],
+      "estimated_backend_preview_ms_samples": [
+        9029,
+        8972,
+        8959,
+        9032,
+        8970
+      ],
+      "ranking_ms_samples": [
+        2978,
+        2978,
+        2953,
+        2991,
+        2953
+      ],
+      "ranking_us_samples": [
+        2978737,
+        2978994,
+        2953976,
+        2991398,
+        2953795
+      ],
+      "median_wall_ms": 8972,
+      "median_preview_ms": 8972,
+      "median_estimated_backend_preview_ms": 8972,
+      "median_ranking_ms": 2978,
+      "median_ranking_us": 2978737,
+      "candidate_density": 0.00038786312272742334,
+      "invalid_slot_rate": 0.9996121368772726,
+      "gpu_memory_budget_source": "free_memory_headroom",
+      "gpu_outcome_tensor_fits_in_memory": true,
+      "gpu_chunk_plan_fits_in_memory": true
+    },
+    "accelerated_preview": {
+      "backend_preference": "Auto",
+      "best_available_backend": "gpu_compiled_tensor_hybrid",
+      "auto_backend_recommended_backend": "cpu_reference",
+      "auto_backend_reasons": [
+        "Candidate density 0.0% is below the current auto-GPU floor of 30.0%.",
+        "Invalid-slot rate 100.0% exceeds the current auto-GPU ceiling of 70.0%."
+      ],
+      "iterations": 5,
+      "wall_ms_samples": [
+        9661,
+        9645,
+        9632,
+        9634,
+        9637
+      ],
+      "preview_ms_samples": [
+        9661,
+        9645,
+        9632,
+        9634,
+        9637
+      ],
+      "estimated_backend_preview_ms_samples": [
+        6719,
+        6711,
+        6698,
+        6675,
+        6692
+      ],
+      "ranking_ms_samples": [
+        678,
+        704,
+        694,
+        690,
+        690
+      ],
+      "ranking_us_samples": [
+        678399,
+        704869,
+        694011,
+        690303,
+        690902
+      ],
+      "median_wall_ms": 9637,
+      "median_preview_ms": 9637,
+      "median_estimated_backend_preview_ms": 6698,
+      "median_ranking_ms": 690,
+      "median_ranking_us": 690902,
+      "candidate_density": 0.00038786312272742334,
+      "invalid_slot_rate": 0.9996121368772726,
+      "gpu_memory_budget_source": "free_memory_headroom",
+      "gpu_outcome_tensor_fits_in_memory": true,
+      "gpu_chunk_plan_fits_in_memory": true
+    },
+    "estimated_backend_preview_wall_speedup_vs_cpu": 1.339504329650642,
+    "preview_wall_speedup_vs_cpu": 1.339504329650642,
+    "hybrid_ranking_speedup_vs_cpu": 4.311374116734356,
+    "scorer_only_speedup_vs_cpu": 4.311374116734356,
+    "notes": [
+      "accelerated backend preference used auto-selection so the preview/full-run target reflects the best available backend on this machine"
+    ]
+  }
+}

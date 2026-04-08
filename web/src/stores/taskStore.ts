@@ -576,6 +576,20 @@ export function activeTasksCount(): number {
   return count;
 }
 
+export function shouldGuardDesktopCloseForTask(
+  task: Pick<TrackedTask, "command" | "status"> | null | undefined,
+): boolean {
+  if (!task) return false;
+  const status = String(task.status || "").trim();
+  if (status !== "queued" && status !== "running" && status !== "cancelling") {
+    return false;
+  }
+  return (
+    isTauriCommand(task.command) &&
+    PROGRESS_ELIGIBLE_COMMANDS.has(task.command)
+  );
+}
+
 export function taskPostureSnapshot(
   stateOrHistoryLimit?: TaskPostureStateLike | number,
   historyLimitArg = 8,

@@ -153,6 +153,11 @@ Current state summary:
   - frameless window decorations are enabled in the canonical and mirrored Tauri configs
   - [DesktopTitlebar.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\DesktopTitlebar.vue) is now the primary window chrome, with drag-region support, window controls, command-palette access, and run/status context
   - [main.json](C:\Rust Projects\ta_desktop_demo\src-tauri\capabilities\main.json) now grants only the explicit `core:window` permissions needed for drag/minimize/maximize/close behavior
+  - desktop presence is now explicit and foreground-first:
+    - minimize remains standard window backgrounding
+    - close exits by default
+    - a narrow close guard is allowed only for meaningful active work
+    - close does not hide the app to the tray
   - the titlebar and shell landmarks now pass the browser-side accessibility smoke gate
 - still deferred:
   - updater
@@ -205,6 +210,10 @@ This plan is complete when:
 - high-signal long-running workflow events can surface as OS notifications
 - runtime/frontend/backend logs have a defined in-app inspection path
 - tray/menu/titlebar decisions are explicit and implemented or intentionally rejected
+- desktop presence semantics are explicit:
+  - minimize is standard
+  - close exits by default
+  - active-work close confirmation is narrow rather than routine
 - updater readiness is documented and either implemented or deferred behind release-signing prerequisites
 - desktop additions ship with accessibility and regression gates
 - the desktop productization work preserves the currently documented frontend functional-coverage matrix
@@ -535,7 +544,11 @@ Acceptance:
 - [x] Decide whether custom titlebar/chrome is worth shipping for this app.
 - [x] If yes, implement a minimal titlebar with drag region and window controls.
 - [x] If yes, scope only the required window permissions.
-- [ ] Decide whether tray/menu meaningfully improves long-running workflow UX.
+- [x] Make the desktop presence model explicit:
+  - minimize remains standard
+  - close exits by default
+  - active-work close confirmation stays narrow
+- [x] Decide whether tray/menu meaningfully improves long-running workflow UX.
 - [ ] If yes, add tray/menu quick actions tied to the existing command system.
 - [x] Reassess global shortcuts only after tray/titlebar decisions are settled.
 - [ ] If global shortcuts are adopted, keep the set minimal and user-justified.

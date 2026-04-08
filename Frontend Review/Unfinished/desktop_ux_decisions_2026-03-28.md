@@ -48,6 +48,33 @@ Current refs:
 - [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
 - [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue)
 
+### Foreground-first presence / close and minimize semantics
+
+Decision: adopted.
+
+Why:
+
+- the current app is a single-window workstation, not a tray-resident utility
+- the titlebar, task center, and notification surfaces already support a foreground-first model cleanly
+- standard desktop semantics are clearer than background identity for the current product phase
+- the remaining safety gap was not minimize or tray support; it was ensuring that meaningful active work is not silently abandoned on close
+
+Current refs:
+
+- [DesktopTitlebar.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\DesktopTitlebar.vue)
+- [TaskCenterOverlay.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\TaskCenterOverlay.vue)
+- [SettingsWorkspacePanel.vue](C:\Rust Projects\ta_desktop_demo\web\src\components\SettingsWorkspacePanel.vue)
+- [desktopProductization.ts](C:\Rust Projects\ta_desktop_demo\web\src\services\desktopProductization.ts)
+- [src-tauri/tauri.conf.json](C:\Rust Projects\ta_desktop_demo\src-tauri\tauri.conf.json)
+
+Current behavior:
+
+- minimize behaves like a normal desktop window action
+- close exits the app by default
+- a narrow close guard appears only when meaningful active work would make silent exit surprising or unsafe
+- close does not hide the app to the tray
+- notifications remain supplemental and background-only when the window is not visible
+
 ## Deferred
 
 ### Tray / menu

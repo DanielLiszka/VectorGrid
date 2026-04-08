@@ -1,9 +1,10 @@
+use ta_app_core::options_types::OptionsStructureFamily;
 use ta_app_core::{
     ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
     OptionsEvaluationSplit, OptionsExitTemplateFamily, OptionsExpressionBackendPreference,
     OptionsExpressionRunRequest, OptionsFillModelFamily, OptionsMoneynessBucket, OptionsPriceRow,
     OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1,
-    OptionsStaticFilterBundle, SignalSide,
+    OptionsSplitAssignmentMode, OptionsStaticFilterBundle, SignalSide,
 };
 
 const MINUTE_MS: i64 = 60_000;
@@ -228,6 +229,7 @@ pub fn synthetic_request() -> OptionsExpressionRunRequest {
         parent_artifact_path: "synthetic://bench".to_string(),
         parent_candidate_index: None,
         options_dataset_id: "bench_spy".to_string(),
+        structure_family: OptionsStructureFamily::LongSingle,
         backend_preference: OptionsExpressionBackendPreference::Auto,
         delay_minutes: vec![0, 1, 5],
         dte_buckets: vec![1, 3, 5],
@@ -252,6 +254,7 @@ pub fn synthetic_request() -> OptionsExpressionRunRequest {
         min_valid_trades: Some(1),
         split_ratio_search: 0.6,
         split_ratio_holdout: 0.2,
+        split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
         sealed_finalist_count: 3,
     }
 }
