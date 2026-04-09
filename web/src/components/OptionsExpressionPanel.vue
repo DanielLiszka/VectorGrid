@@ -1356,6 +1356,32 @@ const selectedArtifactDerivedMetrics = computed(() => {
     },
   ]
 })
+const selectedArtifactLeadershipRows = computed(() => {
+  const artifact = selectedArtifactSummary.value
+  if (!artifact || !hasArtifactLeaderSummaryData(artifact)) return []
+  return [
+    {
+      key: 'artifact-leadership-label',
+      label: 'Leadership',
+      value: artifactLeadershipLabel(artifact),
+    },
+    {
+      key: 'artifact-leadership-map',
+      label: 'Retained leaders',
+      value: artifactLeadershipMap(artifact),
+    },
+    {
+      key: 'artifact-leadership-disagreement',
+      label: 'Summary disagreement',
+      value: artifactLeadershipDisagreement(artifact),
+    },
+    {
+      key: 'artifact-robust-leader-finalist',
+      label: 'Robust leader',
+      value: artifactRobustLeaderFinalistDetail(artifact),
+    },
+  ]
+})
 const selectedArtifactCoverageAdequacy = computed(() => {
   const artifact = selectedArtifactSummary.value
   if (!artifact) return null
@@ -2636,41 +2662,73 @@ function selectInspectionRow(eventId: string): void {
   store.clearEventPathInspection()
 }
 
-function formatArtifactOptionLabel(entry: {
-  ts: string
-  path: string
-  optionsDatasetId: string
-  backendUsed: string
-  priceSemantics: string
-  requestBackendPreference?: string
-  requestFillModel?: string
-  requestStructureFamily?: string
-  topValidationVerdict?: OptionsExpressionValidationVerdict | undefined
-  backendFallbackReason?: string
-  tupleCount: number
-  bestRobustScore: number
-  bestSelectionExpectancyPerPremium: number
-  bestHoldoutExpectancyPerPremium: number | null
-  bestSealedExpectancyPerPremium: number | null
-  bestStressExpectancyPerPremium: number | null
-  bestSealedStressExpectancyPerPremium: number | null
-  bestHarsherStressExpectancyPerPremium: number | null
-  bestSealedHarsherStressExpectancyPerPremium: number | null
-  bestExtremeStressExpectancyPerPremium: number | null
-  bestSealedExtremeStressExpectancyPerPremium: number | null
-  sealedEvaluatedTupleCount?: number
-  sealedFinalistBudget?: number
-  hasHoldoutMetrics: boolean
-  hasSealedEvaluationMetrics: boolean
-  hasStressMetrics: boolean
-  hasHarsherStressMetrics: boolean
-  hasExtremeStressMetrics: boolean
-}): string {
-  const validation = describeArtifactValidation(entry as OptionsExpressionArtifactSummary)
+function formatTupleIdentityShort(index: number | null | undefined): string | null {
+  if (index == null || index < 0 || !Number.isFinite(index)) return null
+  return `#${index + 1}`
+}
+
+function hasArtifactLeaderSummaryData(entry: OptionsExpressionArtifactSummary): boolean {
+  const summary = entry.leaderSummary
+  if (!summary) return false
+  return (
+    summary.distinctLeaderCount > 0
+    || summary.searchLeaderTupleIndex != null
+    || summary.robustLeaderTupleIndex != null
+    || summary.holdoutLeaderTupleIndex != null
+    || summary.sealedLeaderTupleIndex != null
+    || summary.stressLeaderTupleIndex != null
+    || summary.robustLeaderReachedSealedFinalist != null
+  )
+}
+
+function artifactLeadershipLabel(entry: OptionsExpressionArtifactSummary): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return '—'
+  const count = entry.leaderSummary?.distinctLeaderCount ?? 0
+  if (count <= 0) return '—'
+  if (count === 1) return 'same retained leader'
+  return `${count} retained leaders`
+}
+
+function artifactLeadershipMap(entry: OptionsExpressionArtifactSummary): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return '—'
+  const parts = [
+    ['Sel', formatTupleIdentityShort(entry.leaderSummary?.searchLeaderTupleIndex)],
+    ['Robust', formatTupleIdentityShort(entry.leaderSummary?.robustLeaderTupleIndex)],
+    ['Hold', formatTupleIdentityShort(entry.leaderSummary?.holdoutLeaderTupleIndex)],
+    ['Sealed', formatTupleIdentityShort(entry.leaderSummary?.sealedLeaderTupleIndex)],
+    ['Stress', formatTupleIdentityShort(entry.leaderSummary?.stressLeaderTupleIndex)],
+  ]
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .map(([label, value]) => `${label} ${value}`)
+  return parts.length > 0 ? parts.join(' · ') : '—'
+}
+
+function artifactLeadershipDisagreement(entry: OptionsExpressionArtifactSummary): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return '—'
+  const parts: string[] = []
+  if (entry.leaderSummary?.searchVsRobustDisagree) parts.push('Sel≠Robust')
+  if (entry.leaderSummary?.robustVsHoldoutDisagree === true) parts.push('Robust≠Hold')
+  if (entry.leaderSummary?.robustVsSealedDisagree === true) parts.push('Robust≠Sealed')
+  if (parts.length === 0) return 'Leadership aligned across present lanes'
+  return parts.join(' · ')
+}
+
+function artifactRobustLeaderFinalistDetail(entry: OptionsExpressionArtifactSummary): string {
+  if (!hasArtifactLeaderSummaryData(entry)) return '—'
+  const reached = entry.leaderSummary?.robustLeaderReachedSealedFinalist
+  const rank = entry.leaderSummary?.robustLeaderSealedFinalRank
+  if (reached == null) return '—'
+  if (!reached) return 'Robust leader did not reach the sealed finalist set'
+  if (rank != null) return `Robust leader reached sealed finalists (#${rank})`
+  return 'Robust leader reached the sealed finalist set'
+}
+
+function formatArtifactOptionLabel(entry: OptionsExpressionArtifactSummary): string {
+  const validation = describeArtifactValidation(entry)
   const lane = describeRealismLane(entry.priceSemantics, entry.requestFillModel)
   const backendRoute = describeBackendRoute(
     entry.requestBackendPreference,
-    (entry as OptionsExpressionArtifactSummary).backendUsed,
+    entry.backendUsed,
     entry.backendFallbackReason,
   )
   const parts = [
@@ -2720,6 +2778,10 @@ function formatArtifactOptionLabel(entry: {
   }
   if ((entry.sealedFinalistBudget || 0) > 0) {
     parts.push(`finalists ${entry.sealedEvaluatedTupleCount || 0}/${entry.sealedFinalistBudget || 0}`)
+  }
+  const leadership = artifactLeadershipLabel(entry)
+  if (leadership !== '—') {
+    parts.push(leadership)
   }
   if (normalizeText(entry.backendFallbackReason)) {
     parts.push('fallback')
@@ -3216,6 +3278,12 @@ function focusTupleIndex(index: number): void {
         <div v-if="selectedArtifactSummary" class="panelMuted mono">
           {{ selectedArtifactBackendRoute.label }} · {{ selectedArtifactRealismLane.label }} · {{ selectedArtifactSummary.requestFillModel || 'aggregate_research' }} · validation {{ selectedArtifactValidation?.label ?? 'Search only' }} · sel {{ selectedArtifactSummary.bestSelectionExpectancyPerPremium.toFixed(3) }}<template v-if="selectedArtifactSummary.bestHoldoutExpectancyPerPremium != null"> · hold {{ selectedArtifactSummary.bestHoldoutExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExpectancyPerPremium != null"> · sealed {{ selectedArtifactSummary.bestSealedExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestStressExpectancyPerPremium != null"> · stress {{ selectedArtifactSummary.bestStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedStressExpectancyPerPremium != null"> · sealed stress {{ selectedArtifactSummary.bestSealedStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestHarsherStressExpectancyPerPremium != null"> · harsher {{ selectedArtifactSummary.bestHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium != null"> · sealed harsher {{ selectedArtifactSummary.bestSealedHarsherStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestExtremeStressExpectancyPerPremium != null"> · extreme {{ selectedArtifactSummary.bestExtremeStressExpectancyPerPremium.toFixed(3) }}</template><template v-if="selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium != null"> · sealed extreme {{ selectedArtifactSummary.bestSealedExtremeStressExpectancyPerPremium.toFixed(3) }}</template>
         </div>
+        <div v-if="selectedArtifactLeadershipRows.length > 0" class="panelMuted mono">
+          {{ selectedArtifactLeadershipRows[0]?.value }} · {{ selectedArtifactLeadershipRows[1]?.value }}
+        </div>
+        <div v-if="selectedArtifactLeadershipRows.length > 0" class="panelMuted">
+          {{ selectedArtifactLeadershipRows[2]?.value }} · {{ selectedArtifactLeadershipRows[3]?.value }}
+        </div>
         <div v-if="selectedArtifactValidation" class="panelMuted">
           {{ selectedArtifactValidation.detail }}
         </div>
@@ -3293,6 +3361,8 @@ function focusTupleIndex(index: number): void {
                   <th>Adequacy</th>
                   <th>Overlap</th>
                   <th>Validation</th>
+                  <th>Leadership</th>
+                  <th>Disagree</th>
                   <th>Validated / Fragile</th>
                   <th>Validated %</th>
                   <th>Stress %</th>
@@ -3332,6 +3402,12 @@ function focusTupleIndex(index: number): void {
                   </td>
                   <td class="mono">
                     {{ describeArtifactValidation(entry)?.label ?? 'Search only' }}
+                  </td>
+                  <td class="mono">
+                    {{ artifactLeadershipLabel(entry) }}<template v-if="(entry.leaderSummary?.distinctLeaderCount ?? 0) > 0"> · {{ artifactLeadershipMap(entry) }}</template>
+                  </td>
+                  <td class="mono">
+                    {{ artifactLeadershipDisagreement(entry) }}<template v-if="entry.leaderSummary?.robustLeaderReachedSealedFinalist != null"> · {{ artifactRobustLeaderFinalistDetail(entry) }}</template>
                   </td>
                   <td class="mono">
                     {{ entry.validatedTupleCount ?? 0 }} / {{ entry.stressFragileTupleCount ?? 0 }}

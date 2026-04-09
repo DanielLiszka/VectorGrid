@@ -15,6 +15,18 @@ function normalizeOptionalNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function normalizeOptionalBoolean(value: unknown): boolean | null {
+  if (value === true) return true
+  if (value === false) return false
+  if (value == null) return null
+  if (typeof value === 'string') {
+    const lowered = value.trim().toLowerCase()
+    if (lowered === 'true') return true
+    if (lowered === 'false') return false
+  }
+  return null
+}
+
 function normalizeStringList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.map((entry) => normalizeText(entry)).filter((entry) => entry.length > 0)
@@ -436,6 +448,7 @@ export interface OptionsExpressionArtifactSummary {
   bestSealedHarsherStressExpectancyPerPremium: number | null
   bestExtremeStressExpectancyPerPremium: number | null
   bestSealedExtremeStressExpectancyPerPremium: number | null
+  leaderSummary: OptionsExpressionArtifactLeaderSummary
   topValidationVerdict?: OptionsExpressionValidationVerdict | undefined
   sealedFinalistBudget?: number
   sealedEvaluatedTupleCount?: number
@@ -446,6 +459,20 @@ export interface OptionsExpressionArtifactSummary {
   hasStressMetrics: boolean
   hasHarsherStressMetrics: boolean
   hasExtremeStressMetrics: boolean
+}
+
+export interface OptionsExpressionArtifactLeaderSummary {
+  searchLeaderTupleIndex: number | null
+  robustLeaderTupleIndex: number | null
+  holdoutLeaderTupleIndex: number | null
+  sealedLeaderTupleIndex: number | null
+  stressLeaderTupleIndex: number | null
+  distinctLeaderCount: number
+  searchVsRobustDisagree: boolean
+  robustVsHoldoutDisagree: boolean | null
+  robustVsSealedDisagree: boolean | null
+  robustLeaderReachedSealedFinalist: boolean | null
+  robustLeaderSealedFinalRank: number | null
 }
 
 export interface OptionsExpressionArtifactRecord {
@@ -1043,6 +1070,10 @@ function normalizeRequest(raw: unknown): OptionsExpressionRequestSummary {
 
 function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpressionArtifactSummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const leaderSummaryRaw =
+    row.leader_summary && typeof row.leader_summary === 'object'
+      ? (row.leader_summary as Record<string, unknown>)
+      : {}
   return {
     ts: normalizeText(row.ts),
     path: normalizeText(row.path),
@@ -1088,6 +1119,25 @@ function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpress
     bestSealedExtremeStressExpectancyPerPremium: normalizeOptionalNumber(
       row.best_sealed_extreme_stress_expectancy_per_premium,
     ),
+    leaderSummary: {
+      searchLeaderTupleIndex: normalizeOptionalNumber(leaderSummaryRaw.search_leader_tuple_index),
+      robustLeaderTupleIndex: normalizeOptionalNumber(leaderSummaryRaw.robust_leader_tuple_index),
+      holdoutLeaderTupleIndex: normalizeOptionalNumber(leaderSummaryRaw.holdout_leader_tuple_index),
+      sealedLeaderTupleIndex: normalizeOptionalNumber(leaderSummaryRaw.sealed_leader_tuple_index),
+      stressLeaderTupleIndex: normalizeOptionalNumber(leaderSummaryRaw.stress_leader_tuple_index),
+      distinctLeaderCount: normalizeNumber(leaderSummaryRaw.distinct_leader_count),
+      searchVsRobustDisagree: Boolean(leaderSummaryRaw.search_vs_robust_disagree),
+      robustVsHoldoutDisagree: normalizeOptionalBoolean(
+        leaderSummaryRaw.robust_vs_holdout_disagree,
+      ),
+      robustVsSealedDisagree: normalizeOptionalBoolean(leaderSummaryRaw.robust_vs_sealed_disagree),
+      robustLeaderReachedSealedFinalist: normalizeOptionalBoolean(
+        leaderSummaryRaw.robust_leader_reached_sealed_finalist,
+      ),
+      robustLeaderSealedFinalRank: normalizeOptionalNumber(
+        leaderSummaryRaw.robust_leader_sealed_final_rank,
+      ),
+    },
     topValidationVerdict: normalizeValidationVerdict(row.top_validation_verdict),
     sealedFinalistBudget: normalizeNumber(row.sealed_finalist_budget),
     sealedEvaluatedTupleCount: normalizeNumber(row.sealed_evaluated_tuple_count),

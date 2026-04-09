@@ -943,6 +943,66 @@ describe('optionsExpressionStore', () => {
     expect(store.latestRun).toBeNull()
   })
 
+  it('refreshes saved artifact summaries even when retained-leader summary fields are absent', async () => {
+    listOptionsExpressionArtifactsMock.mockResolvedValue([
+      {
+        ts: '2026-04-05T12:00:00Z',
+        path: 'C:/runs/vectorgrid_options_expression_legacy.json',
+        bytes: 2048,
+        parentArtifactId: 'vectorgrid_run_1',
+        parentStrategyKind: 'DoubleMa',
+        rootSymbol: 'SPY',
+        optionsDatasetId: 'spy_options',
+        backendUsed: 'cpu_reference',
+        backendFallbackReason: '',
+        priceSemantics: 'minute_aggregate',
+        requestBackendPreference: 'auto',
+        requestFillModel: 'aggregate_research',
+        requestStructureFamily: 'long_single',
+        requestSplitAssignmentMode: 'event_chronological',
+        coverageAdequacyVerdict: 'healthy',
+        coverageNonPromotable: false,
+        searchOverlapRate: 1,
+        holdoutOverlapRate: 1,
+        sealedTestOverlapRate: 1,
+        searchCandidateCoverageRate: 1,
+        holdoutCandidateCoverageRate: 1,
+        sealedTestCandidateCoverageRate: 1,
+        searchBaselineOutcomeCoverageRate: 1,
+        holdoutBaselineOutcomeCoverageRate: 1,
+        sealedTestBaselineOutcomeCoverageRate: 1,
+        tupleCount: 1,
+        bestRobustScore: 0.18,
+        bestSelectionExpectancyPerPremium: 0.2,
+        bestHoldoutExpectancyPerPremium: null,
+        bestSealedExpectancyPerPremium: null,
+        bestStressExpectancyPerPremium: null,
+        bestSealedStressExpectancyPerPremium: null,
+        bestHarsherStressExpectancyPerPremium: null,
+        bestSealedHarsherStressExpectancyPerPremium: null,
+        bestExtremeStressExpectancyPerPremium: null,
+        bestSealedExtremeStressExpectancyPerPremium: null,
+        topValidationVerdict: 'search_only',
+        validatedTupleCount: 0,
+        stressFragileTupleCount: 0,
+        hasHoldoutMetrics: false,
+        hasSealedEvaluationMetrics: false,
+        hasStressMetrics: false,
+        hasHarsherStressMetrics: false,
+        hasExtremeStressMetrics: false,
+      } as any,
+    ])
+
+    const store = useOptionsExpressionStore()
+    store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
+
+    await store.refreshArtifacts()
+
+    expect(store.artifacts).toHaveLength(1)
+    expect(store.selectedArtifactPath).toBe('C:/runs/vectorgrid_options_expression_legacy.json')
+    expect(store.statusLine).toContain('Loaded 1 saved options expression artifact')
+  })
+
   it('restores the matching realism lane from reopened artifact semantics', async () => {
     loadOptionsExpressionArtifactMock.mockResolvedValue(makeArtifactRecord({
       artifactPath: 'C:/runs/vectorgrid_options_expression_quotes.json',

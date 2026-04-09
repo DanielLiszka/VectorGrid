@@ -388,6 +388,19 @@ describe('OptionsExpressionPanel', () => {
         bestSealedHarsherStressExpectancyPerPremium: 0.01,
         bestExtremeStressExpectancyPerPremium: -0.01,
         bestSealedExtremeStressExpectancyPerPremium: -0.02,
+        leaderSummary: {
+          searchLeaderTupleIndex: 1,
+          robustLeaderTupleIndex: 0,
+          holdoutLeaderTupleIndex: 1,
+          sealedLeaderTupleIndex: 1,
+          stressLeaderTupleIndex: 0,
+          distinctLeaderCount: 2,
+          searchVsRobustDisagree: true,
+          robustVsHoldoutDisagree: true,
+          robustVsSealedDisagree: true,
+          robustLeaderReachedSealedFinalist: false,
+          robustLeaderSealedFinalRank: null,
+        },
         topValidationVerdict: 'stress_fragile',
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
@@ -433,6 +446,19 @@ describe('OptionsExpressionPanel', () => {
         bestSealedHarsherStressExpectancyPerPremium: 0.08,
         bestExtremeStressExpectancyPerPremium: 0.07,
         bestSealedExtremeStressExpectancyPerPremium: 0.06,
+        leaderSummary: {
+          searchLeaderTupleIndex: 0,
+          robustLeaderTupleIndex: 0,
+          holdoutLeaderTupleIndex: 0,
+          sealedLeaderTupleIndex: 0,
+          stressLeaderTupleIndex: 0,
+          distinctLeaderCount: 1,
+          searchVsRobustDisagree: false,
+          robustVsHoldoutDisagree: false,
+          robustVsSealedDisagree: false,
+          robustLeaderReachedSealedFinalist: true,
+          robustLeaderSealedFinalRank: 1,
+        },
         topValidationVerdict: 'sealed_finalist',
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
@@ -478,6 +504,19 @@ describe('OptionsExpressionPanel', () => {
         bestSealedHarsherStressExpectancyPerPremium: 0.07,
         bestExtremeStressExpectancyPerPremium: 0.05,
         bestSealedExtremeStressExpectancyPerPremium: 0.04,
+        leaderSummary: {
+          searchLeaderTupleIndex: 2,
+          robustLeaderTupleIndex: 0,
+          holdoutLeaderTupleIndex: 1,
+          sealedLeaderTupleIndex: 0,
+          stressLeaderTupleIndex: 0,
+          distinctLeaderCount: 3,
+          searchVsRobustDisagree: true,
+          robustVsHoldoutDisagree: true,
+          robustVsSealedDisagree: false,
+          robustLeaderReachedSealedFinalist: true,
+          robustLeaderSealedFinalRank: 2,
+        },
         topValidationVerdict: 'sealed_finalist',
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
@@ -558,6 +597,10 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Aggregate lane')
     expect(wrapper.text()).toContain('aggregate_research')
     expect(wrapper.text()).toContain('validation Stress-fragile')
+    expect(wrapper.text()).toContain('2 retained leaders')
+    expect(wrapper.text()).toContain('Sel #2 · Robust #1 · Hold #2 · Sealed #2 · Stress #1')
+    expect(wrapper.text()).toContain('Sel≠Robust · Robust≠Hold · Robust≠Sealed')
+    expect(wrapper.text()).toContain('Robust leader did not reach the sealed finalist set')
     expect(wrapper.text()).toContain('quote_conservative')
     expect(wrapper.text()).toContain('Mixed fragile · no-promote')
     expect(wrapper.text()).toContain('83.3% / 100.0% / 100.0%')
@@ -574,6 +617,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Selection')
     expect(wrapper.text()).toContain('Holdout')
     expect(wrapper.text()).toContain('Best validated artifact')
+    expect(wrapper.text()).toContain('Leadership')
+    expect(wrapper.text()).toContain('Disagree')
     expect(useOptionsExpressionStore().splitAssignmentMode).toBe('event_chronological')
   })
 

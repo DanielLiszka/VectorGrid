@@ -372,6 +372,19 @@ describe('optionsExpressionService', () => {
             best_sealed_harsher_stress_expectancy_per_premium: 0.01,
             best_extreme_stress_expectancy_per_premium: -0.01,
             best_sealed_extreme_stress_expectancy_per_premium: -0.02,
+            leader_summary: {
+              search_leader_tuple_index: 1,
+              robust_leader_tuple_index: 0,
+              holdout_leader_tuple_index: 1,
+              sealed_leader_tuple_index: 1,
+              stress_leader_tuple_index: 0,
+              distinct_leader_count: 2,
+              search_vs_robust_disagree: true,
+              robust_vs_holdout_disagree: true,
+              robust_vs_sealed_disagree: true,
+              robust_leader_reached_sealed_finalist: false,
+              robust_leader_sealed_final_rank: null,
+            },
             top_validation_verdict: 'stress_fragile',
             validated_tuple_count: 1,
             stress_fragile_tuple_count: 1,
@@ -419,6 +432,12 @@ describe('optionsExpressionService', () => {
     expect(artifacts[0]?.bestSealedHarsherStressExpectancyPerPremium).toBe(0.01)
     expect(artifacts[0]?.bestExtremeStressExpectancyPerPremium).toBe(-0.01)
     expect(artifacts[0]?.bestSealedExtremeStressExpectancyPerPremium).toBe(-0.02)
+    expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBe(1)
+    expect(artifacts[0]?.leaderSummary.robustLeaderTupleIndex).toBe(0)
+    expect(artifacts[0]?.leaderSummary.distinctLeaderCount).toBe(2)
+    expect(artifacts[0]?.leaderSummary.searchVsRobustDisagree).toBe(true)
+    expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBe(true)
+    expect(artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist).toBe(false)
     expect(artifacts[0]?.topValidationVerdict).toBe('stress_fragile')
     expect(artifacts[0]?.sealedFinalistBudget).toBe(0)
     expect(artifacts[0]?.sealedEvaluatedTupleCount).toBe(0)
@@ -436,6 +455,65 @@ describe('optionsExpressionService', () => {
     expect(artifacts[0]?.searchOverlapRate).toBe(0.8333)
     expect(artifacts[0]?.searchBaselineOutcomeCoverageRate).toBe(0.8)
     expect(invokeCommandMock).toHaveBeenCalledWith('list_artifact_library')
+  })
+
+  it('defaults missing retained-leader summary fields for older artifact summaries', async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      options_expression: [
+        {
+          ts: '2026-04-05T12:00:00Z',
+          path: 'C:/runs/vectorgrid_options_expression_legacy.json',
+          bytes: 2048,
+          parent_artifact_id: 'vectorgrid_run_1',
+          parent_strategy_kind: 'DoubleMa',
+          root_symbol: 'SPY',
+          options_dataset_id: 'spy_options',
+          backend_used: 'cpu_reference',
+          price_semantics: 'minute_aggregate',
+          request_backend_preference: 'auto',
+          request_fill_model: 'aggregate_research',
+          request_structure_family: 'long_single',
+          request_split_assignment_mode: 'event_chronological',
+          coverage_adequacy_verdict: 'healthy',
+          coverage_non_promotable: false,
+          search_overlap_rate: 1,
+          holdout_overlap_rate: 1,
+          sealed_test_overlap_rate: 1,
+          search_candidate_coverage_rate: 1,
+          holdout_candidate_coverage_rate: 1,
+          sealed_test_candidate_coverage_rate: 1,
+          search_baseline_outcome_coverage_rate: 1,
+          holdout_baseline_outcome_coverage_rate: 1,
+          sealed_test_baseline_outcome_coverage_rate: 1,
+          tuple_count: 1,
+          best_robust_score: 0.18,
+          best_selection_expectancy_per_premium: 0.2,
+          best_holdout_expectancy_per_premium: null,
+          best_sealed_expectancy_per_premium: null,
+          best_stress_expectancy_per_premium: null,
+          best_sealed_stress_expectancy_per_premium: null,
+          best_harsher_stress_expectancy_per_premium: null,
+          best_sealed_harsher_stress_expectancy_per_premium: null,
+          best_extreme_stress_expectancy_per_premium: null,
+          best_sealed_extreme_stress_expectancy_per_premium: null,
+          top_validation_verdict: 'search_only',
+          validated_tuple_count: 0,
+          stress_fragile_tuple_count: 0,
+          has_holdout_metrics: false,
+          has_sealed_evaluation_metrics: false,
+          has_stress_metrics: false,
+          has_harsher_stress_metrics: false,
+          has_extreme_stress_metrics: false,
+        },
+      ],
+    })
+
+    const artifacts = await listOptionsExpressionArtifacts()
+
+    expect(artifacts[0]?.leaderSummary.distinctLeaderCount).toBe(0)
+    expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBeNull()
+    expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBeNull()
+    expect(artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist).toBeNull()
   })
 
   it('normalizes feasibility preview responses', async () => {

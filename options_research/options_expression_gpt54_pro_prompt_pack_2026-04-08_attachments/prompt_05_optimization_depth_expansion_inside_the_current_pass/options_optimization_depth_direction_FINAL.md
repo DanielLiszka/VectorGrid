@@ -3,6 +3,10 @@
 Date: 2026-04-09
 Status: final consolidation for Prompt 5 (`Optimization-Depth Expansion Inside The Current Pass`)
 
+Implementation follow-through:
+
+- [options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md](/C:/Rust%20Projects/ta_desktop_demo/options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md)
+
 ## 1. Executive summary
 
 The repo does **not** need another broad hot-path metric expansion as the default next step for Prompt 5.

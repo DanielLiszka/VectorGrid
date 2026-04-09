@@ -7,7 +7,7 @@ use crate::settings;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map::DefaultHasher, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -57,6 +57,21 @@ pub struct SaveOptionsCsvResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct OptionsExpressionArtifactLeaderSummary {
+    pub search_leader_tuple_index: Option<usize>,
+    pub robust_leader_tuple_index: Option<usize>,
+    pub holdout_leader_tuple_index: Option<usize>,
+    pub sealed_leader_tuple_index: Option<usize>,
+    pub stress_leader_tuple_index: Option<usize>,
+    pub distinct_leader_count: usize,
+    pub search_vs_robust_disagree: bool,
+    pub robust_vs_holdout_disagree: Option<bool>,
+    pub robust_vs_sealed_disagree: Option<bool>,
+    pub robust_leader_reached_sealed_finalist: Option<bool>,
+    pub robust_leader_sealed_final_rank: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct OptionsExpressionArtifactSummary {
     pub ts: String,
     pub path: String,
@@ -94,6 +109,7 @@ pub struct OptionsExpressionArtifactSummary {
     pub best_sealed_harsher_stress_expectancy_per_premium: Option<f64>,
     pub best_extreme_stress_expectancy_per_premium: Option<f64>,
     pub best_sealed_extreme_stress_expectancy_per_premium: Option<f64>,
+    pub leader_summary: OptionsExpressionArtifactLeaderSummary,
     pub sealed_finalist_budget: usize,
     pub sealed_evaluated_tuple_count: usize,
     pub top_validation_verdict: OptionsExpressionValidationVerdict,
@@ -647,12 +663,103 @@ fn build_options_expression_artifact(
     }
 }
 
+fn best_tuple_index_by_metric(
+    tuples: &[ta_app_core::options_types::OptionsExpressionTupleResult],
+    metric: impl Fn(&ta_app_core::options_types::OptionsExpressionTupleResult) -> Option<f64>,
+) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (index, entry) in tuples.iter().enumerate() {
+        let Some(value) = metric(entry) else {
+            continue;
+        };
+        if !value.is_finite() {
+            continue;
+        }
+        match best {
+            None => best = Some((index, value)),
+            Some((best_index, best_value)) => {
+                if value > best_value
+                    || (value.total_cmp(&best_value).is_eq() && index < best_index)
+                {
+                    best = Some((index, value));
+                }
+            }
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+fn build_artifact_leader_summary(
+    tuples: &[ta_app_core::options_types::OptionsExpressionTupleResult],
+) -> OptionsExpressionArtifactLeaderSummary {
+    let search_leader_tuple_index = best_tuple_index_by_metric(tuples, |entry| {
+        Some(entry.selection_metrics.expectancy_per_premium)
+    });
+    let robust_leader_tuple_index =
+        best_tuple_index_by_metric(tuples, |entry| Some(entry.robust_score));
+    let holdout_leader_tuple_index = best_tuple_index_by_metric(tuples, |entry| {
+        entry
+            .holdout_metrics
+            .as_ref()
+            .map(|metrics| metrics.expectancy_per_premium)
+    });
+    let sealed_leader_tuple_index = best_tuple_index_by_metric(tuples, |entry| {
+        entry
+            .sealed_evaluation_metrics
+            .as_ref()
+            .map(|metrics| metrics.expectancy_per_premium)
+    });
+    let stress_leader_tuple_index = best_tuple_index_by_metric(tuples, |entry| {
+        entry
+            .stress_metrics
+            .as_ref()
+            .map(|metrics| metrics.expectancy_per_premium)
+    });
+    let distinct_leader_count = [
+        search_leader_tuple_index,
+        robust_leader_tuple_index,
+        holdout_leader_tuple_index,
+        sealed_leader_tuple_index,
+        stress_leader_tuple_index,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<BTreeSet<_>>()
+    .len();
+    let robust_leader = robust_leader_tuple_index.and_then(|index| tuples.get(index));
+    OptionsExpressionArtifactLeaderSummary {
+        search_leader_tuple_index,
+        robust_leader_tuple_index,
+        holdout_leader_tuple_index,
+        sealed_leader_tuple_index,
+        stress_leader_tuple_index,
+        distinct_leader_count,
+        search_vs_robust_disagree: matches!(
+            (search_leader_tuple_index, robust_leader_tuple_index),
+            (Some(search), Some(robust)) if search != robust
+        ),
+        robust_vs_holdout_disagree: match (robust_leader_tuple_index, holdout_leader_tuple_index) {
+            (Some(robust), Some(holdout)) => Some(robust != holdout),
+            _ => None,
+        },
+        robust_vs_sealed_disagree: match (robust_leader_tuple_index, sealed_leader_tuple_index) {
+            (Some(robust), Some(sealed)) => Some(robust != sealed),
+            _ => None,
+        },
+        robust_leader_reached_sealed_finalist: robust_leader.map(|entry| entry.sealed_finalist),
+        robust_leader_sealed_final_rank: robust_leader
+            .filter(|entry| entry.sealed_finalist)
+            .map(|entry| entry.sealed_final_rank),
+    }
+}
+
 pub(crate) fn summarize_options_expression_artifact(
     path: &std::path::Path,
     bytes: u64,
     artifact: &OptionsExpressionArtifactV1,
 ) -> OptionsExpressionArtifactSummary {
     let parent_strategy_kind = resolve_options_parent_strategy_kind_from_saved_artifact(artifact);
+    let leader_summary = build_artifact_leader_summary(&artifact.selection_metrics);
     let best_robust_score = artifact
         .selection_metrics
         .iter()
@@ -840,6 +947,7 @@ pub(crate) fn summarize_options_expression_artifact(
         best_sealed_harsher_stress_expectancy_per_premium,
         best_extreme_stress_expectancy_per_premium,
         best_sealed_extreme_stress_expectancy_per_premium,
+        leader_summary,
         sealed_finalist_budget: artifact.request.sealed_finalist_count,
         sealed_evaluated_tuple_count,
         top_validation_verdict,
@@ -1696,6 +1804,59 @@ mod tests {
         }
     }
 
+    fn sample_summary_tuple(
+        delay_minutes: u16,
+        robust_score: f64,
+        selection_expectancy: f64,
+        holdout_expectancy: Option<f64>,
+        sealed_expectancy: Option<f64>,
+        stress_expectancy: Option<f64>,
+        sealed_finalist: bool,
+        sealed_final_rank: usize,
+    ) -> OptionsExpressionTupleResult {
+        let metrics = |expectancy_per_premium: f64| OptionsExpressionMetrics {
+            valid_trades: 5,
+            invalid_events: 0,
+            invalid_rate: 0.0,
+            expectancy_per_trade: expectancy_per_premium * 100.0,
+            expectancy_per_premium,
+            median_return_on_premium: expectancy_per_premium / 2.0,
+            win_rate: 0.6,
+            total_pnl_per_contract: expectancy_per_premium * 400.0,
+        };
+        OptionsExpressionTupleResult {
+            tuple: OptionsTupleSpec {
+                structure_family: OptionsStructureFamily::LongSingle,
+                delay_minutes,
+                dte_days: 1,
+                moneyness_bucket: OptionsMoneynessBucket::Atm,
+                hold_minutes: 15,
+                target_return: Some(0.25),
+                stop_return: Some(0.25),
+                exit_template: ta_app_core::OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+                fill_model: OptionsFillModelFamily::AggregateResearch,
+            },
+            pre_sealed_rank: delay_minutes as usize,
+            sealed_finalist,
+            sealed_final_rank,
+            selection_metrics: metrics(selection_expectancy),
+            holdout_metrics: holdout_expectancy.map(metrics),
+            sealed_evaluation_metrics: sealed_expectancy.map(metrics),
+            stress_metrics: stress_expectancy.map(metrics),
+            sealed_stress_metrics: None,
+            harsher_stress_metrics: None,
+            sealed_harsher_stress_metrics: None,
+            extreme_stress_metrics: None,
+            sealed_extreme_stress_metrics: None,
+            validation_verdict: if sealed_finalist {
+                OptionsExpressionValidationVerdict::SealedFinalist
+            } else {
+                OptionsExpressionValidationVerdict::HoldoutSupported
+            },
+            robust_score,
+        }
+    }
+
     #[test]
     fn signal_manifest_replay_cache_round_trips_to_disk() {
         let app_local_data_dir = temp_app_local_data_dir("signal_manifest_cache_round_trip");
@@ -1991,6 +2152,109 @@ mod tests {
         assert_eq!(summary.search_baseline_outcome_coverage_rate, 1.0);
         assert_eq!(summary.validated_tuple_count, 1);
         assert_eq!(summary.stress_fragile_tuple_count, 1);
+
+        let _ = std::fs::remove_file(&parent_artifact_path);
+        let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    #[test]
+    fn summarize_options_expression_artifact_reports_fragmented_retained_leaders() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "vectorgrid_options_summary_leaders_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let mut artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        artifact.selection_metrics = vec![
+            sample_summary_tuple(0, 0.40, 0.20, Some(0.05), Some(0.07), Some(0.03), true, 2),
+            sample_summary_tuple(1, 0.30, 0.25, Some(0.11), Some(0.06), Some(0.02), false, 0),
+            sample_summary_tuple(5, 0.20, 0.18, Some(0.04), Some(0.12), Some(0.08), true, 1),
+        ];
+
+        let summary = summarize_options_expression_artifact(
+            std::path::Path::new("C:/runs/vectorgrid_options_expression_1.json"),
+            1024,
+            &artifact,
+        );
+
+        assert_eq!(summary.leader_summary.search_leader_tuple_index, Some(1));
+        assert_eq!(summary.leader_summary.robust_leader_tuple_index, Some(0));
+        assert_eq!(summary.leader_summary.holdout_leader_tuple_index, Some(1));
+        assert_eq!(summary.leader_summary.sealed_leader_tuple_index, Some(2));
+        assert_eq!(summary.leader_summary.stress_leader_tuple_index, Some(2));
+        assert_eq!(summary.leader_summary.distinct_leader_count, 3);
+        assert!(summary.leader_summary.search_vs_robust_disagree);
+        assert_eq!(
+            summary.leader_summary.robust_vs_holdout_disagree,
+            Some(true)
+        );
+        assert_eq!(summary.leader_summary.robust_vs_sealed_disagree, Some(true));
+        assert_eq!(
+            summary.leader_summary.robust_leader_reached_sealed_finalist,
+            Some(true)
+        );
+        assert_eq!(
+            summary.leader_summary.robust_leader_sealed_final_rank,
+            Some(2)
+        );
+
+        let _ = std::fs::remove_file(&parent_artifact_path);
+        let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    #[test]
+    fn summarize_options_expression_artifact_uses_lower_retained_index_for_ties_and_absent_lanes() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "vectorgrid_options_summary_tie_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let mut artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        artifact.selection_metrics = vec![
+            sample_summary_tuple(0, 0.30, 0.20, None, None, None, false, 0),
+            sample_summary_tuple(1, 0.30, 0.20, None, None, None, false, 0),
+        ];
+
+        let summary = summarize_options_expression_artifact(
+            std::path::Path::new("C:/runs/vectorgrid_options_expression_1.json"),
+            1024,
+            &artifact,
+        );
+
+        assert_eq!(summary.leader_summary.search_leader_tuple_index, Some(0));
+        assert_eq!(summary.leader_summary.robust_leader_tuple_index, Some(0));
+        assert_eq!(summary.leader_summary.holdout_leader_tuple_index, None);
+        assert_eq!(summary.leader_summary.sealed_leader_tuple_index, None);
+        assert_eq!(summary.leader_summary.stress_leader_tuple_index, None);
+        assert_eq!(summary.leader_summary.distinct_leader_count, 1);
+        assert!(!summary.leader_summary.search_vs_robust_disagree);
+        assert_eq!(summary.leader_summary.robust_vs_holdout_disagree, None);
+        assert_eq!(summary.leader_summary.robust_vs_sealed_disagree, None);
+        assert_eq!(
+            summary.leader_summary.robust_leader_reached_sealed_finalist,
+            Some(false)
+        );
+        assert_eq!(summary.leader_summary.robust_leader_sealed_final_rank, None);
 
         let _ = std::fs::remove_file(&parent_artifact_path);
         let _ = std::fs::remove_dir(&temp_root);
