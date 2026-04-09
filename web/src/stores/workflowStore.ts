@@ -3,6 +3,7 @@ import {
   AGGREGATE_TAB_KEY,
   CONTROLS_TAB_KEY,
   RESULTS_TAB_KEY,
+  WORKFLOW_MODE_KEY,
   WORKFLOW_STATE_KEY,
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
@@ -10,23 +11,27 @@ import {
   WORKSPACE_TAB_KEY,
 } from '../utils/core/storageKeys'
 import {
+  type ShellMode,
   TAB_LABELS,
-  WORKFLOW_ALLOWED,
-  WORKFLOW_DEFAULTS,
-  WORKFLOW_STEP_SUBTITLES,
-  WORKFLOW_SUBTITLES,
   WORKSPACE_SUBTITLES,
   normalizeAggregateTab,
   normalizeControlsTab,
   normalizeResultsTab,
+  normalizeShellMode,
   normalizeWorkflowStep,
   normalizeWorkflowTab,
   normalizeWorkspaceTab,
+  shellModeLabel,
+  workflowAllowedForMode,
+  workflowDefaultsForMode,
   workflowStepFromWorkflow,
+  workflowStepLabelForMode,
+  workflowStepSubtitleForMode,
 } from '../utils/core/workflowModel'
 import { readStorageString, writeStorageString } from '../utils/storage'
 
 interface WorkflowState {
+  mode: ShellMode
   workspace: string
   workflow: string
   workflowStep: string
@@ -51,6 +56,7 @@ interface WorkflowCommitOptions {
 }
 
 const DEFAULT_WORKSPACE = 'workflow'
+const DEFAULT_MODE: ShellMode = 'conventional'
 const DEFAULT_WORKFLOW = 'data'
 const DEFAULT_STEP = 'data'
 const DEFAULT_CONTROLS_TAB = 'data'
@@ -60,6 +66,10 @@ const DEFAULT_SPLIT_FRACTION = 0.34
 
 function normalizeWorkspace(value: unknown): string {
   return normalizeWorkspaceTab(value) || ''
+}
+
+function normalizeMode(value: unknown): ShellMode {
+  return normalizeShellMode(value) || DEFAULT_MODE
 }
 
 function normalizeWorkflow(value: unknown): string {
@@ -86,6 +96,10 @@ function workflowStep(workflow: string): string {
   return normalizeStep(workflowStepFromWorkflow(workflow)) || DEFAULT_STEP
 }
 
+function workflowMemoryKey(mode: ShellMode, workflow: string): string {
+  return `${mode}:${workflow}`
+}
+
 function storageSet(key: string, value: string): void {
   writeStorageString(key, value)
 }
@@ -99,6 +113,7 @@ function normalizeSplitFraction(value: unknown): number {
 function setRootAttr(name: string, value: string): void {
   if (typeof document === 'undefined') return
   const root = document.documentElement
+  if (!root || !root.dataset) return
   if (value) root.dataset[name as keyof DOMStringMap] = value
   else delete root.dataset[name as keyof DOMStringMap]
 }
@@ -109,13 +124,16 @@ function parseWorkflowMemory(raw: string): WorkflowMemory {
     if (!parsed || typeof parsed !== 'object') return {}
     const out: WorkflowMemory = {}
     for (const [key, value] of Object.entries(parsed)) {
-      const workflow = normalizeWorkflow(key)
+      const separatorIndex = key.indexOf(':')
+      const legacyWorkflow = normalizeWorkflow(key)
+      const workflow = separatorIndex >= 0 ? normalizeWorkflow(key.slice(separatorIndex + 1)) : legacyWorkflow
+      const mode = separatorIndex >= 0 ? normalizeMode(key.slice(0, separatorIndex)) : DEFAULT_MODE
       if (!workflow || !value || typeof value !== 'object') continue
       const entry = value as Record<string, unknown>
       const controls = normalizeControls(entry.controls)
       const results = normalizeResults(entry.results)
       if (!controls || !results) continue
-      out[workflow] = { controls, results }
+      out[workflowMemoryKey(mode, workflow)] = { controls, results }
     }
     return out
   } catch {
@@ -139,8 +157,8 @@ function persistWorkflowMemory(): void {
   writeStorageString(WORKFLOW_STATE_KEY, JSON.stringify(workflowMemory))
 }
 
-function allowedTabs(workflow: string): { controls: string[]; results: string[] } {
-  const model = (WORKFLOW_ALLOWED as Record<string, { controls?: readonly string[]; results?: readonly string[] }>)[workflow] || {}
+function allowedTabs(mode: ShellMode, workflow: string): { controls: string[]; results: string[] } {
+  const model = (workflowAllowedForMode(mode) as Record<string, { controls?: readonly string[]; results?: readonly string[] }>)[workflow] || {}
   const controls = Array.isArray(model.controls)
     ? model.controls.map((entry) => normalizeControls(entry)).filter((entry) => entry.length > 0)
     : []
@@ -150,8 +168,8 @@ function allowedTabs(workflow: string): { controls: string[]; results: string[] 
   return { controls, results }
 }
 
-function defaultTabs(workflow: string): { controls: string; results: string } {
-  const model = (WORKFLOW_DEFAULTS as Record<string, { controls?: string; results?: string }>)[workflow] || {}
+function defaultTabs(mode: ShellMode, workflow: string): { controls: string; results: string } {
+  const model = (workflowDefaultsForMode(mode) as Record<string, { controls?: string; results?: string }>)[workflow] || {}
   return {
     controls: normalizeControls(model.controls) || DEFAULT_CONTROLS_TAB,
     results: normalizeResults(model.results) || DEFAULT_RESULTS_TAB,
@@ -159,13 +177,14 @@ function defaultTabs(workflow: string): { controls: string; results: string } {
 }
 
 function resolveTabs(
+  mode: ShellMode,
   workflow: string,
   preferred?: { controls?: string; results?: string },
 ): { controls: string; results: string } {
   const wf = normalizeWorkflow(workflow) || DEFAULT_WORKFLOW
-  const allowed = allowedTabs(wf)
-  const defaults = defaultTabs(wf)
-  const remembered = workflowMemory[wf]
+  const allowed = allowedTabs(mode, wf)
+  const defaults = defaultTabs(mode, wf)
+  const remembered = workflowMemory[workflowMemoryKey(mode, wf)]
 
   const desiredControls =
     normalizeControls(preferred?.controls)
@@ -186,8 +205,8 @@ function resolveTabs(
   return { controls, results }
 }
 
-function tabAllowed(kind: 'controls' | 'results', workflow: string, tab: string): boolean {
-  const allowed = allowedTabs(workflow)
+function tabAllowed(kind: 'controls' | 'results', mode: ShellMode, workflow: string, tab: string): boolean {
+  const allowed = allowedTabs(mode, workflow)
   const next = kind === 'controls' ? normalizeControls(tab) : normalizeResults(tab)
   if (!next) return false
   return kind === 'controls'
@@ -195,11 +214,11 @@ function tabAllowed(kind: 'controls' | 'results', workflow: string, tab: string)
     : allowed.results.includes(next)
 }
 
-function rememberWorkflowTabs(workflow: string, controls: string, results: string): void {
+function rememberWorkflowTabs(mode: ShellMode, workflow: string, controls: string, results: string): void {
   const wf = normalizeWorkflow(workflow)
   if (!wf) return
-  const tabs = resolveTabs(wf, { controls, results })
-  workflowMemory[wf] = tabs
+  const tabs = resolveTabs(mode, wf, { controls, results })
+  workflowMemory[workflowMemoryKey(mode, wf)] = tabs
   persistWorkflowMemory()
 }
 
@@ -237,23 +256,26 @@ function tabLabel(kind: 'controls' | 'results', key: string): string {
   return String(map[key] || '').trim()
 }
 
-function deriveSubtitle(state: Pick<WorkflowState, 'workspace' | 'workflow' | 'workflowStep' | 'controlsTab' | 'resultsTab'>): string {
+function deriveSubtitle(state: Pick<WorkflowState, 'mode' | 'workspace' | 'workflow' | 'workflowStep' | 'controlsTab' | 'resultsTab'>): string {
+  const mode = normalizeMode(state.mode)
   const workspace = normalizeWorkspace(state.workspace) || DEFAULT_WORKSPACE
   const workflow = normalizeWorkflow(state.workflow) || DEFAULT_WORKFLOW
   const step = normalizeStep(state.workflowStep) || workflowStep(workflow)
   const controls = normalizeControls(state.controlsTab) || DEFAULT_CONTROLS_TAB
   const results = normalizeResults(state.resultsTab) || DEFAULT_RESULTS_TAB
 
-  const stepSubtitles = WORKFLOW_STEP_SUBTITLES as Record<string, string>
-  const workflowSubtitles = WORKFLOW_SUBTITLES as Record<string, string>
   const workspaceSubtitles = WORKSPACE_SUBTITLES as Record<string, string>
 
   const base = workspace === 'workflow'
-    ? String(stepSubtitles[step] || workflowSubtitles[workflow] || '').trim()
+    ? workflowStepSubtitleForMode(step, mode)
     : String(workspaceSubtitles[workspace] || '').trim()
 
   let view = ''
-  if (workspace === 'workflow' && workflow === 'optimize') {
+  if (workspace === 'workflow' && mode === 'ml-signal') {
+    const modeText = shellModeLabel(mode)
+    const stepLabel = workflowStepLabelForMode(step, mode)
+    view = `${modeText} • ${stepLabel}`
+  } else if (workspace === 'workflow' && workflow === 'optimize') {
     const controlsLabel = tabLabel('controls', controls)
     if (controlsLabel && controls !== 'opt') view = controlsLabel
     const resultsLabel = tabLabel('results', results)
@@ -278,6 +300,7 @@ function deriveSubtitle(state: Pick<WorkflowState, 'workspace' | 'workflow' | 'w
 }
 
 function syncRuntimeFromState(state: WorkflowState): void {
+  setRootAttr('mode', state.mode)
   setRootAttr('workspace', state.workspace)
   setRootAttr('workflow', state.workflow)
   setRootAttr('workflowStep', state.workflowStep)
@@ -289,6 +312,7 @@ function syncRuntimeFromState(state: WorkflowState): void {
 }
 
 function persistRuntimeState(state: WorkflowState): void {
+  storageSet(WORKFLOW_MODE_KEY, state.mode)
   storageSet(WORKSPACE_TAB_KEY, state.workspace)
   storageSet(WORKFLOW_TAB_KEY, state.workflow)
   storageSet(WORKFLOW_STEP_KEY, state.workflowStep)
@@ -300,6 +324,7 @@ function persistRuntimeState(state: WorkflowState): void {
 
 export const useWorkflowStore = defineStore('workflow', {
   state: (): WorkflowState => ({
+    mode: DEFAULT_MODE,
     workspace: DEFAULT_WORKSPACE,
     workflow: DEFAULT_WORKFLOW,
     workflowStep: DEFAULT_STEP,
@@ -313,6 +338,43 @@ export const useWorkflowStore = defineStore('workflow', {
   }),
 
   actions: {
+    selectMode(mode: unknown, options?: WorkflowCommitOptions): void {
+      const nextMode = normalizeMode(mode)
+      if (this.mode === nextMode) return
+
+      const previousMode = this.mode
+      rememberWorkflowTabs(previousMode, this.workflow, this.controlsTab, this.resultsTab)
+
+      this.mode = nextMode
+
+      if (this.workspace === 'workflow') {
+        const nextWorkflow = normalizeWorkflow(this.workflowStep) || DEFAULT_WORKFLOW
+        const tabs = resolveTabs(nextMode, nextWorkflow)
+        this.workflow = nextWorkflow
+        this.workflowStep = workflowStep(nextWorkflow)
+        this.controlsTab = tabs.controls
+        this.resultsTab = tabs.results
+      } else if (this.workspace === 'aggregate') {
+        this.workflow = 'settings'
+        this.controlsTab = 'advanced'
+        this.resultsTab = 'meta'
+      } else if (this.workspace === 'pro') {
+        this.workflow = 'settings'
+        this.controlsTab = 'advanced'
+        this.resultsTab = 'debug'
+      } else if (this.workspace === 'settings') {
+        this.workflow = 'data'
+        this.controlsTab = 'data'
+        this.resultsTab = 'overview'
+      } else if (this.workspace === 'library') {
+        this.workflow = 'history'
+        this.controlsTab = 'data'
+        this.resultsTab = 'history'
+      }
+
+      this.commitState('vue', true, options)
+    },
+
     commitState(
       source: WorkflowState['source'],
       rememberTabs = true,
@@ -324,7 +386,7 @@ export const useWorkflowStore = defineStore('workflow', {
       syncRuntimeFromState(this)
       const shouldPersist = options?.persist !== false
       if (source === 'vue' && shouldPersist) persistRuntimeState(this)
-      if (rememberTabs) rememberWorkflowTabs(this.workflow, this.controlsTab, this.resultsTab)
+      if (rememberTabs) rememberWorkflowTabs(this.mode, this.workflow, this.controlsTab, this.resultsTab)
     },
 
     syncRuntimeState(): void {
@@ -333,6 +395,7 @@ export const useWorkflowStore = defineStore('workflow', {
     },
 
     applyLegacySnapshot(snapshot: Partial<WorkflowState>): void {
+      const nextMode = normalizeMode(snapshot.mode ?? this.mode)
       const explicitControls = normalizeControls(snapshot.controlsTab)
       const explicitResults = normalizeResults(snapshot.resultsTab)
 
@@ -342,7 +405,7 @@ export const useWorkflowStore = defineStore('workflow', {
         workflow = normalizeWorkflow(inferred) || workflow
       }
 
-      const fallbackTabs = resolveTabs(workflow, {
+      const fallbackTabs = resolveTabs(nextMode, workflow, {
         controls: explicitControls || this.controlsTab,
         results: explicitResults || this.resultsTab,
       })
@@ -360,6 +423,7 @@ export const useWorkflowStore = defineStore('workflow', {
       const explicitStep = normalizeStep(snapshot.workflowStep)
       const step = explicitStep || (workflow !== this.workflow ? workflowStep(workflow) : (this.workflowStep || workflowStep(workflow)))
 
+      this.mode = nextMode
       this.workspace = workspace
       this.workflow = workflow
       this.workflowStep = step
@@ -373,7 +437,7 @@ export const useWorkflowStore = defineStore('workflow', {
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
       syncRuntimeFromState(this)
-      rememberWorkflowTabs(this.workflow, this.controlsTab, this.resultsTab)
+      rememberWorkflowTabs(this.mode, this.workflow, this.controlsTab, this.resultsTab)
     },
 
     selectWorkspace(workspace: string, step?: string, options?: WorkflowCommitOptions): void {
@@ -391,33 +455,33 @@ export const useWorkflowStore = defineStore('workflow', {
 
       if (nextWorkspace === 'workflow') {
         const desiredStep = normalizeStep(step) || normalizeStep(this.workflowStep) || workflowStep(this.workflow)
-        if (desiredStep !== this.workflow) rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
-        const tabs = resolveTabs(desiredStep)
+        if (desiredStep !== this.workflow) rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
+        const tabs = resolveTabs(this.mode, desiredStep)
         nextWorkflow = desiredStep
         nextStep = desiredStep
         nextControls = tabs.controls
         nextResults = tabs.results
       } else if (nextWorkspace === 'library') {
-        if (this.workflow !== 'history') rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
-        const tabs = resolveTabs('history')
+        if (this.workflow !== 'history') rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
+        const tabs = resolveTabs(this.mode, 'history')
         nextWorkflow = 'history'
         nextStep = workflowStep('history')
         nextControls = tabs.controls
         nextResults = tabs.results
       } else if (nextWorkspace === 'aggregate') {
-        if (this.workflow !== 'settings') rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
+        if (this.workflow !== 'settings') rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
         nextWorkflow = 'settings'
         nextStep = workflowStep('settings')
         nextControls = 'advanced'
         nextResults = 'meta'
       } else if (nextWorkspace === 'pro') {
-        if (this.workflow !== 'settings') rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
+        if (this.workflow !== 'settings') rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
         nextWorkflow = 'settings'
         nextStep = workflowStep('settings')
         nextControls = 'advanced'
         nextResults = 'debug'
       } else if (nextWorkspace === 'settings') {
-        if (this.workflow !== 'data') rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
+        if (this.workflow !== 'data') rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
         nextWorkflow = 'data'
         nextStep = workflowStep('data')
         nextControls = 'data'
@@ -465,12 +529,12 @@ export const useWorkflowStore = defineStore('workflow', {
         nextControls = 'data'
         nextResults = 'overview'
       } else {
-        const tabs = resolveTabs(nextWorkflow)
+        const tabs = resolveTabs(this.mode, nextWorkflow)
         nextControls = tabs.controls
         nextResults = tabs.results
       }
 
-      if (nextWorkflow !== this.workflow) rememberWorkflowTabs(prevWorkflow, prevControls, prevResults)
+      if (nextWorkflow !== this.workflow) rememberWorkflowTabs(this.mode, prevWorkflow, prevControls, prevResults)
 
       const changed =
         this.workflow !== nextWorkflow
@@ -494,8 +558,8 @@ export const useWorkflowStore = defineStore('workflow', {
       if (!nextStep) return
       if (this.workspace === 'workflow' && this.workflow === nextStep && this.workflowStep === nextStep) return
 
-      rememberWorkflowTabs(this.workflow, this.controlsTab, this.resultsTab)
-      const tabs = resolveTabs(nextStep)
+      rememberWorkflowTabs(this.mode, this.workflow, this.controlsTab, this.resultsTab)
+      const tabs = resolveTabs(this.mode, nextStep)
 
       this.workspace = 'workflow'
       this.workflow = nextStep
@@ -508,7 +572,7 @@ export const useWorkflowStore = defineStore('workflow', {
     selectControlsTab(tab: string, options?: WorkflowCommitOptions): void {
       const nextTab = normalizeControls(tab)
       if (!nextTab || this.controlsTab === nextTab) return
-      if (!tabAllowed('controls', this.workflow, nextTab)) return
+      if (!tabAllowed('controls', this.mode, this.workflow, nextTab)) return
 
       this.controlsTab = nextTab
       this.commitState('vue', true, options)
@@ -517,7 +581,7 @@ export const useWorkflowStore = defineStore('workflow', {
     selectResultsTab(tab: string, options?: WorkflowCommitOptions): void {
       const nextTab = normalizeResults(tab)
       if (!nextTab || this.resultsTab === nextTab) return
-      if (!tabAllowed('results', this.workflow, nextTab)) return
+      if (!tabAllowed('results', this.mode, this.workflow, nextTab)) return
 
       this.resultsTab = nextTab
       this.commitState('vue', true, options)
@@ -529,7 +593,7 @@ export const useWorkflowStore = defineStore('workflow', {
       if (this.workspace === 'aggregate' && this.aggregateTab === nextTab) return
 
       if (this.workflow !== 'settings') {
-        rememberWorkflowTabs(this.workflow, this.controlsTab, this.resultsTab)
+        rememberWorkflowTabs(this.mode, this.workflow, this.controlsTab, this.resultsTab)
       }
 
       this.workspace = 'aggregate'

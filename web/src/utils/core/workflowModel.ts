@@ -1,3 +1,7 @@
+export const SHELL_MODES = ['conventional', 'ml-signal'] as const
+export type ShellMode = (typeof SHELL_MODES)[number]
+export const SHELL_MODE_SET: ReadonlySet<string> = new Set(SHELL_MODES)
+
 export const WORKFLOW_TABS = ['data', 'optimize', 'validate', 'analyze', 'finalize', 'history', 'settings'] as const
 export type WorkflowTab = (typeof WORKFLOW_TABS)[number]
 export const WORKFLOW_TAB_SET: ReadonlySet<string> = new Set(WORKFLOW_TABS)
@@ -12,12 +16,46 @@ export const WORKFLOW_DEFAULTS = {
   settings: { controls: 'advanced', results: 'meta' },
 } as const
 
+export type WorkflowDefaultEntry = {
+  controls: ControlsTab
+  results: ResultsTab
+}
+
+export type WorkflowDefaultMap = Record<WorkflowTab, WorkflowDefaultEntry>
+
 export const WORKFLOW_ALLOWED = {
   data: { controls: ['data'], results: ['overview'] },
   optimize: { controls: ['opt', 'strategy', 'advanced'], results: ['overview', 'top', 'pareto', 'heatmap'] },
   validate: { controls: ['opt'], results: ['validate'] },
   analyze: { controls: ['opt'], results: ['overview', 'top', 'pareto', 'drill', 'heatmap'] },
   finalize: { controls: ['advanced'], results: ['meta'] },
+  history: { controls: ['data'], results: ['history'] },
+  settings: { controls: ['advanced'], results: ['meta', 'debug'] },
+} as const
+
+export type WorkflowAllowedEntry = {
+  controls: readonly ControlsTab[]
+  results: readonly ResultsTab[]
+}
+
+export type WorkflowAllowedMap = Record<WorkflowTab, WorkflowAllowedEntry>
+
+export const ML_SIGNAL_WORKFLOW_DEFAULTS = {
+  data: { controls: 'data', results: 'overview' },
+  optimize: { controls: 'opt', results: 'overview' },
+  validate: { controls: 'opt', results: 'overview' },
+  analyze: { controls: 'opt', results: 'overview' },
+  finalize: { controls: 'opt', results: 'overview' },
+  history: { controls: 'data', results: 'history' },
+  settings: { controls: 'advanced', results: 'meta' },
+} as const
+
+export const ML_SIGNAL_WORKFLOW_ALLOWED = {
+  data: { controls: ['data'], results: ['overview'] },
+  optimize: { controls: ['opt'], results: ['overview'] },
+  validate: { controls: ['opt'], results: ['overview'] },
+  analyze: { controls: ['opt'], results: ['overview'] },
+  finalize: { controls: ['opt'], results: ['overview'] },
   history: { controls: ['data'], results: ['history'] },
   settings: { controls: ['advanced'], results: ['meta', 'debug'] },
 } as const
@@ -50,6 +88,30 @@ export const WORKFLOW_STEP_SUBTITLES = {
   validate: 'Validation: run robustness checks on the selected optimization.',
   analyze: 'Summary: inspect top results, Pareto, drilldown, and heatmap.',
   finalize: 'Stage 5: apply ML confidence, run Stage 5 ranking, evaluate policy quality, and manage saved finalizer artifacts.',
+} as const
+
+export const WORKFLOW_STEP_LABELS = {
+  data: 'Data Source',
+  optimize: 'Strategy Setup',
+  validate: 'Validation',
+  analyze: 'Summary',
+  finalize: 'Finalizer',
+} as const
+
+export const ML_SIGNAL_WORKFLOW_STEP_LABELS = {
+  data: 'Data Setup',
+  optimize: 'Score Cache',
+  validate: 'Policy Validation',
+  analyze: 'Policy Sweep',
+  finalize: 'Artifacts',
+} as const
+
+export const ML_SIGNAL_WORKFLOW_STEP_SUBTITLES = {
+  data: 'Load the parent dataset and confirm timeframe before exporting ML datasets or score-cache inputs.',
+  optimize: 'Stage 2: build the ML score cache from exported data and model-bundle inputs.',
+  validate: 'Stage 3: validate one policy against the current score cache and execution settings.',
+  analyze: 'Stage 4: sweep policy thresholds and hold settings across the score cache.',
+  finalize: 'Stage 5: inspect the current ML artifact, bundle, sweep, and verdict outputs.',
 } as const
 
 export const WORKSPACE_SUBTITLES = {
@@ -93,6 +155,11 @@ export function normalizeWorkflowTab(value: unknown): WorkflowTab | '' {
   return WORKFLOW_TAB_SET.has(normalized) ? (normalized as WorkflowTab) : ''
 }
 
+export function normalizeShellMode(value: unknown): ShellMode | '' {
+  const normalized = String(value || '').trim().toLowerCase()
+  return SHELL_MODE_SET.has(normalized) ? (normalized as ShellMode) : ''
+}
+
 export function normalizeWorkspaceTab(value: unknown): WorkspaceTab | '' {
   const normalized = String(value || '').trim().toLowerCase()
   return WORKSPACE_TAB_SET.has(normalized) ? (normalized as WorkspaceTab) : ''
@@ -121,4 +188,32 @@ export function normalizeResultsTab(value: unknown): ResultsTab | '' {
 export function workflowStepFromWorkflow(workflow: unknown): string {
   const normalized = normalizeWorkflowTab(workflow)
   return normalizeWorkflowStep(normalized) || 'data'
+}
+
+export function shellModeLabel(mode: unknown): string {
+  return normalizeShellMode(mode) === 'ml-signal' ? 'ML Signal' : 'Conventional'
+}
+
+export function workflowDefaultsForMode(mode: unknown): WorkflowDefaultMap {
+  return normalizeShellMode(mode) === 'ml-signal' ? ML_SIGNAL_WORKFLOW_DEFAULTS : WORKFLOW_DEFAULTS
+}
+
+export function workflowAllowedForMode(mode: unknown): WorkflowAllowedMap {
+  return normalizeShellMode(mode) === 'ml-signal' ? ML_SIGNAL_WORKFLOW_ALLOWED : WORKFLOW_ALLOWED
+}
+
+export function workflowStepLabelForMode(step: unknown, mode: unknown): string {
+  const normalizedStep = normalizeWorkflowStep(step) || 'data'
+  if (normalizeShellMode(mode) === 'ml-signal') {
+    return ML_SIGNAL_WORKFLOW_STEP_LABELS[normalizedStep]
+  }
+  return WORKFLOW_STEP_LABELS[normalizedStep]
+}
+
+export function workflowStepSubtitleForMode(step: unknown, mode: unknown): string {
+  const normalizedStep = normalizeWorkflowStep(step) || 'data'
+  if (normalizeShellMode(mode) === 'ml-signal') {
+    return ML_SIGNAL_WORKFLOW_STEP_SUBTITLES[normalizedStep]
+  }
+  return WORKFLOW_STEP_SUBTITLES[normalizedStep]
 }

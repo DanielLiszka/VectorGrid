@@ -122,15 +122,14 @@ describe("RunFooterPanel", () => {
     wrapper.unmount();
   });
 
-  it("renames the primary footer action for MlSignal while keeping the same dispatch hook", async () => {
+  it("renames the primary footer action for MlSignal mode while keeping the same dispatch hook", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const workflow = useWorkflowStore(pinia);
-    const optimize = useOptimizeStore(pinia);
     const actions = useCommandActionStore(pinia);
     workflow.selectWorkflowStep("optimize", { persist: false });
-    optimize.strategyKind = "MlSignal";
-    optimize.runDisabled = false;
+    workflow.selectMode("ml-signal", { persist: false });
+    useOptimizeStore(pinia).runDisabled = false;
     const runSpy = vi
       .spyOn(actions, "runOptimization")
       .mockImplementation(() => {});

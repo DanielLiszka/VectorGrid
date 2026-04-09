@@ -15,6 +15,7 @@ import {
 import { useOptimizeStore } from "./optimizeStore";
 import { useDataStore } from "./dataStore";
 import { useStrategyStore } from "./strategyStore";
+import { useWorkflowStore } from "./workflowStore";
 import { invokeCommand } from "../tauri/invoke";
 
 vi.mock("../services/optimizeService", () => ({
@@ -134,7 +135,7 @@ describe("optimize store actions", () => {
     const store = useOptimizeStore(pinia);
     const data = useDataStore(pinia);
     const strategy = useStrategyStore(pinia);
-    store.strategyKind = "MlSignal";
+    useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     store.mlSignalScoreInputPath = "C:\\data\\scores.csv";
     store.mlSignalScoreCachePath = "C:\\data\\score_cache.json";
     store.mlSignalLongThreshold = "0.60";

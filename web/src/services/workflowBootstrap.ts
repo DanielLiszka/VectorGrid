@@ -2,17 +2,20 @@ import {
   AGGREGATE_TAB_KEY,
   CONTROLS_TAB_KEY,
   RESULTS_TAB_KEY,
+  WORKFLOW_MODE_KEY,
   WORKFLOW_STEP_KEY,
   WORKFLOW_TAB_KEY,
   WORKSPACE_SPLIT_KEY,
   WORKSPACE_TAB_KEY,
 } from '../utils/core/storageKeys'
+import { normalizeShellMode } from '../utils/core/workflowModel'
 import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { useDataStore } from '../stores/dataStore'
 import { readStorageString } from '../utils/storage'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])
+const WORKFLOW_MODE_KEYS = new Set(['conventional', 'ml-signal'])
 const WORKFLOW_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize', 'history', 'settings'])
 const WORKFLOW_STEP_KEYS = new Set(['data', 'optimize', 'validate', 'analyze', 'finalize'])
 const CONTROLS_TAB_KEYS = new Set(['data', 'opt', 'strategy', 'advanced'])
@@ -20,6 +23,7 @@ const RESULTS_TAB_KEYS = new Set(['overview', 'top', 'pareto', 'validate', 'dril
 const AGGREGATE_TAB_KEYS = new Set(['meta', 'batch', 'saved', 'compare'])
 
 export interface WorkflowBootstrapState {
+  mode: string
   workspace: string
   workflow: string
   workflowStep: string
@@ -48,6 +52,7 @@ function readStorageValue(key: string): string {
 
 export function readWorkflowBootstrapState(): WorkflowBootstrapState {
   return {
+    mode: normalizeFromSet(readStorageValue(WORKFLOW_MODE_KEY), WORKFLOW_MODE_KEYS),
     workspace: normalizeFromSet(readStorageValue(WORKSPACE_TAB_KEY), WORKSPACE_KEYS),
     workflow: normalizeFromSet(readStorageValue(WORKFLOW_TAB_KEY), WORKFLOW_KEYS),
     workflowStep: normalizeFromSet(readStorageValue(WORKFLOW_STEP_KEY), WORKFLOW_STEP_KEYS),
@@ -66,10 +71,15 @@ export function applyWorkflowBootstrapFromStorage(options: WorkflowBootstrapOpti
   const includeDeferredData = options.includeDeferredData !== false
   const startupDataPromise = useDataStore(pinia).hydrateStartupState({ includeDeferred: includeDeferredData })
 
-  if (!state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab && !state.splitFraction) {
+  if (!state.mode && !state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab && !state.splitFraction) {
     return startupDataPromise
   }
   const store = useWorkflowStore(pinia)
+
+  if (state.mode) {
+    const restoredMode = normalizeShellMode(state.mode)
+    if (restoredMode) store.selectMode(restoredMode, { persist: false })
+  }
 
   if (state.workspace) {
     if (state.workspace === 'workflow') {

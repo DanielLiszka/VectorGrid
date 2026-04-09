@@ -65,6 +65,7 @@ describe('OptionsExpressionPanel', () => {
 
     expect(wrapper.text()).toContain('supports saved DoubleMa')
     expect(wrapper.text()).toContain('BreakoutMomentum')
+    expect(wrapper.find('img.emptyStateIllustration').exists()).toBe(true)
     expect(listOptionsDatasetsMock).not.toHaveBeenCalled()
   })
 
@@ -212,6 +213,8 @@ describe('OptionsExpressionPanel', () => {
 
     expect(wrapper.text()).toContain('Options Expression')
     expect(wrapper.text()).toContain('This is an options follow-up surface.')
+    expect(wrapper.find('img.optionsPaneGlyph').exists()).toBe(true)
+    expect(wrapper.findAll('img.optionsActionIcon').length).toBeGreaterThanOrEqual(4)
     expect(wrapper.text()).toContain('Optimize expression')
     expect(wrapper.text()).toContain('Realism lane')
     expect(wrapper.text()).toContain('Split assignment')
@@ -2280,6 +2283,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Showing 2 of 2 event rows')
     expect(wrapper.text()).toContain('Selected event')
     expect(wrapper.text()).toContain('Event path replay')
+    expect(wrapper.findAll('img.sectionGlyph').length).toBeGreaterThanOrEqual(3)
+    expect(wrapper.findAll('img.optionsActionIcon').length).toBeGreaterThanOrEqual(6)
     expect(wrapper.text()).toContain('Option range')
     expect(wrapper.text()).toContain('1.4000 -> 1.8000')
     expect(wrapper.text()).toContain('501.50 -> 503.10')

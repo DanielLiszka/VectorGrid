@@ -13,10 +13,12 @@ import { type TrackedTask, shouldGuardDesktopCloseForTask, useTaskStore } from '
 import { useWorkflowStore } from '../stores/workflowStore'
 import { tauriRuntimeAvailable } from '../tauri/invoke'
 import {
-  WORKFLOW_STEP_SUBTITLES,
   WORKSPACE_SUBTITLES,
+  shellModeLabel,
   normalizeWorkflowStep,
   normalizeWorkspaceTab,
+  workflowStepLabelForMode,
+  workflowStepSubtitleForMode,
 } from '../utils/core/workflowModel'
 
 const commandActionStore = useCommandActionStore()
@@ -28,7 +30,7 @@ const workflowStore = useWorkflowStore()
 
 const { runnerActive } = storeToRefs(executionStore)
 const { canCancel, runDisabled } = storeToRefs(optimizeStore)
-const { workflowStep, workspace } = storeToRefs(workflowStore)
+const { mode, workflowStep, workspace } = storeToRefs(workflowStore)
 
 const desktopRuntimeAvailable = tauriRuntimeAvailable()
 const desktopWindow = desktopRuntimeAvailable ? getCurrentWindow() : null
@@ -48,12 +50,8 @@ const workspaceLabel = computed(() => {
 })
 
 const workflowStepLabel = computed(() => {
-  const normalizedStep = normalizeWorkflowStep(workflowStep.value)
-  if (normalizedStep === 'optimize') return 'Strategy Setup'
-  if (normalizedStep === 'validate') return 'Validation'
-  if (normalizedStep === 'analyze') return 'Summary'
-  if (normalizedStep === 'finalize') return 'Finalizer'
-  return 'Data Source'
+  const normalizedStep = normalizeWorkflowStep(workflowStep.value) || 'data'
+  return workflowStepLabelForMode(normalizedStep, mode.value)
 })
 
 const subtitle = computed(() => {
@@ -62,10 +60,13 @@ const subtitle = computed(() => {
     return WORKSPACE_SUBTITLES[normalizedWorkspace]
   }
   const normalizedStep = normalizeWorkflowStep(workflowStep.value) || 'data'
-  return WORKFLOW_STEP_SUBTITLES[normalizedStep]
+  return workflowStepSubtitleForMode(normalizedStep, mode.value)
 })
 
-const actionLabel = computed(() => (canCancel.value ? 'Stop run' : 'Run optimization'))
+const actionLabel = computed(() => {
+  if (canCancel.value) return 'Stop run'
+  return shellModeLabel(mode.value) === 'ML Signal' ? 'Build score cache' : 'Run optimization'
+})
 const actionDisabled = computed(() => !canCancel.value && !!runDisabled.value)
 const guardedActiveTasks = computed<TrackedTask[]>(() => {
   const tasks: TrackedTask[] = []

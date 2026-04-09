@@ -54,6 +54,7 @@ describe('workflow bootstrap service', () => {
     })
 
     expect(readWorkflowBootstrapState()).toEqual({
+      mode: '',
       workspace: 'library',
       workflow: 'history',
       workflowStep: 'optimize',
@@ -73,6 +74,7 @@ describe('workflow bootstrap service', () => {
     })
 
     expect(readWorkflowBootstrapState()).toEqual({
+      mode: '',
       workspace: 'workflow',
       workflow: 'validate',
       workflowStep: '',
@@ -94,6 +96,7 @@ describe('workflow bootstrap service', () => {
     })
 
     expect(readWorkflowBootstrapState()).toEqual({
+      mode: '',
       workspace: '',
       workflow: '',
       workflowStep: '',
@@ -117,6 +120,7 @@ describe('workflow bootstrap service', () => {
     const store = useWorkflowStore(pinia)
     expect(hydrateStartupStateSpy).toHaveBeenCalled()
     expect(store.workspace).toBe('library')
+    expect(store.mode).toBe('conventional')
     expect(store.workflow).toBe('history')
     expect(store.controlsTab).toBe('data')
     expect(store.resultsTab).toBe('history')
@@ -131,6 +135,7 @@ describe('workflow bootstrap service', () => {
     await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('aggregate')
+    expect(store.mode).toBe('conventional')
     expect(store.workflow).toBe('settings')
     expect(store.controlsTab).toBe('advanced')
     expect(store.resultsTab).toBe('meta')
@@ -145,6 +150,7 @@ describe('workflow bootstrap service', () => {
     await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('aggregate')
+    expect(store.mode).toBe('conventional')
     expect(store.aggregateTab).toBe('compare')
   })
 
@@ -159,6 +165,7 @@ describe('workflow bootstrap service', () => {
     await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('workflow')
+    expect(store.mode).toBe('conventional')
     expect(store.workflow).toBe('optimize')
     expect(store.workflowStep).toBe('optimize')
     expect(store.controlsTab).toBe('strategy')
@@ -176,6 +183,7 @@ describe('workflow bootstrap service', () => {
     await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.workspace).toBe('workflow')
+    expect(store.mode).toBe('conventional')
     expect(store.workflowStep).toBe('finalize')
     expect(store.workflow).toBe('finalize')
     expect(store.controlsTab).toBe('advanced')
@@ -189,6 +197,7 @@ describe('workflow bootstrap service', () => {
     })
 
     expect(readWorkflowBootstrapState()).toEqual({
+      mode: '',
       workspace: '',
       workflow: '',
       workflowStep: '',
@@ -207,6 +216,7 @@ describe('workflow bootstrap service', () => {
     })
 
     expect(readWorkflowBootstrapState()).toEqual({
+      mode: '',
       workspace: 'workflow',
       workflow: '',
       workflowStep: 'analyze',
@@ -219,6 +229,33 @@ describe('workflow bootstrap service', () => {
     await applyWorkflowBootstrapFromStorage()
     const store = useWorkflowStore(pinia)
     expect(store.splitFraction).toBe(0.52)
+  })
+
+  it('restores persisted MlSignal shell mode before workflow posture', async () => {
+    installStorage({
+      vta_workflow_mode_v1: 'ml-signal',
+      vta_workspace_tab_v1: 'workflow',
+      vta_workflow_step_v1: 'validate',
+      vectorgrid_controls_tab_v1: 'opt',
+    })
+
+    expect(readWorkflowBootstrapState()).toEqual({
+      mode: 'ml-signal',
+      workspace: 'workflow',
+      workflow: '',
+      workflowStep: 'validate',
+      controlsTab: 'opt',
+      resultsTab: '',
+      aggregateTab: '',
+      splitFraction: '',
+    })
+
+    await applyWorkflowBootstrapFromStorage()
+    const store = useWorkflowStore(pinia)
+    expect(store.mode).toBe('ml-signal')
+    expect(store.workflowStep).toBe('validate')
+    expect(store.controlsTab).toBe('opt')
+    expect(store.resultsTab).toBe('overview')
   })
 
   it('hydrates startup data even when there is no saved workflow bootstrap state', async () => {

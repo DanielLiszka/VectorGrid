@@ -30,6 +30,15 @@ The harness accepts any of these locations:
 From the repo root:
 
 ```powershell
+npm --prefix web run test:browser:ux
+npm --prefix web run test:desktop:smoke
+```
+
+Use the browser UX suite for deterministic mocked-Tauri interaction proof, and use desktop smoke for real-shell/native verification.
+
+Run only desktop smoke:
+
+```powershell
 npm --prefix web run test:desktop:smoke
 ```
 
@@ -66,6 +75,23 @@ The default smoke path:
 7. executes the desktop smoke specs against the real Tauri shell
 
 The harness deliberately avoids `cargo tauri dev` so it does not depend on dev-server timing or Tauri CLI cwd behavior.
+
+## Verification boundary
+
+Desktop smoke should continue to own:
+
+- real launch into the Tauri shell
+- shell readiness in the native runtime
+- titlebar and native window-control presence
+- workspace, command-palette, task-center, and settings reachability in the real shell
+
+Desktop smoke should not become the primary proof layer for:
+
+- general mocked-Tauri interaction journeys
+- dense form/results interaction semantics
+- broad screenshot assertions
+
+Those app-level browser journeys belong in `web/e2e/browser/`, and exact interaction contracts still belong in component or unit tests.
 
 Optional local overrides:
 

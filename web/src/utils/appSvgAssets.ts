@@ -14,6 +14,14 @@ import emptyResultsWorkspaceColorUrl from '../assets/generated-svg/empty-results
 import modeBuildColorUrl from '../assets/generated-svg/mode-build-color.svg'
 import modeOperateColorUrl from '../assets/generated-svg/mode-operate-color.svg'
 import modeReviewColorUrl from '../assets/generated-svg/mode-review-color.svg'
+import optionsCurrentResultColorUrl from '../assets/generated-svg/options-current-result-color.svg'
+import optionsDatasetImportColorUrl from '../assets/generated-svg/options-dataset-import-color.svg'
+import optionsEventPathReplayColorUrl from '../assets/generated-svg/options-event-path-replay-color.svg'
+import optionsFeasibilityPreviewColorUrl from '../assets/generated-svg/options-feasibility-preview-color.svg'
+import optionsFollowupWorkflowColorUrl from '../assets/generated-svg/options-followup-workflow-color.svg'
+import optionsProviderDownloadColorUrl from '../assets/generated-svg/options-provider-download-color.svg'
+import optionsTupleDrilldownColorUrl from '../assets/generated-svg/options-tuple-drilldown-color.svg'
+import emptyOptionsWorkspaceColorUrl from '../assets/generated-svg/empty-options-workspace-color.svg'
 import provenanceDatasetChangedColorUrl from '../assets/generated-svg/provenance-dataset-changed-color.svg'
 import provenanceLowSampleColorUrl from '../assets/generated-svg/provenance-low-sample-color.svg'
 import provenanceOosStableColorUrl from '../assets/generated-svg/provenance-oos-stable-color.svg'
@@ -66,6 +74,16 @@ export const emptyArtifactLibraryIllustration = emptyArtifactLibraryColorUrl
 export const modeBuildIcon = asset('Build posture', modeBuildColorUrl)
 export const modeReviewIcon = asset('Review posture', modeReviewColorUrl)
 export const modeOperateIcon = asset('Operate posture', modeOperateColorUrl)
+
+export const optionsFollowupWorkflowIcon = asset('Options follow-up workflow', optionsFollowupWorkflowColorUrl)
+export const optionsDatasetImportIcon = asset('Options dataset import', optionsDatasetImportColorUrl)
+export const optionsProviderDownloadIcon = asset('Options provider download', optionsProviderDownloadColorUrl)
+export const optionsFeasibilityPreviewIcon = asset('Options feasibility preview', optionsFeasibilityPreviewColorUrl)
+export const optionsCurrentResultIcon = asset('Options current result', optionsCurrentResultColorUrl)
+export const optionsTupleDrilldownIcon = asset('Options tuple drilldown', optionsTupleDrilldownColorUrl)
+export const optionsEventPathReplayIcon = asset('Options event path replay', optionsEventPathReplayColorUrl)
+
+export const emptyOptionsWorkspaceIllustration = emptyOptionsWorkspaceColorUrl
 
 export function shellPostureIcon(
   workspace: string | null | undefined,

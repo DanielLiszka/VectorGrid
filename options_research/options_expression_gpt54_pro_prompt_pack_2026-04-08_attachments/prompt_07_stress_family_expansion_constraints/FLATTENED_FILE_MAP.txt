@@ -1,0 +1,19 @@
+Flattened file map
+Folder: C:\Rust Projects\ta_desktop_demo\options_research\options_expression_gpt54_pro_prompt_pack_2026-04-08_attachments\prompt_07_stress_family_expansion_constraints
+
+Format:
+flattened_name <- original_relative_path
+
+AGENTS.md <- AGENTS.md
+REPO_MAP.md <- REPO_MAP.md
+README.md <- README.md
+options_expression_optimizer_viable_plan_2026-04-02.md <- options_research/options_expression_optimizer_viable_plan_2026-04-02.md
+options_expression_future_scope_roadmap_2026-04-07.md <- options_research/options_expression_future_scope_roadmap_2026-04-07.md
+options_types.rs <- crates/app_core/src/options_types.rs
+options_expression.rs <- crates/app_core/src/options_expression.rs
+options_expression_gpu.rs <- crates/app_core/src/options_expression_gpu.rs
+commands_options_expression.rs <- src-tauri/src/commands_options_expression.rs
+output__options_expression_phase05_gpu_gate__2026-04-07T20-41-53__2026-04-07T20-41-53__phase05_summary.json <- output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json
+output__options_expression_phase05_gpu_gate__2026-04-08T09-50-23__2026-04-08T09-50-23__phase05_summary.json <- output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json
+spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json <- output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json
+OptionsExpressionPanel.vue <- web/src/components/OptionsExpressionPanel.vue

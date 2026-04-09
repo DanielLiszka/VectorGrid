@@ -91,6 +91,287 @@ If you need more structure, also ask for:
 - a short artifact plan
 - a note explaining which previously plausible ideas should now be considered closed
 
+## Consolidated Short Route
+
+If you want broad coverage without running a large serial tree of prompts, use this compressed route instead.
+
+This is the recommended route when:
+
+- you want to stay under practical upload/time limits
+- you want current-scope coverage without losing the CUDA-first focus
+- you do not want to run every narrow prompt separately
+
+This short route keeps the same overall coverage, but collapses the highest-overlap prompt families into a few larger questions.
+
+### Safe Order
+
+1. Consolidated Prompt A: CUDA-First Performance And Productization Direction
+2. Then run Consolidated Prompt B and Consolidated Prompt C
+   - these can run in parallel if you want to save time
+3. Then optionally run Consolidated Prompt D if you still care about scope-freeze questions
+4. Then use the existing final cross-prompt consolidation prompt on the outputs you actually ran
+
+### Consolidated Prompt A
+
+Replaces:
+
+- Prompt 1
+- Prompt 2
+- Prompt 3
+- Prompt 12
+- Prompt 13
+- Prompt 14
+
+Use this when the real question is:
+
+- where does the next performance dollar belong now?
+- is the next blocker density/coverage, replay/prepare amortization, GPU/CPU finalist boundary, auto-promotion policy, CUDA runtime structure, or SASS-level work?
+
+Recommended attachment set: 13 files
+
+- `AGENTS.md`
+- `REPO_MAP.md`
+- `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `crates/app_core/src/options_types.rs`
+- `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
+- `crates/app_core/src/kernels/options_expression.cu`
+- `src-tauri/src/commands_options_expression.rs`
+- `src-tauri/src/commands_options_data.rs`
+- `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json`
+- `output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json`
+
+```text
+You are reviewing VectorGrid's current options-expression workflow as one combined CUDA-first productization problem.
+
+Using only the attached files, answer this repo-specific question:
+
+Given the current shipped options lane, what is the single best next implementation direction if the goal is to maximize real GPU/CUDA product value without widening scope?
+
+You must evaluate all of these candidate directions together rather than treating them as separate prompts:
+
+- candidate density / invalid-slot / split-policy / provider-slice coverage work
+- replay/build and preparation/cache amortization work
+- GPU/CPU finalist exactification and embedded-validation boundary work
+- auto-backend / planner / product-promotion hardening
+- CUDA runtime micro-architecture work
+- SASS/PTX-level investigation
+- or "do nothing major yet"
+
+Constraints:
+- stay inside the current options optimization + embedded validation workflow
+- do not recommend new strategy families or workflow stages
+- keep GPU-first execution as a product requirement
+- keep CPU fallback/oracle behavior intact
+- treat SASS-level work as guilty until proven valuable
+- use the attached provider-backed evidence, not generic CUDA folklore
+- explicitly distinguish these failure classes:
+  - scorer/runtime issue
+  - replay/prepare issue
+  - GPU/CPU finalist-boundary issue
+  - density / search-quality issue
+  - provider-slice / overlap / eligibility issue
+  - policy / promotion issue
+
+Deliverables:
+1. Summarize what the repo already completed.
+2. Decompose where time and quality risk still go now.
+3. Compare the candidate directions above and state which one should actually win now.
+4. State what should explicitly remain unchanged.
+5. Identify concrete code touch points by file and symbol.
+6. Define the smallest benchmark / profiling / parity plan needed before and after implementation.
+7. State exact stop conditions for each major rejected/deferred direction.
+
+Make one coherent repo decision, not an equal-weight menu.
+```
+
+### Consolidated Prompt B
+
+Replaces:
+
+- Prompt 5
+- Prompt 9
+- Prompt 10
+
+Use this when the real question is:
+
+- what extra useful one-pass work should be added?
+- what extra aggregate state is worth carrying?
+- should the ranking functional change?
+
+Recommended attachment set: 8 files
+
+- `AGENTS.md`
+- `REPO_MAP.md`
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `crates/app_core/src/options_types.rs`
+- `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
+- `src-tauri/src/commands_options_expression.rs`
+- `web/src/components/OptionsExpressionPanel.vue`
+
+```text
+You are reviewing VectorGrid's current options-expression optimizer as one combined single-pass metrics and ranking-math problem.
+
+Using only the attached files, answer this repo-specific question:
+
+What additional useful work should this repo do inside the current options optimization pass, and should the ranking functional change, if the goal is to increase decision quality at near-constant marginal cost?
+
+You must evaluate these questions together:
+
+- what extra metrics are mathematically admissible from current or slightly richer aggregate state
+- what extra per-tuple per-lane state budget is still acceptable
+- what should happen with metrics like `median_return_on_premium`
+- whether broad pre-`top_k` ranking, exactified reranking, and sealed-finalist ordering should share one functional or deliberately differ
+- whether the current scalarization should stay, be minimally revised, or be replaced
+
+Constraints:
+- stay inside the current options optimization + embedded validation workflow
+- no new workflow stages
+- no generic Pareto expansion
+- no path-replay-heavy ideas in the hot loop
+- be mathematically explicit: formulas, state vectors, accumulator sets, mergeability
+- distinguish:
+  - exact from current state
+  - exact with a few extra mergeable accumulators
+  - approximate from a bounded sketch
+  - not worth implementing
+
+Deliverables:
+1. Summarize current metrics, aggregate state, and ranking math.
+2. Propose the best single-pass metric expansion, if any.
+3. Propose the best ranking-functional direction, if any.
+4. State the required accumulator/state vector and whether it widens GPU aggregate state, exact metrics, or both.
+5. State what should remain unchanged.
+6. Identify concrete code touch points by file and symbol.
+7. Define verification, parity, and rejection criteria.
+
+Make one coherent optimization-depth direction for this repo.
+```
+
+### Consolidated Prompt C
+
+Replaces:
+
+- Prompt 6
+- Prompt 11
+
+Use this when the real question is:
+
+- how should embedded validation deepen?
+- what additional frontier/confidence math is worth deriving?
+- how should verdicts, adequacy, and artifact/frontier coherence improve?
+
+Recommended attachment set: 10 files
+
+- `AGENTS.md`
+- `REPO_MAP.md`
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `crates/app_core/src/options_types.rs`
+- `crates/app_core/src/options_expression.rs`
+- `crates/app_core/src/options_expression_gpu.rs`
+- `src-tauri/src/commands_options_expression.rs`
+- `web/src/components/OptionsExpressionPanel.vue`
+- `web/src/stores/optionsExpressionStore.ts`
+- `web/src/services/optionsExpressionService.ts`
+
+```text
+You are reviewing VectorGrid's current options-expression workflow as one combined embedded-validation frontier problem.
+
+Using only the attached files, answer this repo-specific question:
+
+How should the repo deepen embedded options validation and derived validation math without creating a new stage, while keeping the result tuple-coherent, decision-grade, and performance-conscious?
+
+You must evaluate these questions together:
+
+- adequacy / sufficiency signals from split counts, valid trades, and coverage
+- shortlist / `top_k` / `sealed_finalist_count` distortion
+- frontier / regret / dominance / monotone-stress-deterioration summaries
+- whether new math complements or changes `inferred_validation_verdict()` / `is_stress_fragile()`
+- whether artifact-level summaries should remain scalar maxima or become more tuple-coherent
+- where any adopted statistic actually belongs:
+  - `OptionsExpressionTupleResult`
+  - verdict derivation
+  - `OptionsExpressionArtifactSummary`
+  - frontend-only reporting
+
+Constraints:
+- stay inside the current options optimization + embedded validation workflow
+- no new validation mode
+- no heavyweight rerun/bootstrap suggestions unless they clearly fit the current runtime philosophy
+- explicitly state whether each serious candidate statistic is trustworthy:
+  - globally across all tuples
+  - only within retained `top_k`
+  - or only within sealed finalists
+
+Deliverables:
+1. Summarize current embedded validation depth and verdict logic.
+2. Identify what is still genuinely missing.
+3. Propose the best next embedded-validation / frontier-math additions, if any.
+4. State whether the current shortlist/finalist policy should change.
+5. State whether artifact/frontier summaries should become more tuple-coherent.
+6. Identify concrete code touch points by file and symbol.
+7. Define acceptance, interpretability, and rejection criteria.
+
+Make one coherent embedded-validation direction for this repo.
+```
+
+### Consolidated Prompt D (Optional)
+
+Replaces:
+
+- Prompt 4
+- Prompt 7
+- Prompt 8
+
+Use this only if you still care about current scope-freeze questions.
+
+Recommended attachment set: 11 files
+
+- `AGENTS.md`
+- `REPO_MAP.md`
+- `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
+- `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `crates/app_core/src/options_types.rs`
+- `crates/app_core/src/options_expression.rs`
+- `src-tauri/src/commands_options_expression.rs`
+- `src-tauri/src/commands_options_data.rs`
+- `web/src/components/OptionsExpressionPanel.vue`
+- `web/src/stores/optionsExpressionStore.ts`
+- `web/src/services/optionsExpressionService.ts`
+
+```text
+You are reviewing the remaining scope-freeze questions in VectorGrid's current options-expression workflow.
+
+Using only the attached files, answer this repo-specific question:
+
+Should the repo keep the current scope frozen, or is there one narrow additional realism/stress/structure expansion still worth allowing without hurting the GPU-first product shape?
+
+You must evaluate these questions together:
+
+- should quote-aware realism remain secondary or become more first-class
+- should the current stress-family set stay frozen
+- should the current bounded structure-family set stay frozen
+
+Constraints:
+- stay inside the current options optimization + embedded validation workflow
+- no new parent strategy families
+- no new workflow stages
+- no generic options-platform expansion
+- prefer freeze unless there is a strong current-scope reason not to
+
+Deliverables:
+1. Summarize the current frozen scope.
+2. State which parts should stay frozen.
+3. State whether any one narrow expansion is still justified now.
+4. Identify concrete code touch points by file if anything should change.
+5. Define explicit reopen criteria for any deferred/frozen lane.
+
+Be conservative. The default answer should be to keep current scope narrow unless the repo evidence says otherwise.
+```
+
 ## First-Pass Prompt Discipline
 
 For every primary prompt in this pack, prefer answers that do all of the following:

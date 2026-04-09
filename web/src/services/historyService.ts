@@ -14,6 +14,7 @@ import { useOptimizeStore } from "../stores/optimizeStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useValidationStore } from "../stores/validationStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 
 let dataServicePromise: Promise<typeof import("./dataService")> | null = null;
 let optimizeServicePromise: Promise<typeof import("./optimizeService")> | null =
@@ -77,6 +78,22 @@ function parseBooleanLike(value: unknown): boolean | null {
 
 function isMlSignalStrategyKind(value: unknown): boolean {
   return normalizeText(value) === "MlSignal";
+}
+
+function shellModeForStrategyKind(value: unknown): "conventional" | "ml-signal" {
+  return isMlSignalStrategyKind(value) ? "ml-signal" : "conventional";
+}
+
+function selectShellModeForStrategyKind(value: unknown): void {
+  const pinia = resolveRuntimePinia();
+  if (!pinia) return;
+  useWorkflowStore(pinia).selectMode(shellModeForStrategyKind(value));
+}
+
+function selectShellModeForRunRequest(
+  req: Record<string, unknown> | null | undefined,
+): void {
+  selectShellModeForStrategyKind(req?.strategy_kind ?? req?.strategyKind);
 }
 
 function updateAnalysisStatus(message: string): void {
@@ -555,8 +572,9 @@ function updateStoresFromRunRequest(
   const fastTypes = normalizeStringList(req.fast_ma_types);
   const slowTypes = normalizeStringList(req.slow_ma_types);
 
-  if (strategyKind) optimizeStore.strategyKind = strategyKind;
-  if (strategyKind === "MlSignal") {
+  const mlSignalStrategy = strategyKind === "MlSignal";
+  if (strategyKind && !mlSignalStrategy) optimizeStore.strategyKind = strategyKind;
+  if (mlSignalStrategy) {
     const outputPath = normalizeText(req.output_path ?? req.outputPath);
     const inputPath = normalizeText(req.input_path ?? req.inputPath);
     const scoreCachePath = normalizeText(
@@ -847,6 +865,9 @@ export async function applySession(ts: string): Promise<void> {
     },
     "vue",
   );
+  selectShellModeForStrategyKind(
+    (entry.req as Record<string, unknown> | null)?.strategy_kind,
+  );
   if (
     isMlSignalStrategyKind(
       (entry.req as Record<string, unknown> | null)?.strategy_kind,
@@ -959,6 +980,7 @@ export async function loadSavedRun(path: string): Promise<void> {
     currentRun && currentRun.req && typeof currentRun.req === "object"
       ? (currentRun.req as Record<string, unknown>)
       : null;
+  selectShellModeForRunRequest(runReq);
   if (
     isMlSignalStrategyKind(
       (runReq as Record<string, unknown> | null)?.strategy_kind,
@@ -981,6 +1003,7 @@ export async function applySavedRun(path: string): Promise<void> {
   if (!req) throw new Error("Saved run artifact is missing run.req.");
   const csvPath = normalizeText(detail.csvPath);
   const timeframe = normalizeText(detail.timeframe);
+  selectShellModeForRunRequest(req);
   updateStoresFromRunRequest(req, csvPath, timeframe, validationReq);
 }
 
@@ -1017,6 +1040,7 @@ export async function rerunSavedRun(path: string): Promise<void> {
     request.data_id = currentDataId;
     request.dataId = currentDataId;
   }
+  selectShellModeForRunRequest(req);
   if (isMlSignalStrategyKind(req.strategy_kind ?? req.strategyKind)) {
     const {
       exportMlSignalDataset,

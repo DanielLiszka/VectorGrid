@@ -20,6 +20,7 @@ const HeatmapWorkspacePanel = defineAsyncComponent(() => import('./components/He
 const HistoryWorkspacePanel = defineAsyncComponent(() => import('./components/HistoryWorkspacePanel.vue'))
 const HistoryContextDock = defineAsyncComponent(() => import('./components/HistoryContextDock.vue'))
 const MetaWorkspacePanel = defineAsyncComponent(() => import('./components/MetaWorkspacePanel.vue'))
+const MlSignalShellPanel = defineAsyncComponent(() => import('./components/MlSignalShellPanel.vue'))
 const OptimizeContextDock = defineAsyncComponent(() => import('./components/OptimizeContextDock.vue'))
 const OptimizeWorkspacePanel = defineAsyncComponent(() => import('./components/OptimizeWorkspacePanel.vue'))
 const OverviewWorkspacePanel = defineAsyncComponent(() => import('./components/OverviewWorkspacePanel.vue'))
@@ -35,19 +36,21 @@ const WorkflowQuickSwitch = defineAsyncComponent(() => import('./components/Work
 const workflowStore = useWorkflowStore()
 workflowStore.syncRuntimeState()
 
-const { controlsTab, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
+const { controlsTab, mode, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
 
 const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
 const workflowWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'workflow')
+const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
+const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
 const analysisDockActive = computed(() => {
   const ws = String(workspace.value || '').trim()
   const wf = String(workflow.value || '').trim()
-  return ws === 'aggregate' || wf === 'optimize' || wf === 'validate' || wf === 'analyze'
+  return ws === 'aggregate' || (!mlSignalModeActive.value && (wf === 'optimize' || wf === 'validate' || wf === 'analyze'))
 })
-const optimizeDockActive = computed(() => workflowWorkspaceActive.value && activeControlsTab.value === 'opt')
-const validationDockActive = computed(() => workflowWorkspaceActive.value && activeResultsTab.value === 'validate')
+const optimizeDockActive = computed(() => workflowWorkspaceActive.value && activeControlsTab.value === 'opt' && !mlSignalModeActive.value)
+const validationDockActive = computed(() => workflowWorkspaceActive.value && activeResultsTab.value === 'validate' && !mlSignalModeActive.value)
 const historyPanelActive = computed(() => {
   const ws = String(workspace.value || '').trim()
   const wf = String(workflow.value || '').trim()
@@ -66,16 +69,17 @@ function shouldShowWorkflowQuickSwitch(): boolean {
 
 const showWorkflowQuickSwitch = shouldShowWorkflowQuickSwitch()
 const dataPanelActive = computed(() => activeControlsTab.value === 'data')
-const optimizePanelActive = computed(() => activeControlsTab.value === 'opt')
+const optimizePanelActive = computed(() => activeControlsTab.value === 'opt' && !mlSignalModeActive.value)
+const mlSignalPanelActive = computed(() => activeControlsTab.value === 'opt' && mlSignalModeActive.value)
 const strategyPanelActive = computed(() => activeControlsTab.value === 'strategy')
 const advancedPanelActive = computed(() => activeControlsTab.value === 'advanced')
-const overviewPanelActive = computed(() => activeResultsTab.value === 'overview')
-const topPanelActive = computed(() => activeResultsTab.value === 'top')
-const paretoPanelActive = computed(() => activeResultsTab.value === 'pareto')
-const validationPanelActive = computed(() => activeResultsTab.value === 'validate')
-const drillPanelActive = computed(() => activeResultsTab.value === 'drill')
-const heatmapPanelActive = computed(() => activeResultsTab.value === 'heatmap')
-const metaPanelActive = computed(() => activeResultsTab.value === 'meta')
+const overviewPanelActive = computed(() => activeResultsTab.value === 'overview' && !mlSignalModeActive.value)
+const topPanelActive = computed(() => activeResultsTab.value === 'top' && !mlSignalModeActive.value)
+const paretoPanelActive = computed(() => activeResultsTab.value === 'pareto' && !mlSignalModeActive.value)
+const validationPanelActive = computed(() => activeResultsTab.value === 'validate' && !mlSignalModeActive.value)
+const drillPanelActive = computed(() => activeResultsTab.value === 'drill' && !mlSignalModeActive.value)
+const heatmapPanelActive = computed(() => activeResultsTab.value === 'heatmap' && !mlSignalModeActive.value)
+const metaPanelActive = computed(() => activeResultsTab.value === 'meta' && (!mlSignalModeActive.value || currentWorkspace.value !== 'workflow'))
 const debugPanelActive = computed(() => activeResultsTab.value === 'debug')
 
 type LazyPanelKey = 'data' | 'optimize' | 'overview'
@@ -119,10 +123,11 @@ mountWhenActive('overview', () => overviewPanelActive.value)
   <HistoryContextDock v-if="historyPanelActive" />
   <HistoryWorkspacePanel v-if="historyPanelActive" />
   <MetaWorkspacePanel v-if="metaPanelActive" />
+  <MlSignalShellPanel v-if="mlSignalPanelActive" />
   <OverviewWorkspacePanel v-if="mountedPanels.overview" />
   <OptimizeContextDock v-if="optimizeDockActive" />
   <ParetoWorkspacePanel v-if="paretoPanelActive" />
-  <OptimizeWorkspacePanel v-if="mountedPanels.optimize" />
+  <OptimizeWorkspacePanel v-if="mountedPanels.optimize && !mlSignalModeActive" />
   <RunFooterPanel />
   <SettingsWorkspacePanel v-if="settingsWorkspaceActive" />
   <StrategyWorkspacePanel v-if="strategyPanelActive" />

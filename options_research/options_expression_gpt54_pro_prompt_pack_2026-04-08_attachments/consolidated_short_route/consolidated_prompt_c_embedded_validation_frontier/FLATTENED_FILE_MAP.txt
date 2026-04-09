@@ -1,0 +1,16 @@
+Flattened file map
+Folder: C:\Rust Projects\ta_desktop_demo\options_research\options_expression_gpt54_pro_prompt_pack_2026-04-08_attachments\consolidated_short_route\consolidated_prompt_c_embedded_validation_frontier
+
+Format:
+flattened_name <- original_relative_path
+
+AGENTS.md <- AGENTS.md
+REPO_MAP.md <- REPO_MAP.md
+options_expression_future_scope_roadmap_2026-04-07.md <- options_research/options_expression_future_scope_roadmap_2026-04-07.md
+options_types.rs <- crates/app_core/src/options_types.rs
+options_expression.rs <- crates/app_core/src/options_expression.rs
+options_expression_gpu.rs <- crates/app_core/src/options_expression_gpu.rs
+commands_options_expression.rs <- src-tauri/src/commands_options_expression.rs
+OptionsExpressionPanel.vue <- web/src/components/OptionsExpressionPanel.vue
+optionsExpressionStore.ts <- web/src/stores/optionsExpressionStore.ts
+optionsExpressionService.ts <- web/src/services/optionsExpressionService.ts

@@ -8,6 +8,7 @@ const PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Optimize',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'workflow',
       workflow: 'optimize',
       workflowStep: 'optimize',
@@ -23,6 +24,7 @@ const PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Validate',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'workflow',
       workflow: 'validate',
       workflowStep: 'validate',
@@ -38,6 +40,7 @@ const PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Run Library',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'library',
       workflow: 'history',
       workflowStep: 'data',
@@ -53,6 +56,7 @@ const PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Review Focus',
     builtIn: false,
     snapshot: {
+      mode: 'conventional',
       workspace: 'workflow',
       workflow: 'analyze',
       workflowStep: 'analyze',

@@ -5,6 +5,7 @@ import { useWorkflowStore } from './workflowStore'
 describe('workflow store actions', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    if (typeof localStorage !== 'undefined') localStorage.clear()
   })
 
   it('selects library workspace with history workflow defaults', () => {
@@ -94,6 +95,39 @@ describe('workflow store actions', () => {
 
     expect(store.splitFraction).toBe(0.48)
     expect(store.source).toBe('vue')
+  })
+
+  it('switches into MlSignal mode without reusing conventional optimize tabs', () => {
+    const store = useWorkflowStore()
+    store.selectWorkflowStep('optimize', { persist: false })
+    store.selectControlsTab('strategy', { persist: false })
+    store.selectResultsTab('top', { persist: false })
+
+    store.selectMode('ml-signal', { persist: false })
+
+    expect(store.mode).toBe('ml-signal')
+    expect(store.workflow).toBe('optimize')
+    expect(store.workflowStep).toBe('optimize')
+    expect(store.controlsTab).toBe('opt')
+    expect(store.resultsTab).toBe('overview')
+    expect(store.workflowSubtitle).toContain('score cache')
+  })
+
+  it('keeps mode-specific tab memory separate between conventional and MlSignal', () => {
+    const store = useWorkflowStore()
+    store.selectWorkflowStep('optimize', { persist: false })
+    store.selectControlsTab('strategy', { persist: false })
+    store.selectResultsTab('top', { persist: false })
+    store.selectMode('ml-signal', { persist: false })
+    store.selectWorkflowStep('validate', { persist: false })
+    store.selectWorkflowStep('optimize', { persist: false })
+    expect(store.controlsTab).toBe('opt')
+    expect(store.resultsTab).toBe('overview')
+
+    store.selectMode('conventional', { persist: false })
+
+    expect(store.controlsTab).toBe('strategy')
+    expect(store.resultsTab).toBe('top')
   })
 
   it('ignores invalid values', () => {

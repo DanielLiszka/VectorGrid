@@ -71,6 +71,17 @@ describe('DesktopTitlebar', () => {
     expect(wrapper.findAll('.titlebarTool')).toHaveLength(3)
   })
 
+  it('uses mode-aware labels and action text for MlSignal shell mode', () => {
+    const workflowStore = useWorkflowStore()
+    workflowStore.selectMode('ml-signal', { persist: false })
+    workflowStore.selectWorkflowStep('validate', { persist: false })
+
+    const wrapper = mount(DesktopTitlebar)
+
+    expect(wrapper.text()).toContain('Workflow · Policy Validation')
+    expect(wrapper.get('.titlebarPrimary').attributes('aria-label')).toBe('Build score cache')
+  })
+
   it('routes shell actions through the existing stores', async () => {
     const commandPaletteStore = useCommandPaletteStore()
     const commandActionStore = useCommandActionStore()

@@ -9,6 +9,7 @@ import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { shellModeLabel, workflowStepLabelForMode } from '../utils/core/workflowModel'
 import { shellPostureIcon, shellPostureLabel } from '../utils/appSvgAssets'
 
 const workflowStore = useWorkflowStore()
@@ -22,7 +23,7 @@ const workspaceGridRef = ref<HTMLElement | null>(null)
 const viewportWidth = ref(1440)
 const dividerDrag = ref<{ pointerId: number; startClientX: number; startFraction: number } | null>(null)
 
-const { controlsTab, resultsTab, splitFraction, workspace, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
+const { controlsTab, mode, resultsTab, splitFraction, workspace, workflowStep, workflowSubtitle } = storeToRefs(workflowStore)
 const { dataId, dataLen, datasetLabel, datasetRange } = storeToRefs(dataStore)
 const { backend, progressMeta, runReadinessHint, strategyKind } = storeToRefs(optimizeStore)
 const { controlsCollapsed } = storeToRefs(settingsStore)
@@ -35,12 +36,9 @@ const workspaceItems = [
   { key: 'settings', label: 'Settings' },
 ] as const
 
-const workflowStepItems = [
-  { key: 'data', label: '1 Data Source' },
-  { key: 'optimize', label: '2 Strategy Setup' },
-  { key: 'validate', label: '3 Validation' },
-  { key: 'analyze', label: '4 Summary' },
-  { key: 'finalize', label: '5 Finalizer' },
+const modeItems = [
+  { key: 'conventional', label: 'Conventional' },
+  { key: 'ml-signal', label: 'ML Signal' },
 ] as const
 
 const controlsItems = {
@@ -77,6 +75,10 @@ function workspaceTabId(key: string): string {
   return `workspace_tab_${key}`
 }
 
+function modeTabId(key: string): string {
+  return `mode_tab_${key}`
+}
+
 function workflowStepTabId(key: string): string {
   return `workflow_step_tab_${key}`
 }
@@ -91,12 +93,21 @@ function resultTabId(key: string): string {
 
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
+const currentMode = computed(() => String(mode.value || '').trim() || 'conventional')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const currentWorkflowStep = computed(() => String(workflowStep.value || '').trim() || 'data')
+const workflowStepItems = computed(() => [
+  { key: 'data', label: `1 ${workflowStepLabelForMode('data', currentMode.value)}` },
+  { key: 'optimize', label: `2 ${workflowStepLabelForMode('optimize', currentMode.value)}` },
+  { key: 'validate', label: `3 ${workflowStepLabelForMode('validate', currentMode.value)}` },
+  { key: 'analyze', label: `4 ${workflowStepLabelForMode('analyze', currentMode.value)}` },
+  { key: 'finalize', label: `5 ${workflowStepLabelForMode('finalize', currentMode.value)}` },
+])
 const settingsWorkspaceActive = computed(() => currentWorkspace.value === 'settings')
+const currentModeLabel = computed(() => shellModeLabel(currentMode.value))
 const currentWorkspaceLabel = computed(() => workspaceItems.find((item) => item.key === currentWorkspace.value)?.label || 'Workflow')
 const currentWorkflowStepLabel = computed(
-  () => workflowStepItems.find((item) => item.key === currentWorkflowStep.value)?.label || '1 Data Source',
+  () => workflowStepItems.value.find((item) => item.key === currentWorkflowStep.value)?.label || `1 ${workflowStepLabelForMode('data', currentMode.value)}`,
 )
 const currentControlsLabel = computed(
   () => visibleControlsItems.value.find((item) => item.key === activeControlsTab.value)?.label || 'No setup panel',
@@ -111,7 +122,10 @@ const selectedShellTabId = computed(() =>
 )
 const shellSelectionAnnouncement = computed(() => {
   const parts = [`Workspace ${currentWorkspaceLabel.value}.`]
-  if (currentWorkspace.value === 'workflow') parts.push(`Workflow step ${currentWorkflowStepLabel.value}.`)
+  if (currentWorkspace.value === 'workflow') {
+    parts.push(`Mode ${currentModeLabel.value}.`)
+    parts.push(`Workflow step ${currentWorkflowStepLabel.value}.`)
+  }
   if (visibleControlsItems.value.length > 0) parts.push(`Setup panel ${currentControlsLabel.value}.`)
   if (visibleResultsItems.value.length > 0) parts.push(`Results panel ${currentResultsLabel.value}.`)
   return parts.join(' ')
@@ -122,10 +136,14 @@ const shellSubtitle = computed(() => {
 })
 const shellPostureVisual = computed(() => shellPostureIcon(currentWorkspace.value, currentWorkflowStep.value))
 const shellPostureText = computed(() => shellPostureLabel(currentWorkspace.value, currentWorkflowStep.value))
-const layoutKey = computed(() => `${currentWorkspace.value}:${currentWorkflowStep.value}`)
+const layoutKey = computed(() => `${currentMode.value}:${currentWorkspace.value}:${currentWorkflowStep.value}`)
 
 const visibleControlsItems = computed(() => {
   if (currentWorkspace.value === 'workflow') {
+    if (currentMode.value === 'ml-signal') {
+      if (currentWorkflowStep.value === 'data') return [controlsItems.data]
+      return [controlsItems.opt]
+    }
     if (currentWorkflowStep.value === 'data') return [controlsItems.data]
     if (currentWorkflowStep.value === 'optimize') return [controlsItems.opt, controlsItems.strategy, controlsItems.advanced]
     if (currentWorkflowStep.value === 'finalize') return [controlsItems.advanced]
@@ -139,6 +157,7 @@ const visibleControlsItems = computed(() => {
 
 const visibleResultsItems = computed(() => {
   if (currentWorkspace.value === 'workflow') {
+    if (currentMode.value === 'ml-signal') return []
     if (currentWorkflowStep.value === 'data') return [resultsItems.overview]
     if (currentWorkflowStep.value === 'optimize') {
       return [resultsItems.overview, resultsItems.top, resultsItems.pareto, resultsItems.heatmap]
@@ -157,16 +176,19 @@ const visibleResultsItems = computed(() => {
 
 const controlsColumnEligible = computed(() => visibleControlsItems.value.length > 0 && !settingsWorkspaceActive.value)
 const controlsColumnVisible = computed(() => controlsColumnEligible.value && !controlsCollapsed.value)
-const resultsTabsVisible = computed(() => visibleResultsItems.value.length > 1)
+const resultsColumnVisible = computed(() => visibleResultsItems.value.length > 0 && !settingsWorkspaceActive.value)
+const resultsTabsVisible = computed(() => resultsColumnVisible.value && visibleResultsItems.value.length > 1)
 const controlsTabsVisible = computed(() => controlsColumnVisible.value && visibleControlsItems.value.length > 1)
 const shellUsesSplitLayout = computed(() => {
-  if (!controlsColumnVisible.value) return false
-  return layoutKey.value === 'workflow:data' || layoutKey.value === 'workflow:optimize' || currentWorkspace.value === 'pro'
+  if (!controlsColumnVisible.value || !resultsColumnVisible.value) return false
+  if (currentWorkspace.value === 'pro') return true
+  return currentMode.value === 'conventional'
+    && (layoutKey.value === 'conventional:workflow:data' || layoutKey.value === 'conventional:workflow:optimize')
 })
 const splitLayoutActive = computed(() => shellUsesSplitLayout.value && viewportWidth.value > 1200)
 const stackedLayoutActive = computed(() => shellUsesSplitLayout.value && controlsColumnVisible.value && !splitLayoutActive.value)
 const workspaceGridClass = computed(() => ({
-  singleColumn: !controlsColumnVisible.value || !shellUsesSplitLayout.value,
+  singleColumn: !controlsColumnVisible.value || !resultsColumnVisible.value || !shellUsesSplitLayout.value,
   stacked: stackedLayoutActive.value,
 }))
 const workspaceGridStyle = computed(() => {
@@ -188,6 +210,50 @@ const allContextItems = computed<ContextItem[]>(() => {
   const backendLabel = String(backend.value || '').trim()
   const status = String(progressMeta.value || '').trim() || String(runReadinessHint.value || '').trim()
   const loaded = String(dataId.value || '').trim()
+  const modeContextItems = currentWorkspace.value !== 'workflow'
+    ? [
+        {
+          key: 'Workspace',
+          value: currentWorkspaceLabel.value,
+          current: true,
+          defaultVisible: true,
+        },
+        {
+          key: 'Mode',
+          value: currentModeLabel.value,
+          current: currentMode.value === 'ml-signal',
+          defaultVisible: true,
+        },
+      ]
+    : currentMode.value === 'ml-signal'
+      ? [
+          {
+            key: 'Workflow',
+            value: 'ML Signal',
+            current: true,
+            defaultVisible: true,
+          },
+          {
+            key: 'Stage',
+            value: workflowStepLabelForMode(currentWorkflowStep.value, currentMode.value),
+            current: true,
+            defaultVisible: true,
+          },
+        ]
+      : [
+          {
+            key: 'Strategy',
+            value: strategy || '—',
+            current: strategy.length > 0,
+            defaultVisible: true,
+          },
+          {
+            key: 'Backend',
+            value: backendLabel || '—',
+            current: false,
+            defaultVisible: true,
+          },
+        ]
   return [
     {
       key: 'Dataset',
@@ -197,13 +263,7 @@ const allContextItems = computed<ContextItem[]>(() => {
     },
     { key: 'Range', value: range && range !== '—' ? range : 'No range', current: false, defaultVisible: true },
     { key: 'Rows', value: rows && rows !== '—' ? rows : '—', current: false, defaultVisible: false },
-    {
-      key: 'Strategy',
-      value: strategy || '—',
-      current: currentWorkspace.value === 'workflow' && strategy.length > 0,
-      defaultVisible: true,
-    },
-    { key: 'Backend', value: backendLabel || '—', current: false, defaultVisible: true },
+    ...modeContextItems,
     { key: 'Status', value: status || 'Ready.', current: statusCardCurrent.value, defaultVisible: true },
     { key: 'Loaded ID', value: loaded && loaded !== '—' ? loaded : '—', current: false, defaultVisible: false },
   ]
@@ -242,6 +302,11 @@ watch(
 function selectWorkspace(key: string): void {
   if (currentWorkspace.value === key) return
   workflowStore.selectWorkspace(key)
+}
+
+function selectMode(key: string): void {
+  if (currentMode.value === key) return
+  workflowStore.selectMode(key)
 }
 
 function openTaskCenter(): void {
@@ -283,10 +348,11 @@ function visibleItemKeys(items: readonly TabKeyItem[]): string[] {
 function resolveFocusedNavigationKey(event: KeyboardEvent): string | null {
   const target =
     event.target instanceof Element
-      ? (event.target.closest('[data-workspace], [data-workflow-step], [data-tab]') as HTMLElement | null)
+      ? (event.target.closest('[data-mode], [data-workspace], [data-workflow-step], [data-tab]') as HTMLElement | null)
       : null
   if (!target) return null
   const focusedKey =
+    String(target.dataset.mode || '').trim() ||
     String(target.dataset.workspace || '').trim() ||
     String(target.dataset.workflowStep || '').trim() ||
     String(target.dataset.tab || '').trim()
@@ -331,10 +397,14 @@ function onWorkspaceKeydown(event: KeyboardEvent): void {
   moveTabFocus(event, workspaceItems, currentWorkspace.value, selectWorkspace, (key) => `#workspaceBar [data-workspace="${key}"]`)
 }
 
+function onModeKeydown(event: KeyboardEvent): void {
+  moveTabFocus(event, modeItems, currentMode.value, selectMode, (key) => `#modeBar [data-mode="${key}"]`)
+}
+
 function onWorkflowStepKeydown(event: KeyboardEvent): void {
   moveTabFocus(
     event,
-    workflowStepItems,
+    workflowStepItems.value,
     currentWorkflowStep.value,
     selectWorkflowStep,
     (key) => `#workflowStepBar [data-workflow-step="${key}"]`,
@@ -485,6 +555,32 @@ onBeforeUnmount(() => {
             :aria-controls="shellMainPanelId"
             :tabindex="currentWorkspace === item.key ? 0 : -1"
             @click="selectWorkspace(item.key)"
+          >
+            {{ item.label }}
+          </button>
+        </nav>
+
+        <nav
+          id="modeBar"
+          class="tabsRow modeBar"
+          aria-label="Workflow mode"
+          role="tablist"
+          aria-orientation="horizontal"
+          @keydown="onModeKeydown"
+        >
+          <button
+            v-for="item in modeItems"
+            :key="`mode_${item.key}`"
+            :id="modeTabId(item.key)"
+            type="button"
+            class="tabBtn modeBtn"
+            :data-mode="item.key"
+            :class="{ active: currentMode === item.key }"
+            role="tab"
+            :aria-selected="currentMode === item.key"
+            :aria-controls="shellMainPanelId"
+            :tabindex="currentMode === item.key ? 0 : -1"
+            @click="selectMode(item.key)"
           >
             {{ item.label }}
           </button>
@@ -699,7 +795,11 @@ onBeforeUnmount(() => {
           <span class="workspaceDividerGrip" aria-hidden="true"></span>
         </button>
 
-        <section id="shellResultsColumn" class="resultsColumn">
+        <section
+          id="shellResultsColumn"
+          v-show="resultsColumnVisible"
+          class="resultsColumn"
+        >
           <nav
             v-if="resultsTabsVisible"
             id="resultsTabBar"
@@ -916,6 +1016,14 @@ onBeforeUnmount(() => {
   background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
 }
 
+.modeBar {
+  flex: 0 0 auto;
+  padding: 0.24rem 0.28rem 0.18rem;
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-sunken) 94%, var(--panel));
+}
+
 .workflowStepBar {
   padding: 0.22rem 0.28rem 0.16rem;
   border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
@@ -1035,6 +1143,10 @@ onBeforeUnmount(() => {
     color var(--motion-fast) var(--ease-standard),
     box-shadow var(--motion-fast) var(--ease-standard),
     transform var(--motion-fast) var(--ease-standard);
+}
+
+.modeBtn {
+  min-width: 7.25rem;
 }
 
 .tabBtn.active {

@@ -108,7 +108,7 @@ describe("OptimizeWorkspacePanel", () => {
     wrapper.unmount();
   });
 
-  it("switches to the dedicated ML signal workspace panel for MlSignal", async () => {
+  it("keeps the optimize panel conventional even if strategy state is stale MlSignal", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const workflow = useWorkflowStore(pinia);
@@ -123,13 +123,11 @@ describe("OptimizeWorkspacePanel", () => {
     });
     await flushPanel();
 
-    expect(document.body.textContent || "").toContain(
+    expect(document.body.textContent || "").not.toContain(
       "Pattern Recognition + ML signal validation",
     );
-    expect(document.querySelector("#mlSignalDatasetExportPath")).not.toBeNull();
-    expect(document.querySelector("#mlSignalScoreCachePath")).not.toBeNull();
-    expect(document.querySelector("#vueBackend")).toBeNull();
-    expect(document.body.textContent || "").not.toContain("Run optimization");
+    expect(document.querySelector("#mlSignalDatasetExportPath")).toBeNull();
+    expect(document.body.textContent || "").toContain("Run optimization");
 
     wrapper.unmount();
   });

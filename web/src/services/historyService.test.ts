@@ -26,6 +26,7 @@ import { useExecutionStore } from "../stores/executionStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useValidationStore } from "../stores/validationStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 import {
   applyTimeframe as applyDataTimeframe,
   loadCsv as loadDataCsv,
@@ -342,6 +343,7 @@ describe("historyService", () => {
   });
 
   it("loads saved run artifact directly and hydrates workflow artifacts store", async () => {
+    useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
       currentRun: {
         ts: "2026-02-25T00:00:00Z",
@@ -368,6 +370,7 @@ describe("historyService", () => {
     await loadSavedRun(" C:/runs/run1.json ");
 
     const artifacts = useWorkflowArtifactsStore(pinia);
+    expect(useWorkflowStore(pinia).mode).toBe("conventional");
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_hydration", {
       path: "C:/runs/run1.json",
     });
@@ -386,6 +389,7 @@ describe("historyService", () => {
   });
 
   it("loads MlSignal saved run artifact without routing into optimizer analysis refresh", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
       currentRun: {
         ts: "2026-03-20T00:00:00Z",
@@ -420,6 +424,7 @@ describe("historyService", () => {
     await loadSavedRun(" C:/runs/ml_signal.json ");
 
     const artifacts = useWorkflowArtifactsStore(pinia);
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/ml_signal.json");
     expect(artifacts.currentRun?.mlSignal?.stage).toBe("validation");
     expect(artifacts.currentRun?.mlSignal?.scoreScope).toBe(
@@ -433,6 +438,7 @@ describe("historyService", () => {
   });
 
   it("applies saved run request into Vue optimize/advanced/data stores", async () => {
+    useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
       strategyKind: "DoubleMa",
       timeframe: "5m",
@@ -463,6 +469,7 @@ describe("historyService", () => {
     const advanced = useAdvancedStore(pinia);
     const data = useDataStore(pinia);
     const validation = useValidationStore(pinia);
+    expect(useWorkflowStore(pinia).mode).toBe("conventional");
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
@@ -481,6 +488,7 @@ describe("historyService", () => {
   });
 
   it("applies MlSignal saved run request into Vue optimize/data stores", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
       strategyKind: "MlSignal",
       timeframe: "1d",
@@ -519,7 +527,8 @@ describe("historyService", () => {
 
     const optimize = useOptimizeStore(pinia);
     const data = useDataStore(pinia);
-    expect(optimize.strategyKind).toBe("MlSignal");
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(optimize.strategyKind).not.toBe("MlSignal");
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
     expect(optimize.mlSignalModelBundleId).toBe("bundle-a");
@@ -534,6 +543,7 @@ describe("historyService", () => {
   });
 
   it("reruns saved run by loading data, optional resample, then executing optimization", async () => {
+    useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
       timeframe: "5m",
       csvPath: "C:/data/aapl.csv",
@@ -551,6 +561,7 @@ describe("historyService", () => {
     expect(invokeCommandMock).toHaveBeenCalledWith("load_run_artifact_detail", {
       path: "C:/runs/run1.json",
     });
+    expect(useWorkflowStore(pinia).mode).toBe("conventional");
     expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/aapl.csv");
     expect(applyDataTimeframeMock).toHaveBeenCalledWith("5m", "data-1");
     expect(runOptimizationMock).toHaveBeenCalledWith({
@@ -564,6 +575,7 @@ describe("historyService", () => {
   });
 
   it("reruns MlSignal saved validation artifact through score-cache build then validation", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
       timeframe: "1d",
       csvPath: "C:/data/spy.csv",
@@ -589,6 +601,7 @@ describe("historyService", () => {
     await rerunSavedRun(" C:/runs/ml_signal.json ");
 
     expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/spy.csv");
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
     expect(runOptimizationMock).not.toHaveBeenCalled();
     expect(generateMlSignalScoreCacheMock).toHaveBeenCalledTimes(1);
     expect(runMlSignalValidationMock).toHaveBeenCalledTimes(1);
@@ -600,6 +613,7 @@ describe("historyService", () => {
   });
 
   it("reruns MlSignal dataset-export artifact through dataset export only", async () => {
+    useWorkflowStore(pinia).selectMode("conventional", { persist: false });
     invokeCommandMock.mockResolvedValueOnce({
       timeframe: "1d",
       csvPath: "C:/data/spy.csv",
@@ -616,6 +630,7 @@ describe("historyService", () => {
     await rerunSavedRun(" C:/runs/ml_export.json ");
 
     expect(exportMlSignalDatasetMock).toHaveBeenCalledTimes(1);
+    expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
     expect(generateMlSignalScoreCacheMock).not.toHaveBeenCalled();
     expect(runMlSignalValidationMock).not.toHaveBeenCalled();
     expect(runMlSignalPolicySweepMock).not.toHaveBeenCalled();

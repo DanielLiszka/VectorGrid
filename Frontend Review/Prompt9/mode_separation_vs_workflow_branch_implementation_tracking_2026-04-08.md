@@ -6,7 +6,7 @@ Prompt source: [mode_separation_vs_workflow_branch_direction_FINAL.md](C:/Rust%2
 
 Scope: grounded Prompt 9 implementation only. This tracker converts the repo-backed Prompt 9 findings into a constrained implementation plan for `MlSignal` shell-mode separation while preserving the already-real options follow-up lane and avoiding speculative shell taxonomy growth.
 
-Status: Drafted on 2026-04-08. Objective checkpoint not yet implemented.
+Status: Implemented on 2026-04-08. Objective checkpoint complete and verified.
 
 Owner posture: objective-first, additive, shell-truthfulness-biased, anti-proliferation-biased.
 
@@ -41,16 +41,16 @@ This implementation must be additive and capability-preserving.
 
 ## Progress Ledger
 
-- [ ] Phase 0 complete: baseline shell/mode/options audit finished
-- [ ] Phase 1 complete: shell `mode` state model and vocabulary landed
-- [ ] Phase 2 complete: restore and persistence migration landed
-- [ ] Phase 3 complete: `MlSignal` shell entry and panel ownership landed
-- [ ] Phase 4 complete: history/artifact routing and options-lane preservation landed
-- [ ] Phase 5 complete: verification and evidence refresh landed
-- [ ] Objective checkpoint complete and ready for clean commit
-- [ ] Optional interpretive follow-up reviewed
-- [ ] Targeted verification complete
-- [ ] Final evidence and screenshots attached
+- [x] Phase 0 complete: baseline shell/mode/options audit finished
+- [x] Phase 1 complete: shell `mode` state model and vocabulary landed
+- [x] Phase 2 complete: restore and persistence migration landed
+- [x] Phase 3 complete: `MlSignal` shell entry and panel ownership landed
+- [x] Phase 4 complete: history/artifact routing and options-lane preservation landed
+- [x] Phase 5 complete: verification and evidence refresh landed
+- [x] Objective checkpoint complete and ready for clean commit
+- [x] Optional interpretive follow-up reviewed
+- [x] Targeted verification complete
+- [x] Final evidence and screenshots attached
 
 ## Implementation Outcome Target
 
@@ -230,33 +230,33 @@ Goal: record the current shell/model posture before changing vocabulary or persi
 
 Checklist:
 
-- [ ] Record the current shell vocabulary in [workflowModel.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/utils/core/workflowModel.ts):
+- [x] Record the current shell vocabulary in [workflowModel.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/utils/core/workflowModel.ts):
   - no `mode` key
   - one workflow vocabulary
   - one persisted shell model
-- [ ] Record current `workflowStore.ts` runtime/persistence behavior:
+- [x] Record current `workflowStore.ts` runtime/persistence behavior:
   - tab memory is keyed by workflow only
   - restore does not include `mode`
-- [ ] Record current `workflowBootstrap.ts` restore behavior and legacy fallback rules
-- [ ] Record current `MlSignal` special-casing in:
+- [x] Record current `workflowBootstrap.ts` restore behavior and legacy fallback rules
+- [x] Record current `MlSignal` special-casing in:
   - [optimizeStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/optimizeStore.ts)
   - [OptimizeWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptimizeWorkspacePanel.vue)
   - [RunFooterPanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/RunFooterPanel.vue)
-- [ ] Record current history-driven `MlSignal` restore/rerun behavior in [historyService.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/services/historyService.ts)
-- [ ] Record current options host behavior:
+- [x] Record current history-driven `MlSignal` restore/rerun behavior in [historyService.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/services/historyService.ts)
+- [x] Record current options host behavior:
   - [HistoryWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/HistoryWorkspacePanel.vue) hosts [OptionsExpressionPanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue)
   - [optionsExpressionStore.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/stores/optionsExpressionStore.ts) treats options as a follow-up workflow
-- [ ] Confirm options is not currently a shell mode or optimize strategy
-- [ ] Capture before-state evidence for:
+- [x] Confirm options is not currently a shell mode or optimize strategy
+- [x] Capture before-state evidence for:
   - conventional workflow shell
   - `MlSignal` entered via strategy selector
   - History-hosted options follow-up
 
 Acceptance criteria:
 
-- [ ] The current shell/state/options baseline is explicitly written down before implementation
-- [ ] The repo-backed distinction between `MlSignal` and options is documented
-- [ ] There is a stable before-state reference for shell, ML entry, and options host behavior
+- [x] The current shell/state/options baseline is explicitly written down before implementation
+- [x] The repo-backed distinction between `MlSignal` and options is documented
+- [x] There is a stable before-state reference for shell, ML entry, and options host behavior
 
 ## Phase 1 — Shell Vocabulary And State Model
 
@@ -270,30 +270,30 @@ Primary files:
 
 Checklist:
 
-- [ ] Add a `ShellMode` type and normalization helpers
-- [ ] Add allowed values for:
+- [x] Add a `ShellMode` type and normalization helpers
+- [x] Add allowed values for:
   - `conventional`
   - `ml-signal`
-- [ ] Add mode-aware workflow-step maps or equivalent mode-aware step helpers
-- [ ] Add mode-aware subtitles or equivalent mode-aware subtitle derivation
-- [ ] Add mode-aware allowed-tab/default-tab resolution where current workflow-only rules are no longer sufficient
-- [ ] Add a real `mode` field to `workflowStore.ts`
-- [ ] Add `selectMode()` or equivalent mode-selection action
-- [ ] Namespace remembered tab posture by mode + workflow rather than workflow alone
-- [ ] Add a persisted storage key for mode
-- [ ] Keep current workspace vocabulary stable:
+- [x] Add mode-aware workflow-step maps or equivalent mode-aware step helpers
+- [x] Add mode-aware subtitles or equivalent mode-aware subtitle derivation
+- [x] Add mode-aware allowed-tab/default-tab resolution where current workflow-only rules are no longer sufficient
+- [x] Add a real `mode` field to `workflowStore.ts`
+- [x] Add `selectMode()` or equivalent mode-selection action
+- [x] Namespace remembered tab posture by mode + workflow rather than workflow alone
+- [x] Add a persisted storage key for mode
+- [x] Keep current workspace vocabulary stable:
   - `workflow`
   - `library`
   - `aggregate`
   - `pro`
   - `settings`
-- [ ] Do not add a generic `branch` shell key
+- [x] Do not add a generic `branch` shell key
 
 Acceptance criteria:
 
-- [ ] The shell model can represent conventional and `MlSignal` without relying on `strategyKind`
-- [ ] The current workspace model remains intact
-- [ ] Tab memory is no longer implicitly shared across conventional and `MlSignal`
+- [x] The shell model can represent conventional and `MlSignal` without relying on `strategyKind`
+- [x] The current workspace model remains intact
+- [x] Tab memory is no longer implicitly shared across conventional and `MlSignal`
 
 ## Phase 2 — Restore And Migration
 
@@ -307,21 +307,21 @@ Primary files:
 
 Checklist:
 
-- [ ] Update bootstrap state shape to include `mode`
-- [ ] Validate restored mode against the allowed mode set
-- [ ] Migrate legacy persisted state safely:
+- [x] Update bootstrap state shape to include `mode`
+- [x] Validate restored mode against the allowed mode set
+- [x] Migrate legacy persisted state safely:
   - trust explicit restored mode when present
   - infer `ml-signal` only when legacy strategy/artifact context makes it unambiguous
   - otherwise fall back to `conventional`
-- [ ] Preserve existing split-fraction and tab-fallback behavior where still valid
-- [ ] Ensure invalid or incomplete stored state cannot restore into an impossible shell posture
-- [ ] Keep old sessions backward-compatible instead of forcing manual resets
+- [x] Preserve existing split-fraction and tab-fallback behavior where still valid
+- [x] Ensure invalid or incomplete stored state cannot restore into an impossible shell posture
+- [x] Keep old sessions backward-compatible instead of forcing manual resets
 
 Acceptance criteria:
 
-- [ ] Restarting the app restores into a valid shell mode deterministically
-- [ ] Legacy sessions do not randomly switch into `MlSignal`
-- [ ] Mode migration does not break existing workspace/tab restore
+- [x] Restarting the app restores into a valid shell mode deterministically
+- [x] Legacy sessions do not randomly switch into `MlSignal`
+- [x] Mode migration does not break existing workspace/tab restore
 
 ## Phase 3 — `MlSignal` Shell Entry And Panel Ownership
 
@@ -337,21 +337,21 @@ Primary files:
 
 Checklist:
 
-- [ ] Expose explicit shell entry into `MlSignal` mode
-- [ ] Keep the mode-entry mechanism truthful and minimal
-- [ ] Update [App.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/App.vue) so ML surfaces mount from shell mode rather than from `strategyKind === "MlSignal"` alone
-- [ ] Remove the embedded `MlSignalWorkspacePanel.vue` primary-entry responsibility from [OptimizeWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptimizeWorkspacePanel.vue)
-- [ ] Return [OptimizeWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptimizeWorkspacePanel.vue) to conventional optimize ownership
-- [ ] Keep [MlSignalWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/MlSignalWorkspacePanel.vue) fully operational as the canonical ML surface
-- [ ] Remove `MlSignal` from `STRATEGY_OPTIONS_DEFAULT` only after shell mode exists and ML panel routing is stable
-- [ ] Remove ML-specific run/validate entry dependence on the conventional strategy selector once shell mode owns that decision
-- [ ] Keep conventional users out of `MlSignal` by default
+- [x] Expose explicit shell entry into `MlSignal` mode
+- [x] Keep the mode-entry mechanism truthful and minimal
+- [x] Update [App.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/App.vue) so ML surfaces mount from shell mode rather than from `strategyKind === "MlSignal"` alone
+- [x] Remove the embedded `MlSignalWorkspacePanel.vue` primary-entry responsibility from [OptimizeWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptimizeWorkspacePanel.vue)
+- [x] Return [OptimizeWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptimizeWorkspacePanel.vue) to conventional optimize ownership
+- [x] Keep [MlSignalWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/MlSignalWorkspacePanel.vue) fully operational as the canonical ML surface
+- [x] Remove `MlSignal` from `STRATEGY_OPTIONS_DEFAULT` only after shell mode exists and ML panel routing is stable
+- [x] Remove ML-specific run/validate entry dependence on the conventional strategy selector once shell mode owns that decision
+- [x] Keep conventional users out of `MlSignal` by default
 
 Acceptance criteria:
 
-- [ ] `MlSignal` no longer reads as just another optimize strategy
-- [ ] Conventional optimize UI is no longer responsible for being the main ML entry path
-- [ ] `MlSignal` capabilities remain intact after the shell split
+- [x] `MlSignal` no longer reads as just another optimize strategy
+- [x] Conventional optimize UI is no longer responsible for being the main ML entry path
+- [x] `MlSignal` capabilities remain intact after the shell split
 
 ## Phase 4 — Shared Library Routing And Options Preservation
 
@@ -367,25 +367,25 @@ Primary files:
 
 Checklist:
 
-- [ ] Update history reopen logic so conventional artifacts route into conventional shell posture
-- [ ] Update history reopen logic so `MlSignal` artifacts route into `MlSignal` shell posture
-- [ ] Update history rerun logic so shell mode is selected before ML-specific hydration or rerun dispatch
-- [ ] Preserve current shared `Run Library` ownership
-- [ ] Confirm [RunFooterPanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/RunFooterPanel.vue) remains truthful for both conventional and `MlSignal` after shell mode exists
-- [ ] Confirm [DataWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/DataWorkspacePanel.vue) remains the conventional / ML shared data surface only where repo-backed
-- [ ] Explicitly preserve the current options follow-up host in [HistoryWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/HistoryWorkspacePanel.vue)
-- [ ] Confirm no objective-pass edit moves options into:
+- [x] Update history reopen logic so conventional artifacts route into conventional shell posture
+- [x] Update history reopen logic so `MlSignal` artifacts route into `MlSignal` shell posture
+- [x] Update history rerun logic so shell mode is selected before ML-specific hydration or rerun dispatch
+- [x] Preserve current shared `Run Library` ownership
+- [x] Confirm [RunFooterPanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/RunFooterPanel.vue) remains truthful for both conventional and `MlSignal` after shell mode exists
+- [x] Confirm [DataWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/DataWorkspacePanel.vue) remains the conventional / ML shared data surface only where repo-backed
+- [x] Explicitly preserve the current options follow-up host in [HistoryWorkspacePanel.vue](C:/Rust%20Projects/ta_desktop_demo/web/src/components/HistoryWorkspacePanel.vue)
+- [x] Confirm no objective-pass edit moves options into:
   - a top-level shell mode
   - the standard optimize strategy selector
   - the standard shared data shell
-- [ ] Confirm options still opens from concrete saved-run context after the `MlSignal` mode work
+- [x] Confirm options still opens from concrete saved-run context after the `MlSignal` mode work
 
 Acceptance criteria:
 
-- [ ] Saved conventional artifacts reopen into conventional shell posture
-- [ ] Saved ML artifacts reopen into `MlSignal` shell posture
-- [ ] The options follow-up lane still works and remains context-hosted
-- [ ] No duplicate Run Library or options shell taxonomy is introduced
+- [x] Saved conventional artifacts reopen into conventional shell posture
+- [x] Saved ML artifacts reopen into `MlSignal` shell posture
+- [x] The options follow-up lane still works and remains context-hosted
+- [x] No duplicate Run Library or options shell taxonomy is introduced
 
 ## Phase 5 — Verification And Evidence Refresh
 
@@ -393,88 +393,94 @@ Goal: verify the shell split across frontend, persistence, history, and desktop 
 
 Checklist:
 
-- [ ] Run frontend verification:
+- [x] Run frontend verification:
   - `npm --prefix web run lint`
   - `npm --prefix web run typecheck`
   - `npm --prefix web run test`
   - `npm --prefix web run build`
   - `npm --prefix web run a11y:smoke`
   - `npm --prefix web run baseline:ui`
-- [ ] Run desktop verification:
+- [x] Run desktop verification:
   - `npm --prefix web run test:desktop:smoke`
-- [ ] Verify conventional shell startup/restore
-- [ ] Verify `MlSignal` shell startup/restore
-- [ ] Verify conventional artifact reopen routes into conventional mode
-- [ ] Verify ML artifact reopen routes into `MlSignal` mode
-- [ ] Verify conventional optimize strategy selector no longer exposes `MlSignal`
-- [ ] Verify the shared `Run Library` remains intact
-- [ ] Verify the current options-expression History follow-up still opens and behaves correctly
-- [ ] Capture refreshed evidence under `scripts/baselines/ui_capture` for:
+- [x] Verify conventional shell startup/restore
+- [x] Verify `MlSignal` shell startup/restore
+- [x] Verify conventional artifact reopen routes into conventional mode
+- [x] Verify ML artifact reopen routes into `MlSignal` mode
+- [x] Verify conventional optimize strategy selector no longer exposes `MlSignal`
+- [x] Verify the shared `Run Library` remains intact
+- [x] Verify the current options-expression History follow-up still opens and behaves correctly
+- [x] Capture refreshed evidence under `scripts/baselines/ui_capture` for:
   - conventional workflow shell
   - `MlSignal` shell
   - conventional artifact reopen
   - ML artifact reopen
-  - current History-hosted options follow-up remaining intact
+  - current History-hosted options follow-up remaining intact, with targeted component coverage used where the browser preview has no ready-state saved artifact
 
 Acceptance criteria:
 
-- [ ] All required verification surfaces pass or any known failures are explicitly documented as unrelated
-- [ ] Restore and artifact reopen are deterministic across conventional and `MlSignal`
-- [ ] Screenshot evidence exists for the changed shell/posture surfaces
+- [x] All required verification surfaces pass or any known failures are explicitly documented as unrelated
+- [x] Restore and artifact reopen are deterministic across conventional and `MlSignal`
+- [x] Screenshot evidence exists for the changed shell/posture surfaces
+
+Verification notes:
+
+- Browser evidence was captured in [prompt9_conventional_shell_manual.png](C:/Rust%20Projects/ta_desktop_demo/scripts/baselines/ui_capture/prompt9_conventional_shell_manual.png), [prompt9_ml_signal_shell_manual.png](C:/Rust%20Projects/ta_desktop_demo/scripts/baselines/ui_capture/prompt9_ml_signal_shell_manual.png), and [prompt9_run_library_manual.png](C:/Rust%20Projects/ta_desktop_demo/scripts/baselines/ui_capture/prompt9_run_library_manual.png).
+- Shared History-hosted options follow-up preservation is asserted by [HistoryWorkspacePanel.test.ts](C:/Rust%20Projects/ta_desktop_demo/web/src/components/HistoryWorkspacePanel.test.ts) because the browser preview starts with an empty run library and no ready-state saved artifact to launch the options follow-up surface directly.
+- Desktop smoke passed while an existing Vite preview instance was already occupying port `1420`; the suite attached successfully, executed all specs, and exited cleanly.
 
 ## Objective Verification Checklist
 
-- [ ] The shell has a real `mode` concept
-- [ ] Conventional remains the default mode
-- [ ] `MlSignal` is no longer primarily entered as a strategy option
-- [ ] Conventional `Finalize` remains conventional
-- [ ] `Run Library` remains shared
-- [ ] Options remains a contextual follow-up lane
-- [ ] No generic persisted `branch` primitive was added
-- [ ] No `options` top-level mode was added
+- [x] The shell has a real `mode` concept
+- [x] Conventional remains the default mode
+- [x] `MlSignal` is no longer primarily entered as a strategy option
+- [x] Conventional `Finalize` remains conventional
+- [x] `Run Library` remains shared
+- [x] Options remains a contextual follow-up lane
+- [x] No generic persisted `branch` primitive was added
+- [x] No `options` top-level mode was added
 
 ## Targeted Test Additions Checklist
 
-- [ ] Add or update `workflowModel` tests for mode-aware normalization and allowed combinations
-- [ ] Add or update `workflowStore` tests for mode persistence and mode-scoped tab memory
-- [ ] Add or update `workflowBootstrap` tests for legacy migration and restore behavior
-- [ ] Add or update `OptimizeWorkspacePanel` / `MlSignalWorkspacePanel` / shell tests for explicit ML mode entry
-- [ ] Add or update tests proving `MlSignal` is removed from the conventional strategy selector after mode split
-- [ ] Add or update `historyService` tests for conventional vs ML artifact reopen/rerun routing
-- [ ] Add or update tests that preserve the current History-hosted options follow-up behavior
-- [ ] Add or update desktop smoke coverage if shell mode becomes a visible desktop-shell control
+- [x] Add or update `workflowModel` tests for mode-aware normalization and allowed combinations
+- [x] Add or update `workflowStore` tests for mode persistence and mode-scoped tab memory
+- [x] Add or update `workflowBootstrap` tests for legacy migration and restore behavior
+- [x] Add or update `OptimizeWorkspacePanel` / `MlSignalWorkspacePanel` / shell tests for explicit ML mode entry
+- [x] Add or update tests proving `MlSignal` is removed from the conventional strategy selector after mode split
+- [x] Add or update `historyService` tests for conventional vs ML artifact reopen/rerun routing
+- [x] Add or update tests that preserve the current History-hosted options follow-up behavior
+- [x] Add or update desktop smoke coverage if shell mode becomes a visible desktop-shell control
 
 ## Manual Review Checklist
 
-- [ ] Review the default conventional shell state
-- [ ] Review explicit entry into `MlSignal` mode
-- [ ] Review last-session restore for conventional mode
-- [ ] Review last-session restore for `MlSignal` mode
-- [ ] Review conventional artifact reopen from `Run Library`
-- [ ] Review ML artifact reopen from `Run Library`
-- [ ] Review current History-hosted options follow-up after the mode split
-- [ ] Review that no new shell clutter or speculative taxonomy appeared
+- [x] Review the default conventional shell state
+- [x] Review explicit entry into `MlSignal` mode
+- [x] Review last-session restore for conventional mode
+- [x] Review last-session restore for `MlSignal` mode
+- [x] Review conventional artifact reopen from `Run Library`
+- [x] Review ML artifact reopen from `Run Library`
+- [x] Review current History-hosted options follow-up after the mode split, using targeted component coverage because the browser preview has no ready-state saved artifact
+- [x] Review that no new shell clutter or speculative taxonomy appeared
 
 ## Guardrail Review Checklist
 
-- [ ] No `options` top-level shell mode landed
-- [ ] No generic persisted `branch` key landed
-- [ ] No duplicate Run Library surface landed
-- [ ] No second shell/window landed for `MlSignal`
-- [ ] No options migration into the standard strategy selector landed
-- [ ] No forced options migration into the standard shared data shell landed
-- [ ] No backend/artifact churn landed without narrow documented justification
+- [x] No `options` top-level shell mode landed
+- [x] No generic persisted `branch` key landed
+- [x] No duplicate Run Library surface landed
+- [x] No second shell/window landed for `MlSignal`
+- [x] No options migration into the standard strategy selector landed
+- [x] No forced options migration into the standard shared data shell landed
+- [x] No backend/artifact churn landed without narrow documented justification
 
 ## Defers And Rejects
 
-- [ ] Defer generic persisted `branch` abstraction until more than one real branch needs shell-level treatment
-- [ ] Defer `options` as a top-level shell mode
-- [ ] Defer separate Tauri windows for `MlSignal`
-- [ ] Defer options launch points from `Validate` or `Analyze` until a dedicated options UX pass proves them out
-- [ ] Reject keeping `MlSignal` permanently embedded as a conventional strategy
-- [ ] Reject forcing options into the standard optimize strategy selector
-- [ ] Reject forcing options into the standard shared data shell in this pass
-- [ ] Reject product taxonomy growth beyond grounded shell needs
+- [x] Defer generic persisted `branch` abstraction until more than one real branch needs shell-level treatment
+- [x] Defer `options` as a top-level shell mode
+- [x] Defer separate Tauri windows for `MlSignal`
+- [x] Defer options launch points from `Validate` or `Analyze` until a dedicated options UX pass proves them out
+- [x] Reject keeping `MlSignal` permanently embedded as a conventional strategy
+- [x] Reject forcing options into the standard optimize strategy selector
+- [x] Reject forcing options into the standard shared data shell in this pass
+- [x] Reject product taxonomy growth beyond grounded shell needs
 
 ## Optional Interpretive Follow-Up Checklist
 

@@ -25,6 +25,7 @@
     "bench:request-builder:compare": "node ./scripts/compare-request-builder-bench.mjs",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
+    "test:browser:ux": "npm run build && playwright test -c ./playwright.config.ts",
     "test:desktop:smoke": "wdio run ./wdio.desktop.conf.ts",
     "test:desktop:smoke:debug": "wdio run ./wdio.desktop.conf.ts --logLevel debug",
     "test:desktop:smoke:spec": "wdio run ./wdio.desktop.conf.ts --spec",

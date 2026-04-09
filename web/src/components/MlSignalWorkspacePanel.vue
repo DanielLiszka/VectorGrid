@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
+import { useWorkflowStore } from "../stores/workflowStore";
 import {
   exportMlSignalDataset,
   generateMlSignalScoreCache,
@@ -28,6 +29,7 @@ const optimizeStore = useOptimizeStore();
 const dataStore = useDataStore();
 const strategyStore = useStrategyStore();
 const workflowArtifactsStore = useWorkflowArtifactsStore();
+const workflowStore = useWorkflowStore();
 
 const {
   mlSignalDatasetExportPath,
@@ -76,6 +78,7 @@ const {
   canCancel,
 } = storeToRefs(optimizeStore);
 const { currentRun, currentValidation } = storeToRefs(workflowArtifactsStore);
+const { mode, workflowStep } = storeToRefs(workflowStore);
 
 const bundleOptions = ref<BundleOption[]>([]);
 const bundleRefreshBusy = ref(false);
@@ -360,11 +363,31 @@ async function onRevealArtifactPath(path: string): Promise<void> {
   }
 }
 
+function stageAnchorSelector(step: string): string {
+  return `[data-ml-stage="${step}"]`;
+}
+
+async function syncStageScroll(step: string): Promise<void> {
+  if (String(mode.value || "").trim() !== "ml-signal") return;
+  const normalizedStep = String(step || "").trim();
+  if (!normalizedStep || normalizedStep === "data") return;
+  await nextTick();
+  const target = document.querySelector<HTMLElement>(
+    stageAnchorSelector(normalizedStep),
+  );
+  target?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+}
+
 watch(mlSignalModelBundleId, () => {
   void refreshBundleStatus();
 });
 
+watch(workflowStep, (step) => {
+  void syncStageScroll(String(step || "").trim());
+});
+
 onMounted(() => {
+  void syncStageScroll(String(workflowStep.value || "").trim());
   if (!hasTauriRuntime.value) return;
   void refreshBundleOptions();
   void refreshBundleStatus();
@@ -401,7 +424,7 @@ onMounted(() => {
       </div>
     </section>
 
-    <section class="pane">
+    <section class="pane" data-ml-stage="data">
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 1</div>
@@ -606,7 +629,7 @@ onMounted(() => {
       <div class="muted mono">{{ mlSignalDatasetMeta }}</div>
     </section>
 
-    <section class="pane">
+    <section class="pane" data-ml-stage="optimize">
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 2</div>
@@ -713,7 +736,7 @@ onMounted(() => {
       <div class="muted mono">{{ mlSignalScoreMeta }}</div>
     </section>
 
-    <section class="pane">
+    <section class="pane" data-ml-stage="validate">
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 3</div>
@@ -877,7 +900,7 @@ onMounted(() => {
       <div class="muted mono" role="status" aria-live="polite">{{ statusLine }}</div>
     </section>
 
-    <section class="pane">
+    <section class="pane" data-ml-stage="analyze">
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 4</div>
@@ -1132,7 +1155,7 @@ onMounted(() => {
       <div class="muted mono">{{ mlSignalSweepMeta }}</div>
     </section>
 
-    <section class="pane">
+    <section class="pane" data-ml-stage="finalize">
       <div class="paneHeader">
         <div>
           <div class="sectionEyebrow">Stage 5</div>

@@ -21,7 +21,7 @@ describe('VueWorkspaceShell', () => {
     useTaskCenterVisibility().value = false
   })
 
-  it('shows only workspace and workflow-step navigation, with local tabs for the active step', async () => {
+  it('shows workspace, mode, and workflow-step navigation with local tabs for the active step', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const workflowStore = useWorkflowStore(pinia)
@@ -35,6 +35,7 @@ describe('VueWorkspaceShell', () => {
 
     expect(document.querySelector('#workflowTabBar')).toBeNull()
     expect(document.querySelector('#workspaceBar')?.getAttribute('role')).toBe('tablist')
+    expect(document.querySelector('#modeBar')?.getAttribute('role')).toBe('tablist')
     expect(document.querySelector('#workflowStepBar')?.getAttribute('role')).toBe('tablist')
 
     const controlsLabels = Array.from(document.querySelectorAll('#controlsTabBar .tabBtn')).map((el) => el.textContent?.trim())
@@ -42,6 +43,59 @@ describe('VueWorkspaceShell', () => {
 
     expect(controlsLabels).toEqual(['Optimize', 'Strategy', 'Advanced'])
     expect(resultsLabels).toEqual(['Overview', 'Top', 'Pareto', 'Heatmap'])
+
+    wrapper.unmount()
+  })
+
+  it('switches shell posture for MlSignal mode and hides conventional results chrome', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectMode('ml-signal', { persist: false })
+    workflowStore.selectWorkflowStep('validate', { persist: false })
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const stepLabels = Array.from(document.querySelectorAll('#workflowStepBar .tabBtn')).map((el) => el.textContent?.trim())
+    expect(stepLabels).toEqual([
+      '1 Data Setup',
+      '2 Score Cache',
+      '3 Policy Validation',
+      '4 Policy Sweep',
+      '5 Artifacts',
+    ])
+    expect(document.querySelector('#controlsTabBar')).toBeNull()
+    expect((document.querySelector('#shellResultsColumn') as HTMLElement | null)?.style.display).toBe('none')
+    expect(document.body.textContent || '').toContain('ML Signal')
+    expect(document.body.textContent || '').toContain('Stage')
+
+    wrapper.unmount()
+  })
+
+  it('keeps shared library context truthful when MlSignal mode is active outside the workflow workspace', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectMode('ml-signal', { persist: false })
+    workflowStore.selectWorkspace('library')
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Workspace')
+    expect(text).toContain('Run Library')
+    expect(text).toContain('Mode')
+    expect(text).toContain('ML Signal')
+    expect(text).not.toContain('WorkflowML Signal')
+    expect(text).not.toContain('StageData Setup')
 
     wrapper.unmount()
   })

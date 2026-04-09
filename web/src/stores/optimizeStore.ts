@@ -1,4 +1,6 @@
 import { defineStore } from "pinia";
+import { useWorkflowStore } from "./workflowStore";
+import { resolveRuntimePinia } from "./runtimePinia";
 
 let optimizeServicePromise:
   | Promise<typeof import("../services/optimizeService")>
@@ -85,7 +87,6 @@ const STRATEGY_OPTIONS_DEFAULT: OptimizeOption[] = [
   { value: "BreakoutMomentum", label: "Breakout Momentum", disabled: false },
   { value: "CompositeMo", label: "Composite MO", disabled: false },
   { value: "DynamicDoubleMa", label: "Dynamic Double MA", disabled: false },
-  { value: "MlSignal", label: "ML Signal", disabled: false },
 ];
 
 const BACKEND_OPTIONS_DEFAULT: OptimizeOption[] = [
@@ -133,7 +134,7 @@ function normalizeStrategyOptions(values: unknown): OptimizeOption[] {
   const seen = new Set<string>();
   for (const option of entries) {
     const value = String(option.value || "").trim();
-    if (!value || seen.has(value)) continue;
+    if (!value || value === "MlSignal" || seen.has(value)) continue;
     seen.add(value);
     out.push(option);
   }
@@ -1035,7 +1036,8 @@ export const useOptimizeStore = defineStore("optimize", {
     },
 
     runOptimization(): void {
-      if (String(this.strategyKind || "").trim() === "MlSignal") {
+      const pinia = resolveRuntimePinia();
+      if (pinia && String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal") {
         void import("../services/mlSignalService").then(
           ({ generateMlSignalScoreCache }) => generateMlSignalScoreCache(),
         );
@@ -1058,7 +1060,8 @@ export const useOptimizeStore = defineStore("optimize", {
     },
 
     runValidation(): void {
-      if (String(this.strategyKind || "").trim() === "MlSignal") {
+      const pinia = resolveRuntimePinia();
+      if (pinia && String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal") {
         void import("../services/mlSignalService").then(
           ({ runMlSignalValidation }) => runMlSignalValidation(),
         );

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import AppVisualIcon from './AppVisualIcon.vue'
 import type {
   OptionsExpressionArtifactSummary,
   OptionsExpressionMetricsSummary,
@@ -23,6 +24,16 @@ import {
   OPTIONS_REALISM_LANE_OPTIONS,
   priceSemanticsForRealismLane,
 } from '../stores/optionsExpressionStore'
+import {
+  emptyOptionsWorkspaceIllustration,
+  optionsCurrentResultIcon,
+  optionsDatasetImportIcon,
+  optionsEventPathReplayIcon,
+  optionsFeasibilityPreviewIcon,
+  optionsFollowupWorkflowIcon,
+  optionsProviderDownloadIcon,
+  optionsTupleDrilldownIcon,
+} from '../utils/appSvgAssets'
 
 const props = defineProps<{
   parentArtifactPath: string
@@ -2465,19 +2476,23 @@ function focusTupleIndex(index: number): void {
 <template>
   <section class="optionsPanel surfaceFocus" aria-label="Options expression follow-up">
     <div class="panelSectionHeader">
-      <div>
-        <div class="panelEyebrow">Follow-up workflow</div>
-        <h3 class="panelPaneTitle" style="margin: 0;">Options Expression</h3>
-        <div class="panelSectionLead">
-          Express a saved validated directional artifact through a constrained Polygon/Massive options search without mutating the main workflow state.
-        </div>
-        <div class="panelMuted" style="margin-top: 6px;">
-          This is an options follow-up surface. Conventional stock optimization and validation remain in the main workflow.
+      <div class="panelHeaderVisual">
+        <AppVisualIcon :icon="optionsFollowupWorkflowIcon" class="optionsPaneGlyph" />
+        <div>
+          <div class="panelEyebrow">Follow-up workflow</div>
+          <h3 class="panelPaneTitle" style="margin: 0;">Options Expression</h3>
+          <div class="panelSectionLead">
+            Express a saved validated directional artifact through a constrained Polygon/Massive options search without mutating the main workflow state.
+          </div>
+          <div class="panelMuted" style="margin-top: 6px;">
+            This is an options follow-up surface. Conventional stock optimization and validation remain in the main workflow.
+          </div>
         </div>
       </div>
     </div>
 
     <section v-if="!hasParentSelection" class="emptyState">
+      <img class="emptyStateIllustration" :src="emptyOptionsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
       <div class="emptyTitle">Select a saved run first.</div>
       <div class="emptyBody">
         Options expression optimization is launched from a saved artifact in the History workspace.
@@ -2485,6 +2500,7 @@ function focusTupleIndex(index: number): void {
     </section>
 
     <section v-else-if="!supportedParent" class="emptyState">
+      <img class="emptyStateIllustration" :src="emptyOptionsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
       <div class="emptyTitle">Saved run not supported yet.</div>
       <div class="emptyBody">
         The current vertical slice supports saved <span class="mono">DoubleMa</span>, <span class="mono">CompositeTrend</span>, <span class="mono">RegimeHybrid</span>, and <span class="mono">BreakoutMomentum</span> artifacts. Other strategy families stay read-only until their manifest projector is implemented.
@@ -2620,8 +2636,9 @@ function focusTupleIndex(index: number): void {
             </label>
           </div>
           <div class="row inlineControls">
-            <button type="button" :disabled="importBusy" @click="store.importDatasetFromPicker()">
-              Import Polygon/Massive CSV
+            <button type="button" :disabled="importBusy" @click="store.importDatasetFromPicker()" class="buttonWithIcon">
+              <AppVisualIcon :icon="optionsDatasetImportIcon" class="optionsActionIcon" />
+              <span>Import Polygon/Massive CSV</span>
             </button>
           </div>
           <div class="panelMuted">
@@ -2682,8 +2699,10 @@ function focusTupleIndex(index: number): void {
               type="button"
               :disabled="downloadBusy || realismLane !== 'aggregate'"
               @click="store.downloadDatasetFromPolygon()"
+              class="buttonWithIcon"
             >
-              Download Polygon/Massive 1m data
+              <AppVisualIcon :icon="optionsProviderDownloadIcon" class="optionsActionIcon" />
+              <span>Download Polygon/Massive 1m data</span>
             </button>
           </div>
           <div class="panelMuted">
@@ -2870,15 +2889,19 @@ function focusTupleIndex(index: number): void {
           type="button"
           :disabled="feasibilityBusy || !selectedDatasetId"
           @click="store.previewCurrentFeasibility()"
+          class="buttonWithIcon"
         >
-          {{ feasibilityBusy ? 'Previewing…' : 'Preview feasibility' }}
+          <AppVisualIcon :icon="optionsFeasibilityPreviewIcon" class="optionsActionIcon" />
+          <span>{{ feasibilityBusy ? 'Previewing…' : 'Preview feasibility' }}</span>
         </button>
         <button
           type="button"
           :disabled="runBusy || !selectedDatasetId"
           @click="store.runCurrentExpression()"
+          class="buttonWithIcon"
         >
-          {{ runBusy ? 'Running…' : 'Optimize expression' }}
+          <AppVisualIcon :icon="optionsFollowupWorkflowIcon" class="optionsActionIcon" />
+          <span>{{ runBusy ? 'Running…' : 'Optimize expression' }}</span>
         </button>
         <button type="button" :disabled="artifactsBusy" @click="store.refreshArtifacts()">
           Refresh artifacts
@@ -3155,10 +3178,13 @@ function focusTupleIndex(index: number): void {
 
       <section v-if="latestFeasibility" class="resultCard">
         <div class="panelSectionHeader">
-          <div>
-            <div class="panelEyebrow">Phase 0.5 preview</div>
-            <div class="panelSectionLead">
-              Review candidate density, event coverage, and replay/compile timing before committing to a full optimization run or GPU work.
+          <div class="panelHeaderVisual">
+            <AppVisualIcon :icon="optionsFeasibilityPreviewIcon" class="sectionGlyph" />
+            <div>
+              <div class="panelEyebrow">Phase 0.5 preview</div>
+              <div class="panelSectionLead">
+                Review candidate density, event coverage, and replay/compile timing before committing to a full optimization run or GPU work.
+              </div>
             </div>
           </div>
         </div>
@@ -3297,10 +3323,13 @@ function focusTupleIndex(index: number): void {
 
       <section v-if="activeDiagnostics" class="resultCard">
         <div class="panelSectionHeader">
-          <div>
-            <div class="panelEyebrow">Current result</div>
-            <div class="panelSectionLead">
-              Review the current top tuples before deciding whether this expression family is worth promoting into a wider options workflow.
+          <div class="panelHeaderVisual">
+            <AppVisualIcon :icon="optionsCurrentResultIcon" class="sectionGlyph" />
+            <div>
+              <div class="panelEyebrow">Current result</div>
+              <div class="panelSectionLead">
+                Review the current top tuples before deciding whether this expression family is worth promoting into a wider options workflow.
+              </div>
             </div>
           </div>
         </div>
@@ -3581,10 +3610,13 @@ function focusTupleIndex(index: number): void {
         </div>
         <div v-if="selectedTuple" class="detailInspector">
           <div class="panelSectionHeader">
-            <div>
-              <div class="panelEyebrow">Selected tuple</div>
-              <div class="panelSectionLead">
-                Inspect the current top-row configuration and robustness metrics before promoting it into a wider options workflow.
+            <div class="panelHeaderVisual">
+              <AppVisualIcon :icon="optionsTupleDrilldownIcon" class="sectionGlyph" />
+              <div>
+                <div class="panelEyebrow">Selected tuple</div>
+                <div class="panelSectionLead">
+                  Inspect the current top-row configuration and robustness metrics before promoting it into a wider options workflow.
+                </div>
               </div>
             </div>
           </div>
@@ -3593,8 +3625,10 @@ function focusTupleIndex(index: number): void {
               type="button"
               :disabled="inspectionBusy || !activeArtifactPath"
               @click="loadSelectedTupleInspection()"
+              class="buttonWithIcon"
             >
-              {{ inspectionBusy ? 'Loading events…' : 'Load event drilldown' }}
+              <AppVisualIcon :icon="optionsTupleDrilldownIcon" class="optionsActionIcon" />
+              <span>{{ inspectionBusy ? 'Loading events…' : 'Load event drilldown' }}</span>
             </button>
           </div>
           <div class="detailGrid detailGridTight">
@@ -3969,8 +4003,10 @@ function focusTupleIndex(index: number): void {
                     type="button"
                     :disabled="eventPathBusy"
                     @click="loadSelectedEventPath()"
+                    class="buttonWithIcon"
                   >
-                    {{ eventPathBusy ? 'Loading path…' : 'Reload path replay' }}
+                    <AppVisualIcon :icon="optionsEventPathReplayIcon" class="optionsActionIcon" />
+                    <span>{{ eventPathBusy ? 'Loading path…' : 'Reload path replay' }}</span>
                   </button>
                 </div>
                 <div class="detailGrid detailGridTight">
@@ -4067,10 +4103,13 @@ function focusTupleIndex(index: number): void {
                 </div>
                 <div v-if="selectedEventPathInspection" class="detailInspector">
                   <div class="panelSectionHeader">
-                    <div>
-                      <div class="panelEyebrow">Event path replay</div>
-                      <div class="panelSectionLead">
-                        Replayed option OHLC and underlier path for the selected executed event.
+                    <div class="panelHeaderVisual">
+                      <AppVisualIcon :icon="optionsEventPathReplayIcon" class="sectionGlyph" />
+                      <div>
+                        <div class="panelEyebrow">Event path replay</div>
+                        <div class="panelSectionLead">
+                          Replayed option OHLC and underlier path for the selected executed event.
+                        </div>
                       </div>
                     </div>
                     <div class="actions">
@@ -4122,8 +4161,12 @@ function focusTupleIndex(index: number): void {
             </div>
           </details>
         </div>
-        <div v-else class="emptyBody">
-          No ranked tuples available yet. Run an options expression job or load a saved artifact.
+        <div v-else class="emptyState">
+          <img class="emptyStateIllustration" :src="emptyOptionsWorkspaceIllustration" alt="" aria-hidden="true" draggable="false" />
+          <div class="emptyTitle">No ranked tuples available yet.</div>
+          <div class="emptyBody">
+            Run an options expression job or load a saved artifact.
+          </div>
         </div>
       </section>
     </template>
@@ -4140,6 +4183,19 @@ function focusTupleIndex(index: number): void {
   border-radius: 14px;
   background: var(--panel-footer);
   padding: 0.9rem;
+}
+
+.panelHeaderVisual {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.optionsPaneGlyph {
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: 0 0 auto;
+  margin-top: 0.08rem;
 }
 
 .optionsGrid {
@@ -4232,6 +4288,25 @@ function focusTupleIndex(index: number): void {
   display: flex;
   flex-wrap: wrap;
   gap: 0.55rem;
+}
+
+.buttonWithIcon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.optionsActionIcon {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+}
+
+.sectionGlyph {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+  margin-top: 0.08rem;
 }
 
 .gateBadgeRow {
@@ -4330,6 +4405,12 @@ function focusTupleIndex(index: number): void {
   display: grid;
   gap: 0.35rem;
   padding: 0.7rem 0.2rem 0.1rem;
+}
+
+.emptyStateIllustration {
+  width: 4.25rem;
+  height: 4.25rem;
+  display: block;
 }
 
 .emptyTitle {

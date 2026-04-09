@@ -231,6 +231,44 @@ describe("HistoryWorkspacePanel", () => {
     expect(document.activeElement).toBe(savedButtons[0]);
   });
 
+  it("keeps the options follow-up panel mounted from History detail for supported parent runs", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 1;
+    history.savedSelectedValue = "C:/runs/double_ma.json";
+    history.savedRunDetailTitle = "double_ma run";
+    history.savedRunDetailMeta = "artifact: double_ma.json";
+    history.savedRunDetailStrategy = "DoubleMa";
+    history.savedRunDetailDataset = "spy.csv";
+    history.savedRunDetailTimeframe = "1d";
+    history.savedRunDetailValidation = "Available";
+    history.savedRunDetailMetricSurface = "Core17";
+    history.savedRunDetailAdmission = "scalar_union";
+    history.savedRunDetailReport = "Not exported";
+    history.savedRunDetailSize = "12 KiB";
+    history.savedRunDetailTags = "baseline";
+    history.savedRunDetailParams = "strategy: DoubleMa";
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const bodyText = document.body.textContent || "";
+    expect(bodyText).toContain("Options Expression");
+    expect(bodyText).toContain("Follow-up workflow");
+    expect(bodyText).toContain("This is an options follow-up surface.");
+    expect(
+      document.querySelector('[aria-label="Options expression follow-up"]'),
+    ).not.toBeNull();
+  });
+
   it("documents that saved-run search is local while command search stays global", async () => {
     const history = useHistoryStore();
     const workflow = useWorkflowStore();

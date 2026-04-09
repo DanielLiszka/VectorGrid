@@ -33,7 +33,6 @@ import {
 import { tauriRuntimeAvailable } from "../tauri/invoke";
 import { describeStrategyOptimizationCapabilities } from "../utils/strategyOptimizationCapabilities";
 import { formatUiTimeFromUnixMs } from "../utils/uiTime";
-import MlSignalWorkspacePanel from "./MlSignalWorkspacePanel.vue";
 import {
   builderEligibleDynamicIndicators,
   createDefaultDynamicDoubleMaBuilderState,
@@ -188,17 +187,10 @@ const isDynamicDoubleMaKind = computed(
     String(strategyDraft.value || strategyKind.value || "").trim() ===
     "DynamicDoubleMa",
 );
-const isMlSignalKind = computed(
-  () =>
-    String(strategyDraft.value || strategyKind.value || "").trim() ===
-    "MlSignal",
-);
 const strategyHintText = computed(() =>
   isDynamicDoubleMaKind.value
     ? "Constrained builder + JSON preview for dynamic Double-MA strategy_ir payloads."
-    : isMlSignalKind.value
-      ? "Alternative ML route: export datasets, import score caches, and validate score policies without replacing the deterministic optimizer."
-      : String(strategyHint.value || "").trim() || "—",
+    : String(strategyHint.value || "").trim() || "—",
 );
 const selectedFastMaType = computed(() =>
   String(fastTypeDraft.value || fastMaType.value || "").trim(),
@@ -1725,9 +1717,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
-      <MlSignalWorkspacePanel v-if="isMlSignalKind" />
-      <template v-else>
-        <section class="pane">
+      <section class="pane">
           <div class="paneHeader">
             <div>
               <div class="sectionEyebrow">Execution</div>
@@ -2849,7 +2839,6 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </section>
-      </template>
     </section>
   </Teleport>
 </template>

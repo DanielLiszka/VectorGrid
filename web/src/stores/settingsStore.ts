@@ -31,6 +31,7 @@ export type DensityMode = 'comfortable' | 'standard' | 'dense'
 export type DesktopNotificationMode = 'off' | 'failures' | 'important'
 
 export interface WorkstationPerspectiveSnapshot {
+  mode: string
   workspace: string
   workflow: string
   workflowStep: string
@@ -184,6 +185,7 @@ const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Optimize',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'workflow',
       workflow: 'optimize',
       workflowStep: 'optimize',
@@ -199,6 +201,7 @@ const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Validate',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'workflow',
       workflow: 'validate',
       workflowStep: 'validate',
@@ -214,6 +217,7 @@ const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Top Results Triage',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'workflow',
       workflow: 'analyze',
       workflowStep: 'analyze',
@@ -229,6 +233,7 @@ const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Execution Review',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'settings',
       workflow: 'data',
       workflowStep: 'data',
@@ -244,6 +249,7 @@ const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
     name: 'Run Library',
     builtIn: true,
     snapshot: {
+      mode: 'conventional',
       workspace: 'library',
       workflow: 'history',
       workflowStep: 'data',
@@ -260,6 +266,7 @@ function normalizePerspectiveSnapshot(value: unknown): WorkstationPerspectiveSna
   if (!value || typeof value !== 'object') return null
   const row = value as Record<string, unknown>
   return {
+    mode: String(row.mode || '').trim() || 'conventional',
     workspace: String(row.workspace || '').trim() || 'workflow',
     workflow: String(row.workflow || '').trim() || 'data',
     workflowStep: String(row.workflowStep || '').trim() || 'data',
@@ -489,6 +496,7 @@ export const useSettingsStore = defineStore('settings', {
         name: trimmedName,
         builtIn: false,
         snapshot: {
+          mode: workflowStore.mode,
           workspace: workflowStore.workspace,
           workflow: workflowStore.workflow,
           workflowStep: workflowStore.workflowStep,
@@ -520,6 +528,7 @@ export const useSettingsStore = defineStore('settings', {
           : {
               ...entry,
               snapshot: {
+                mode: workflowStore.mode,
                 workspace: workflowStore.workspace,
                 workflow: workflowStore.workflow,
                 workflowStep: workflowStore.workflowStep,
@@ -548,6 +557,7 @@ export const useSettingsStore = defineStore('settings', {
       this.densityMode = normalizeDensityMode(entry.snapshot.densityMode)
       applyDensityModeLocally(this.densityMode)
       workflowStore.applyLegacySnapshot({
+        mode: entry.snapshot.mode === 'ml-signal' ? 'ml-signal' : 'conventional',
         workspace: entry.snapshot.workspace,
         workflow: entry.snapshot.workflow,
         workflowStep: entry.snapshot.workflowStep,

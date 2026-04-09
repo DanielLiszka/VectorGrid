@@ -21,7 +21,6 @@ const optimizeStore = useOptimizeStore();
 const taskStore = useTaskStore();
 const workflowStore = useWorkflowStore();
 const {
-  strategyKind,
   runDisabled,
   canCancel,
   progressMeta,
@@ -34,7 +33,7 @@ const {
 const { bestMeta, bestTitle, drillStatus, heatmapMeta, topRows } =
   storeToRefs(analysisStore);
 const { overallProgress } = storeToRefs(taskStore);
-const { resultsTab, workspace } = storeToRefs(workflowStore);
+const { mode, resultsTab, workspace } = storeToRefs(workflowStore);
 const {
   activeTaskCount,
   centerStatusLabel,
@@ -46,6 +45,9 @@ const { mountReady } = useShellMount("#runFooterVueShellMount");
 const footerExpanded = useStorage<boolean>("VTA_RUN_FOOTER_EXPANDED_V1", false);
 const footerVisible = computed(
   () => String(workspace.value || "").trim() === "workflow",
+);
+const mlSignalModeActive = computed(
+  () => String(mode.value || "").trim() === "ml-signal",
 );
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
@@ -71,6 +73,9 @@ const footerSummary = computed(() => {
 });
 const runningCount = computed(() => activeTaskCount.value);
 const analysisSummary = computed(() => {
+  if (mlSignalModeActive.value) {
+    return "ML signal mode uses dataset export, score cache, validation, and sweep artifacts."
+  }
   const title = String(bestTitle.value || "").trim();
   const meta = String(bestMeta.value || "").trim();
   if (title && title !== "—" && title !== "-")
@@ -100,7 +105,7 @@ const overallProgressLabel = computed(() => {
   return formatOverallProgressLabel(overallProgress.value);
 });
 const primaryActionLabel = computed(() =>
-  String(strategyKind.value || "").trim() === "MlSignal"
+  mlSignalModeActive.value
     ? "Build score cache"
     : "Run optimization",
 );
@@ -182,11 +187,16 @@ function toggleFooterDetails(): void {
         <section class="summaryCard">
           <div class="summaryLabel">Insights</div>
           <div class="metaLine mono">{{ analysisSummary }}</div>
-          <div class="status mono">
-            Tab {{ resultsTab || "overview" }} · Top {{ topRows }} · Drill
-            {{ drillStatus }}
-          </div>
-          <div class="status mono">Heatmap {{ heatmapMeta }}</div>
+          <template v-if="mlSignalModeActive">
+            <div class="status mono">Mode ML Signal · Shared Run Library stays available for reopen and rerun.</div>
+          </template>
+          <template v-else>
+            <div class="status mono">
+              Tab {{ resultsTab || "overview" }} · Top {{ topRows }} · Drill
+              {{ drillStatus }}
+            </div>
+            <div class="status mono">Heatmap {{ heatmapMeta }}</div>
+          </template>
         </section>
 
         <section class="summaryCard">
