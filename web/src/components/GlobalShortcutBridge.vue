@@ -7,6 +7,7 @@ import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
+import { dispatchSharedShellShortcut } from '../utils/shellShortcutRegistry'
 
 const analysisStore = useAnalysisStore()
 const commandActionStore = useCommandActionStore()
@@ -73,68 +74,47 @@ function onKeydown(e: KeyboardEvent): void {
     return
   }
 
-  if (mod && lower === 'o' && !e.shiftKey) {
-    e.preventDefault()
-    if (!canBrowseCsv.value) return
-    commandActionStore.browseCsv()
-    return
-  }
-
-  if (mod && lower === 'o' && e.shiftKey) {
-    e.preventDefault()
-    if (!canPolygonOpen.value) return
-    commandActionStore.openPolygon()
-    return
-  }
-
-  if (mod && key === '\\') {
-    e.preventDefault()
-    commandActionStore.toggleControls()
-    return
-  }
-
   if (mod && key === 'Enter') {
     if (isMultilineEditorTarget(document.activeElement as Element | null) && !e.shiftKey) return
-    e.preventDefault()
-    if (!canRun.value) return
-    commandActionStore.runOptimization()
-    return
   }
 
-  if (mod && e.shiftKey && lower === 'v') {
-    e.preventDefault()
-    if (!canValidate.value) return
-    commandActionStore.validateOptimization()
-    return
-  }
-
-  if (mod && e.shiftKey && lower === 'c') {
-    e.preventDefault()
-    if (!canExportCsv.value) return
-    commandActionStore.exportTopCsv()
-    return
-  }
-
-  if (mod && e.shiftKey && lower === 'j') {
-    e.preventDefault()
-    if (!canExportJson.value) return
-    commandActionStore.exportTopJson()
-    return
-  }
-
-  if (mod && e.shiftKey && lower === 'r') {
-    e.preventDefault()
-    if (!canOpenLatestReport.value) return
-    commandActionStore.openLatestReport()
-    return
-  }
-
-  if (mod && e.shiftKey && lower === 'm') {
-    e.preventDefault()
-    if (!canOpenLatestMetaReport.value) return
-    commandActionStore.openLatestMetaReport()
-    return
-  }
+  if (dispatchSharedShellShortcut(e, {
+    canRun: canRun.value,
+    canValidate: canValidate.value,
+    canBrowseCsv: canBrowseCsv.value,
+    canPolygonOpen: canPolygonOpen.value,
+    canExportCsv: canExportCsv.value,
+    canExportJson: canExportJson.value,
+    canOpenLatestReport: canOpenLatestReport.value,
+    canOpenLatestMetaReport: canOpenLatestMetaReport.value,
+    browseCsv: () => {
+      commandActionStore.browseCsv()
+    },
+    openPolygon: () => {
+      commandActionStore.openPolygon()
+    },
+    toggleControls: () => {
+      commandActionStore.toggleControls()
+    },
+    runOptimization: () => {
+      commandActionStore.runOptimization()
+    },
+    validateOptimization: () => {
+      commandActionStore.validateOptimization()
+    },
+    exportTopCsv: () => {
+      commandActionStore.exportTopCsv()
+    },
+    exportTopJson: () => {
+      commandActionStore.exportTopJson()
+    },
+    openLatestReport: () => {
+      commandActionStore.openLatestReport()
+    },
+    openLatestMetaReport: () => {
+      commandActionStore.openLatestMetaReport()
+    },
+  })) return
 
   if (!mod) {
     const isPrev = lower === 'k' || key === 'ArrowUp'

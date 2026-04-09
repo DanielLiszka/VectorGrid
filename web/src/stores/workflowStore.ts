@@ -72,6 +72,10 @@ function normalizeMode(value: unknown): ShellMode {
   return normalizeShellMode(value) || DEFAULT_MODE
 }
 
+function parseMode(value: unknown): ShellMode | '' {
+  return normalizeShellMode(value) || ''
+}
+
 function normalizeWorkflow(value: unknown): string {
   return normalizeWorkflowTab(value) || ''
 }
@@ -339,7 +343,8 @@ export const useWorkflowStore = defineStore('workflow', {
 
   actions: {
     selectMode(mode: unknown, options?: WorkflowCommitOptions): void {
-      const nextMode = normalizeMode(mode)
+      const nextMode = parseMode(mode)
+      if (!nextMode) return
       if (this.mode === nextMode) return
 
       const previousMode = this.mode
@@ -395,7 +400,7 @@ export const useWorkflowStore = defineStore('workflow', {
     },
 
     applyLegacySnapshot(snapshot: Partial<WorkflowState>): void {
-      const nextMode = normalizeMode(snapshot.mode ?? this.mode)
+      const nextMode = parseMode(snapshot.mode) || this.mode || DEFAULT_MODE
       const explicitControls = normalizeControls(snapshot.controlsTab)
       const explicitResults = normalizeResults(snapshot.resultsTab)
 

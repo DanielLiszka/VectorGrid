@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every field in the startup snapshot and where it is written.
-- [ ] Document the startup restore sequence and stop conditions.
-- [ ] Document the difference between `startupHydratedOnce` and `startupDeferredHydratedOnce`.
-- [ ] Document status-line behavior for restore pending, success, and failure.
-- [ ] Add or tighten tests for restore success, derived-timeframe restore, and restore failure.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every field in the startup snapshot and where it is written.
+- [x] Document the startup restore sequence and stop conditions.
+- [x] Document the difference between `startupHydratedOnce` and `startupDeferredHydratedOnce`.
+- [x] Document status-line behavior for restore pending, success, and failure.
+- [x] Add or tighten tests for restore success, derived-timeframe restore, and restore failure.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -121,6 +121,13 @@ Public-repo quality focus:
 - avoid changing persisted storage keys or snapshot fields without a compatibility plan
 - prefer making restore phases more explicit before making them more aggressive
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added explicit store-level coverage in `web/src/stores/dataStore.actions.test.ts` for startup restore pending and restore failure semantics so the app keeps surfacing `Startup restore pending.` and `Startup restore failed: ...` states instead of collapsing into a blank ready posture.
+- Kept the existing restore model intact: startup hydration still owns the single restore attempt, deferred affordances still load later, and broken restore paths still degrade safely to an empty-dataset shell rather than re-downloading or crashing startup.
+- Preserved storage compatibility by hardening visible behavior and tests only; no snapshot key, restore ordering, or persisted schema change was introduced in this slice.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/stores/dataStore.actions.test.ts src/components/DataWorkspacePanel.test.ts src/services/dataService.test.ts src/services/optimizeService.test.ts src/services/validationService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_app_core`.
 
 ## Related Docs
 

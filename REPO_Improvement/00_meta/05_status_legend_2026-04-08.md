@@ -95,17 +95,49 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Canonical Status Definitions
+
+- `planned`
+  - the slug exists in the catalog, but no implementation-plan file exists yet
+- `drafted`
+  - the file exists, but it has not yet met the full implementation-doc quality bar
+- `active`
+  - the document is the current authoritative plan for its surface and may still be evolving
+- `partially_executed`
+  - implementation work has started against the plan, but document-level closure has not been reached
+- `completed`
+  - the document-level scope has been implemented and verified far enough to count as done for the current repo state
+- `archived`
+  - the document is no longer an active planning authority, but is retained for historical context
+
+## Auxiliary Operational Definitions
+
+- `created`
+  - the file exists on disk for the planned slug
+- `section-complete`
+  - the file satisfies the structural implementation-doc template and second-pass hardening bar
+- `superseded`
+  - the document has been replaced by a newer authoritative document and must point forward to that replacement
+
+## Usage Rules
+
+- the tracker may use `created` and `section-complete` for corpus-construction work, but not as synonyms for implementation completion
+- the execution ledger should use whole-document completion semantics rather than file-existence semantics
+- program summaries should prefer `completed` only when the underlying implementation or governance work is actually done
+- archived or superseded documents must stay visible through explicit labels or forward pointers
+- status wording should stay stable across tracker, index, ledger, and governance docs unless the legend itself is updated first
+
 ## Checklist
 
-- [ ] Define `planned`, `drafted`, `active`, `partially_executed`, `completed`, and `archived`.
-- [ ] Define `created`, `section-complete`, and `superseded`.
-- [ ] Clarify how statuses appear in tracker and wave summaries.
-- [ ] Prevent “file exists” from being treated as “completed.”
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define `planned`, `drafted`, `active`, `partially_executed`, `completed`, and `archived`.
+- [x] Define `created`, `section-complete`, and `superseded`.
+- [x] Clarify how statuses appear in tracker and wave summaries.
+- [x] Prevent “file exists” from being treated as “completed.”
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

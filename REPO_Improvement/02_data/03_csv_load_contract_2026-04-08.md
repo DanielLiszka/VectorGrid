@@ -35,6 +35,8 @@ Users can browse to a CSV, load it, and receive normalized dataset metadata plus
 
 ## Current Verification Surface
 
+- `crates/app_core/src/csv_compat.rs` compatibility tests
+- `src-tauri/src/commands_data.rs` repo-data helper tests
 - `web/src/services/dataService.test.ts`
 - `web/src/stores/dataStore.actions.test.ts`
 - `src-tauri` state/data tests
@@ -80,21 +82,28 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- replaced manual comma splitting in `crates/app_core/src/csv_compat.rs` with `csv::ReaderBuilder`, using standards-aware parsing while preserving the existing named-header and positional fallback contract
+- kept the frontend-visible load result stable: `load_price_data` still feeds the same `loadSource`, metadata, and cache semantics that `dataService.ts` and `dataStore.ts` normalize today
+- preserved current failure posture for malformed timestamps and missing required columns, but improved the parser so quoted headers and unused quoted fields containing commas no longer break import compatibility
+- revalidated the command-side consumer expectations through `dataService.test.ts`, `dataStore.actions.test.ts`, and the meta-service tests that depend on repo CSV inventory remaining structurally stable
+
 ## Checklist
 
-- [ ] Document accepted named-header aliases and positional layouts.
-- [ ] Document required vs optional candle fields.
-- [ ] Document timestamp parsing expectations and failure cases.
-- [ ] Document response fields returned to the frontend.
-- [ ] Document `loadSource` values and when each is used.
-- [ ] Document cache-hit vs in-memory-reuse semantics.
-- [ ] Add or tighten tests for representative CSV variants and malformed cases.
-- [ ] Verify artifact/dataset metadata consumers still receive the same core fields.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document accepted named-header aliases and positional layouts.
+- [x] Document required vs optional candle fields.
+- [x] Document timestamp parsing expectations and failure cases.
+- [x] Document response fields returned to the frontend.
+- [x] Document `loadSource` values and when each is used.
+- [x] Document cache-hit vs in-memory-reuse semantics.
+- [x] Add or tighten tests for representative CSV variants and malformed cases.
+- [x] Verify artifact/dataset metadata consumers still receive the same core fields.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

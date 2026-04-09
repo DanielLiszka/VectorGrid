@@ -8,6 +8,12 @@ import RunFooterPanel from './components/RunFooterPanel.vue'
 import StartupAnimationOverlay from './components/StartupAnimationOverlay.vue'
 import VueWorkspaceShell from './components/VueWorkspaceShell.vue'
 import { useWorkflowStore } from './stores/workflowStore'
+import {
+  isAnalysisDockVisible,
+  isHistoryDockVisible,
+  isOptimizeDockVisible,
+  isValidationDockVisible,
+} from './utils/shellDockContract'
 
 const AdvancedWorkspacePanel = defineAsyncComponent(() => import('./components/AdvancedWorkspacePanel.vue'))
 const AnalysisContextDock = defineAsyncComponent(() => import('./components/AnalysisContextDock.vue'))
@@ -40,23 +46,37 @@ const { controlsTab, mode, resultsTab, workflow, workspace } = storeToRefs(workf
 const startupAnimationEnabled = false
 
 const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
-const workflowWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'workflow')
 const currentWorkspace = computed(() => String(workspace.value || '').trim() || 'workflow')
 const mlSignalModeActive = computed(() => String(mode.value || '').trim() === 'ml-signal')
 const activeControlsTab = computed(() => String(controlsTab.value || '').trim() || 'data')
 const activeResultsTab = computed(() => String(resultsTab.value || '').trim() || 'overview')
-const analysisDockActive = computed(() => {
-  const ws = String(workspace.value || '').trim()
-  const wf = String(workflow.value || '').trim()
-  return ws === 'aggregate' || (!mlSignalModeActive.value && (wf === 'optimize' || wf === 'validate' || wf === 'analyze'))
-})
-const optimizeDockActive = computed(() => workflowWorkspaceActive.value && activeControlsTab.value === 'opt' && !mlSignalModeActive.value)
-const validationDockActive = computed(() => workflowWorkspaceActive.value && activeResultsTab.value === 'validate' && !mlSignalModeActive.value)
-const historyPanelActive = computed(() => {
-  const ws = String(workspace.value || '').trim()
-  const wf = String(workflow.value || '').trim()
-  return ws === 'library' || wf === 'history'
-})
+const analysisDockActive = computed(() =>
+  isAnalysisDockVisible({
+    mode: mode.value,
+    workspace: workspace.value,
+    workflow: workflow.value,
+  }),
+)
+const optimizeDockActive = computed(() =>
+  isOptimizeDockVisible({
+    mode: mode.value,
+    workspace: workspace.value,
+    controlsTab: controlsTab.value,
+  }),
+)
+const validationDockActive = computed(() =>
+  isValidationDockVisible({
+    mode: mode.value,
+    workspace: workspace.value,
+    resultsTab: resultsTab.value,
+  }),
+)
+const historyPanelActive = computed(() =>
+  isHistoryDockVisible({
+    workspace: workspace.value,
+    workflow: workflow.value,
+  }),
+)
 function shouldShowWorkflowQuickSwitch(): boolean {
   if (!import.meta.env.DEV) return false
   try {

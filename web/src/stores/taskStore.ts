@@ -158,6 +158,16 @@ interface PersistedTaskCenterV1 {
   timeline: TaskTimelineItem[];
 }
 
+interface PersistedTaskCenterV2 {
+  version: 2;
+  history: TrackedTask[];
+  events: TaskEventItem[];
+  timeline: TaskTimelineItem[];
+  toasts: TaskToastItem[];
+}
+
+type PersistedTaskCenter = PersistedTaskCenterV1 | PersistedTaskCenterV2;
+
 const MAX_HISTORY = 80;
 const MAX_EVENTS = 160;
 const MAX_TIMELINE = 300;
@@ -166,7 +176,7 @@ const PROGRESS_UPDATE_INTERVAL_MS = 120;
 const POLYGON_BAR_EVENT_INTERVAL_MS = 1000;
 const RUNNER_EVENT_INTERVAL_MS = 200;
 const POLYGON_STATUS_EVENT_INTERVAL_MS = 220;
-const TASK_CENTER_PERSIST_VERSION = 1;
+const TASK_CENTER_PERSIST_VERSION = 2;
 const PERSIST_DEBOUNCE_MS = 220;
 
 let nextTaskSeq = 0;
@@ -280,13 +290,17 @@ function clampTimeline(items: TaskTimelineItem[]): TaskTimelineItem[] {
   return items.slice(0, MAX_TIMELINE);
 }
 
+function clampToasts(items: TaskToastItem[]): TaskToastItem[] {
+  return items.slice(0, MAX_TOASTS);
+}
+
 function hydrateStoreFromDisk(st: TaskState): void {
   if (hydratedFromStorage) return;
   hydratedFromStorage = true;
-  const payload = readStorageJson<PersistedTaskCenterV1>(
+  const payload = readStorageJson<PersistedTaskCenter>(
     TASK_TIMELINE_STORAGE_KEY,
   );
-  if (!payload || payload.version !== 1) return;
+  if (!payload || (payload.version !== 1 && payload.version !== 2)) return;
 
   st.history = clampHistory(
     Array.isArray(payload.history) ? payload.history : [],
@@ -295,6 +309,17 @@ function hydrateStoreFromDisk(st: TaskState): void {
   st.timeline = clampTimeline(
     Array.isArray(payload.timeline) ? payload.timeline : [],
   );
+  st.toasts = clampToasts(
+    Array.isArray((payload as Partial<PersistedTaskCenterV2>).toasts)
+      ? (payload as PersistedTaskCenterV2).toasts
+      : [],
+  );
+  const last = st.history[0];
+  if (!last) st.centerStatus = "idle";
+  else if (last.status === "success") st.centerStatus = "success";
+  else if (last.status === "cancelled") st.centerStatus = "cancelled";
+  else if (last.status === "failed") st.centerStatus = "failed";
+  else st.centerStatus = "idle";
 }
 
 function taskStoreSingleton() {
@@ -311,11 +336,12 @@ function removeActiveTaskId(st: TaskState, id: string): void {
 
 function persistTaskCenterNow(): void {
   const st = taskStoreSingleton();
-  const payload: PersistedTaskCenterV1 = {
+  const payload: PersistedTaskCenterV2 = {
     version: TASK_CENTER_PERSIST_VERSION,
     history: clampHistory(st.history),
     events: clampEvents(st.events),
     timeline: clampTimeline(st.timeline),
+    toasts: clampToasts(st.toasts),
   };
   writeStorageJson(TASK_TIMELINE_STORAGE_KEY, payload);
 }
@@ -330,6 +356,13 @@ const persistTaskCenterDebounced = useDebounceFn(
 
 function schedulePersistTaskCenter(): void {
   persistTaskCenterDebounced();
+}
+
+function cancelPersistTaskCenterDebounce(): void {
+  const cancellable = persistTaskCenterDebounced as typeof persistTaskCenterDebounced & {
+    cancel?: () => void;
+  };
+  cancellable.cancel?.();
 }
 
 function refreshCenterStatus(): void {
@@ -414,6 +447,7 @@ function pushToast(
   if (st.toasts.length > MAX_TOASTS) {
     st.toasts.splice(MAX_TOASTS);
   }
+  schedulePersistTaskCenter();
 }
 
 function pushHistory(task: TrackedTask): void {
@@ -487,7 +521,25 @@ export function dismissToast(id: string): void {
   const targetId = String(id || "").trim();
   if (!targetId) return;
   const index = st.toasts.findIndex((toast) => toast.id === targetId);
-  if (index >= 0) st.toasts.splice(index, 1);
+  if (index >= 0) {
+    st.toasts.splice(index, 1);
+    schedulePersistTaskCenter();
+  }
+}
+
+export function persistTaskCenterForTests(): void {
+  persistTaskCenterNow();
+}
+
+export function hydrateTaskCenterForTests(): void {
+  const st = taskStoreSingleton();
+  st.history = [];
+  st.events = [];
+  st.timeline = [];
+  st.toasts = [];
+  st.centerStatus = "idle";
+  hydratedFromStorage = false;
+  hydrateStoreFromDisk(st);
 }
 
 export function markTaskCancelling(id: string): void {
@@ -968,4 +1020,27 @@ export function recordPolygonLiveBarEvent(
     "info",
     atUnixMs,
   );
+}
+
+export function resetTaskStoreForTests(): void {
+  hydratedFromStorage = false;
+  nextTaskSeq = 0;
+  nextEventSeq = 0;
+  nextTimelineSeq = 0;
+  nextToastSeq = 0;
+  lastDoubleMaPhase = "";
+  lastDoubleMaProgressAt = 0;
+  lastResearchCampaignSignature = "";
+  lastResearchCampaignProgressAt = 0;
+  lastPolygonLiveBarAt = 0;
+  lastRunnerEventAt = 0;
+  lastRunnerEventSignature = "";
+  lastPolygonStatusAt = 0;
+  lastPolygonStatusSignature = "";
+  commandLabelCache.clear();
+  cancelPersistTaskCenterDebounce();
+  const pinia = resolveRuntimePinia();
+  if (pinia) {
+    useTaskStore(pinia).$reset();
+  }
 }

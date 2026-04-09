@@ -6,6 +6,7 @@ import { useAnchoredOverlay } from '../composables/useAnchoredOverlay'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { ANALYSIS_DOCK_OPEN_STORAGE_KEY, isAnalysisDockVisible } from '../utils/shellDockContract'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
 
 const analysis = useAnalysisStore()
@@ -23,7 +24,7 @@ const {
   updatedAtUnixMs,
 } = storeToRefs(analysis)
 const { resultsTab, workspace, workflow } = storeToRefs(workflowState)
-const dockOpen = useStorage<boolean>('VTA_ANALYSIS_DOCK_OPEN_V1', false)
+const dockOpen = useStorage<boolean>(ANALYSIS_DOCK_OPEN_STORAGE_KEY, false)
 const dockPanelId = 'vta-analysis-dock-panel'
 const { referenceRef, floatingRef, floatingStyles } = useAnchoredOverlay(dockOpen, {
   placement: 'top-end',
@@ -32,10 +33,11 @@ const { referenceRef, floatingRef, floatingStyles } = useAnchoredOverlay(dockOpe
 })
 
 const visible = computed(() => {
-  const ws = String(workspace.value || '').trim()
-  const wf = String(workflow.value || '').trim()
-  if (ws === 'aggregate') return true
-  return wf === 'optimize' || wf === 'validate' || wf === 'analyze'
+  return isAnalysisDockVisible({
+    mode: workflowState.mode,
+    workspace: workspace.value,
+    workflow: workflow.value,
+  })
 })
 
 watch(

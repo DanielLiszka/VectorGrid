@@ -11,12 +11,16 @@ import {
   formatTaskSourceLabel,
   formatOverallProgressLabel,
   taskLevelLabel,
+  taskLevelTone,
   runtimePhaseLabel,
   taskLifecycleLabel,
+  taskLifecycleTone,
 } from './statusPresentation'
 
 describe('statusPresentation', () => {
   it('normalizes task lifecycle labels across shell surfaces', () => {
+    expect(taskLifecycleTone('running')).toBe('running')
+    expect(taskLifecycleTone('warning')).toBe('idle')
     expect(taskLifecycleLabel('running')).toBe('Running')
     expect(taskLifecycleLabel('success')).toBe('Completed')
     expect(taskLifecycleLabel('cancelled')).toBe('Cancelled')
@@ -72,6 +76,20 @@ describe('statusPresentation', () => {
         },
       }),
     ).toBe('Validation failed.')
+
+    expect(
+      describeTaskActivity({
+        activeTasks: [],
+        latestToast: null,
+        latestTask: {
+          id: 'task_2',
+          command: 'run_double_ma_validation',
+          label: 'Validation',
+          status: 'failed',
+          startedAt: 1_700_000_000_000,
+        },
+      }),
+    ).toBe('Validation failed.')
   })
 
   it('formats progress and runtime summaries consistently', () => {
@@ -101,6 +119,8 @@ describe('statusPresentation', () => {
   })
 
   it('normalizes task severity, source, and phase labels for diagnostics surfaces', () => {
+    expect(taskLevelTone('warning')).toBe('warn')
+    expect(taskLevelTone('done')).toBe('success')
     expect(taskLevelLabel('warn')).toBe('Warning')
     expect(taskLevelLabel('success')).toBe('Success')
     expect(formatTaskPhaseLabel('phase_changed')).toBe('Phase Changed')

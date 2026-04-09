@@ -3,6 +3,7 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import {
   recordLiveExecutionRunnerEvent,
   recordPolygonLiveStatusEvent,
+  resetTaskStoreForTests,
   useTaskStore,
 } from './taskStore'
 import { bindRuntimePinia } from './runtimePinia'
@@ -48,6 +49,7 @@ describe('task-store event throttling', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     ;(globalThis as Record<string, unknown>).window = { localStorage: new MemoryStorage() }
+    resetTaskStoreForTests()
     const store = useTaskStore(pinia)
     store.$reset()
   })

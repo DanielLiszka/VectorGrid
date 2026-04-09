@@ -42,6 +42,44 @@ describe('TaskCenterOverlay', () => {
     wrapper.unmount()
   })
 
+  it('uses quiet launcher posture and clamps persisted launcher position back into the viewport', async () => {
+    localStorage.setItem('VTA_TASK_CENTER_POS_V1', JSON.stringify({ x: -640, y: 9_999 }))
+    localStorage.setItem('VTA_TASK_CENTER_POS_INIT_V1', 'true')
+    window.innerWidth = 360
+    window.innerHeight = 240
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const wrapper = mount(TaskCenterOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const toggle = wrapper.get('.overlayToggle')
+    const root = document.querySelector<HTMLElement>('.taskOverlayRoot')
+    const stored = JSON.parse(String(localStorage.getItem('VTA_TASK_CENTER_POS_V1') || '{}')) as {
+      x?: number
+      y?: number
+    }
+
+    expect(toggle.classes()).toContain('quiet')
+    expect(toggle.text()).toContain('Tasks')
+    expect(toggle.text()).not.toContain('Idle')
+    expect(typeof stored.x).toBe('number')
+    expect(typeof stored.y).toBe('number')
+    expect(Number(stored.x)).toBeGreaterThanOrEqual(8)
+    expect(Number(stored.y)).toBeGreaterThanOrEqual(8)
+    expect(Number(stored.x)).toBeLessThanOrEqual(window.innerWidth - 8)
+    expect(Number(stored.y)).toBeLessThanOrEqual(window.innerHeight - 8)
+    expect(root?.style.left).toBe(`${Math.round(Number(stored.x))}px`)
+    expect(root?.style.top).toBe(`${Math.round(Number(stored.y))}px`)
+
+    wrapper.unmount()
+  })
+
   it('moves focus into the task panel on open and restores focus to the toggle on close', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

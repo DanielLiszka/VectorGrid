@@ -16,7 +16,7 @@ Track the creation status of the active non-options document program planned in 
 - raw non-meta implementation-plan files now on disk: `343`
 - created docs in `00_meta/` now: `16`
 - planned-doc coverage status: `complete`
-- current creation wave: `Wave 26`
+- last completed creation wave: `Wave 26`
 - current implementation-doc audit status: all current planned docs now exist, the completed implementation-plan set now passes the second-pass hardening audit, and the program now moves from document creation toward implementation use and ongoing maintenance
 
 ## Current Folder Status
@@ -101,9 +101,9 @@ Added on 2026-04-09 in the final completion passes:
 - `10_tests_perf/55_headless_workflow_bins_2026-04-09.md`
 - `10_tests_perf/56_static_analysis_quality_gates_2026-04-09.md`
 - `10_tests_perf/57_manual_a11y_review_matrix_2026-04-09.md`
-- `00_meta/00_program_index_DATE.md`
-- `00_meta/01_doc_creation_tracker_DATE.md`
-- `00_meta/execution_ledger_DATE.md`
+- `00_meta/00_program_index_2026-04-09.md`
+- `00_meta/01_doc_creation_tracker_2026-04-09.md`
+- `00_meta/execution_ledger_2026-04-09.md`
 - `11_docs_ops/15_public_repo_community_health_2026-04-09.md`
 - `11_docs_ops/16_public_release_operations_2026-04-09.md`
 
@@ -133,7 +133,7 @@ The next operational phase is:
 
 ## Related Docs
 
-- [program_index_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/program_index_2026-04-08.md)
+- [00_program_index_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/00_program_index_2026-04-09.md)
 - [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
 - [execution_ledger_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/execution_ledger_2026-04-09.md)
 - [REPO_IMPROVEMENT_META_PLAN_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md)

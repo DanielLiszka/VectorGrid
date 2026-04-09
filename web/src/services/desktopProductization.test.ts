@@ -6,14 +6,20 @@ import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useRuntimeStore } from '../stores/runtimeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useTaskStore, type TrackedTask } from '../stores/taskStore'
-import { initializeDesktopProductization, teardownDesktopProductizationForTests } from './desktopProductization'
+import {
+  initializeDesktopProductization,
+  requestDesktopNotificationPermission,
+  teardownDesktopProductizationForTests,
+} from './desktopProductization'
 
 const saveWindowStateMock = vi.fn(async () => undefined)
-const sendNotificationMock = vi.fn()
+const filenameMock = vi.fn(async () => 'vectorgrid-window-state.json')
+const sendNotificationMock = vi.fn((_payload: unknown) => undefined)
 const isPermissionGrantedMock = vi.fn(async () => true)
 const requestPermissionMock = vi.fn(async () => 'granted')
 const attachConsoleMock = vi.fn(async () => () => {})
 const infoMock = vi.fn(async (_message: string) => undefined)
+const tauriRuntimeAvailableMock = vi.fn(() => true)
 let loggerCallback: ((entry: { level: number; message: string }) => void) | null = null
 const attachLoggerMock = vi.fn(async (callback: (entry: { level: number; message: string }) => void) => {
   loggerCallback = callback
@@ -22,11 +28,12 @@ const attachLoggerMock = vi.fn(async (callback: (entry: { level: number; message
   }
 })
 vi.mock('../tauri/invoke', () => ({
-  tauriRuntimeAvailable: () => true,
+  tauriRuntimeAvailable: () => tauriRuntimeAvailableMock(),
 }))
 
 vi.mock('@tauri-apps/plugin-window-state', () => ({
   StateFlags: { ALL: 63 },
+  filename: () => filenameMock(),
   saveWindowState: () => saveWindowStateMock(),
 }))
 
@@ -82,6 +89,10 @@ describe('initializeDesktopProductization', () => {
     attachConsoleMock.mockClear()
     attachLoggerMock.mockClear()
     infoMock.mockClear()
+    filenameMock.mockReset()
+    filenameMock.mockResolvedValue('vectorgrid-window-state.json')
+    tauriRuntimeAvailableMock.mockReset()
+    tauriRuntimeAvailableMock.mockReturnValue(true)
     setDocumentVisibilityState('hidden')
   })
 
@@ -99,6 +110,53 @@ describe('initializeDesktopProductization', () => {
       level: 'info',
       message: 'desktop log ready',
     })
+  })
+
+  it('is a no-op when the Tauri runtime is unavailable', async () => {
+    tauriRuntimeAvailableMock.mockReturnValue(false)
+    const runtimeStore = useRuntimeStore()
+
+    await initializeDesktopProductization()
+    await requestDesktopNotificationPermission()
+
+    expect(attachLoggerMock).not.toHaveBeenCalled()
+    expect(attachConsoleMock).not.toHaveBeenCalled()
+    expect(isPermissionGrantedMock).not.toHaveBeenCalled()
+    expect(requestPermissionMock).not.toHaveBeenCalled()
+    expect(infoMock).not.toHaveBeenCalled()
+    expect(runtimeStore.desktopLogs).toEqual([])
+    expect(runtimeStore.desktopNotificationPermission).toBe('unknown')
+    expect(runtimeStore.desktopWindowStateReady).toBe(false)
+  })
+
+  it('records window-state metadata and binds manual saves when the plugin is available', async () => {
+    await initializeDesktopProductization()
+    const runtimeStore = useRuntimeStore()
+
+    expect(runtimeStore.desktopWindowStateFile).toBe('vectorgrid-window-state.json')
+    expect(runtimeStore.desktopWindowStateReady).toBe(true)
+
+    window.dispatchEvent(new Event('pagehide'))
+    expect(saveWindowStateMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('downgrades window-state metadata failures into diagnostics warnings', async () => {
+    filenameMock.mockRejectedValueOnce(new Error('window-state capability denied'))
+    await initializeDesktopProductization()
+    const runtimeStore = useRuntimeStore()
+
+    expect(runtimeStore.desktopWindowStateFile).toBe('')
+    expect(runtimeStore.desktopWindowStateReady).toBe(false)
+    expect(runtimeStore.desktopLogs.some((entry) => entry.message.includes('Window state metadata unavailable'))).toBe(true)
+  })
+
+  it('marks desktop notifications unsupported when permission refresh fails', async () => {
+    isPermissionGrantedMock.mockRejectedValueOnce(new Error('notifications unavailable'))
+    await initializeDesktopProductization()
+    const runtimeStore = useRuntimeStore()
+
+    expect(runtimeStore.desktopNotificationPermission).toBe('unsupported')
+    expect(runtimeStore.desktopLogs.some((entry) => entry.message.includes('OS notifications unavailable'))).toBe(true)
   })
 
   it('routes important completed tasks to OS notifications when enabled', async () => {
@@ -168,6 +226,54 @@ describe('initializeDesktopProductization', () => {
     await Promise.resolve()
 
     expect(sendNotificationMock).not.toHaveBeenCalled()
+  })
+
+  it('records a warning when notification delivery throws', async () => {
+    sendNotificationMock.mockImplementationOnce(() => {
+      throw new Error('delivery failed')
+    })
+    await initializeDesktopProductization()
+    const settingsStore = useSettingsStore()
+    const taskStore = useTaskStore()
+    const runtimeStore = useRuntimeStore()
+    settingsStore.setSelectField('settingsDesktopNotifications', 'important')
+
+    taskStore.$patch({
+      history: [
+        makeTrackedTask({
+          id: 'task_notify_delivery_failure',
+          status: 'failed',
+          error: 'Desktop notification should fail.',
+        }),
+      ],
+    })
+
+    await nextTick()
+    await Promise.resolve()
+
+    expect(runtimeStore.desktopLogs.some((entry) => entry.message.includes('OS notification delivery failed'))).toBe(true)
+  })
+
+  it('requests notification permission through the runtime diagnostics bridge', async () => {
+    const runtimeStore = useRuntimeStore()
+
+    await requestDesktopNotificationPermission()
+
+    expect(requestPermissionMock).toHaveBeenCalledTimes(1)
+    expect(runtimeStore.desktopNotificationPermission).toBe('granted')
+    expect(runtimeStore.desktopLogs.some((entry) => entry.message.includes('OS notification permission granted'))).toBe(true)
+  })
+
+  it('downgrades notification permission request failures into unsupported diagnostics', async () => {
+    requestPermissionMock.mockRejectedValueOnce(new Error('permission request unavailable'))
+    const runtimeStore = useRuntimeStore()
+
+    await requestDesktopNotificationPermission()
+
+    expect(runtimeStore.desktopNotificationPermission).toBe('unsupported')
+    expect(runtimeStore.desktopLogs.some((entry) => entry.message.includes('OS notification permission request failed'))).toBe(
+      true,
+    )
   })
 
 })

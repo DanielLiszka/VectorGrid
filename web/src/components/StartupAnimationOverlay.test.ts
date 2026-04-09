@@ -5,7 +5,7 @@ import { mount } from '@vue/test-utils'
 import { defineComponent, nextTick } from 'vue'
 import StartupAnimationOverlay from './StartupAnimationOverlay.vue'
 import AppRuntimeBanner from './AppRuntimeBanner.vue'
-import { useRuntimeStore } from '../stores/runtimeStore'
+import { BOOT_STAGES, useRuntimeStore } from '../stores/runtimeStore'
 
 const MIN_VISIBLE_MS = 360
 const SIGNATURE_MS = 900
@@ -67,7 +67,7 @@ describe('StartupAnimationOverlay', () => {
 
   it('shows during boot and exits after readiness once minimum visibility elapses', async () => {
     const runtimeStore = useRuntimeStore(pinia)
-    runtimeStore.markBooting('Restoring workspace state')
+    runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
 
     const wrapper = mount(StartupAnimationOverlay, {
       global: { plugins: [pinia] },
@@ -98,7 +98,7 @@ describe('StartupAnimationOverlay', () => {
 
   it('hands off after the signature duration if startup is still booting', async () => {
     const runtimeStore = useRuntimeStore(pinia)
-    runtimeStore.markBooting('Initializing desktop services')
+    runtimeStore.markBooting(BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES)
 
     const wrapper = mount(StartupHarness, {
       global: { plugins: [pinia] },
@@ -112,14 +112,14 @@ describe('StartupAnimationOverlay', () => {
     expect(document.querySelector('#startupAnimationOverlay')).toBeNull()
     expect(runtimeStore.bootPhase).toBe('booting')
     expect(wrapper.find('.runtimeBanner').exists()).toBe(true)
-    expect(wrapper.text()).toContain('Initializing desktop services')
+    expect(wrapper.text()).toContain(BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES)
 
     wrapper.unmount()
   })
 
   it('allows skipping after the minimum threshold', async () => {
     const runtimeStore = useRuntimeStore(pinia)
-    runtimeStore.markBooting('Restoring workspace state')
+    runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
 
     const wrapper = mount(StartupAnimationOverlay, {
       global: { plugins: [pinia] },
@@ -142,7 +142,7 @@ describe('StartupAnimationOverlay', () => {
 
   it('exits quickly if startup errors', async () => {
     const runtimeStore = useRuntimeStore(pinia)
-    runtimeStore.markBooting('Initializing desktop services')
+    runtimeStore.markBooting(BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES)
 
     const wrapper = mount(StartupHarness, {
       global: { plugins: [pinia] },
@@ -165,7 +165,7 @@ describe('StartupAnimationOverlay', () => {
   it('applies the reduced-motion posture when reduced motion is preferred', async () => {
     stubMatchMedia(true)
     const runtimeStore = useRuntimeStore(pinia)
-    runtimeStore.markBooting('Restoring workspace state')
+    runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
 
     const wrapper = mount(StartupAnimationOverlay, {
       global: { plugins: [pinia] },
@@ -182,7 +182,7 @@ describe('StartupAnimationOverlay', () => {
   it('honors the debug hold flag until the operator skips', async () => {
     localStorage.setItem('VTA_STARTUP_OVERLAY_HOLD', '1')
     const runtimeStore = useRuntimeStore(pinia)
-    runtimeStore.markBooting('Restoring workspace state')
+    runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
 
     const wrapper = mount(StartupAnimationOverlay, {
       global: { plugins: [pinia] },

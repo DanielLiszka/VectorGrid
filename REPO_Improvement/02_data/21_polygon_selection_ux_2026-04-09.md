@@ -93,16 +93,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current button/pressed-state selection behavior.
-- [ ] Document selected-path and `polygonSelectedMeta` behavior.
-- [ ] Document action enablement based on selected cached dataset.
-- [ ] Document keyboard movement and focus expectations for the selection rows.
-- [ ] Add or tighten tests if selection semantics or ordering change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document current button/pressed-state selection behavior.
+- [x] Document selected-path and `polygonSelectedMeta` behavior.
+- [x] Document action enablement based on selected cached dataset.
+- [x] Document keyboard movement and focus expectations for the selection rows.
+- [x] Add or tighten tests if selection semantics or ordering change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -119,6 +119,13 @@ Public-repo quality focus:
 - keep selection store-owned even if the panel layout changes
 - avoid merging repo CSV browsing into this contract without a separate scope decision
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened `web/src/components/DataWorkspacePanel.test.ts` so the cached-Polygon selection contract is now explicit at the panel boundary: pressed-state rendering, selection-status copy, keyboard navigation, and enabled selection-scoped actions are all asserted together.
+- Kept the runtime behavior store-owned and unchanged. This slice only hardened the acceptance evidence around the existing `polygonSelectedPath` / `polygonSelectedMeta` contract instead of moving selection logic into the component.
+- Preserved the split between selection UX and broader repo CSV browsing; no unrelated data-panel behavior was widened or removed.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/utils/core/datasetMeta.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

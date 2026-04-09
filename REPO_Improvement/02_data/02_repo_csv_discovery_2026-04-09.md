@@ -43,6 +43,7 @@ Current behavior includes:
 
 ## Current Verification Surface
 
+- `src-tauri/src/commands_data.rs` helper tests for repo-data root resolution, sample discovery, and traversal behavior
 - `web/src/services/dataService.test.ts`
 - `web/src/stores/dataStore.actions.test.ts`
 - `meta-service tests that exercise repo inventory consumers`
@@ -90,18 +91,25 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- extracted `sample_csvs_from_root(...)` so curated sample discovery is testable without depending on the live repo layout
+- added direct tests for workspace-root discovery via `find_repo_data_dir_from(...)`, including the missing-`data/` negative case
+- tightened `list_csvs_in_dir(...)` to sort files and child directories before traversal, which makes recursive truncation deterministic without widening the API or removing the existing cap behavior
+- preserved the distinction between curated sample CSVs and general repo CSV inventory, which keeps the data panel and the meta-service on separate discovery lanes
+
 ## Checklist
 
-- [ ] Document root-discovery fallbacks and ancestor-walk limits.
-- [ ] Document the difference between `list_sample_csvs` and `list_repo_data_csvs`.
-- [ ] Document recursive and cap behavior together with `truncated` semantics.
-- [ ] Record current consumers of both discovery paths.
-- [ ] Add tests if fallback root detection or traversal behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document root-discovery fallbacks and ancestor-walk limits.
+- [x] Document the difference between `list_sample_csvs` and `list_repo_data_csvs`.
+- [x] Document recursive and cap behavior together with `truncated` semantics.
+- [x] Record current consumers of both discovery paths.
+- [x] Add tests if fallback root detection or traversal behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

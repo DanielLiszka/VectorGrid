@@ -45,6 +45,7 @@ Current shipped behavior includes:
 
 ## Current Verification Surface
 
+- `src-tauri/src/commands_data.rs` helper tests for repo inventory and discovery
 - `web/src/services/metaService.test.ts`
 - `web/src/services/metaServiceCampaignResume.test.ts`
 - `web/src/services/metaServiceCampaignStrategy.test.ts`
@@ -93,18 +94,25 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- extracted `build_repo_data_csv_list(...)` in `src-tauri/src/commands_data.rs` so the repo inventory contract can be tested directly without going through the async Tauri command wrapper
+- added direct Rust coverage proving `csv_paths`, `csv_entries`, `dir`, and `truncated` stay aligned when `include_identity` is toggled
+- preserved the current meta-service contract that effectively relies on object-based `csv_entries` rows when `include_identity=true`
+- kept path-only listing intact for lighter callers while freezing the richer identity-enriched lane for meta/research consumers
+
 ## Checklist
 
-- [ ] Document every field in `RepoDataCsvList` and `RepoDataCsvEntry`.
-- [ ] Document `include_identity`, `recursive`, and `max_files` semantics.
-- [ ] Document sorting and truncation behavior.
-- [ ] List current frontend consumers of repo CSV inventory.
-- [ ] Add or tighten tests if inventory shape or shared consumer expectations change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every field in `RepoDataCsvList` and `RepoDataCsvEntry`.
+- [x] Document `include_identity`, `recursive`, and `max_files` semantics.
+- [x] Document sorting and truncation behavior.
+- [x] List current frontend consumers of repo CSV inventory.
+- [x] Add or tighten tests if inventory shape or shared consumer expectations change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

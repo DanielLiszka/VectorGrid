@@ -133,17 +133,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current keyboard shortcut inventory and precedence rules.
-- [ ] Document which command-palette entries map to the same actions as global shortcuts.
-- [ ] Document task-center persistence keys, return-focus behavior, and drag-state behavior.
-- [ ] Document current optimize/analysis/history/validation dock visibility and action boundaries.
-- [ ] Document titlebar close-guard interaction with active work.
-- [ ] Add or tighten tests if shortcut routing, focus handling, or dock visibility changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current keyboard shortcut inventory and precedence rules.
+- [x] Document which command-palette entries map to the same actions as global shortcuts.
+- [x] Document task-center persistence keys, return-focus behavior, and drag-state behavior.
+- [x] Document current optimize/analysis/history/validation dock visibility and action boundaries.
+- [x] Document titlebar close-guard interaction with active work.
+- [x] Add or tighten tests if shortcut routing, focus handling, or dock visibility changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

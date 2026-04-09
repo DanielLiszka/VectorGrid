@@ -1,11 +1,23 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useWorkflowStore } from './workflowStore'
+
+function ensureDocumentDataset(): Record<string, string> {
+  const existing = (globalThis as { document?: { documentElement?: { dataset?: Record<string, string> } } }).document
+  if (existing?.documentElement?.dataset) return existing.documentElement.dataset
+  const dataset: Record<string, string> = {}
+  vi.stubGlobal('document', { documentElement: { dataset } })
+  return dataset
+}
 
 describe('workflow store actions', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     if (typeof localStorage !== 'undefined') localStorage.clear()
+    const dataset = ensureDocumentDataset()
+    for (const key of Object.keys(dataset)) {
+      delete dataset[key]
+    }
   })
 
   it('selects library workspace with history workflow defaults', () => {
@@ -130,9 +142,64 @@ describe('workflow store actions', () => {
     expect(store.resultsTab).toBe('top')
   })
 
+  it('ignores invalid mode changes and legacy mode snapshots', () => {
+    const store = useWorkflowStore()
+    store.selectMode('ml-signal', { persist: false })
+
+    store.selectMode('invalid', { persist: false })
+    expect(store.mode).toBe('ml-signal')
+
+    store.applyLegacySnapshot({ mode: 'invalid' as never })
+    expect(store.mode).toBe('ml-signal')
+  })
+
+  it('syncs runtime dataset attributes and subtitle from workflow posture changes', () => {
+    const dataset = ensureDocumentDataset()
+    const store = useWorkflowStore()
+
+    store.selectWorkflowStep('optimize', { persist: false })
+    store.selectControlsTab('strategy', { persist: false })
+    store.selectResultsTab('top', { persist: false })
+    store.setSplitFraction(0.52, { persist: false })
+
+    expect(dataset.mode).toBe('conventional')
+    expect(dataset.workspace).toBe('workflow')
+    expect(dataset.workflow).toBe('optimize')
+    expect(dataset.workflowStep).toBe('optimize')
+    expect(dataset.controlsTab).toBe('strategy')
+    expect(dataset.resultsTab).toBe('top')
+    expect(dataset.aggregateTab).toBe('meta')
+    expect(dataset.splitFraction).toBe('0.52')
+    expect(dataset.workflowSubtitle).toBe(store.workflowSubtitle)
+    expect(store.workflowSubtitle).toContain('Strategy setup')
+  })
+
+  it('infers settings and pro workspace posture from legacy tab snapshots', () => {
+    const dataset = ensureDocumentDataset()
+    const store = useWorkflowStore()
+
+    store.applyLegacySnapshot({
+      controlsTab: 'advanced',
+      resultsTab: 'debug',
+      splitFraction: 0.61,
+    })
+
+    expect(store.workspace).toBe('pro')
+    expect(store.workflow).toBe('settings')
+    expect(store.workflowStep).toBe('data')
+    expect(store.controlsTab).toBe('advanced')
+    expect(store.resultsTab).toBe('debug')
+    expect(store.splitFraction).toBe(0.61)
+    expect(dataset.workspace).toBe('pro')
+    expect(dataset.workflow).toBe('settings')
+    expect(dataset.resultsTab).toBe('debug')
+    expect(dataset.workflowSubtitle).toBe(store.workflowSubtitle)
+  })
+
   it('ignores invalid values', () => {
     const store = useWorkflowStore()
     const snapshot = {
+      mode: store.mode,
       workspace: store.workspace,
       workflow: store.workflow,
       workflowStep: store.workflowStep,
@@ -141,13 +208,16 @@ describe('workflow store actions', () => {
       aggregateTab: store.aggregateTab,
     }
 
+    store.selectMode('ml-signal', { persist: false })
     store.selectWorkspace('invalid')
     store.selectWorkflow('invalid')
     store.selectWorkflowStep('invalid')
+    store.selectMode('invalid', { persist: false })
     store.selectControlsTab('invalid')
     store.selectResultsTab('invalid')
     store.selectAggregateTab('invalid')
 
+    expect(store.mode).toBe('ml-signal')
     expect(store.workspace).toBe(snapshot.workspace)
     expect(store.workflow).toBe(snapshot.workflow)
     expect(store.workflowStep).toBe(snapshot.workflowStep)

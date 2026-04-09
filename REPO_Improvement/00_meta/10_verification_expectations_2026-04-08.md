@@ -29,9 +29,10 @@ Every existing implementation-plan doc already includes a verification section, 
 - `REPO_Improvement/11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md`
 - `REPO_Improvement/00_meta/02_pre_impl_research_gate_2026-04-08.md`
 - `REPO_MAP.md`
+- `scripts/run_repo_quality_gate.ps1`
 - repo verification surfaces such as:
   - `cargo test`
-  - `npm --prefix web test`
+  - `npm --prefix web run test`
   - parity scripts
   - perf gates
   - desktop/manual verification paths
@@ -89,18 +90,25 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Current Verification Authority
+
+- use `scripts/run_repo_quality_gate.ps1` as the default broad local baseline when touched surfaces cross multiple layers
+- prefer targeted `cargo test`, `npm --prefix web run test -- ...`, Playwright/desktop harnesses, parity scripts, or workbook tests when the regression surface is narrower
+- include manual verification notes when the change affects visible desktop UX, workbook quality, file-open flows, or other artifact-heavy behavior that is not fully captured by automated checks
+- name the exact command or test file rather than generic buckets whenever possible
+
 ## Checklist
 
-- [ ] Require named repo tests/scripts in every verification section.
-- [ ] Prefer targeted verification over generic “run everything.”
-- [ ] Include manual verification for desktop/visual behaviors when needed.
-- [ ] Include perf gates where a surface is performance-sensitive.
-- [ ] Keep verification tied to the actual regressions named in the doc.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Require named repo tests/scripts in every verification section.
+- [x] Prefer targeted verification over generic “run everything.”
+- [x] Include manual verification for desktop/visual behaviors when needed.
+- [x] Include perf gates where a surface is performance-sensitive.
+- [x] Keep verification tied to the actual regressions named in the doc.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

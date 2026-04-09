@@ -80,17 +80,31 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Archive And Supersede Rules
+
+- keep a document active when it is still the current planning authority and can be safely updated in place
+- mark a document superseded when a newer document replaces it as the planning authority for the same surface
+- mark a document archived when it remains useful as historical context but should no longer receive routine edits
+- delete a document only when it is an exact duplicate or an accidental placeholder with no historical value
+
+## Required Pointer Rules
+
+- every superseded document must include a clear forward pointer to the canonical replacement
+- tracker, index, and execution-ledger references must be updated in the same change as the supersede or archive action
+- historical documents must retain enough context that a contributor can understand why they are no longer active
+- archive or supersede actions must preserve short-path discoverability rather than hiding state in commit history alone
+
 ## Checklist
 
-- [ ] Define archive versus supersede semantics.
-- [ ] Require forward pointers for superseded docs.
-- [ ] Update tracker/index when archive state changes.
-- [ ] Preserve historical context rather than deleting useful planning history.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define archive versus supersede semantics.
+- [x] Require forward pointers for superseded docs.
+- [x] Update tracker/index when archive state changes.
+- [x] Preserve historical context rather than deleting useful planning history.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

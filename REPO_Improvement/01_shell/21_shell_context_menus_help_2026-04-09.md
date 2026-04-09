@@ -56,11 +56,11 @@ Current usage already exists in major panels such as data, execution, meta, and 
 ## Current Verification Surface
 
 - `web/src/components/ContextActionMenu.test.ts`
+- `web/src/components/ContextHelpTip.test.ts`
 - `web/src/components/MetaWorkspacePanel.test.ts`
 - `web/src/components/SettingsWorkspacePanel.test.ts`
 - `web/src/stores/settingsStore.actions.test.ts`
 - indirect coverage through consumer panel tests
-- there is currently no dedicated `ContextHelpTip` test
 
 ## Strengths Already Present
 
@@ -116,21 +116,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current full/concise/off help behavior.
-- [ ] Document the current shared help component and its consumers.
-- [ ] Document the current shared context-menu behavior and consumers.
-- [ ] Add direct regression coverage for `ContextHelpTip.vue`.
-- [ ] Preserve centralized help-mode behavior in the settings store.
-- [ ] Reuse shared primitives for new local menus/help instead of adding one-offs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document current full/concise/off help behavior.
+- [x] Document the current shared help component and its consumers.
+- [x] Document the current shared context-menu behavior and consumers.
+- [x] Add direct regression coverage for `ContextHelpTip.vue`.
+- [x] Preserve centralized help-mode behavior in the settings store.
+- [x] Reuse shared primitives for new local menus/help instead of adding one-offs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- add and run a dedicated `ContextHelpTip` test
+- run `npm --prefix web run test -- src/components/ContextHelpTip.test.ts`
 - run `npm --prefix web run test -- src/components/ContextActionMenu.test.ts`
 - run `npm --prefix web run test -- src/components/MetaWorkspacePanel.test.ts`
 - run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`

@@ -125,17 +125,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current invalidation triggers and reuse triggers.
-- [ ] Document base/derived version relationships and descendant-tree removal.
-- [ ] Document frontend clear/reset behavior and why unknown clears stay non-fatal.
-- [ ] Document same-source base reuse separately from true invalidation.
-- [ ] Add or tighten tests if invalidation messaging or command behavior changes.
-- [ ] Identify where stale-dataset cues should surface in the UI without creating a second invalidation authority.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current invalidation triggers and reuse triggers.
+- [x] Document base/derived version relationships and descendant-tree removal.
+- [x] Document frontend clear/reset behavior and why unknown clears stay non-fatal.
+- [x] Document same-source base reuse separately from true invalidation.
+- [x] Add or tighten tests if invalidation messaging or command behavior changes.
+- [x] Identify where stale-dataset cues should surface in the UI without creating a second invalidation authority.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -154,6 +154,13 @@ Public-repo quality focus:
 - preserve current reuse semantics for identical source identity
 - if stale-dataset UI cues are added later, ensure they reflect backend decisions rather than speculative frontend heuristics
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Re-verified the full backend invalidation set in `src-tauri/src/state.rs`: base replacement, live updates, derived reuse-until-base-change, and identical-source base reuse all remain explicitly covered and were kept backend-owned.
+- Tightened frontend evidence in `web/src/stores/dataStore.actions.test.ts` so restore/reset flows continue to carry the correct base-source identity through startup and timeframe transitions without inventing a second invalidation authority in the UI.
+- Kept clear/reset behavior conservative and non-destructive. This slice hardened the proof around the shipped invalidation policy instead of broadening invalidation triggers or removing any restore behavior.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app state --lib`, `cargo test -p ta_desktop_demo_app data_cache --lib`, `npm.cmd --prefix web run test -- src/stores/dataStore.actions.test.ts src/services/validationService.test.ts src/utils/core/artifactIdentity.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

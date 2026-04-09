@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every strategy family and its optimization command path.
-- [ ] Document backend alias normalization rules and legacy-token compatibility.
-- [ ] Document which families respect the global backend selector and which do not.
-- [ ] Add selector-to-command parity tests where coverage is thin.
-- [ ] Document composite-profile route policy and export limitations clearly.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every strategy family and its optimization command path.
+- [x] Document backend alias normalization rules and legacy-token compatibility.
+- [x] Document which families respect the global backend selector and which do not.
+- [x] Add selector-to-command parity tests where coverage is thin.
+- [x] Document composite-profile route policy and export limitations clearly.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - treat backend truth as authoritative if capability prose and backend execution disagree
 - keep staged families explicit rather than half-hidden
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Kept the routing model unchanged and tightened the selector-to-command evidence instead. The existing service and request-builder suites already prove major family dispatch across the Double-MA, Composite CPU, and Composite MO paths, plus backend alias normalization and ADX-sensitive composite routing.
+- Added two panel-layer tests in `web/src/components/OptimizeWorkspacePanel.test.ts` to close the remaining display-truth gaps. One proves a legacy `GpuOnly` backend value is normalized into the product-facing unified GPU messaging instead of resurfacing the stale token. The other proves `CompositeTrend` with ADX enabled renders the hybrid route preview and export limitation text that the backend policy implies.
+- Reused the existing deeper routing tests rather than duplicating backend logic in the component layer. `optimizeRequestBuilder.test.ts`, `optimizeService.test.ts`, and `optimizeStore.actions.test.ts` remain the authority for command-path parity, while the panel tests now prove the optimize shell displays that routing truth coherently.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/OptimizeWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

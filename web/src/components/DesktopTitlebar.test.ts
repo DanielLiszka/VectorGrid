@@ -228,4 +228,16 @@ describe('DesktopTitlebar', () => {
 
     expect(cancelSpy).toHaveBeenCalledTimes(1)
   })
+
+  it('keeps icon-only titlebar controls accessible through stable aria labels', () => {
+    const wrapper = mount(DesktopTitlebar)
+
+    const labels = wrapper.findAll('button').map((button) => button.attributes('aria-label')).filter(Boolean)
+    expect(labels).toContain('Open command palette')
+    expect(labels).toContain('Open settings workspace')
+    expect(labels).toContain('Run optimization')
+    expect(labels).toContain('Minimize window')
+    expect(labels).toContain('Maximize or restore window')
+    expect(labels).toContain('Close window')
+  })
 })

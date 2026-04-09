@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document keyring, legacy JSON, env, and `.env` fallback order.
-- [ ] Document `polygon_get_cache_info`, `polygon_set_api_key`, and `polygon_clear_api_key` frontend/backend behavior.
-- [ ] Document current UI copy and any mismatches with backend storage behavior.
-- [ ] Keep raw-key non-exposure as an explicit security invariant.
-- [ ] Add or tighten tests if fallback order or save/clear behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document keyring, legacy JSON, env, and `.env` fallback order.
+- [x] Document `polygon_get_cache_info`, `polygon_set_api_key`, and `polygon_clear_api_key` frontend/backend behavior.
+- [x] Document current UI copy and any mismatches with backend storage behavior.
+- [x] Keep raw-key non-exposure as an explicit security invariant.
+- [x] Add or tighten tests if fallback order or save/clear behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - prefer tightening UI wording before reworking backend key storage
 - do not widen frontend exposure beyond current `hasApiKey` state
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added backend fallback coverage in `src-tauri/src/polygon.rs` for `get_cache_info()` over a legacy `polygon_settings.json` file, freezing the `has_api_key` truth surface without ever exposing raw key material to the frontend.
+- Corrected the Data workspace copy in `web/src/components/DataWorkspacePanel.vue` so the UI now matches the actual backend contract: secure system storage is preferred when available, and local Polygon settings are treated as a compatibility fallback instead of the primary storage path.
+- Added component and service tests in `web/src/components/DataWorkspacePanel.test.ts` and `web/src/services/dataService.test.ts` to lock down the corrected storage wording, cache-summary presentation, and save/clear capability posture.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/components/DataWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, `cargo check -p ta_desktop_demo_app`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

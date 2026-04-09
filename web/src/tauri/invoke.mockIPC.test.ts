@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { invokeByName, invokeCommand } from './invoke'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { invokeByName, invokeCommand, resetInvokeLifecycleHooksForTests, setInvokeLifecycleHooks } from './invoke'
 import { TauriRuntimeError } from './runtimeError'
 import { installMockIpc, resetTauriApiMocks } from '../test/tauriMocks'
 
 describe('invoke mockIPC bridge', () => {
   beforeEach(() => {
     resetTauriApiMocks()
+    resetInvokeLifecycleHooksForTests()
   })
 
   afterEach(() => {
+    resetInvokeLifecycleHooksForTests()
     resetTauriApiMocks()
   })
 
@@ -82,6 +84,27 @@ describe('invoke mockIPC bridge', () => {
     await invokeCommand('cancel_current_run', args)
 
     expect(harness.calls[0]?.args).toEqual(args)
+    harness.expectCallCount('cancel_current_run', 1)
+  })
+
+  it('keeps invoke lifecycle hooks best-effort when hook callbacks throw', async () => {
+    const harness = installMockIpc({
+      cancel_current_run: { ok: true },
+    })
+    const beforeInvoke = vi.fn(() => {
+      throw new Error('before hook failed')
+    })
+    const afterSuccess = vi.fn(() => {
+      throw new Error('after success failed')
+    })
+
+    setInvokeLifecycleHooks({ beforeInvoke, afterSuccess })
+
+    await expect(invokeCommand('cancel_current_run', { scope: 'desktop' })).resolves.toEqual({
+      ok: true,
+    })
+    expect(beforeInvoke).toHaveBeenCalledTimes(1)
+    expect(afterSuccess).toHaveBeenCalledTimes(1)
     harness.expectCallCount('cancel_current_run', 1)
   })
 })

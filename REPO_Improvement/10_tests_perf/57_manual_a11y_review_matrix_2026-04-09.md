@@ -66,14 +66,14 @@ This matters because many accessibility failures in a data-heavy desktop app are
 - browser UX smoke flows
 - desktop smoke flows
 
-## Current Strengths Already Present
+## Strengths Already Present
 
 - the repo already treats accessibility as a real quality surface rather than an afterthought
 - automated a11y smoke exists instead of relying only on manual checking
 - shell and copy planning already mention clarity and keyboard-safe UX concerns
 - result-display adequacy is already a separate plan lane, which gives accessibility review a concrete place to anchor
 
-## Current Weaknesses and Failure Modes
+## Weaknesses / Failure Modes
 
 - there is no explicit manual review matrix across screens and workflows
 - automated checks cannot fully validate keyboard operability, table comprehension, or assistive-technology usability
@@ -132,7 +132,7 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
-## Step-by-Step Checklist
+## Checklist
 
 - [ ] Define the representative non-options screen set for manual accessibility review.
 - [ ] Define the keyboard-only task path for each selected surface.

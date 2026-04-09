@@ -91,16 +91,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document manifest location and top-level map shape.
-- [ ] Document dataset-key naming rules, including `stocks_raw` behavior.
-- [ ] Document every `PolygonDatasetMeta` field and its meaning.
-- [ ] Document when `integrity` is null, reused, refreshed, or overwritten.
-- [ ] Add or tighten backend tests if manifest key or field behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document manifest location and top-level map shape.
+- [x] Document dataset-key naming rules, including `stocks_raw` behavior.
+- [x] Document every `PolygonDatasetMeta` field and its meaning.
+- [x] Document when `integrity` is null, reused, refreshed, or overwritten.
+- [x] Add or tighten backend tests if manifest key or field behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -117,6 +117,13 @@ Public-repo quality focus:
 - prefer richer docs and tests before attempting manifest simplification
 - keep manifest behavior backend-owned even when UI copy improves
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Extracted the dataset-key/file-name policy into an explicit helper in `src-tauri/src/polygon.rs`, then added backend tests covering adjusted stock keys, unadjusted `stocks_raw` keys, and manifest loader back-compat for legacy stock entries that omitted the `adjusted` field.
+- Added frontend manifest-normalization coverage in `web/src/services/dataService.test.ts` so missing optional fields still normalize predictably: `timeframe` defaults to `1m`, `adjusted` remains explicit, and integrity counters stay typed instead of leaking raw command payload shapes into the UI.
+- Added component/store coverage in `web/src/components/DataWorkspacePanel.test.ts` and `web/src/stores/dataStore.actions.test.ts` so cache summaries and selected-dataset summaries keep showing manifest-backed state such as adjusted/raw posture and `Integrity: unchecked` after downloads.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/components/DataWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, `cargo check -p ta_desktop_demo_app`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

@@ -10,10 +10,14 @@ import { useCommandPaletteStore } from '../stores/commandPaletteStore'
 import { useDataStore } from '../stores/dataStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import {
+  createSharedShellShortcutCommands,
+  type SharedShellShortcutGroup,
+} from '../utils/shellShortcutRegistry'
 
 interface PaletteCommand {
   id: string
-  group: 'actions' | 'data' | 'exports' | 'layout' | 'navigation'
+  group: SharedShellShortcutGroup | 'navigation'
   name: string
   desc: string
   keys: string[]
@@ -72,22 +76,47 @@ function setWorkspaceIfNeeded(nextWorkspace: string): void {
 
 const inputRef = ref<HTMLInputElement | null>(null)
 
+const sharedShortcutCommands = computed<PaletteCommand[]>(() => createSharedShellShortcutCommands({
+  canRun: !runDisabled.value,
+  canValidate: !validateDisabled.value,
+  canBrowseCsv: canBrowseCsv.value,
+  canPolygonOpen: canPolygonOpen.value,
+  canExportCsv: canExportCsv.value,
+  canExportJson: canExportJson.value,
+  canOpenLatestReport: canOpenLatestReport.value,
+  canOpenLatestMetaReport: canOpenLatestMetaReport.value,
+  browseCsv: () => {
+    commandActionStore.browseCsv()
+  },
+  openPolygon: () => {
+    commandActionStore.openPolygon()
+  },
+  toggleControls: () => {
+    commandActionStore.toggleControls()
+  },
+  runOptimization: () => {
+    commandActionStore.runOptimization()
+  },
+  validateOptimization: () => {
+    commandActionStore.validateOptimization()
+  },
+  exportTopCsv: () => {
+    commandActionStore.exportTopCsv()
+  },
+  exportTopJson: () => {
+    commandActionStore.exportTopJson()
+  },
+  openLatestReport: () => {
+    commandActionStore.openLatestReport()
+  },
+  openLatestMetaReport: () => {
+    commandActionStore.openLatestMetaReport()
+  },
+}))
+
 const commands = computed<PaletteCommand[]>(() => {
-  const canRun = !runDisabled.value
-  const canValidate = !validateDisabled.value
   return [
-    {
-      id: 'run',
-      group: 'actions',
-      name: 'Run optimization',
-      desc: 'Start optimization for current setup.',
-      keys: ['Ctrl', 'Enter'],
-      keywords: ['run', 'optimize', 'backtest'],
-      enabled: canRun,
-      run: () => {
-        commandActionStore.runOptimization()
-      },
-    },
+    ...sharedShortcutCommands.value,
     {
       id: 'cancel',
       group: 'actions',
@@ -98,102 +127,6 @@ const commands = computed<PaletteCommand[]>(() => {
       enabled: canCancel.value,
       run: () => {
         commandActionStore.cancelOptimization()
-      },
-    },
-    {
-      id: 'validate',
-      group: 'actions',
-      name: 'Run validation',
-      desc: 'Execute validation checks for shortlisted candidates.',
-      keys: ['Ctrl', 'Shift', 'V'],
-      keywords: ['validate', 'robustness', 'shortlist'],
-      enabled: canValidate,
-      run: () => {
-        commandActionStore.validateOptimization()
-      },
-    },
-    {
-      id: 'browse_csv',
-      group: 'data',
-      name: 'Browse CSV',
-      desc: 'Pick dataset CSV from disk.',
-      keys: ['Ctrl', 'O'],
-      keywords: ['csv', 'data', 'browse'],
-      enabled: canBrowseCsv.value,
-      run: () => {
-        commandActionStore.browseCsv()
-      },
-    },
-    {
-      id: 'open_polygon',
-      group: 'data',
-      name: 'Open Polygon Downloader',
-      desc: 'Open Polygon dataset downloader modal.',
-      keys: ['Ctrl', 'Shift', 'O'],
-      keywords: ['polygon', 'download', 'market'],
-      enabled: canPolygonOpen.value,
-      run: () => {
-        commandActionStore.openPolygon()
-      },
-    },
-    {
-      id: 'export_csv',
-      group: 'exports',
-      name: 'Export Top CSV',
-      desc: 'Export current top table as CSV.',
-      keys: ['Ctrl', 'Shift', 'C'],
-      keywords: ['export', 'csv', 'top'],
-      enabled: canExportCsv.value,
-      run: () => {
-        commandActionStore.exportTopCsv()
-      },
-    },
-    {
-      id: 'export_json',
-      group: 'exports',
-      name: 'Export Top JSON',
-      desc: 'Export current top result as JSON.',
-      keys: ['Ctrl', 'Shift', 'J'],
-      keywords: ['export', 'json', 'top'],
-      enabled: canExportJson.value,
-      run: () => {
-        commandActionStore.exportTopJson()
-      },
-    },
-    {
-      id: 'open_latest_report',
-      group: 'exports',
-      name: 'Open latest report',
-      desc: 'Open most recent generated report.',
-      keys: ['Ctrl', 'Shift', 'R'],
-      keywords: ['report', 'xlsx'],
-      enabled: canOpenLatestReport.value,
-      run: () => {
-        commandActionStore.openLatestReport()
-      },
-    },
-    {
-      id: 'open_latest_meta_report',
-      group: 'exports',
-      name: 'Open latest meta report',
-      desc: 'Open most recent meta-analysis report.',
-      keys: ['Ctrl', 'Shift', 'M'],
-      keywords: ['meta', 'report', 'xlsx'],
-      enabled: canOpenLatestMetaReport.value,
-      run: () => {
-        commandActionStore.openLatestMetaReport()
-      },
-    },
-    {
-      id: 'toggle_controls',
-      group: 'layout',
-      name: 'Toggle controls panel',
-      desc: 'Collapse or expand controls column.',
-      keys: ['Ctrl', '\\'],
-      keywords: ['controls', 'sidebar', 'layout'],
-      enabled: true,
-      run: () => {
-        commandActionStore.toggleControls()
       },
     },
     {

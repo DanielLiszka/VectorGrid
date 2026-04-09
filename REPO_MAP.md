@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-03-30
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -39,6 +39,7 @@ Do not treat this as the full implementation spec. Use it together with:
 - `options_research/options_expression_overlap_quality_hardening_implementation_guide_2026-04-08.md` for the current execution guide covering overlap-quality hardening, adequacy reporting, conditional default-profile clamps, and verification gates inside the existing options workflow
 - `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md` for the current Prompt 2 follow-up execution guide covering the one-factor `event_chronological` versus `session_chronological` split-assignment ablation, fixed SPY/QQQ sign-off pair, and reject/defer/promote checklist
 - `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md` for the current Prompt 4 follow-up execution guide covering realism-lane semantic lock-in, aggregate-only provider-download scope freeze, and quote-aware versus derived-mid clarity hardening
+- `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md` for the current Prompt 5 follow-up execution guide covering retained-leader/disagreement summary hardening for artifact list, compare, and reopened summary surfaces without widening hot-path GPU state
 
 ## How To Use This Map
 
@@ -109,6 +110,7 @@ If the task is about the current options backtest optimization / embedded valida
   - `options_research/options_expression_overlap_quality_hardening_implementation_guide_2026-04-08.md`
   - `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md`
   - `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md`
+  - `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md`
 - frontend host / request shaping
   - `web/src/components/OptionsExpressionPanel.vue`
   - `web/src/stores/optionsExpressionStore.ts`
@@ -219,6 +221,8 @@ These crates are smaller than `app_core`, but they are part of the real executio
 
 - `web/package.json`
   - Node toolchain requirements, frontend scripts, generated-command checks, parity scripts, and request-builder benchmark entrypoints
+- `scripts/run_repo_quality_gate.ps1`
+  - canonical local-first static-analysis lane for broad non-options work: Rust fmt/check/clippy plus web lint/typecheck, with optional desktop typecheck and workspace tests
 - `web/scripts/check-a11y-smoke.mjs`
   - Playwright + axe smoke coverage for the shipped desktop shell surfaces
 - `src-tauri/tauri.conf.json`
@@ -232,6 +236,20 @@ These crates are smaller than `app_core`, but they are part of the real executio
   - keep it aligned via `scripts/check_tauri_config_sync.mjs`
 - `RELEASE.md`
   - Windows build variants, `cargo tauri build`, PTX packaging notes, and compatibility/release validation commands
+
+Current local quality gate to know:
+
+- `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1`
+  - use for broad non-options code-quality validation before handoff
+  - add `-IncludeDesktopTypecheck` when desktop harness files move
+  - add `-IncludeWorkspaceTests` for higher-risk backend or cross-layer changes
+
+Current verification order to know:
+
+- run one workflow/perf/profile script at a time; do not overlap benchmark, faceoff, Nsight, or CUPTI sessions
+- run the repo quality gate first for broad non-options changes
+- run `scripts/run_workflow_gate.ps1` before CPU/GPU perf gates when the change could affect staged workflow timing rather than only a single benchmark surface
+- treat perf/profile scripts as local-authority evidence and keep CI mirroring downstream from the local command contract
 
 Current build/release variants to know:
 

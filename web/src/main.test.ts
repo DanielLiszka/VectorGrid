@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveRuntimePinia, bindRuntimePinia } from './stores/runtimePinia'
-import { useRuntimeStore } from './stores/runtimeStore'
+import { BOOT_STAGES, useRuntimeStore } from './stores/runtimeStore'
 
 function createDeferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -56,6 +56,8 @@ describe('startVectorGridApp', () => {
     document.body.innerHTML = ''
     bindRuntimePinia(null)
     vi.clearAllMocks()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
       cb(0)
       return 1
@@ -86,13 +88,48 @@ describe('startVectorGridApp', () => {
     expect(pinia).not.toBeNull()
     const runtimeStore = useRuntimeStore(pinia!)
     expect(runtimeStore.bootPhase).toBe('booting')
-    expect(runtimeStore.bootStage).toBe('Finalizing dataset readiness')
+    expect(runtimeStore.bootStage).toBe(BOOT_STAGES.FINALIZING_DATASET_READINESS)
 
     deferred.resolve()
     await appPromise
 
     expect(runtimeStore.bootPhase).toBe('ready')
-    expect(runtimeStore.bootStage).toBe('Frontend runtime ready')
+    expect(runtimeStore.bootStage).toBe(BOOT_STAGES.FRONTEND_RUNTIME_READY)
     expect(settled).toBe(true)
+  })
+
+  it('records a recoverable desktop startup warning but still reaches ready', async () => {
+    vi.mocked(initializeDesktopProductization).mockRejectedValueOnce(new Error('Desktop bridge failed'))
+    vi.mocked(applyWorkflowBootstrapFromStorage).mockResolvedValueOnce(undefined)
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    await startVectorGridApp(root)
+
+    const pinia = resolveRuntimePinia()
+    expect(pinia).not.toBeNull()
+    const runtimeStore = useRuntimeStore(pinia!)
+    expect(runtimeStore.bootPhase).toBe('ready')
+    expect(runtimeStore.bootStage).toBe(BOOT_STAGES.FRONTEND_RUNTIME_READY)
+    expect(runtimeStore.desktopLogs[0]?.level).toBe('warn')
+    expect(runtimeStore.desktopLogs[0]?.message).toContain('Desktop startup service failed: Desktop bridge failed')
+  })
+
+  it('marks the runtime failed when critical bootstrap work throws', async () => {
+    vi.mocked(initializeDesktopProductization).mockResolvedValueOnce(undefined)
+    vi.mocked(applyWorkflowBootstrapFromStorage).mockRejectedValueOnce(new Error('Dataset bootstrap failed'))
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+
+    await startVectorGridApp(root)
+
+    const pinia = resolveRuntimePinia()
+    expect(pinia).not.toBeNull()
+    const runtimeStore = useRuntimeStore(pinia!)
+    expect(runtimeStore.bootPhase).toBe('error')
+    expect(runtimeStore.bootStage).toBe(BOOT_STAGES.FRONTEND_RUNTIME_FAILED)
+    expect(runtimeStore.bootError).toContain('Dataset bootstrap failed')
   })
 })

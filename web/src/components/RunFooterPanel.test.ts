@@ -122,6 +122,38 @@ describe("RunFooterPanel", () => {
     wrapper.unmount();
   });
 
+  it("restores expanded footer details from storage and persists hide/show toggles", async () => {
+    localStorage.setItem("VTA_RUN_FOOTER_EXPANDED_V1", "true");
+
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    workflow.selectWorkflowStep("optimize", { persist: false });
+
+    const wrapper = mount(RunFooterPanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    expect(document.body.textContent || "").toContain("Readiness");
+    expect(document.body.textContent || "").toContain("Insights");
+
+    const toggle = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Hide details",
+    ) as HTMLButtonElement | undefined;
+    expect(toggle).toBeDefined();
+
+    toggle?.click();
+    await flushPanel();
+
+    expect(localStorage.getItem("VTA_RUN_FOOTER_EXPANDED_V1")).toBe("false");
+    expect(document.querySelector(".summaryGrid")).toBeNull();
+    expect(document.body.textContent || "").toContain("Show details");
+
+    wrapper.unmount();
+  });
+
   it("renames the primary footer action for MlSignal mode while keeping the same dispatch hook", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -146,6 +178,37 @@ describe("RunFooterPanel", () => {
     expect(primary).toBeDefined();
     primary?.click();
     expect(runSpy).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
+  it("routes footer cancellation through the existing command action when a run is cancellable", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    const actions = useCommandActionStore(pinia);
+    workflow.selectWorkflowStep("optimize", { persist: false });
+    optimize.$patch({ canCancel: true, runDisabled: false, progressMeta: "Optimize 84/100" });
+    const cancelSpy = vi
+      .spyOn(actions, "cancelOptimization")
+      .mockImplementation(() => {});
+
+    const wrapper = mount(RunFooterPanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const cancel = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Cancel",
+    ) as HTMLButtonElement | undefined;
+    expect(cancel).toBeDefined();
+    expect(cancel?.disabled).toBe(false);
+
+    cancel?.click();
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent || "").toContain("Optimize 84/100");
 
     wrapper.unmount();
   });

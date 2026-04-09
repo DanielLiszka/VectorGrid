@@ -91,16 +91,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document repair preconditions and hard limits.
-- [ ] Document sort and de-dup behavior explicitly.
-- [ ] Document best-effort gap-refetch conditions and bounds.
-- [ ] Document post-repair manifest updates and integrity semantics.
-- [ ] Add or tighten tests if repair behavior or limits change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document repair preconditions and hard limits.
+- [x] Document sort and de-dup behavior explicitly.
+- [x] Document best-effort gap-refetch conditions and bounds.
+- [x] Document post-repair manifest updates and integrity semantics.
+- [x] Add or tighten tests if repair behavior or limits change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -118,6 +118,13 @@ Public-repo quality focus:
 - preserve hard limits and bounded network behavior unless new safeguards are added first
 - prefer clearer UI wording before extending repair behavior
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added backend precondition coverage in `src-tauri/src/polygon.rs` so repair now explicitly proves the manifest-membership requirement instead of only exercising the successful duplicate/order-fix path.
+- Added service/store regression coverage in `web/src/services/dataService.test.ts` and `web/src/stores/dataStore.actions.test.ts` for repair-path guardrails: empty-path rejection remains immediate, the selected cached dataset stays pinned after repair, and refreshed metadata continues to flow back into cache summary and selected-dataset text.
+- Preserved the current bounded repair semantics. This slice did not widen row-limit or gap-refetch behavior; it tightened test coverage around the existing mutable path so future contributors cannot accidentally soften those safeguards.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

@@ -105,4 +105,13 @@ describe('shared Tauri event listeners', () => {
     expect(nativeOffByEvent.get('polygon_live_bar')).toHaveBeenCalledTimes(1)
     expect(nativeListeners.has('polygon_live_bar')).toBe(false)
   })
+
+  it('returns a safe no-op result when the Tauri runtime is unavailable', async () => {
+    isTauriMock.mockReturnValue(false)
+
+    const off = await listenEvent('live_execution_runner_event', vi.fn())
+
+    expect(off).toBeNull()
+    expect(listenMock).not.toHaveBeenCalled()
+  })
 })

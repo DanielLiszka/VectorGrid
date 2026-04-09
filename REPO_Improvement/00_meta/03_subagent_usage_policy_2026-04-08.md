@@ -52,7 +52,7 @@ There is no direct product behavior here. The current behavior is procedural: th
 
 ## Weaknesses / Failure Modes
 
-- sub-agent usage is encouraged, but not yet documented as an operating policy
+- sub-agent usage is now documented, but it still depends on bounded scopes and parent synthesis to stay useful
 - agents can duplicate effort if delegation scope is vague
 - sub-agent summaries can drift from final tracker state if not folded back immediately
 - there is no written rule for when local parent inspection is still mandatory
@@ -104,18 +104,36 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Operating Rules
+
+- sub-agents are required when a topic spans materially different frontend, backend, runtime, test, or artifact surfaces that can be audited independently
+- sub-agents are optional for narrow single-surface work where direct parent inspection is cheaper and clearer
+- the parent agent must still read the key authority files before finalizing the plan or implementation
+- only the parent agent may update tracker, index, ledger, or other authoritative status docs
+- if sub-agent findings materially affected coverage, note that in the wave summary, maintenance note, or implementation summary so the delegation rationale is not lost
+
+## Bounded Delegation Template
+
+Every delegated request should specify:
+
+- the exact implementation-doc slug or narrowly scoped audit target
+- the files or folders the sub-agent should inspect
+- the facts or questions it should return
+- the regressions or drift risks to watch for
+- whether the sub-agent is read-only or may edit a bounded file set
+
 ## Checklist
 
-- [ ] Define when sub-agents are required versus optional.
-- [ ] Define a bounded delegation template for future waves.
-- [ ] Require parent verification of all sub-agent findings before doc creation.
-- [ ] Require parent ownership of tracker/index updates.
-- [ ] Record sub-agent use in wave summaries when it materially affected coverage.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define when sub-agents are required versus optional.
+- [x] Define a bounded delegation template for future waves.
+- [x] Require parent verification of all sub-agent findings before doc creation.
+- [x] Require parent ownership of tracker/index updates.
+- [x] Record sub-agent use in wave summaries when it materially affected coverage.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

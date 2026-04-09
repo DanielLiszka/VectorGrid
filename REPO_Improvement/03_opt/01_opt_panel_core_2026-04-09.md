@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the optimize panel’s ownership boundaries.
-- [ ] Document which summary fields are live truth versus legacy display fields.
-- [ ] Document strategy-family-specific panel behavior such as `CompositeMo` and `DynamicDoubleMa`.
-- [ ] Identify candidate splits inside the large component without changing behavior first.
-- [ ] Add or tighten tests for mount, restore, and conventional-shell behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the optimize panel’s ownership boundaries.
+- [x] Document which summary fields are live truth versus legacy display fields.
+- [x] Document strategy-family-specific panel behavior such as `CompositeMo` and `DynamicDoubleMa`.
+- [x] Identify candidate splits inside the large component without changing behavior first.
+- [x] Add or tighten tests for mount, restore, and conventional-shell behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,13 @@ Public-repo quality focus:
 - if summary fields are demoted, keep current UI text until all consumers are updated together
 - maintain compatibility with persisted snapshot fields until migrations are explicit
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Kept this slice focused on the panel-core contract rather than widening into request-building or backend-routing changes. `OptimizeWorkspacePanel.vue` remains the conventional optimization shell, while strategy-owned route differences such as `CompositeMo` and `DynamicDoubleMa` continue to branch inside that shell instead of forking the workflow surface.
+- Tightened the panel evidence with a new component test in `web/src/components/OptimizeWorkspacePanel.test.ts` proving the panel renders live store-driven status and readiness fields (`strategyHint`, `pairsPreview`, `progressMeta`, `statusLine`, `runDisabled`, `validateDisabled`) directly from store truth. This makes it explicit that those fields are the active panel contract, while older snapshot-era fields like `runPlanMeta` are not part of the current core render path.
+- Revalidated the existing strategy-family behavior instead of changing UI structure prematurely. The optimize panel tests still prove backend/mode visibility for `DoubleMa`, strategy-owned execution for `CompositeMo`, constrained builder handling for `DynamicDoubleMa`, persisted builder-state restore, and conventional-shell behavior even when stale `MlSignal` state is present.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/OptimizeWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/services/optimizeService.test.ts src/components/RunFooterPanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

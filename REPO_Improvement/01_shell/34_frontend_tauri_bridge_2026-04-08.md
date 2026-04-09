@@ -121,19 +121,25 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- kept the typed frontend Tauri boundary intact and verified it through the existing command-registry, invoke, event, and instrumentation suites
+- added direct `invoke.mockIPC` coverage for lifecycle-hook failures so bridge instrumentation remains best-effort instead of being able to break normal invokes
+- preserved the current generation/check workflow around `commands.ts` and kept the plugin bridge separate while still validating the shared diagnostics path through desktop-productization tests
+
 ## Checklist
 
-- [ ] Document the allowed frontend entry points for Tauri command calls and events.
-- [ ] Document generated command inventory ownership and regeneration/check policy.
-- [ ] Document invoke error normalization and runtime-detection semantics.
-- [ ] Document shared event-listener behavior, retry behavior, and teardown expectations.
-- [ ] Document instrumentation channel ownership and tracked-command policy.
-- [ ] Add or tighten bridge tests if wrappers or generation rules change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the allowed frontend entry points for Tauri command calls and events.
+- [x] Document generated command inventory ownership and regeneration/check policy.
+- [x] Document invoke error normalization and runtime-detection semantics.
+- [x] Document shared event-listener behavior, retry behavior, and teardown expectations.
+- [x] Document instrumentation channel ownership and tracked-command policy.
+- [x] Add or tighten bridge tests if wrappers or generation rules change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

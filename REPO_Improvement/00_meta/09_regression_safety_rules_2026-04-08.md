@@ -97,21 +97,45 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Required Non-Regression Matrix
+
+- shell and UX changes
+  - preserve mount/readiness behavior, navigation continuity, keyboard flow, and visible status messaging
+  - verify with targeted frontend tests plus browser or desktop checks when the behavior is visible
+- data changes
+  - preserve dataset identity, provenance, restore behavior, and source/repair semantics
+  - verify with request/response or artifact checks plus any affected workflow smoke tests
+- optimization changes
+  - preserve request defaults, route selection, cancellation, CPU/GPU fallback, and result-contract stability
+  - verify with targeted Rust and frontend request-shaping tests, then run quality gates
+- results or validation changes
+  - preserve user-facing metrics, workbook/report path semantics, and display adequacy
+  - verify with report tests, workbook checks, and visual/manual evidence where needed
+- artifact and history changes
+  - preserve hydration, replay, reopen, tags, and path persistence semantics
+  - verify with artifact/library tests, file-shape evidence, and reopen flows
+- performance-sensitive changes
+  - preserve or justify perf-sensitive behavior with the relevant gate or benchmark evidence
+  - use `scripts/run_repo_quality_gate.ps1` as the broad local baseline before narrower perf work
+- public-repo docs or quality changes
+  - preserve contributor clarity, runnable local verification, and public-facing hygiene
+  - update adjacent docs in the same change when contributor flow would otherwise drift
+
 ## Checklist
 
-- [ ] Identify current user-visible behavior that must remain valid.
-- [ ] Identify request / response / artifact contracts that must remain compatible.
-- [ ] Identify path, file, or report semantics that must not drift.
-- [ ] Identify exact tests, harnesses, or scripts to run before handoff.
-- [ ] Identify whether performance-sensitive code paths need perf-gate coverage.
-- [ ] Identify whether GPU/CPU fallback behavior must be preserved.
-- [ ] Identify stale-data, report-open, and history/replay behaviors if artifacts are touched.
-- [ ] Refuse plans that improve one layer by silently weakening another.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Identify current user-visible behavior that must remain valid.
+- [x] Identify request / response / artifact contracts that must remain compatible.
+- [x] Identify path, file, or report semantics that must not drift.
+- [x] Identify exact tests, harnesses, or scripts to run before handoff.
+- [x] Identify whether performance-sensitive code paths need perf-gate coverage.
+- [x] Identify whether GPU/CPU fallback behavior must be preserved.
+- [x] Identify stale-data, report-open, and history/replay behaviors if artifacts are touched.
+- [x] Refuse plans that improve one layer by silently weakening another.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

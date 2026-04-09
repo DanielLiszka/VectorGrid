@@ -55,11 +55,11 @@ So the shell already has a reusable confirmation surface, not a collection of un
 
 ## Current Verification Surface
 
+- `web/src/components/ConfirmationDialog.test.ts`
 - `web/src/components/DesktopTitlebar.test.ts`
 - `web/src/components/ExecutionWorkspacePanel.test.ts`
 - `web/src/components/HistoryWorkspacePanel.test.ts`
 - `web/src/components/MetaWorkspacePanel.test.ts`
-- there is currently no dedicated `ConfirmationDialog` unit test
 
 ## Strengths Already Present
 
@@ -116,20 +116,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the shared confirmation-dialog guarantees.
-- [ ] Add direct unit coverage for `ConfirmationDialog.vue`.
-- [ ] Document current consumer surfaces and their use of the shared component.
-- [ ] Preserve focus trap, focus restore, and Escape behavior.
-- [ ] Keep new shell confirmations on the shared component path by default.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the shared confirmation-dialog guarantees.
+- [x] Add direct unit coverage for `ConfirmationDialog.vue`.
+- [x] Document current consumer surfaces and their use of the shared component.
+- [x] Preserve focus trap, focus restore, and Escape behavior.
+- [x] Keep new shell confirmations on the shared component path by default.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- add and run a dedicated `ConfirmationDialog` component test
+- run `npm --prefix web run test -- src/components/ConfirmationDialog.test.ts`
 - run `npm --prefix web run test -- src/components/DesktopTitlebar.test.ts`
 - run `npm --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts`
 - run `npm --prefix web run test -- src/components/HistoryWorkspacePanel.test.ts`

@@ -131,4 +131,31 @@ describe("workflowArtifactsStore", () => {
       fields: ["pnl", "trades", "max_dd"],
     });
   });
+
+  it("clears stale store state even when the latest global signatures are already null", () => {
+    const store = useWorkflowArtifactsStore(pinia);
+    store.currentRun = {
+      ts: "2026-04-01T12:00:00Z",
+      artifactPath: "C:/runs/run.json",
+      reportXlsxPath: "",
+      csvPath: "",
+      datasetMeta: null,
+      mlSignal: null,
+      optimizationMetricSurface: null,
+      tags: [],
+      req: null,
+      res: null,
+    };
+    store.currentValidation = {
+      ts: "2026-04-01T12:00:00Z",
+      req: { candidates: 16 },
+      res: { rows: [] },
+    };
+
+    store.clearArtifacts();
+
+    expect(store.currentRun).toBeNull();
+    expect(store.currentValidation).toBeNull();
+    expect(store.source).toBe("vue");
+  });
 });

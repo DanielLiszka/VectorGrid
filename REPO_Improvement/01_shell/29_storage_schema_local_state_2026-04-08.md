@@ -60,6 +60,8 @@ The persistence model is already additive and user-visible: the shell tries to r
 - `web/src/stores/settingsStore.actions.test.ts`
 - `web/src/services/settingsService.test.ts`
 - `web/src/stores/workflowStore.test.ts`
+- `web/src/utils/storage.test.ts`
+- `web/src/composables/useTaskCenterVisibility.test.ts`
 
 ## Strengths Already Present
 
@@ -124,20 +126,26 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- kept the shared storage wrappers authoritative by routing `settingsBootstrap.ts` and `useTaskCenterVisibility.ts` through `readStorageString(...)` / `writeStorageString(...)` rather than ad hoc raw `localStorage` access
+- verified the storage schema and alias-migration contract directly in `web/src/utils/storage.test.ts`, while `useTaskCenterVisibility.test.ts` covers the task-center open-state key through the shared helpers
+- preserved existing key names and compatibility behavior; this pass hardened ownership and access patterns instead of renaming or deleting keys
+
 ## Checklist
 
-- [ ] Enumerate the full non-options local-state key inventory.
-- [ ] Document which store/service/composable owns each key.
-- [ ] Document the current schema-version and alias-migration behavior.
-- [ ] Document which keys are scalar versus serialized JSON payloads.
-- [ ] Document normalization behavior for invalid persisted values.
-- [ ] Identify any remaining direct `localStorage` access that should be aligned with shared helpers.
-- [ ] Tighten persistence tests when new keys or migrations are added.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the full non-options local-state key inventory.
+- [x] Document which store/service/composable owns each key.
+- [x] Document the current schema-version and alias-migration behavior.
+- [x] Document which keys are scalar versus serialized JSON payloads.
+- [x] Document normalization behavior for invalid persisted values.
+- [x] Identify any remaining direct `localStorage` access that should be aligned with shared helpers.
+- [x] Tighten persistence tests when new keys or migrations are added.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

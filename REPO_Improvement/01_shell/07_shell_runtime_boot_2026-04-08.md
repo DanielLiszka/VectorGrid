@@ -91,19 +91,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact stage order from mount to ready.
-- [ ] Normalize stage names and ensure they are not duplicated ad hoc.
-- [ ] Separate fatal boot errors from recoverable desktop warnings.
-- [ ] Define when `markReady()` is allowed to fire.
-- [ ] Define how deferred dataset bootstrap affects perceived readiness.
-- [ ] Keep the runtime banner aligned with the store contract.
-- [ ] Add or tighten tests for boot success, degraded startup, and boot failure.
-- [ ] Verify that disabling the startup overlay remains the default behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the exact stage order from mount to ready.
+- [x] Normalize stage names and ensure they are not duplicated ad hoc.
+- [x] Separate fatal boot errors from recoverable desktop warnings.
+- [x] Define when `markReady()` is allowed to fire.
+- [x] Define how deferred dataset bootstrap affects perceived readiness.
+- [x] Keep the runtime banner aligned with the store contract.
+- [x] Add or tighten tests for boot success, degraded startup, and boot failure.
+- [x] Verify that disabling the startup overlay remains the default behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

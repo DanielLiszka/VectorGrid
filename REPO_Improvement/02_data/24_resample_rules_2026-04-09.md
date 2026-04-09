@@ -92,16 +92,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document supported timeframe label formats and canonicalization.
-- [ ] Document sorted-timestamp preconditions.
-- [ ] Document bucket anchoring and OHLCV aggregation rules.
-- [ ] Document derived-ID and reuse behavior.
-- [ ] Document field-availability preservation across resample.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document supported timeframe label formats and canonicalization.
+- [x] Document sorted-timestamp preconditions.
+- [x] Document bucket anchoring and OHLCV aggregation rules.
+- [x] Document derived-ID and reuse behavior.
+- [x] Document field-availability preservation across resample.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -119,6 +119,13 @@ Public-repo quality focus:
 - prefer stronger docs and tests before broadening timeframe support
 - keep resample backend-owned even if frontend hints get clearer
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Used the existing `crates/app_core/src/timeframe.rs` test surface as the authority for this contract and included it in acceptance evidence: canonical seconds-to-label parsing, unsorted-timestamp rejection, day-relative bucket anchoring, and OHLCV aggregation semantics are now explicitly part of the verified closure for this item.
+- Tightened the frontend/store evidence instead of changing backend math: the data-store resample tests now prove that derived-timeframe hints, base-timeframe reset behavior, and reuse-oriented copy stay aligned with the backend rule set.
+- Kept field-availability preservation and derived-id stability backend-owned. This slice focused on freezing the rules and adding regression coverage rather than refactoring the resample engine.
+- Acceptance evidence captured during execution: `cargo test -p ta_app_core timeframe`, `cargo test -p ta_desktop_demo_app state --lib`, `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/utils/core/datasetMeta.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

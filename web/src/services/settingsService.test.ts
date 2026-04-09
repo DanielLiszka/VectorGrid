@@ -16,11 +16,16 @@ describe('settings service', () => {
   it('maps window effect payload for native command', async () => {
     await setWindowEffect('none', false)
     await setWindowEffect('mica', true)
+    await setWindowEffect('blur', false)
 
     expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'set_window_effect', { effect: null, dark: false })
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'set_window_effect', {
       effect: 'mica',
       dark: true,
+    })
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, 'set_window_effect', {
+      effect: 'blur',
+      dark: false,
     })
   })
 

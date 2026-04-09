@@ -1,5 +1,8 @@
 # Program Index
 
+Superseded historical snapshot.
+Current canonical entrypoint: [00_program_index_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/00_program_index_2026-04-09.md)
+
 Last updated: 2026-04-09
 
 ## Purpose

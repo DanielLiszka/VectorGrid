@@ -48,7 +48,9 @@ The app currently exposes one shared runtime status surface for the shell. Durin
 ## Current Verification Surface
 
 - `web/src/main.test.ts`
+- `web/src/stores/runtimeStore.test.ts`
 - `web/src/stores/domainStores.test.ts`
+- `web/src/components/AppRuntimeBanner.test.ts`
 - `web/src/components/SettingsWorkspacePanel.test.ts`
 - `web/src/components/StartupAnimationOverlay.test.ts`
 - `web/src/services/desktopProductization.test.ts`
@@ -114,21 +116,27 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- added direct `web/src/stores/runtimeStore.test.ts` coverage for legacy mount state, desktop log retention and clearing, console-bridge state, window-state readiness, and notification-permission setters
+- verified the current ownership boundary remains intact across `main.ts`, `desktopProductization.ts`, `AppRuntimeBanner.vue`, and `SettingsWorkspacePanel.vue`
+- kept the runtime truth split explicit: `runtimeStore` owns boot/runtime diagnostics and desktop readiness state, while `taskStore` remains the task-center lifecycle source of truth
+
 ## Checklist
 
-- [ ] Enumerate all current `runtimeStore` fields and getters.
-- [ ] Document which code path currently writes each field.
-- [ ] Document boot lifecycle semantics for `idle`, `booting`, `ready`, and `error`.
-- [ ] Document desktop log ordering, retention cap, and clearing behavior.
-- [ ] Document notification-permission and window-state readiness semantics.
-- [ ] Document the current role of `legacyMounted`.
-- [ ] Document the ownership boundary between `runtimeStore` and `taskStore`.
-- [ ] Add or tighten tests if runtime-field ownership or wording changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate all current `runtimeStore` fields and getters.
+- [x] Document which code path currently writes each field.
+- [x] Document boot lifecycle semantics for `idle`, `booting`, `ready`, and `error`.
+- [x] Document desktop log ordering, retention cap, and clearing behavior.
+- [x] Document notification-permission and window-state readiness semantics.
+- [x] Document the current role of `legacyMounted`.
+- [x] Document the ownership boundary between `runtimeStore` and `taskStore`.
+- [x] Add or tighten tests if runtime-field ownership or wording changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

@@ -336,6 +336,22 @@ mod tests {
     }
 
     #[test]
+    fn resample_rejects_unsorted_timestamps() {
+        let candles = Candles::new(
+            vec![120_000, 60_000],
+            vec![10.0, 11.0],
+            vec![11.0, 12.0],
+            vec![9.0, 10.0],
+            vec![10.5, 11.5],
+            vec![1.0, 2.0],
+        );
+
+        let error =
+            resample_candles(&candles, 60_000).expect_err("unsorted timestamps should fail");
+        assert!(error.contains("sorted ascending"));
+    }
+
+    #[test]
     fn resample_anchors_to_first_bar_of_day() {
         // Two "days" of minute bars. Day 0 starts at 09:30 (in ms from epoch day 0).
         let day0_start = 9 * 3_600_000 + 30 * 60_000; // 09:30

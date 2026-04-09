@@ -84,19 +84,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document required request fields and valid market/timeframe combinations.
-- [ ] Document default `adjusted` behavior and how it is persisted.
-- [ ] Document chunking and request-limit behavior.
-- [ ] Document when `usedCacheOnly` may be true.
-- [ ] Document the difference between `baseLoad` and final `load`.
-- [ ] Document manifest updates and returned dataset metadata.
-- [ ] Document failure handling for bad keys, partial coverage, and empty aggregate windows.
-- [ ] Add or tighten tests for cache-only and fresh-download paths.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document required request fields and valid market/timeframe combinations.
+- [x] Document default `adjusted` behavior and how it is persisted.
+- [x] Document chunking and request-limit behavior.
+- [x] Document when `usedCacheOnly` may be true.
+- [x] Document the difference between `baseLoad` and final `load`.
+- [x] Document manifest updates and returned dataset metadata.
+- [x] Document failure handling for bad keys, partial coverage, and empty aggregate windows.
+- [x] Add or tighten tests for cache-only and fresh-download paths.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -113,6 +113,13 @@ Public-repo quality focus:
 - preserve current response fields even if internal flow changes
 - prefer clearer status semantics over new UI surface area
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Hardened the frontend command contract in `web/src/services/dataService.ts`: Polygon download responses now fail fast when the backend payload is missing a CSV path, base dataset, or loaded dataset instead of silently normalizing a broken response into empty state.
+- Added service coverage in `web/src/services/dataService.test.ts` for malformed download payloads, keeping `baseLoad` versus final `load` separation explicit and preserving current stock/FX/crypto request normalization from the prior tranche.
+- Added store-level coverage in `web/src/stores/dataStore.actions.test.ts` for fresh-download versus cache-reuse behavior, including selected-dataset summary updates and cache-note visibility after downloads complete.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

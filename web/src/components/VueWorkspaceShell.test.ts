@@ -306,4 +306,37 @@ describe('VueWorkspaceShell', () => {
 
     wrapper.unmount()
   })
+
+  it('clamps split-divider keyboard moves to the supported min and max bounds', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflowStep('optimize', { persist: false })
+    workflowStore.setSplitFraction(0.34, { persist: false })
+
+    const wrapper = mount(VueWorkspaceShell, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushUi()
+
+    const divider = document.querySelector('.workspaceDivider') as HTMLButtonElement | null
+    expect(divider).not.toBeNull()
+    expect(divider?.getAttribute('role')).toBe('separator')
+    const minPercent = Number(divider?.getAttribute('aria-valuemin') || '0')
+    const maxPercent = Number(divider?.getAttribute('aria-valuemax') || '100')
+
+    divider?.focus()
+    divider?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await flushUi()
+    expect(workflowStore.splitFraction).toBeCloseTo(maxPercent / 100, 5)
+    expect(divider?.getAttribute('aria-valuenow')).toBe(String(maxPercent))
+
+    divider?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    await flushUi()
+    expect(workflowStore.splitFraction).toBeCloseTo(minPercent / 100, 5)
+    expect(divider?.getAttribute('aria-valuenow')).toBe(String(minPercent))
+
+    wrapper.unmount()
+  })
 })

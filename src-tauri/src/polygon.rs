@@ -118,6 +118,13 @@ struct TimeframeSpec {
     interval_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DownloadCachePlan {
+    FullHit,
+    AppendOnly,
+    FullRefresh,
+}
+
 fn parse_timeframe(raw: Option<&str>) -> Result<TimeframeSpec, String> {
     let s0 = raw.unwrap_or("1m");
     let s = s0.trim().to_ascii_lowercase();
@@ -171,6 +178,34 @@ fn settings_path(cache_dir: &Path) -> PathBuf {
 
 fn manifest_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(MANIFEST_FILE)
+}
+
+fn polygon_dataset_key_and_file_name(
+    market: Market,
+    polygon_ticker: &str,
+    adjusted: bool,
+    tf_label: &str,
+) -> (String, String) {
+    if market == Market::Stocks && !adjusted {
+        (
+            format!("stocks_raw:{polygon_ticker}:{tf_label}"),
+            format!(
+                "polygon_stocks_raw_{}_{}.csv",
+                sanitize_filename_component(polygon_ticker),
+                tf_label
+            ),
+        )
+    } else {
+        (
+            format!("{}:{polygon_ticker}:{tf_label}", market.as_str()),
+            format!(
+                "polygon_{}_{}_{}.csv",
+                market.as_str(),
+                sanitize_filename_component(polygon_ticker),
+                tf_label
+            ),
+        )
+    }
 }
 
 fn write_settings_file(cache_dir: &Path, api_key: &str) -> Result<(), String> {
@@ -391,6 +426,34 @@ pub fn get_cache_info(app_identifier: &str, cache_dir: &Path) -> Result<PolygonC
         has_api_key: api_key.is_some(),
         datasets: manifest.datasets.values().cloned().collect(),
     })
+}
+
+fn plan_download_cache_strategy(
+    csv_exists: bool,
+    cached_min_date: Option<NaiveDate>,
+    cached_max_date: Option<NaiveDate>,
+    cached_min_ts: i64,
+    cached_max_ts: i64,
+    from_date: NaiveDate,
+    to_date: NaiveDate,
+) -> DownloadCachePlan {
+    let have_full_range = match (cached_min_date, cached_max_date) {
+        (Some(min_d), Some(max_d)) => csv_exists && from_date >= min_d && to_date <= max_d,
+        _ => false,
+    };
+    if have_full_range {
+        return DownloadCachePlan::FullHit;
+    }
+
+    let can_append_only = match cached_min_date {
+        Some(min_d) => csv_exists && cached_min_ts > 0 && cached_max_ts > 0 && from_date >= min_d,
+        None => false,
+    };
+    if can_append_only {
+        DownloadCachePlan::AppendOnly
+    } else {
+        DownloadCachePlan::FullRefresh
+    }
 }
 
 fn sanitize_filename_component(s: &str) -> String {
@@ -1054,25 +1117,8 @@ pub fn download_1m_to_cache(
     let tf = parse_timeframe(req.timeframe.as_deref())?;
 
     // Keep back-compat: adjusted stocks keep the original key/path. Unadjusted stocks get their own cache entry.
-    let dataset_key = if market == Market::Stocks && !adjusted {
-        format!("stocks_raw:{}:{}", polygon_ticker, tf.label)
-    } else {
-        format!("{}:{}:{}", market.as_str(), polygon_ticker, tf.label)
-    };
-    let file_name = if market == Market::Stocks && !adjusted {
-        format!(
-            "polygon_stocks_raw_{}_{}.csv",
-            sanitize_filename_component(&polygon_ticker),
-            tf.label
-        )
-    } else {
-        format!(
-            "polygon_{}_{}_{}.csv",
-            market.as_str(),
-            sanitize_filename_component(&polygon_ticker),
-            tf.label
-        )
-    };
+    let (dataset_key, file_name) =
+        polygon_dataset_key_and_file_name(market, &polygon_ticker, adjusted, &tf.label);
     let csv_path = cache_dir.join(file_name);
 
     let mut used_cache_only = false;
@@ -1101,12 +1147,17 @@ pub fn download_1m_to_cache(
     let cached_max_date =
         chrono::DateTime::<chrono::Utc>::from_timestamp_millis(max_ts).map(|dt| dt.date_naive());
 
-    let have_full_range = match (cached_min_date, cached_max_date) {
-        (Some(min_d), Some(max_d)) => csv_path.exists() && from_date >= min_d && to_date <= max_d,
-        _ => false,
-    };
+    let cache_plan = plan_download_cache_strategy(
+        csv_path.exists(),
+        cached_min_date,
+        cached_max_date,
+        min_ts,
+        max_ts,
+        from_date,
+        to_date,
+    );
 
-    if have_full_range && csv_path.exists() {
+    if cache_plan == DownloadCachePlan::FullHit {
         used_cache_only = true;
     } else {
         let client = Client::builder()
@@ -1117,12 +1168,7 @@ pub fn download_1m_to_cache(
 
         // Append-only: if we have some data and the request starts within what we have, fetch only newer bars.
         // Otherwise, refresh the full requested range and overwrite.
-        let do_append_only = match cached_min_date {
-            Some(min_d) => csv_path.exists() && min_ts > 0 && max_ts > 0 && from_date >= min_d,
-            _ => false,
-        };
-
-        if do_append_only {
+        if cache_plan == DownloadCachePlan::AppendOnly {
             // Fetch from (cached max timestamp + 1 minute) up to requested to.
             // We convert cached max_ts to a date for Polygon requests.
             let next_ms = max_ts.saturating_add(tf.interval_ms);
@@ -1410,5 +1456,230 @@ badline\n",
         let resolved = dotenv_api_key_fallback_from_dir(&dir);
 
         assert_eq!(resolved.as_deref(), Some("polygon-dotenv-key"));
+    }
+
+    #[test]
+    fn normalize_symbol_supports_market_specific_and_native_formats() {
+        let (stocks_ticker, stocks_display) =
+            normalize_symbol(Market::Stocks, " aapl ").expect("normalize stock");
+        assert_eq!(stocks_ticker, "AAPL");
+        assert_eq!(stocks_display, "AAPL");
+
+        let (fx_ticker, fx_display) =
+            normalize_symbol(Market::Fx, "eur/usd").expect("normalize fx");
+        assert_eq!(fx_ticker, "C:EURUSD");
+        assert_eq!(fx_display, "EUR/USD");
+
+        let (crypto_ticker, crypto_display) =
+            normalize_symbol(Market::Crypto, "btcusd").expect("normalize crypto");
+        assert_eq!(crypto_ticker, "X:BTCUSD");
+        assert_eq!(crypto_display, "BTC/USD");
+
+        let (native_ticker, native_display) =
+            normalize_symbol(Market::Crypto, "x:btcusd").expect("normalize native ticker");
+        assert_eq!(native_ticker, "X:BTCUSD");
+        assert_eq!(native_display, "BTC/USD");
+    }
+
+    #[test]
+    fn polygon_dataset_key_and_file_name_distinguish_adjusted_and_raw_stocks() {
+        let (adjusted_key, adjusted_file) =
+            polygon_dataset_key_and_file_name(Market::Stocks, "AAPL", true, "1m");
+        let (raw_key, raw_file) =
+            polygon_dataset_key_and_file_name(Market::Stocks, "AAPL", false, "1m");
+        let (fx_key, fx_file) =
+            polygon_dataset_key_and_file_name(Market::Fx, "C:EURUSD", false, "5m");
+
+        assert_eq!(adjusted_key, "stocks:AAPL:1m");
+        assert_eq!(adjusted_file, "polygon_stocks_AAPL_1m.csv");
+        assert_eq!(raw_key, "stocks_raw:AAPL:1m");
+        assert_eq!(raw_file, "polygon_stocks_raw_AAPL_1m.csv");
+        assert_eq!(fx_key, "fx:C:EURUSD:5m");
+        assert_eq!(fx_file, "polygon_fx_C_EURUSD_5m.csv");
+    }
+
+    #[test]
+    fn plan_download_cache_strategy_distinguishes_hit_append_and_refresh() {
+        let min_d = NaiveDate::from_ymd_opt(2024, 1, 1).expect("min date");
+        let max_d = NaiveDate::from_ymd_opt(2024, 1, 31).expect("max date");
+
+        let full_hit = plan_download_cache_strategy(
+            true,
+            Some(min_d),
+            Some(max_d),
+            1,
+            2,
+            NaiveDate::from_ymd_opt(2024, 1, 10).expect("from"),
+            NaiveDate::from_ymd_opt(2024, 1, 20).expect("to"),
+        );
+        assert_eq!(full_hit, DownloadCachePlan::FullHit);
+
+        let append_only = plan_download_cache_strategy(
+            true,
+            Some(min_d),
+            Some(max_d),
+            1,
+            2,
+            NaiveDate::from_ymd_opt(2024, 1, 1).expect("from"),
+            NaiveDate::from_ymd_opt(2024, 2, 15).expect("to"),
+        );
+        assert_eq!(append_only, DownloadCachePlan::AppendOnly);
+
+        let full_refresh = plan_download_cache_strategy(
+            true,
+            Some(min_d),
+            Some(max_d),
+            1,
+            2,
+            NaiveDate::from_ymd_opt(2023, 12, 1).expect("from"),
+            NaiveDate::from_ymd_opt(2024, 1, 20).expect("to"),
+        );
+        assert_eq!(full_refresh, DownloadCachePlan::FullRefresh);
+    }
+
+    #[test]
+    fn load_manifest_upgrades_legacy_adjusted_stock_entries() {
+        let cache_dir = make_temp_dir("vectorta_polygon_manifest_upgrade");
+        let manifest_json = r#"{
+  "datasets": {
+    "stocks:AAPL:1m": {
+      "market": "stocks",
+      "display_symbol": "AAPL",
+      "polygon_ticker": "AAPL",
+      "timeframe": "1m",
+      "csv_path": "C:/cache/polygon_stocks_AAPL_1m.csv",
+      "min_ts": 1700000000000,
+      "max_ts": 1700000600000,
+      "last_updated_utc_ms": 1700000700000,
+      "row_count": 500
+    }
+  }
+}"#;
+        fs::write(manifest_path(&cache_dir), manifest_json).expect("write manifest");
+
+        let manifest = load_manifest(&cache_dir).expect("load manifest");
+        let dataset = manifest
+            .datasets
+            .get("stocks:AAPL:1m")
+            .expect("legacy adjusted dataset");
+        assert!(dataset.adjusted);
+    }
+
+    #[test]
+    fn get_cache_info_reports_api_key_presence_from_legacy_settings_file() {
+        let cache_dir = make_temp_dir("vectorta_polygon_cache_info_key");
+        let app_identifier = format!(
+            "dev.vectoralpha.vectorgrid.cache-info.{}.{}",
+            std::process::id(),
+            now_utc_ms().max(1)
+        );
+        write_settings_file(&cache_dir, "polygon-legacy-file-key").expect("write settings");
+
+        let info = get_cache_info(&app_identifier, &cache_dir).expect("cache info");
+
+        assert!(info.has_api_key);
+        assert!(info.datasets.is_empty());
+        assert_eq!(info.cache_dir, cache_dir.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn get_cache_info_returns_manifest_datasets_in_key_order() {
+        let cache_dir = make_temp_dir("vectorta_polygon_cache_info_order");
+        let app_identifier = format!(
+            "dev.vectoralpha.vectorgrid.cache-order.{}.{}",
+            std::process::id(),
+            now_utc_ms().max(1)
+        );
+        let mut manifest = PolygonCacheManifest::default();
+        manifest.datasets.insert(
+            "stocks:MSFT:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "MSFT".to_string(),
+                polygon_ticker: "MSFT".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: "C:/cache/MSFT.csv".to_string(),
+                min_ts: 1,
+                max_ts: 2,
+                last_updated_utc_ms: 10,
+                row_count: 2,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+        manifest.datasets.insert(
+            "stocks:AAPL:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "AAPL".to_string(),
+                polygon_ticker: "AAPL".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: "C:/cache/AAPL.csv".to_string(),
+                min_ts: 1,
+                max_ts: 2,
+                last_updated_utc_ms: 20,
+                row_count: 2,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+        save_manifest(&cache_dir, &manifest).expect("save manifest");
+
+        let info = get_cache_info(&app_identifier, &cache_dir).expect("cache info");
+        let symbols: Vec<&str> = info
+            .datasets
+            .iter()
+            .map(|row| row.display_symbol.as_str())
+            .collect();
+
+        assert_eq!(symbols, vec!["AAPL", "MSFT"]);
+        assert_eq!(info.cache_dir, cache_dir.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn find_manifest_dataset_by_csv_path_matches_trimmed_paths() {
+        let mut manifest = PolygonCacheManifest::default();
+        manifest.datasets.insert(
+            "stocks:AAPL:1m".to_string(),
+            PolygonDatasetMeta {
+                market: "stocks".to_string(),
+                display_symbol: "AAPL".to_string(),
+                polygon_ticker: "AAPL".to_string(),
+                timeframe: "1m".to_string(),
+                csv_path: "C:/cache/AAPL.csv".to_string(),
+                min_ts: 1,
+                max_ts: 2,
+                last_updated_utc_ms: 0,
+                row_count: 2,
+                adjusted: true,
+                integrity: None,
+            },
+        );
+
+        let found =
+            find_manifest_dataset_by_csv_path(&manifest, "  C:/cache/AAPL.csv  ").expect("match");
+        assert_eq!(found.display_symbol, "AAPL");
+        assert!(find_manifest_dataset_by_csv_path(&manifest, "   ").is_none());
+        assert!(find_manifest_dataset_by_csv_path(&manifest, "C:/cache/MSFT.csv").is_none());
+    }
+
+    #[test]
+    fn validate_and_repair_require_manifest_membership() {
+        let cache_dir = make_temp_dir("vectorta_polygon_manifest_requirement");
+        let csv_path = cache_dir.join("detached.csv");
+        let csv_path_s = csv_path.to_string_lossy().to_string();
+        fs::write(
+            &csv_path,
+            "timestamp,open,close,high,low,volume\n1700000000000,1,1,1,1,1\n",
+        )
+        .expect("write csv");
+
+        let validate_err =
+            validate_cached_dataset(&cache_dir, &csv_path_s).expect_err("validate should fail");
+        let repair_err = repair_cached_dataset("vectorta_test", &cache_dir, &csv_path_s)
+            .expect_err("repair should fail");
+
+        assert!(validate_err.contains("dataset not found in Polygon manifest"));
+        assert!(repair_err.contains("dataset not found in Polygon manifest"));
     }
 }

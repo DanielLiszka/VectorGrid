@@ -121,19 +121,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document workflow-only footer visibility.
-- [ ] Document compact versus expanded footer behavior.
-- [ ] Document primary-action differences for standard versus ML Signal mode.
-- [ ] Document summary-pill priority rules.
-- [ ] Document plan/readiness/insights/tasks card ownership.
-- [ ] Add tests for expansion persistence and shell visibility.
-- [ ] Add tests for ML Signal primary-action labeling.
-- [ ] Add tests for run/cancel posture and summary consistency during active runs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document workflow-only footer visibility.
+- [x] Document compact versus expanded footer behavior.
+- [x] Document primary-action differences for standard versus ML Signal mode.
+- [x] Document summary-pill priority rules.
+- [x] Document plan/readiness/insights/tasks card ownership.
+- [x] Add tests for expansion persistence and shell visibility.
+- [x] Add tests for ML Signal primary-action labeling.
+- [x] Add tests for run/cancel posture and summary consistency during active runs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

@@ -88,17 +88,40 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Required Change-Log Entries
+
+Record a program-level change-log entry when any of the following happen:
+
+- a full wave is completed or re-baselined
+- the planned-doc count changes
+- a top-level folder is added, removed, or materially re-scoped
+- governance rules change in a way that affects future document creation or execution
+- the execution model changes in a way that affects how contributors use the corpus
+
+Do not create a separate program-level change-log entry for every individual planned doc. Per-doc detail belongs in the tracker or the document itself.
+
+## Program Change Log Entries
+
+- `2026-04-08`
+  - locked the active non-options improvement catalog as `v7`
+  - fixed the full planned-doc scope at `356` planned slots
+- `2026-04-09`
+  - completed Waves `1` through `26` for planned-doc creation
+  - completed the second-pass hardening sweep across the implementation-doc corpus
+  - adopted the execution-ledger model for whole-document implementation tracking
+  - promoted `00_program_index_2026-04-09.md` and `01_doc_creation_tracker_2026-04-09.md` as the canonical current-status meta docs
+
 ## Checklist
 
-- [ ] Define what changes require a program change-log entry.
-- [ ] Keep wave completions and governance changes visible.
-- [ ] Avoid duplicating the tracker’s full per-doc detail.
-- [ ] Preserve a concise historical record inside the repo.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define what changes require a program change-log entry.
+- [x] Keep wave completions and governance changes visible.
+- [x] Avoid duplicating the tracker’s full per-doc detail.
+- [x] Preserve a concise historical record inside the repo.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

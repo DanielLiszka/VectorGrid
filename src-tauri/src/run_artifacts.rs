@@ -2099,6 +2099,50 @@ mod tests {
     }
 
     #[test]
+    fn dataset_meta_normalization_keeps_existing_fingerprint_and_resample_identity() {
+        let mut ds = serde_json::Map::new();
+        ds.insert("csv_path".to_string(), json!("C:/data/AAPL.csv"));
+        ds.insert("timeframe".to_string(), json!("15m"));
+        ds.insert("base_timeframe".to_string(), json!("1m"));
+        ds.insert(
+            "source_content_fingerprint".to_string(),
+            json!("fnv1a64-full-deadbeefdeadbeef"),
+        );
+        normalize_dataset_meta(&mut ds, "ignored.csv");
+
+        assert_eq!(ds.get("schema_version").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            ds.get("csv_path").and_then(|v| v.as_str()),
+            Some("C:/data/AAPL.csv")
+        );
+        assert_eq!(
+            ds.get("base_timeframe").and_then(|v| v.as_str()),
+            Some("1m")
+        );
+        assert_eq!(
+            ds.get("derived_timeframe").and_then(|v| v.as_str()),
+            Some("15m")
+        );
+        assert_eq!(
+            ds.get("resample_applied").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            ds.get("resample_rule").and_then(|v| v.as_str()),
+            Some("session_relative_ohlcv")
+        );
+        assert_eq!(
+            ds.get("resample_anchor").and_then(|v| v.as_str()),
+            Some("day_first_timestamp")
+        );
+        assert_eq!(
+            ds.get("source_content_fingerprint")
+                .and_then(|v| v.as_str()),
+            Some("fnv1a64-full-deadbeefdeadbeef")
+        );
+    }
+
+    #[test]
     fn run_artifact_kind_alias_accepts_legacy_and_vectorgrid_names() {
         assert!(is_run_artifact_kind("vectorbt_run_artifact"));
         assert!(is_run_artifact_kind("vectorgrid_run_artifact"));
@@ -2410,6 +2454,101 @@ mod tests {
         );
         assert!(detail.params_text.contains("strategy: MlSignal"));
         assert!(detail.params_text.contains("policy t_long: 0.6"));
+    }
+
+    #[test]
+    fn run_artifact_detail_response_preserves_dataset_identity_and_fingerprint() {
+        let artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "config_fingerprint": "cfg1-fnv1a64-0011223344556677",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m",
+                "base_timeframe": "1m",
+                "derived_timeframe": "15m",
+                "resample_applied": true,
+                "resample_rule": "session_relative_ohlcv",
+                "resample_anchor": "day_first_timestamp",
+                "source_size_bytes": 2048,
+                "source_mtime_utc_ms": 1700003000000i64,
+                "source_content_fingerprint": "fnv1a64-full-deadbeefdeadbeef"
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            }
+        });
+
+        let detail =
+            build_run_artifact_detail_response("C:/runs/vectorgrid_run_test.json", &artifact)
+                .expect("detail payload");
+
+        assert_eq!(detail.csv_path, "C:/data/AAPL.csv");
+        assert_eq!(detail.timeframe, "15m");
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("base_timeframe"))
+                .and_then(|value| value.as_str()),
+            Some("1m")
+        );
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("derived_timeframe"))
+                .and_then(|value| value.as_str()),
+            Some("15m")
+        );
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("resample_applied"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("resample_rule"))
+                .and_then(|value| value.as_str()),
+            Some("session_relative_ohlcv")
+        );
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("resample_anchor"))
+                .and_then(|value| value.as_str()),
+            Some("day_first_timestamp")
+        );
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("source_size_bytes"))
+                .and_then(|value| value.as_u64()),
+            Some(2048)
+        );
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("source_mtime_utc_ms"))
+                .and_then(|value| value.as_i64()),
+            Some(1700003000000)
+        );
+        assert_eq!(
+            detail
+                .dataset_meta
+                .as_ref()
+                .and_then(|value| value.get("source_content_fingerprint"))
+                .and_then(|value| value.as_str()),
+            Some("fnv1a64-full-deadbeefdeadbeef")
+        );
     }
 
     #[test]

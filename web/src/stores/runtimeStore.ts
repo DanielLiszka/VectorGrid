@@ -3,6 +3,18 @@ import { defineStore } from 'pinia'
 export type LegacyBootPhase = 'idle' | 'booting' | 'ready' | 'error'
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 export type DesktopNotificationPermission = 'unknown' | 'default' | 'granted' | 'denied' | 'unsupported'
+export const BOOT_STAGES = {
+  STARTING_FRONTEND_RUNTIME: 'Starting frontend runtime',
+  RESTORING_WORKSPACE_STATE: 'Restoring workspace state',
+  INITIALIZING_DESKTOP_SERVICES: 'Initializing desktop services',
+  FINALIZING_DATASET_READINESS: 'Finalizing dataset readiness',
+  MOUNTING_WORKSPACE_SHELL: 'Mounting workspace shell',
+  FRONTEND_RUNTIME_READY: 'Frontend runtime ready',
+  FRONTEND_RUNTIME_FAILED: 'Frontend runtime failed',
+  BOOTING_FALLBACK: 'Booting',
+} as const
+
+export type BootStage = (typeof BOOT_STAGES)[keyof typeof BOOT_STAGES]
 
 export interface RuntimeLogEntry {
   id: string
@@ -27,6 +39,11 @@ interface RuntimeState {
 }
 
 const MAX_DESKTOP_LOGS = 24
+
+function normalizeBootStage(stage: string | null | undefined, fallback: BootStage): string {
+  const text = String(stage || '').trim()
+  return text || fallback
+}
 
 export const useRuntimeStore = defineStore('runtime', {
   state: (): RuntimeState => ({
@@ -57,18 +74,17 @@ export const useRuntimeStore = defineStore('runtime', {
       this.legacyMounted = mounted
     },
 
-    markBooting(stage = 'Starting frontend runtime'): void {
+    markBooting(stage: BootStage = BOOT_STAGES.STARTING_FRONTEND_RUNTIME): void {
       this.bootPhase = 'booting'
-      this.bootStage = String(stage || '').trim() || 'Booting'
+      this.bootStage = normalizeBootStage(stage, BOOT_STAGES.BOOTING_FALLBACK)
       this.bootError = null
       this.bootErrorDetail = null
       this.bootReadyAt = null
       this.bootStartedAt = Date.now()
     },
 
-    setBootStage(stage: string): void {
-      const text = String(stage || '').trim()
-      this.bootStage = text || this.bootStage || 'Booting'
+    setBootStage(stage: BootStage): void {
+      this.bootStage = normalizeBootStage(stage, (this.bootStage as BootStage) || BOOT_STAGES.BOOTING_FALLBACK)
       if (this.bootPhase === 'idle') this.bootPhase = 'booting'
       if (!this.bootStartedAt) this.bootStartedAt = Date.now()
     },
@@ -76,7 +92,7 @@ export const useRuntimeStore = defineStore('runtime', {
     markReady(): void {
       if (!this.bootStartedAt) this.bootStartedAt = Date.now()
       this.bootPhase = 'ready'
-      this.bootStage = 'Frontend runtime ready'
+      this.bootStage = BOOT_STAGES.FRONTEND_RUNTIME_READY
       this.bootReadyAt = Date.now()
       this.bootError = null
       this.bootErrorDetail = null
@@ -86,7 +102,7 @@ export const useRuntimeStore = defineStore('runtime', {
       if (!this.bootStartedAt) this.bootStartedAt = Date.now()
       this.bootPhase = 'error'
       this.bootReadyAt = null
-      this.bootStage = 'Frontend runtime failed'
+      this.bootStage = BOOT_STAGES.FRONTEND_RUNTIME_FAILED
       this.bootError = String(err instanceof Error ? err.message : err ?? 'Unknown error')
       const stack = err instanceof Error ? String(err.stack || '').trim() : ''
       if (stack) {

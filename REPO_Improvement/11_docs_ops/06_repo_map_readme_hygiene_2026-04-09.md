@@ -95,18 +95,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the intended ownership split between `README.md` and `REPO_MAP.md`.
-- [ ] Review top-level links for stale or duplicate routing content.
-- [ ] Keep benchmark/product framing in README and code-routing detail in `REPO_MAP.md`.
-- [ ] Keep `AGENTS.md` aligned with the repo-map-first navigation rule.
-- [ ] Update both docs together when a major workflow entrypoint changes.
-- [ ] Add or tighten doc review steps if top-level routing confusion returns.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document the intended ownership split between `README.md` and `REPO_MAP.md`.
+- [x] Review top-level links for stale or duplicate routing content.
+- [x] Keep benchmark/product framing in README and code-routing detail in `REPO_MAP.md`.
+- [x] Keep `AGENTS.md` aligned with the repo-map-first navigation rule.
+- [x] Update both docs together when a major workflow entrypoint changes.
+- [x] Add or tighten doc review steps if top-level routing confusion returns.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 

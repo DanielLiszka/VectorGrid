@@ -118,18 +118,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate the current `dataset_meta` field set and schema version.
-- [ ] Document required, optional, nullable, and derived fields separately.
-- [ ] Document the relationship between `timeframe`, `base_timeframe`, and `derived_timeframe`.
-- [ ] Document resample fields and when `resample_applied` becomes true.
-- [ ] Document provenance fields such as size, mtime, and source-content fingerprint.
-- [ ] Document the subset that `commands_reports.rs` preserves in `report.data`.
-- [ ] Add or tighten frontend/backend parity tests when the schema changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the current `dataset_meta` field set and schema version.
+- [x] Document required, optional, nullable, and derived fields separately.
+- [x] Document the relationship between `timeframe`, `base_timeframe`, and `derived_timeframe`.
+- [x] Document resample fields and when `resample_applied` becomes true.
+- [x] Document provenance fields such as size, mtime, and source-content fingerprint.
+- [x] Document the subset that `commands_reports.rs` preserves in `report.data`.
+- [x] Add or tighten frontend/backend parity tests when the schema changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -146,6 +146,13 @@ Public-repo quality focus:
 - if the report subset expands, keep old fields stable rather than reinterpreting them
 - do not fall back to CSV path alone when richer dataset metadata is already available
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Expanded the artifact-backed schema coverage at both the frontend and Tauri boundaries. `web/src/services/validationService.test.ts` now proves that persisted validation artifacts keep the full dataset-meta family together, including base/derived timeframe fields, resample flags, and source-content fingerprinting.
+- Tightened `src-tauri/src/commands_reports.rs` so the existing artifact-report builder test now freezes the report-facing subset too: `report.data.meta` and `report.data.ctx` must keep timeframe/resample fields, numeric provenance fields, and `source_content_fingerprint` in their current places.
+- Preserved the shipped schema instead of introducing a migration. This slice improves parity and evidence for `schema_version = 2` rather than widening `dataset_meta` or weakening nullability rules.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app run_artifacts --lib`, `cargo test -p ta_desktop_demo_app commands_reports --lib`, `npm.cmd --prefix web run test -- src/services/validationService.test.ts src/utils/core/artifactIdentity.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

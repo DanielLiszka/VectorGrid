@@ -120,17 +120,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current shell grammar and normalized value sets.
-- [ ] Document default and allowed-tab rules for both modes.
-- [ ] Document mode-specific tab memory and restore behavior.
-- [ ] Document subtitle derivation and root dataset synchronization.
-- [ ] Add or tighten tests if new workspaces, steps, or tabs are introduced.
-- [ ] Keep invalid-value behavior non-mutating.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current shell grammar and normalized value sets.
+- [x] Document default and allowed-tab rules for both modes.
+- [x] Document mode-specific tab memory and restore behavior.
+- [x] Document subtitle derivation and root dataset synchronization.
+- [x] Add or tighten tests if new workspaces, steps, or tabs are introduced.
+- [x] Keep invalid-value behavior non-mutating.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

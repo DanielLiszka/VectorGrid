@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document each current user task supported by the Data workspace.
-- [ ] Document selection, summary-chip, and status-line behavior for loaded datasets.
-- [ ] Document current Polygon cached-dataset selection and announcement behavior.
-- [ ] Document the storage-settings handoff and folder affordances.
-- [ ] Add or tighten tests for any copy, keyboard, or selection contract changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document each current user task supported by the Data workspace.
+- [x] Document selection, summary-chip, and status-line behavior for loaded datasets.
+- [x] Document current Polygon cached-dataset selection and announcement behavior.
+- [x] Document the storage-settings handoff and folder affordances.
+- [x] Add or tighten tests for any copy, keyboard, or selection contract changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -121,6 +121,13 @@ Public-repo quality focus:
 - prefer clarifying current UX before compressing or restyling it
 - maintain keyboard selection behavior and visible status cues as non-negotiable baseline behavior
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added a broad component-level contract test in `web/src/components/DataWorkspacePanel.test.ts` that freezes the current combined UX surface: dataset summary chips, sample dataset affordances, recent paths, dataset context, field hints, effective storage hints, and status text now render together under test instead of relying on ad hoc manual checks.
+- Preserved the existing Polygon keyboard-selection path and kept the data panel’s shipped scope intact; this slice hardened current affordances rather than introducing a new repo-browser mode.
+- Added an additive summary improvement in `web/src/components/DataWorkspacePanel.vue`: when a derived timeframe is active, the panel now surfaces `Base timeframe: ...` so current-vs-base context is explicit without removing any existing chip or control.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/stores/dataStore.actions.test.ts src/services/dataService.test.ts src/services/optimizeService.test.ts src/services/validationService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_app_core`.
 
 ## Related Docs
 

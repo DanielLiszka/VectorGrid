@@ -107,18 +107,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document `resample_price_data` request and response behavior.
-- [ ] Document how `AppState::resample_loaded_data` creates or reuses derived datasets.
-- [ ] Document when derived datasets are invalidated.
-- [ ] Document current timeframe parsing and chronology requirements.
-- [ ] Document `base_timeframe`, `derived_timeframe`, `resample_applied`, `resample_rule`, and `resample_anchor`.
-- [ ] Document frontend load-source behavior for fresh derived resamples.
-- [ ] Add or tighten tests if reuse, invalidation, or metadata behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document `resample_price_data` request and response behavior.
+- [x] Document how `AppState::resample_loaded_data` creates or reuses derived datasets.
+- [x] Document when derived datasets are invalidated.
+- [x] Document current timeframe parsing and chronology requirements.
+- [x] Document `base_timeframe`, `derived_timeframe`, `resample_applied`, `resample_rule`, and `resample_anchor`.
+- [x] Document frontend load-source behavior for fresh derived resamples.
+- [x] Add or tighten tests if reuse, invalidation, or metadata behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -136,6 +136,13 @@ Public-repo quality focus:
 - preserve persisted resample metadata across artifacts and reports
 - if resample policy changes, update both runtime behavior and metadata contracts in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the frontend command contract in `web/src/services/dataService.test.ts`: `applyTimeframe` now has explicit guard coverage for missing base dataset ids and empty timeframe requests, which keeps bad resample calls from leaking through as backend-dependent behavior.
+- Extended `web/src/stores/dataStore.actions.test.ts` so the resample flow proves both sides of the user contract: derived timeframes keep the “no extra downloads” hint, and resetting to the base timeframe restores the base-timeframe hint and clears derived posture cleanly.
+- Re-verified the backend contract instead of rewriting it: `src-tauri/src/state.rs`, `src-tauri/src/run_artifacts.rs`, and `crates/app_core/src/timeframe.rs` already preserve reuse, invalidation, chronology, and persisted resample identity, and the targeted Rust test suite is now part of the acceptance evidence for this doc.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app state --lib`, `cargo test -p ta_desktop_demo_app run_artifacts --lib`, `cargo test -p ta_app_core timeframe`, `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/utils/core/datasetMeta.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

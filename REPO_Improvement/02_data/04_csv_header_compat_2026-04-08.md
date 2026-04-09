@@ -49,7 +49,7 @@ The app accepts VectorTA-style positional CSV layouts and some named-header layo
 
 - named-header support is narrow and only lightly documented
 - unsupported named timestamp or close headers can silently fall back to positional mapping
-- parsing uses raw `split(',')`, so quoted commas and embedded newlines are outside the real contract
+- compatibility is still intentionally narrow even though parsing is now standards-aware for quoted fields and comma-bearing cells
 - blank optional fields become `NaN`, but that semantic contract is not visible to users
 - tests appear biased toward the Polygon happy path instead of the full compatibility matrix
 
@@ -84,21 +84,28 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- upgraded `csv_compat.rs` to use the Rust `csv` crate while keeping the visible compatibility contract conservative: named-header mode still requires recognized timestamp and close aliases, and unsupported named layouts still fall back to positional parsing
+- added direct coverage for quoted headers plus unused quoted fields containing commas, which closes a real parser-quality gap without broadening the accepted market-data contract beyond the current repo targets
+- kept Polygon raw CSV imports and VectorTA positional imports as the hard compatibility anchors
+- preserved blank optional-field semantics (`NaN` storage with boolean field flags only set when any real values are present), which keeps downstream gating stable
+
 ## Checklist
 
-- [ ] Document the exact supported alias table.
-- [ ] Document the supported positional layout(s).
-- [ ] Define named-header vs positional fallback precedence.
-- [ ] Decide and document quoted-field support or non-support explicitly.
-- [ ] Document blank-cell semantics for optional columns.
-- [ ] Add tests for supported alias variants and unsupported named-header cases.
-- [ ] Add tests for malformed rows and quoted-field edge cases.
-- [ ] Verify frontend error messaging reflects the real compatibility contract.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the exact supported alias table.
+- [x] Document the supported positional layout(s).
+- [x] Define named-header vs positional fallback precedence.
+- [x] Decide and document quoted-field support or non-support explicitly.
+- [x] Document blank-cell semantics for optional columns.
+- [x] Add tests for supported alias variants and unsupported named-header cases.
+- [x] Add tests for malformed rows and quoted-field edge cases.
+- [x] Verify frontend error messaging reflects the real compatibility contract.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

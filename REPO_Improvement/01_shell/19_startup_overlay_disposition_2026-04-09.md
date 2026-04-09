@@ -54,6 +54,7 @@ So the current product disposition is: keep the implementation and tests, but do
 ## Current Verification Surface
 
 - `web/src/components/StartupAnimationOverlay.test.ts`
+- `web/src/App.test.ts`
 - `web/src/main.test.ts`
 - shell-level behavior through `web/src/App.vue`
 
@@ -111,19 +112,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current disabled-by-default root posture.
-- [ ] Document the retained overlay behavior and why it still matters.
-- [ ] Preserve reduced-motion, debug-hold, and error-handoff behavior in tests.
-- [ ] Require deliberate review before re-enabling the overlay in `App.vue`.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current disabled-by-default root posture.
+- [x] Document the retained overlay behavior and why it still matters.
+- [x] Preserve reduced-motion, debug-hold, and error-handoff behavior in tests.
+- [x] Require deliberate review before re-enabling the overlay in `App.vue`.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `npm --prefix web run test -- src/components/StartupAnimationOverlay.test.ts`
+- run `npm --prefix web run test -- src/App.test.ts`
 - run `npm --prefix web run test -- src/main.test.ts`
 - manually verify that normal startup still mounts the shell without showing the overlay
 - run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched

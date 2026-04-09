@@ -115,17 +115,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the difference between `config_fingerprint` and `source_content_fingerprint`.
-- [ ] Document the current canonicalization and strip rules before hashing.
-- [ ] Document the current version prefix and when it may change.
-- [ ] Document cross-ticker dataset ordering normalization.
-- [ ] Add or tighten frontend/backend parity checks for representative request families.
-- [ ] Clarify that the current hash is for stable identity, not for cryptographic trust.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the difference between `config_fingerprint` and `source_content_fingerprint`.
+- [x] Document the current canonicalization and strip rules before hashing.
+- [x] Document the current version prefix and when it may change.
+- [x] Document cross-ticker dataset ordering normalization.
+- [x] Add or tighten frontend/backend parity checks for representative request families.
+- [x] Clarify that the current hash is for stable identity, not for cryptographic trust.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -142,6 +142,13 @@ Public-repo quality focus:
 - do not repurpose `source_content_fingerprint` as a substitute for request identity
 - if strip rules expand, update tests and this document in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added a second focused frontend fingerprint test in `web/src/utils/core/artifactIdentity.test.ts` to pin two distinct properties that matter in a public repo: key-order noise must not change `config_fingerprint`, and a real request change must still produce a different fingerprint.
+- Re-verified the backend half of the contract instead of guessing from frontend behavior. `src-tauri/src/run_artifacts.rs` remains the authority for `config_fingerprint` generation, and `src-tauri/src/data_cache.rs` remains the authority for content-fingerprint stability/change detection.
+- Kept the identity split explicit: request/config identity and dataset-content identity stay separate, and this slice improved the parity evidence without repurposing FNV hashes as cryptographic guarantees.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app run_artifacts --lib`, `cargo test -p ta_desktop_demo_app data_cache --lib`, `npm.cmd --prefix web run test -- src/utils/core/artifactIdentity.test.ts src/services/validationService.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

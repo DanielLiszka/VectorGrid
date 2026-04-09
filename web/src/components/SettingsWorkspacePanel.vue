@@ -27,7 +27,9 @@ import {
 } from '../utils/statusPresentation'
 import { taskLevelIcon, taskStatusIcon } from '../utils/iconography'
 import { searchPerspectives } from '../utils/perspectiveSearch'
+import { SETTINGS_SHORTCUT_SUMMARY_ROWS } from '../utils/shellShortcutRegistry'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import { listSupportedWindowEffects, windowEffectLabel } from '../utils/windowEffects'
 import AppVisualIcon from './AppVisualIcon.vue'
 import VectorAlphaLogo from './VectorAlphaLogo.vue'
 
@@ -117,6 +119,13 @@ const settingsSummaryChips = computed(() => [
   controlsCollapsed.value ? 'Controls collapsed first' : 'Controls expanded first',
   marketDataDirDraft.value.trim().length > 0 ? 'Custom data folder' : 'Default data folder',
 ])
+const keyboardShortcutSummaryRows = SETTINGS_SHORTCUT_SUMMARY_ROWS
+const windowEffectOptions = computed(() =>
+  listSupportedWindowEffects().map((value) => ({
+    value,
+    label: windowEffectLabel(value),
+  })),
+)
 const selectedPerspective = computed(() =>
   perspectives.value.find((entry) => entry.id === selectedPerspectiveId.value) ?? perspectives.value[0] ?? null,
 )
@@ -592,10 +601,9 @@ onBeforeUnmount(() => {
                 :value="effectDraft"
                 @change="effectDraft = String(($event.target as HTMLSelectElement).value || 'none'); setSelectValue('settingsEffectSelect', effectDraft)"
               >
-                <option value="none">None</option>
-                <option value="mica">Mica</option>
-                <option value="acrylic">Acrylic</option>
-                <option value="vibrancy">Vibrancy</option>
+                <option v-for="option in windowEffectOptions" :key="`window_effect_${option.value}`" :value="option.value">
+                  {{ option.label }}
+                </option>
               </select>
             </div>
           </div>
@@ -816,16 +824,10 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="shortcutGrid">
-            <div class="mono">Ctrl+K</div>
-            <div>Command palette</div>
-            <div class="mono">Ctrl+Enter</div>
-            <div>Run optimization</div>
-            <div class="mono">Ctrl+Shift+V</div>
-            <div>Run validation</div>
-            <div class="mono">Ctrl+Shift+C</div>
-            <div>Export top rows CSV</div>
-            <div class="mono">Ctrl+O</div>
-            <div>Browse CSV file</div>
+            <template v-for="row in keyboardShortcutSummaryRows" :key="`settings_shortcut_${row.keysLabel}_${row.label}`">
+              <div class="mono">{{ row.keysLabel }}</div>
+              <div>{{ row.label }}</div>
+            </template>
           </div>
         </section>
 

@@ -7,13 +7,16 @@ Current seed documents:
 - [REPO_IMPROVEMENT_META_PLAN_2026-04-08.md](./REPO_IMPROVEMENT_META_PLAN_2026-04-08.md)
 - [IMPROVEMENT_FEATURE_INVENTORY_2026-04-08.md](./IMPROVEMENT_FEATURE_INVENTORY_2026-04-08.md)
 - [IMPROVEMENT_MASTER_PLAN_2026-04-08.md](./IMPROVEMENT_MASTER_PLAN_2026-04-08.md)
-- [program_index_2026-04-08.md](./00_meta/program_index_2026-04-08.md)
-- [doc_creation_tracker_2026-04-08.md](./00_meta/doc_creation_tracker_2026-04-08.md)
 
 Canonical planned-slot meta docs:
 
 - [00_program_index_2026-04-09.md](./00_meta/00_program_index_2026-04-09.md)
 - [01_doc_creation_tracker_2026-04-09.md](./00_meta/01_doc_creation_tracker_2026-04-09.md)
+
+Historical status snapshots:
+
+- [program_index_2026-04-08.md](./00_meta/program_index_2026-04-08.md)
+- [doc_creation_tracker_2026-04-08.md](./00_meta/doc_creation_tracker_2026-04-08.md)
 
 Current execution-status companion doc:
 

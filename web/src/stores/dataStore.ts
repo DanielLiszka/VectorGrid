@@ -503,6 +503,44 @@ function normalizeStartupSnapshot(raw: unknown): DataStartupSnapshot | null {
   };
 }
 
+function startupRestoreSourceIdentityWarning(
+  snapshot: DataStartupSnapshot | null,
+  meta: DataLoadResult["meta"] | null,
+): string {
+  const expectedSize =
+    snapshot && typeof snapshot.baseSourceSizeBytes === "number"
+      ? snapshot.baseSourceSizeBytes
+      : null;
+  const expectedMtime =
+    snapshot && typeof snapshot.baseSourceMtimeUtcMs === "number"
+      ? snapshot.baseSourceMtimeUtcMs
+      : null;
+  const actualSize =
+    meta && typeof meta.sourceSizeBytes === "number" ? meta.sourceSizeBytes : null;
+  const actualMtime =
+    meta && typeof meta.sourceMtimeUtcMs === "number"
+      ? meta.sourceMtimeUtcMs
+      : null;
+
+  const warnings: string[] = [];
+  if (
+    expectedSize != null &&
+    actualSize != null &&
+    Number(expectedSize) !== Number(actualSize)
+  ) {
+    warnings.push("size changed");
+  }
+  if (
+    expectedMtime != null &&
+    actualMtime != null &&
+    Number(expectedMtime) !== Number(actualMtime)
+  ) {
+    warnings.push("mtime changed");
+  }
+  if (!warnings.length) return "";
+  return `Source changed since last session (${warnings.join("; ")}).`;
+}
+
 function readStartupSnapshot(): DataStartupSnapshot | null {
   return normalizeStartupSnapshot(
     readStorageJson<DataStartupSnapshot>(DATA_STARTUP_SNAPSHOT_KEY),
@@ -934,6 +972,10 @@ export const useDataStore = defineStore("data", {
             markVueUpdate(this);
             try {
               const base = await loadCsvAction(restorePath);
+              const restoreIdentityWarning = startupRestoreSourceIdentityWarning(
+                startup,
+                base.meta,
+              );
               this.applyLoadResult(base, {
                 treatAsBase: true,
                 statusLine: baseLoadStatusText(base, restoreSource),
@@ -952,6 +994,10 @@ export const useDataStore = defineStore("data", {
                 });
               } else {
                 this.statusLine = `Restored ${restoreLabel}.`;
+                markVueUpdate(this);
+              }
+              if (restoreIdentityWarning) {
+                this.statusLine = `${this.statusLine} ${restoreIdentityWarning}`.trim();
                 markVueUpdate(this);
               }
             } catch (error: unknown) {
@@ -1591,7 +1637,8 @@ export const useDataStore = defineStore("data", {
       });
       applyEmptyDatasetState(this, "Cleared data.");
       persistStartupSnapshot(this);
-      const pinia = (this as unknown as { $pinia?: Pinia }).$pinia;
+      const pinia =
+        (this as unknown as { $pinia?: Pinia }).$pinia ?? resolveRuntimePinia();
       if (pinia) useWorkflowArtifactsStore(pinia).clearArtifacts();
       setControlsBusy(this, false);
       markVueUpdate(this);

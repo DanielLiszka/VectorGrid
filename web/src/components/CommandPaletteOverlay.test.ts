@@ -160,4 +160,40 @@ describe('CommandPaletteOverlay', () => {
 
     wrapper.unmount()
   })
+
+  it('resets the query and active selection when the palette is reopened', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const paletteStore = useCommandPaletteStore(pinia)
+    paletteStore.openPalette()
+
+    const wrapper = mount(CommandPaletteOverlay, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    paletteStore.setQuery('go')
+    await nextTick()
+
+    const commandRows = Array.from(document.querySelectorAll<HTMLElement>('.cmdPaletteDialog [role="option"]'))
+    expect(commandRows.length).toBeGreaterThan(3)
+    paletteStore.setSelection(3, commandRows.length)
+    await nextTick()
+
+    expect(document.querySelector<HTMLInputElement>('.cmdPaletteDialog .query')?.value).toBe('go')
+    paletteStore.closePalette()
+    await nextTick()
+    paletteStore.openPalette()
+    await nextTick()
+    await nextTick()
+
+    const input = document.querySelector<HTMLInputElement>('.cmdPaletteDialog .query')
+    const firstRow = document.querySelector<HTMLElement>('.cmdPaletteDialog [role="option"]')
+    expect(input?.value).toBe('')
+    expect(input?.getAttribute('aria-activedescendant')).toBe(firstRow?.id)
+
+    wrapper.unmount()
+  })
 })

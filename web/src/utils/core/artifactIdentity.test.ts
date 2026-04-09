@@ -60,4 +60,38 @@ describe('artifactIdentity', () => {
       computeConfigFingerprint(runReq, baseValidationReq),
     ).toBe(computeConfigFingerprint({ ...runReq, data_id: 'run-b' }, variantValidationReq))
   })
+
+  it('stays stable under key ordering noise but changes for real request changes', () => {
+    const runReqA = {
+      strategy_kind: 'DoubleMa',
+      objective: 'Sharpe',
+      backend: { backend: 'CpuOnly', device_id: 0 },
+      data_id: 'data-a',
+    }
+    const runReqB = {
+      data_id: 'data-b',
+      backend: { device_id: 0, backend: 'CpuOnly' },
+      objective: 'Sharpe',
+      strategy_kind: 'DoubleMa',
+    }
+    const validationReq = {
+      max_candidates: 12,
+      seed: 7,
+      admission_policy: 'scalar_union',
+    }
+
+    const stableA = computeConfigFingerprint(runReqA, validationReq)
+    const stableB = computeConfigFingerprint(runReqB, {
+      seed: 7,
+      admission_policy: 'scalar_union',
+      max_candidates: 12,
+    })
+    const changed = computeConfigFingerprint(
+      { ...runReqA, objective: 'NetProfit' },
+      validationReq,
+    )
+
+    expect(stableA).toBe(stableB)
+    expect(changed).not.toBe(stableA)
+  })
 })

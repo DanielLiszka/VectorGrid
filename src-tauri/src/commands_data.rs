@@ -234,10 +234,7 @@ pub struct SampleCsv {
     pub path: String,
 }
 
-#[tauri::command]
-pub fn list_sample_csvs() -> Vec<SampleCsv> {
-    let root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-
+fn sample_csvs_from_root(root: &Path) -> Vec<SampleCsv> {
     let candidates: [(&str, &str, &str); 3] = [
         ("10k", "10k candles", "src/data/10kCandles.csv"),
         (
@@ -260,6 +257,12 @@ pub fn list_sample_csvs() -> Vec<SampleCsv> {
         }
     }
     out
+}
+
+#[tauri::command]
+pub fn list_sample_csvs() -> Vec<SampleCsv> {
+    let root: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    sample_csvs_from_root(&root)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -334,26 +337,76 @@ fn list_csvs_in_dir(
     while let Some(dir) = stack.pop() {
         let entries = std::fs::read_dir(&dir)
             .map_err(|e| format!("failed to read dir {}: {}", dir.display(), e))?;
+        let mut child_dirs: Vec<PathBuf> = Vec::new();
+        let mut child_files: Vec<PathBuf> = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
             if path.is_dir() {
                 if recursive {
-                    stack.push(path);
+                    child_dirs.push(path);
                 }
                 continue;
             }
             if path.is_file() && is_csv_path(&path) {
-                out.push(path);
-                if out.len() >= max_files {
-                    out.sort();
-                    return Ok((out, true));
-                }
+                child_files.push(path);
+            }
+        }
+        child_files.sort();
+        for path in child_files {
+            out.push(path);
+            if out.len() >= max_files {
+                out.sort();
+                return Ok((out, true));
+            }
+        }
+        if recursive {
+            child_dirs.sort();
+            for path in child_dirs.into_iter().rev() {
+                stack.push(path);
             }
         }
     }
     out.sort();
     Ok((out, false))
+}
+
+fn build_repo_data_csv_list(
+    dir: &Path,
+    recursive: bool,
+    max_files: usize,
+    include_identity: bool,
+) -> Result<RepoDataCsvList, String> {
+    let (paths, truncated) = list_csvs_in_dir(dir, recursive, max_files)?;
+    let mut csv_paths: Vec<String> = Vec::with_capacity(paths.len());
+    let mut csv_entries: Vec<RepoDataCsvEntry> = if include_identity {
+        Vec::with_capacity(paths.len())
+    } else {
+        Vec::new()
+    };
+
+    for path in paths {
+        let csv_path = path.to_string_lossy().to_string();
+        csv_paths.push(csv_path.clone());
+        if include_identity {
+            let (size, mtime) = match crate::data_cache::identity_for_source(&path) {
+                Ok(id) => (Some(id.size), Some(id.mtime_utc_ms)),
+                Err(_) => (None, None),
+            };
+            csv_entries.push(RepoDataCsvEntry {
+                csv_path,
+                source_size_bytes: size,
+                source_mtime_utc_ms: mtime,
+            });
+        }
+    }
+
+    Ok(RepoDataCsvList {
+        dir: Some(dir.to_string_lossy().to_string()),
+        csv_paths,
+        csv_entries,
+        truncated,
+    })
 }
 
 #[tauri::command]
@@ -375,36 +428,7 @@ pub async fn list_repo_data_csvs(
                 truncated: false,
             });
         };
-
-        let (paths, truncated) = list_csvs_in_dir(&dir, recursive, max_files)?;
-        let mut csv_paths: Vec<String> = Vec::with_capacity(paths.len());
-        let mut csv_entries: Vec<RepoDataCsvEntry> = if include_identity {
-            Vec::with_capacity(paths.len())
-        } else {
-            Vec::new()
-        };
-
-        for p in paths {
-            let s = p.to_string_lossy().to_string();
-            csv_paths.push(s.clone());
-            if include_identity {
-                let (size, mtime) = match crate::data_cache::identity_for_source(&p) {
-                    Ok(id) => (Some(id.size), Some(id.mtime_utc_ms)),
-                    Err(_) => (None, None),
-                };
-                csv_entries.push(RepoDataCsvEntry {
-                    csv_path: s,
-                    source_size_bytes: size,
-                    source_mtime_utc_ms: mtime,
-                });
-            }
-        }
-        Ok(RepoDataCsvList {
-            dir: Some(dir.to_string_lossy().to_string()),
-            csv_paths,
-            csv_entries,
-            truncated,
-        })
+        build_repo_data_csv_list(&dir, recursive, max_files, include_identity)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1323,8 +1347,12 @@ pub fn pick_folder() -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::build_repo_data_csv_list;
     use super::clear_loaded_data_impl;
+    use super::find_repo_data_dir_from;
+    use super::list_csvs_in_dir;
     use super::normalize_polygon_live_bar;
+    use super::sample_csvs_from_root;
     use crate::state::AppState;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -1414,6 +1442,128 @@ mod tests {
         assert!(cleared.removed_ids.contains(&derived.id));
         assert!(state.get_candles(&base.id).is_err());
         assert!(state.get_candles(&derived.id).is_err());
+    }
+
+    #[test]
+    fn find_repo_data_dir_from_prefers_workspace_data_folder() {
+        let temp = make_temp_dir("commands_data_repo_root");
+        let data_dir = temp.join("data");
+        let nested = temp.join("src-tauri").join("src").join("deep");
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        std::fs::write(temp.join("Cargo.toml"), "[workspace]\nmembers = []\n")
+            .expect("write workspace cargo");
+
+        let resolved = find_repo_data_dir_from(&nested).expect("find repo data dir");
+        assert_eq!(resolved, data_dir);
+    }
+
+    #[test]
+    fn find_repo_data_dir_from_returns_none_without_workspace_data_folder() {
+        let temp = make_temp_dir("commands_data_repo_root_missing");
+        let nested = temp.join("src-tauri").join("src");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        std::fs::write(temp.join("Cargo.toml"), "[workspace]\nmembers = []\n")
+            .expect("write workspace cargo");
+
+        assert!(find_repo_data_dir_from(&nested).is_none());
+    }
+
+    #[test]
+    fn sample_csvs_from_root_skips_missing_files_and_preserves_order() {
+        let temp = make_temp_dir("commands_data_sample_csvs");
+        let src_data = temp.join("src").join("data");
+        std::fs::create_dir_all(&src_data).expect("create sample data dir");
+        std::fs::write(src_data.join("10kCandles.csv"), "timestamp,close\n1,1\n")
+            .expect("write 10k sample");
+        std::fs::write(
+            src_data.join("bitfinex btc-usd 100,000 candles ends 09-01-24.csv"),
+            "timestamp,close\n1,1\n",
+        )
+        .expect("write 100k sample");
+
+        let rows = sample_csvs_from_root(&temp);
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(ids, vec!["10k", "100k"]);
+        assert_eq!(rows[0].label, "10k candles");
+        assert!(rows[0].path.ends_with("src/data/10kCandles.csv"));
+    }
+
+    #[test]
+    fn list_csvs_in_dir_respects_recursive_flag_and_sorted_output() {
+        let temp = make_temp_dir("commands_data_repo_csvs");
+        let nested = temp.join("nested");
+        std::fs::create_dir_all(&nested).expect("create nested dir");
+        std::fs::write(temp.join("b.csv"), "timestamp,close\n1,1\n").expect("write b");
+        std::fs::write(temp.join("a.csv"), "timestamp,close\n1,1\n").expect("write a");
+        std::fs::write(nested.join("c.csv"), "timestamp,close\n1,1\n").expect("write c");
+        std::fs::write(nested.join("ignore.txt"), "not csv").expect("write txt");
+
+        let (shallow, shallow_truncated) =
+            list_csvs_in_dir(&temp, false, 10).expect("list shallow csvs");
+        let shallow_names: Vec<String> = shallow
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(shallow_names, vec!["a.csv", "b.csv"]);
+        assert!(!shallow_truncated);
+
+        let (recursive, recursive_truncated) =
+            list_csvs_in_dir(&temp, true, 10).expect("list recursive csvs");
+        let recursive_names: Vec<String> = recursive
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(recursive_names, vec!["a.csv", "b.csv", "c.csv"]);
+        assert!(!recursive_truncated);
+    }
+
+    #[test]
+    fn list_csvs_in_dir_truncates_at_the_requested_cap() {
+        let temp = make_temp_dir("commands_data_repo_csvs_cap");
+        std::fs::write(temp.join("c.csv"), "timestamp,close\n1,1\n").expect("write c");
+        std::fs::write(temp.join("a.csv"), "timestamp,close\n1,1\n").expect("write a");
+        std::fs::write(temp.join("b.csv"), "timestamp,close\n1,1\n").expect("write b");
+
+        let (paths, truncated) = list_csvs_in_dir(&temp, false, 2).expect("list capped csvs");
+        let names: Vec<String> = paths
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.csv", "b.csv"]);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn build_repo_data_csv_list_populates_identity_when_requested() {
+        let temp = make_temp_dir("commands_data_repo_identity");
+        let alpha = temp.join("alpha.csv");
+        let beta = temp.join("beta.csv");
+        std::fs::write(&alpha, "timestamp,close\n1,1\n").expect("write alpha csv");
+        std::fs::write(&beta, "timestamp,close\n2,2\n").expect("write beta csv");
+
+        let without_identity =
+            build_repo_data_csv_list(&temp, false, 10, false).expect("build repo csv list");
+        assert_eq!(
+            without_identity.csv_paths,
+            vec![
+                alpha.to_string_lossy().to_string(),
+                beta.to_string_lossy().to_string()
+            ]
+        );
+        assert!(without_identity.csv_entries.is_empty());
+        assert!(!without_identity.truncated);
+
+        let with_identity =
+            build_repo_data_csv_list(&temp, false, 10, true).expect("build repo csv list");
+        assert_eq!(with_identity.csv_entries.len(), 2);
+        assert_eq!(
+            with_identity.csv_entries[0].csv_path,
+            with_identity.csv_paths[0]
+        );
+        assert!(with_identity.csv_entries[0].source_size_bytes.is_some());
+        assert!(with_identity.csv_entries[0].source_mtime_utc_ms.is_some());
+        assert_eq!(with_identity.dir, Some(temp.to_string_lossy().to_string()));
     }
 
     #[test]

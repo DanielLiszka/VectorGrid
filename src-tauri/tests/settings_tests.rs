@@ -39,6 +39,22 @@ fn set_persists_and_resolves_market_data_dir() {
 }
 
 #[test]
+fn clearing_market_data_dir_restores_default_resolution() {
+    let base = unique_temp_dir("clear_market_data_dir");
+    let data_root = unique_temp_dir("clear_market_data_dir_root");
+
+    std::fs::create_dir_all(&data_root).unwrap();
+    settings::set_market_data_root_dir(&base, Some(&data_root)).unwrap();
+    settings::set_market_data_root_dir(&base, None).unwrap();
+
+    let configured = settings::configured_market_data_root_dir(&base).unwrap();
+    assert!(configured.is_none());
+
+    let resolved = settings::resolve_market_data_root_dir(&base).unwrap();
+    assert_eq!(resolved, base);
+}
+
+#[test]
 fn relative_market_data_dir_is_rejected() {
     let base = unique_temp_dir("reject_relative");
     std::fs::create_dir_all(&base).unwrap();

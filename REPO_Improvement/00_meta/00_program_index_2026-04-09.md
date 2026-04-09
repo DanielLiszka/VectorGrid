@@ -24,10 +24,10 @@ It is the quickest starting point for understanding:
 - [REPO_IMPROVEMENT_META_PLAN_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md)
 - [IMPROVEMENT_FEATURE_INVENTORY_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/IMPROVEMENT_FEATURE_INVENTORY_2026-04-08.md)
 - [IMPROVEMENT_MASTER_PLAN_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/IMPROVEMENT_MASTER_PLAN_2026-04-08.md)
-- [doc_creation_tracker_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md)
 - [00_program_index_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/00_program_index_2026-04-09.md)
 - [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
 - [execution_ledger_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/execution_ledger_2026-04-09.md)
+- historical snapshot: [doc_creation_tracker_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md)
 
 ## External Routing Anchor
 
@@ -74,6 +74,6 @@ The next phase is:
 ## Related Docs
 
 - [README.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/README.md)
-- [doc_creation_tracker_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md)
 - [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
 - [execution_ledger_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/execution_ledger_2026-04-09.md)
+- historical snapshot: [doc_creation_tracker_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md)

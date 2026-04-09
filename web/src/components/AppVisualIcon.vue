@@ -41,5 +41,7 @@ const resolvedAlt = computed(() => {
     v-else-if="icon"
     v-bind="attrs"
     :aria-hidden="decorative ? 'true' : undefined"
+    :aria-label="!decorative && resolvedAlt ? resolvedAlt : undefined"
+    :role="!decorative && resolvedAlt ? 'img' : undefined"
   />
 </template>

@@ -1,5 +1,8 @@
 # Doc Creation Tracker
 
+Superseded historical snapshot.
+Current canonical tracker: [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
+
 Last updated: 2026-04-09
 
 ## Purpose

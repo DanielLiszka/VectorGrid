@@ -14,7 +14,10 @@ const {
 } = storeToRefs(analysisStore)
 const { resultsTab } = storeToRefs(workflowStore)
 
-const { mountReady } = useShellMount('#drillVueShellMount')
+const { mountReady } = useShellMount('#drillVueShellMount', {
+  paneSelector: "[data-vue-panel='drill']",
+  paneDatasetKey: 'vueDrill',
+})
 
 const visible = computed(() => String(resultsTab.value || '').trim() === 'drill')
 

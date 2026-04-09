@@ -128,11 +128,15 @@ const dataSummaryChips = computed(() => {
   const chips: string[] = [];
   const dataset = String(datasetLabel.value || "").trim();
   const timeframe = String(effectiveTimeframe.value || "").trim();
+  const baseTimeframe = String(baseDataMeta.value?.timeframe || "").trim();
   const loadedId = String(dataId.value || "").trim();
   const fieldCount = dataFields.value.length;
   if (dataset) chips.push(`Dataset: ${dataset}`);
   chips.push(`Rows: ${rowLabel.value}`);
   if (timeframe) chips.push(`Timeframe: ${timeframe}`);
+  if (timeframe && baseTimeframe && timeframe !== baseTimeframe) {
+    chips.push(`Base timeframe: ${baseTimeframe}`);
+  }
   if (loadedId) chips.push(`Loaded ID: ${loadedId}`);
   if (fieldCount > 0) chips.push(`Fields: ${fieldCount}`);
   return chips;
@@ -485,8 +489,8 @@ onBeforeUnmount(() => {
             <div class="muted mono">
               {{
                 polygonHasApiKey
-                  ? "API key saved in local Polygon cache settings."
-                  : "Save an API key to enable download and live Polygon workflows."
+                  ? "API key saved in secure system storage when available. Local Polygon settings remain a compatibility fallback."
+                  : "Save an API key to enable Polygon historical download and live workflows."
               }}
             </div>
           </div>

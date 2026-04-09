@@ -119,18 +119,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the full dataset-context field inventory and meanings.
-- [ ] Document base versus current dataset surface semantics.
-- [ ] Document startup-restore and recent-path behavior.
-- [ ] Document field-availability and timeframe-hint behavior.
-- [ ] Add tests for shell-visible dataset context after load, clear, and timeframe change.
-- [ ] Add tests for startup restore and base/current context transitions.
-- [ ] Add tests proving artifact/meta builders stay aligned with visible dataset context.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the full dataset-context field inventory and meanings.
+- [x] Document base versus current dataset surface semantics.
+- [x] Document startup-restore and recent-path behavior.
+- [x] Document field-availability and timeframe-hint behavior.
+- [x] Add tests for shell-visible dataset context after load, clear, and timeframe change.
+- [x] Add tests for startup restore and base/current context transitions.
+- [x] Add tests proving artifact/meta builders stay aligned with visible dataset context.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -149,6 +149,13 @@ Public-repo quality focus:
 - prefer additive clarifications over changing user-visible context semantics abruptly
 - keep the base/current distinction explicit if the data surface becomes richer later
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Hardened dataset-context coverage across service, store, and panel layers: `web/src/services/dataService.test.ts`, `web/src/stores/dataStore.actions.test.ts`, and `web/src/components/DataWorkspacePanel.test.ts` now freeze context normalization, startup restore posture, and visible dataset-summary behavior in one verified slice.
+- Added an explicit base/current cue in `web/src/components/DataWorkspacePanel.vue` by surfacing `Base timeframe: ...` whenever a derived timeframe is active, making base-versus-current context legible without changing existing field names or service contracts.
+- Preserved downstream alignment by keeping optimize and validation service tests in the verification set, so visible dataset context and service-level consumers remain synchronized.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/stores/dataStore.actions.test.ts src/services/dataService.test.ts src/services/optimizeService.test.ts src/services/validationService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_app_core`.
 
 ## Related Docs
 

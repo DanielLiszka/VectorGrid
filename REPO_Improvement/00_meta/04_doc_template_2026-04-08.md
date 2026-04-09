@@ -89,18 +89,61 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Canonical Section Contract
+
+The default implementation-plan document should keep this canonical section order unless a topic-specific addendum is clearly justified:
+
+1. `Purpose`
+   - state the single planning objective
+2. `Scope Boundaries`
+   - separate in-scope and out-of-scope decisions
+3. `Current User-Facing Behavior`
+   - describe the live behavior being preserved or improved
+4. `Current Code Surface`
+   - name the real repo files that currently own the behavior
+5. `Current Verification Surface`
+   - name the existing tests, scripts, harnesses, or artifacts that prove behavior
+6. `Strengths Already Present`
+   - capture what should be preserved rather than accidentally rewritten
+7. `Weaknesses / Failure Modes`
+   - capture the current gaps or drift risks
+8. `Regressions To Avoid`
+   - make non-regression rules explicit before proposing changes
+9. `External Research Summary`
+   - summarize the primary external constraints that matter to the repo surface
+10. `Proposed Improvement Approach`
+   - describe the implementation direction in bounded, additive terms
+11. `Checklist`
+   - provide a concrete execution list that can actually be worked through
+12. `Verification Plan`
+   - define the exact evidence required before closure
+13. `Rollout / Fallback / Compatibility Notes`
+   - describe compatibility, migration, and fallback expectations
+14. `Related Docs`
+   - point to nearby plans or governance docs that must stay aligned
+
+## Extra Section Rules
+
+Extra sections are appropriate only when they improve execution clarity for a real surface:
+
+- add an extra section for schema examples, command matrices, or UI-state inventories when that content would otherwise make the main sections vague
+- add an extra section for phased rollout notes when the implementation cannot safely land in one slice
+- add an extra section for artifact examples when workbook, JSON, CSV, or screenshot evidence is central to the plan
+- do not add decorative overview sections that duplicate `Purpose`, `Scope Boundaries`, or `Proposed Improvement Approach`
+- if extra sections are added, keep the canonical 14-section backbone intact and place the extra section where it sharpens execution rather than at the end as an orphan note
+
 ## Checklist
 
-- [ ] Freeze the 14 mandatory headings in one canonical order.
-- [ ] Define the minimum content expectation for each heading.
-- [ ] Define when extra sections are appropriate.
-- [ ] Preserve checklist and verification sections as mandatory.
-- [ ] Keep the tracker audit aligned with the template wording.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Freeze the 14 mandatory headings in one canonical order.
+- [x] Define the minimum content expectation for each heading.
+- [x] Define when extra sections are appropriate.
+- [x] Preserve checklist and verification sections as mandatory.
+- [x] Keep the tracker audit aligned with the template wording.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

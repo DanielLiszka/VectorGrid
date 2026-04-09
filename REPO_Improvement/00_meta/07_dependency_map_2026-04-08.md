@@ -95,17 +95,50 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Dependency Backbone
+
+The foundational dependency chain for this program is:
+
+1. `REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
+   - source of truth for scope and catalog
+2. `00_meta/00_program_index_2026-04-09.md`
+   - current operational entry point
+3. `00_meta/01_doc_creation_tracker_2026-04-09.md`
+   - corpus/state ledger for planned-slot creation
+4. `00_meta/02_pre_impl_research_gate_2026-04-08.md`
+   - mandatory research rule for detailed planning and implementation
+5. `00_meta/04_doc_template_2026-04-08.md`
+   - shape contract for implementation-plan docs
+6. `11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md`
+   - quality threshold for implementation-plan docs
+7. `00_meta/09_regression_safety_rules_2026-04-08.md`
+   - non-regression authority for any implementation slice
+8. `00_meta/10_verification_expectations_2026-04-08.md`
+   - evidence standard for plan closure
+9. domain implementation docs under `01_shell/` through `11_docs_ops/`
+   - specific execution authorities for repo surfaces
+10. `00_meta/execution_ledger_2026-04-09.md`
+   - whole-document execution tracker
+
+## Wave-Order Rules
+
+- create or update foundational meta docs before creating or materially revising dependent implementation docs
+- if a domain doc conflicts with a meta doc, update the governing meta doc first or in the same change
+- use dependency order to decide serial execution when multiple untouched docs compete for attention
+- treat cross-cutting test/perf or docs/ops docs as prerequisite companions when a domain doc clearly depends on them
+- keep `Related Docs` aligned with these dependencies so contributors can navigate the chain without re-discovery
+
 ## Checklist
 
-- [ ] Define the foundational meta-doc dependency chain.
-- [ ] Define when an implementation doc depends on a meta doc.
-- [ ] Use dependencies to shape future wave order.
-- [ ] Keep related-doc references aligned with the dependency map.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define the foundational meta-doc dependency chain.
+- [x] Define when an implementation doc depends on a meta doc.
+- [x] Use dependencies to shape future wave order.
+- [x] Keep related-doc references aligned with the dependency map.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

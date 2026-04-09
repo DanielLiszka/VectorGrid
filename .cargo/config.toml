@@ -1,5 +1,3 @@
-[build]
-rustc-wrapper = "sccache"
-
 [env]
+# Keep the cache-size hint for contributors who opt into sccache locally.
 SCCACHE_CACHE_SIZE = "20G"

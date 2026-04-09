@@ -44,6 +44,7 @@ Current visible behavior therefore includes:
 
 ## Current Verification Surface
 
+- `web/src/composables/useTaskLifecycleSummary.test.ts`
 - `web/src/stores/taskStore.lifecycle.test.ts`
 - `web/src/stores/taskStoreCampaignProgress.test.ts`
 - `web/src/stores/taskStoreEventThrottle.test.ts`
@@ -96,18 +97,24 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- added direct `web/src/composables/useTaskLifecycleSummary.test.ts` coverage for active-task posture, overall progress, latest-task outcome, and toast-based shell headline fallback
+- verified the shared summary still feeds `RunFooterPanel`, `SettingsWorkspacePanel`, and `VueWorkspaceShell` without consumer-specific divergence
+- kept the summary contract intentionally small: shell consumers get a concise derived posture while Task Center remains the detailed task surface
+
 ## Checklist
 
-- [ ] Document every value returned by `useTaskLifecycleSummary.ts` and where it is consumed.
-- [ ] Document which `taskStore.ts` fields the summary depends on.
-- [ ] Document how `statusPresentation.ts` participates in tone and wording normalization.
-- [ ] Add or tighten tests for active-task count, latest outcome, and overall-progress label behavior.
-- [ ] Record the rule that shell consumers should not fork their own summary logic.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every value returned by `useTaskLifecycleSummary.ts` and where it is consumed.
+- [x] Document which `taskStore.ts` fields the summary depends on.
+- [x] Document how `statusPresentation.ts` participates in tone and wording normalization.
+- [x] Add or tighten tests for active-task count, latest outcome, and overall-progress label behavior.
+- [x] Record the rule that shell consumers should not fork their own summary logic.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

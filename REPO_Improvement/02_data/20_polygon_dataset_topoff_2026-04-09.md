@@ -93,16 +93,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document top-off preconditions and manifest dependence.
-- [ ] Document lookback-window rejection behavior.
-- [ ] Document base-load versus effective-load response semantics.
-- [ ] Document requested-timeframe resample behavior after top-off.
-- [ ] Add or tighten tests if top-off branching or response shape changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document top-off preconditions and manifest dependence.
+- [x] Document lookback-window rejection behavior.
+- [x] Document base-load versus effective-load response semantics.
+- [x] Document requested-timeframe resample behavior after top-off.
+- [x] Add or tighten tests if top-off branching or response shape changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -120,6 +120,13 @@ Public-repo quality focus:
 - keep top-off error posture explicit rather than silently degrading to a full download
 - maintain direct response parity with download-and-load where possible
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added frontend command-contract hardening in `web/src/services/dataService.ts` and `web/src/services/dataService.test.ts`: malformed top-off responses now fail fast, and empty-path requests still reject before any backend invoke.
+- Added store regression coverage in `web/src/stores/dataStore.actions.test.ts` for two key top-off branches that were previously implicit: non-base selected datasets now prove the `1m` fallback request path, and the post-top-off forced cache refresh keeps the topped-off dataset selected.
+- Preserved backend lookback-window and manifest-derived request construction exactly as implemented in `src-tauri/src/polygon.rs`; this slice improved parity and verification without widening top-off into generic download behavior.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

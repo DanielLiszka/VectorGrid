@@ -57,14 +57,14 @@ That means the repo can build software, but the public-release story is still un
 - perf-gate outputs for candidate builds
 - future GitHub releases page once public releases are created
 
-## Current Strengths Already Present
+## Strengths Already Present
 
 - the repo already distinguishes build variants and benchmark posture carefully
 - release/build docs already exist instead of being fully ad hoc
 - artifact and report naming quality is already a recognized concern elsewhere in the plan set
 - the improvement program already values evidence-backed verification
 
-## Current Weaknesses and Failure Modes
+## Weaknesses / Failure Modes
 
 - release publishing can become inconsistent without a checklist
 - public users may not know which platform/build combinations are actually supported
@@ -125,7 +125,7 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
-## Step-by-Step Checklist
+## Checklist
 
 - [ ] Define the public release checklist for this repo.
 - [ ] Define the supported platform and build-variant statement format.

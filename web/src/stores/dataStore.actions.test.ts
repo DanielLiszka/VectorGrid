@@ -32,6 +32,7 @@ import {
 import { DATA_STARTUP_SNAPSHOT_KEY } from "../utils/core/storageKeys";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import { useDataStore } from "./dataStore";
+import { useWorkflowArtifactsStore } from "./workflowArtifactsStore";
 
 function installStorageHarness(
   seed: Record<string, string> = {},
@@ -349,6 +350,14 @@ async function flushAsync(): Promise<void> {
   await Promise.resolve();
 }
 
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 describe("data store actions", () => {
   let pinia: ReturnType<typeof createPinia>;
 
@@ -498,11 +507,15 @@ describe("data store actions", () => {
     expect(store.dataLen).toBe("500");
     expect(store.baseCsvPath).toBe("C:/tmp/aapl.csv");
     expect(store.baseSourceKind).toBe("csv");
+    expect(store.baseSourceSizeBytes).toBe(123);
+    expect(store.baseSourceMtimeUtcMs).toBe(456);
     expect(store.canApplyTimeframe).toBe(true);
-    expect(
-      readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)
-        ?.baseCsvPath,
-    ).toBe("C:/tmp/aapl.csv");
+    const snapshot = readStorageJson<Record<string, unknown>>(
+      DATA_STARTUP_SNAPSHOT_KEY,
+    );
+    expect(snapshot?.baseCsvPath).toBe("C:/tmp/aapl.csv");
+    expect(snapshot?.baseSourceSizeBytes).toBe(123);
+    expect(snapshot?.baseSourceMtimeUtcMs).toBe(456);
   });
 
   it("applies timeframe using base data id and supports reset to base timeframe", async () => {
@@ -514,9 +527,15 @@ describe("data store actions", () => {
     await flushAsync();
 
     expect(applyTimeframeMock).toHaveBeenCalledWith("15m", "data-1");
+    expect(store.baseDataId).toBe("data-1");
     expect(store.dataId).toBe("data-1@15m");
     expect(store.dataTimeframe).toBe("15m");
     expect(store.datasetRange).toContain("15m");
+    expect(store.dataTimeframeHint).toContain("no extra downloads");
+    expect(store.baseCsvPath).toBe("C:/tmp/aapl.csv");
+    expect(store.baseDataMeta?.timeframe).toBe("1m");
+    expect(store.baseSourceSizeBytes).toBe(123);
+    expect(store.baseSourceMtimeUtcMs).toBe(456);
     expect(
       readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)
         ?.selectedTimeframe,
@@ -528,6 +547,11 @@ describe("data store actions", () => {
     expect(store.dataId).toBe("data-1");
     expect(store.dataTimeframe).toBe("");
     expect(store.datasetRange).toContain("1m");
+    expect(store.baseDataId).toBe("data-1");
+    expect(store.baseCsvPath).toBe("C:/tmp/aapl.csv");
+    expect(store.dataTimeframeHint).toContain(
+      "Choose a higher timeframe to derive candles",
+    );
   });
 
   it("dispatches market-data directory and sample actions through data service", async () => {
@@ -579,6 +603,39 @@ describe("data store actions", () => {
     expect(closePolygonMock).toHaveBeenCalled();
   });
 
+  it("falls back to the first cached dataset when refresh drops the prior selection", async () => {
+    const store = useDataStore();
+    getPolygonCacheInfoMock
+      .mockResolvedValueOnce({
+        cacheDir: "C:/default/polygon-cache",
+        hasApiKey: true,
+        datasets: [
+          defaultPolygonDataset,
+          {
+            ...defaultPolygonDataset,
+            displaySymbol: "MSFT",
+            polygonTicker: "MSFT",
+            csvPath: "C:/default/polygon-cache/MSFT_1m.csv",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        cacheDir: "C:/default/polygon-cache",
+        hasApiKey: true,
+        datasets: [defaultPolygonDataset],
+      });
+
+    store.openPolygon();
+    await flushAsync();
+    store.selectPolygonDataset("C:/default/polygon-cache/MSFT_1m.csv");
+
+    store.refreshPolygon();
+    await flushAsync();
+
+    expect(store.polygonSelectedPath).toBe(defaultPolygonDataset.csvPath);
+    expect(store.polygonSelectedMeta).toContain("AAPL");
+  });
+
   it("saves API keys and downloads/loads Polygon data through the store", async () => {
     const store = useDataStore();
     store.setInputField("polygonApiKey", "secret");
@@ -608,6 +665,40 @@ describe("data store actions", () => {
     expect(store.dataTimeframe).toBe("15m");
     expect(store.datasetContext).toContain("source=polygon");
     expect(store.baseSourceKind).toBe("polygon");
+  });
+
+  it("surfaces cache reuse and unchecked integrity for downloaded Polygon datasets", async () => {
+    const store = useDataStore();
+    downloadPolygonDatasetMock.mockResolvedValueOnce({
+      csvPath: "C:/default/polygon-cache/AAPL_1m.csv",
+      downloadedBars: 0,
+      usedCacheOnly: true,
+      baseLoad: {
+        ...defaultLoadResult,
+        path: "C:/default/polygon-cache/AAPL_1m.csv",
+        dataId: "poly-cache-base",
+        meta: { ...defaultLoadResult.meta, timeframe: "1m", len: 5000 },
+      },
+      load: {
+        ...defaultLoadResult,
+        path: "C:/default/polygon-cache/AAPL_1m.csv",
+        dataId: "poly-cache-base",
+        meta: { ...defaultLoadResult.meta, timeframe: "1m", len: 5000 },
+      },
+    });
+
+    store.setInputField("polygonSymbol", "aapl");
+    store.setInputField("polygonFrom", "2024-01-01");
+    store.setInputField("polygonTo", "2024-01-31");
+
+    store.downloadPolygonDataset();
+    await flushAsync();
+    await flushAsync();
+
+    expect(store.statusLine).toContain("cache reused");
+    expect(store.statusLine).toContain("AAPL");
+    expect(store.polygonSelectedMeta).toContain("Integrity: unchecked");
+    expect(store.polygonSelectedMeta).toContain("adjusted");
   });
 
   it("auto-tops off a matching cached Polygon dataset when re-downloading the same cached coverage", async () => {
@@ -647,12 +738,41 @@ describe("data store actions", () => {
     store.openPolygon();
     await flushAsync();
 
+    validatePolygonDatasetMock.mockResolvedValueOnce({
+      ...defaultPolygonDataset,
+      rowCount: 1600,
+      minTs: 1699999000,
+      maxTs: 1700006000,
+      integrity: {
+        checkedUtcMs: 1700006000000,
+        parseErrors: 0,
+        duplicates: 1,
+        outOfOrder: 0,
+        sameDayGapsGt2Min: 0,
+      },
+    });
+    repairPolygonDatasetMock.mockResolvedValueOnce({
+      ...defaultPolygonDataset,
+      rowCount: 1600,
+      minTs: 1699999000,
+      maxTs: 1700006000,
+      integrity: {
+        checkedUtcMs: 1700007000000,
+        parseErrors: 0,
+        duplicates: 0,
+        outOfOrder: 0,
+        sameDayGapsGt2Min: 0,
+      },
+    });
+
     store.validatePolygonDataset();
     await flushAsync();
     expect(validatePolygonDatasetMock).toHaveBeenCalledWith(
       defaultPolygonDataset.csvPath,
     );
     expect(store.polygonSelectedMeta).toContain("dup=1");
+    expect(store.polygonDatasets[0]?.rowCount).toBe(1600);
+    expect(store.polygonCacheMeta).toContain("1 cached dataset");
 
     store.repairPolygonDataset();
     await flushAsync();
@@ -660,6 +780,7 @@ describe("data store actions", () => {
       defaultPolygonDataset.csvPath,
     );
     expect(store.polygonSelectedMeta).toContain("dup=0");
+    expect(store.polygonSelectedPath).toBe(defaultPolygonDataset.csvPath);
 
     store.clearPolygonApiKey();
     await flushAsync();
@@ -701,6 +822,100 @@ describe("data store actions", () => {
     expect(store.baseDataId).toBe("poly-topoff-base");
     expect(store.dataId).toBe("poly-topoff");
     expect(store.dataTimeframe).toBe("15m");
+  });
+
+  it("keeps no-new-bars status text visible when Polygon top-off finds nothing new", async () => {
+    const store = useDataStore();
+    store.openPolygon();
+    await flushAsync();
+
+    topOffPolygonDatasetMock.mockResolvedValueOnce({
+      csvPath: defaultPolygonDataset.csvPath,
+      downloadedBars: 0,
+      usedCacheOnly: false,
+      baseLoad: {
+        ...defaultLoadResult,
+        path: defaultPolygonDataset.csvPath,
+        dataId: "poly-topoff-empty-base",
+      },
+      load: {
+        ...defaultLoadResult,
+        path: defaultPolygonDataset.csvPath,
+        dataId: "poly-topoff-empty-base",
+      },
+    });
+
+    store.topOffPolygonDataset();
+    await flushAsync();
+    await flushAsync();
+
+    expect(store.statusLine).toContain("no new bars available");
+    expect(store.statusLine).toContain("Loaded Polygon dataset");
+  });
+
+  it("tops off a non-active cached dataset using 1m and keeps it selected after refresh", async () => {
+    const store = useDataStore();
+    const otherDataset = {
+      ...defaultPolygonDataset,
+      displaySymbol: "MSFT",
+      polygonTicker: "MSFT",
+      csvPath: "C:/default/polygon-cache/MSFT_1m.csv",
+    };
+
+    store.openPolygon();
+    await flushAsync();
+    store.polygonDatasets = [defaultPolygonDataset, otherDataset];
+    store.selectPolygonDataset(otherDataset.csvPath);
+    store.applyLoadResult(
+      {
+        ...defaultLoadResult,
+        path: defaultPolygonDataset.csvPath,
+        dataId: "poly-1-base",
+      },
+      { treatAsBase: true, source: "polygon" },
+    );
+    store.applyLoadResult(
+      {
+        ...defaultLoadResult,
+        path: defaultPolygonDataset.csvPath,
+        dataId: "poly-1",
+        meta: { ...defaultLoadResult.meta, timeframe: "15m", len: 100 },
+      },
+      { treatAsBase: false, source: "polygon" },
+    );
+
+    topOffPolygonDatasetMock.mockResolvedValueOnce({
+      csvPath: otherDataset.csvPath,
+      downloadedBars: 5,
+      usedCacheOnly: false,
+      baseLoad: {
+        ...defaultLoadResult,
+        path: otherDataset.csvPath,
+        dataId: "poly-msft-base",
+      },
+      load: {
+        ...defaultLoadResult,
+        path: otherDataset.csvPath,
+        dataId: "poly-msft-base",
+      },
+    });
+    getPolygonCacheInfoMock.mockResolvedValueOnce({
+      cacheDir: "C:/default/polygon-cache",
+      hasApiKey: true,
+      datasets: [otherDataset, defaultPolygonDataset],
+    });
+
+    store.topOffPolygonDataset();
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(topOffPolygonDatasetMock).toHaveBeenCalledWith({
+      csvPath: otherDataset.csvPath,
+      timeframe: "1m",
+    });
+    expect(store.polygonSelectedPath).toBe(otherDataset.csvPath);
+    expect(store.statusLine).toContain("bars downloaded");
   });
 
   it("hydrates startup data using Vue-owned data bootstrap services", async () => {
@@ -754,6 +969,163 @@ describe("data store actions", () => {
     expect(store.baseDataId).toBe("data-1");
     expect(store.dataId).toBe("data-1@15m");
     expect(store.dataTimeframe).toBe("15m");
+    expect(store.baseSourceSizeBytes).toBe(123);
+    expect(store.baseSourceMtimeUtcMs).toBe(456);
+  });
+
+  it("reuses the same critical startup hydration promise across concurrent callers", async () => {
+    const store = useDataStore();
+    const deferred = createDeferred<MarketDataDirInfoSummary>();
+    getMarketDataDirInfoMock.mockReturnValueOnce(deferred.promise);
+
+    const first = store.hydrateStartupState({ includeDeferred: false });
+    const second = store.hydrateStartupState({ includeDeferred: false });
+
+    expect(getMarketDataDirInfoMock).toHaveBeenCalledTimes(1);
+
+    deferred.resolve({
+      defaultRootDir: "C:/default",
+      configuredRootDir: "",
+      effectiveRootDir: "C:/default",
+      polygonCacheDir: "C:/default/polygon-cache",
+      hint: "Using default root: C:/default · Polygon cache: C:/default/polygon-cache",
+    });
+
+    await Promise.all([first, second]);
+    expect(store.marketDataDirHint).toContain("Using default root: C:/default");
+  });
+
+  it("warns when startup restore finds the same path with different source identity", async () => {
+    const store = useDataStore();
+    loadCsvMock.mockResolvedValueOnce({
+      ...defaultLoadResult,
+      meta: {
+        ...defaultLoadResult.meta,
+        sourceSizeBytes: 999,
+        sourceMtimeUtcMs: 888,
+      },
+    });
+    writeStorageJson(DATA_STARTUP_SNAPSHOT_KEY, {
+      autoRestoreDataset: true,
+      baseCsvPath: "C:/tmp/aapl.csv",
+      selectedTimeframe: "15m",
+      source: "csv",
+      baseSourceSizeBytes: 123,
+      baseSourceMtimeUtcMs: 456,
+      savedAtUnixMs: Date.now(),
+    });
+
+    await store.hydrateStartupState({ includeDeferred: false });
+
+    expect(loadCsvMock).toHaveBeenCalledWith("C:/tmp/aapl.csv");
+    expect(applyTimeframeMock).toHaveBeenCalledWith("15m", "data-1");
+    expect(store.baseDataId).toBe("data-1");
+    expect(store.dataId).toBe("data-1@15m");
+    expect(store.statusLine).toContain("Source changed since last session");
+    expect(store.statusLine).toContain("size changed");
+    expect(store.statusLine).toContain("mtime changed");
+  });
+
+  it("shows startup restore pending when legacy hydration sees an auto-restore snapshot", () => {
+    const store = useDataStore();
+    writeStorageJson(DATA_STARTUP_SNAPSHOT_KEY, {
+      autoRestoreDataset: true,
+      baseCsvPath: "C:/tmp/aapl.csv",
+      selectedTimeframe: "",
+      source: "csv",
+      baseSourceSizeBytes: 123,
+      baseSourceMtimeUtcMs: 456,
+      savedAtUnixMs: Date.now(),
+    });
+
+    store.applyLegacySnapshot({
+      autoRestoreDataset: true,
+    });
+
+    expect(store.statusLine).toBe("Startup restore pending.");
+    expect(store.dataId).toBe("—");
+    expect(store.baseDataId).toBe("");
+  });
+
+  it("surfaces restore failure instead of hiding it behind a ready state", async () => {
+    const store = useDataStore();
+    loadCsvMock.mockRejectedValueOnce(new Error("missing csv"));
+    writeStorageJson(DATA_STARTUP_SNAPSHOT_KEY, {
+      autoRestoreDataset: true,
+      baseCsvPath: "C:/tmp/missing.csv",
+      selectedTimeframe: "15m",
+      source: "csv",
+      baseSourceSizeBytes: 123,
+      baseSourceMtimeUtcMs: 456,
+      savedAtUnixMs: Date.now(),
+    });
+
+    await store.hydrateStartupState({ includeDeferred: false });
+
+    expect(store.statusLine).toContain("Startup restore failed:");
+    expect(store.statusLine).toContain("missing csv");
+    expect(store.dataId).toBe("—");
+    expect(store.baseDataId).toBe("");
+    expect(store.startupHydratedOnce).toBe(true);
+  });
+
+  it("waits for critical startup hydration before loading deferred sample affordances", async () => {
+    const store = useDataStore();
+    const deferred = createDeferred<MarketDataDirInfoSummary>();
+    getMarketDataDirInfoMock.mockReturnValueOnce(deferred.promise);
+
+    const hydration = store.hydrateStartupState();
+
+    expect(getMarketDataDirInfoMock).toHaveBeenCalledTimes(1);
+    expect(listSampleCsvsMock).not.toHaveBeenCalled();
+    expect(store.startupHydratedOnce).toBe(false);
+    expect(store.startupDeferredHydratedOnce).toBe(false);
+
+    deferred.resolve({
+      defaultRootDir: "C:/default",
+      configuredRootDir: "",
+      effectiveRootDir: "C:/default",
+      polygonCacheDir: "C:/default/polygon-cache",
+      hint: "Using default root: C:/default · Polygon cache: C:/default/polygon-cache",
+    });
+
+    await hydration;
+
+    expect(store.startupHydratedOnce).toBe(true);
+    expect(store.startupDeferredHydratedOnce).toBe(true);
+    expect(listSampleCsvsMock).toHaveBeenCalledTimes(1);
+    expect(store.sampleCsvVisible).toBe(true);
+    expect(store.sampleCsvOptions).toEqual(defaultSampleRows);
+  });
+
+  it("shares the same critical startup work when deferred hydration overlaps a critical-only caller", async () => {
+    const store = useDataStore();
+    const deferred = createDeferred<MarketDataDirInfoSummary>();
+    getMarketDataDirInfoMock.mockReturnValueOnce(deferred.promise);
+
+    const bootCritical = store.hydrateStartupState({ includeDeferred: false });
+    const panelFollowup = store.hydrateStartupState();
+
+    expect(getMarketDataDirInfoMock).toHaveBeenCalledTimes(1);
+    expect(listSampleCsvsMock).not.toHaveBeenCalled();
+
+    deferred.resolve({
+      defaultRootDir: "C:/default",
+      configuredRootDir: "",
+      effectiveRootDir: "C:/default",
+      polygonCacheDir: "C:/default/polygon-cache",
+      hint: "Using default root: C:/default · Polygon cache: C:/default/polygon-cache",
+    });
+
+    await bootCritical;
+    expect(store.startupHydratedOnce).toBe(true);
+
+    await panelFollowup;
+
+    expect(store.startupDeferredHydratedOnce).toBe(true);
+    expect(listSampleCsvsMock).toHaveBeenCalledTimes(1);
+    expect(store.sampleCsvVisible).toBe(true);
+    expect(store.sampleCsvOptions).toEqual(defaultSampleRows);
   });
 
   it("does not eagerly scan Polygon cache when stale polygon-open state is restored during startup hydration", async () => {
@@ -854,8 +1226,20 @@ describe("data store actions", () => {
 
   it("clears data state while still calling data service clear hook", async () => {
     const store = useDataStore();
+    const artifacts = useWorkflowArtifactsStore(pinia);
     store.loadCsv("C:/tmp/aapl.csv");
     await flushAsync();
+    artifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-04-09T10:00:00Z",
+        artifactPath: "C:/runs/run.json",
+        strategyKind: "DoubleMa",
+      },
+      currentValidation: {
+        ts: "2026-04-09T10:05:00Z",
+        artifactPath: "C:/runs/validation.json",
+      },
+    });
 
     store.clearData();
     await flushAsync();
@@ -866,6 +1250,8 @@ describe("data store actions", () => {
     expect(store.datasetLabel).toBe("—");
     expect(store.dataFields).toEqual([]);
     expect(store.canApplyTimeframe).toBe(false);
+    expect(artifacts.currentRun).toBeNull();
+    expect(artifacts.currentValidation).toBeNull();
     expect(
       readStorageJson<Record<string, unknown>>(DATA_STARTUP_SNAPSHOT_KEY)
         ?.baseCsvPath,

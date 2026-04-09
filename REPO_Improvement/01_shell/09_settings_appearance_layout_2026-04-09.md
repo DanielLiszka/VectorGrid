@@ -25,7 +25,10 @@ Out of scope:
 Settings already exposes a coherent appearance/layout surface:
 
 - theme: `light`, `dark`, `system`
-- window effect: `none`, `mica`, `acrylic`, `vibrancy`
+- window effect:
+  - Windows: `none`, `mica`, `acrylic`, `blur`
+  - macOS: `none`, `vibrancy`
+  - other platforms: `none`
 - help mode: `full`, `concise`, `off`
 - density mode: `comfortable`, `standard`, `dense`
 - layout defaults for advanced controls and collapsed controls panel
@@ -124,17 +127,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document theme, effect, help, density, and layout-default settings separately.
-- [ ] Document preflight, bootstrap, and live-update responsibilities.
-- [ ] Document root dataset attributes used by the shell.
-- [ ] Document native window-effect behavior and its service boundary.
-- [ ] Add or tighten tests if appearance or layout copy/behavior changes.
-- [ ] Preserve the separation from Tauri app-settings persistence.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document theme, effect, help, density, and layout-default settings separately.
+- [x] Document preflight, bootstrap, and live-update responsibilities.
+- [x] Document root dataset attributes used by the shell.
+- [x] Document native window-effect behavior and its service boundary.
+- [x] Add or tighten tests if appearance or layout copy/behavior changes.
+- [x] Preserve the separation from Tauri app-settings persistence.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

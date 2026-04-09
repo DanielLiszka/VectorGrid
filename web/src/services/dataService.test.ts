@@ -147,6 +147,15 @@ describe("dataService market-data directory actions", () => {
     expect(result.loadSource).toBe("derived_fresh_resample");
   });
 
+  it("rejects applyTimeframe when base data id or timeframe is missing", async () => {
+    await expect(applyTimeframe("15m", "")).rejects.toThrow(
+      "Load a dataset first (missing base data id).",
+    );
+    await expect(applyTimeframe("   ", "data-2")).rejects.toThrow(
+      "Choose a timeframe first.",
+    );
+  });
+
   it("loads sample CSV by index using list_sample_csvs command", async () => {
     invokeCommandMock
       .mockResolvedValueOnce([{ path: "C:/a.csv" }, { path: " C:/b.csv " }])
@@ -166,6 +175,34 @@ describe("dataService market-data directory actions", () => {
     });
     expect(result?.dataId).toBe("data-9");
     expect(result?.loadSource).toBe("csv_parsed_cache_write_skipped");
+  });
+
+  it("infers base-load reuse when legacy responses omit load_source", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      id: "data-legacy-base",
+      meta: { len: 42, timeframe: "1m", has_close: true },
+      cache_hit: true,
+      cache_path: "",
+    });
+
+    const result = await loadCsv(" C:/legacy.csv ");
+
+    expect(result.dataId).toBe("data-legacy-base");
+    expect(result.loadSource).toBe("in_memory_base_reuse");
+  });
+
+  it("infers derived reuse when legacy resample responses omit load_source", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      id: "data-legacy@15m",
+      meta: { len: 21, timeframe: "15m", has_close: true },
+      cache_hit: true,
+      cache_path: "",
+    });
+
+    const result = await applyTimeframe("15m", "data-legacy");
+
+    expect(result.dataId).toBe("data-legacy@15m");
+    expect(result.loadSource).toBe("derived_in_memory_reuse");
   });
 
   it("lists sample CSV entries with normalized labels and paths", async () => {
@@ -260,6 +297,31 @@ describe("dataService market-data directory actions", () => {
     });
   });
 
+  it("opens the effective market-data root when Polygon cache path is unavailable", async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        default_root_dir: "C:/default",
+        configured_root_dir: "C:/custom",
+        effective_root_dir: "C:/custom",
+        polygon_cache_dir: "",
+      })
+      .mockResolvedValueOnce(undefined);
+
+    const result = await openMarketDataDir();
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "get_market_data_dir_info",
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {
+      path: "C:/custom",
+    });
+    expect(result).toEqual({
+      path: "C:/custom",
+      openedWith: "open_path",
+    });
+  });
+
   it("rejects when market-data directory path is empty", async () => {
     await expect(setMarketDataDir("   ", true)).rejects.toThrow(
       "Enter a market data folder path first.",
@@ -328,6 +390,55 @@ describe("dataService market-data directory actions", () => {
     expect(info.hasApiKey).toBe(true);
     expect(saved.hasApiKey).toBe(true);
     expect(cleared.hasApiKey).toBe(false);
+  });
+
+  it("normalizes Polygon cache datasets with manifest defaults and integrity details", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      cache_dir: "C:/polygon",
+      has_api_key: false,
+      datasets: [
+        {
+          market: "stocks",
+          display_symbol: "AAPL",
+          polygon_ticker: "AAPL",
+          csv_path: "C:/polygon/AAPL_1m.csv",
+          row_count: "10",
+          adjusted: 0,
+          integrity: {
+            parse_errors: 1,
+            duplicates: 2,
+            out_of_order: 3,
+            same_day_gaps_gt_2min: 4,
+            checked_utc_ms: 1700000000000,
+          },
+        },
+      ],
+    });
+
+    const info = await getPolygonCacheInfo();
+
+    expect(info.hasApiKey).toBe(false);
+    expect(info.datasets).toEqual([
+      {
+        market: "stocks",
+        displaySymbol: "AAPL",
+        polygonTicker: "AAPL",
+        timeframe: "1m",
+        csvPath: "C:/polygon/AAPL_1m.csv",
+        minTs: 0,
+        maxTs: 0,
+        lastUpdatedUtcMs: 0,
+        rowCount: 10,
+        adjusted: false,
+        integrity: {
+          checkedUtcMs: 1700000000000,
+          parseErrors: 1,
+          duplicates: 2,
+          outOfOrder: 3,
+          sameDayGapsGt2Min: 4,
+        },
+      },
+    ]);
   });
 
   it("downloads, tops off, validates, and repairs Polygon datasets via backend commands", async () => {
@@ -463,5 +574,165 @@ describe("dataService market-data directory actions", () => {
     expect(toppedOff.load.dataId).toBe("poly-2");
     expect(validated.integrity?.duplicates).toBe(1);
     expect(repaired.integrity?.duplicates).toBe(0);
+  });
+
+  it("rejects malformed Polygon download and top-off responses", async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        csv_path: "",
+        downloaded_bars: 0,
+        used_cache_only: false,
+        base_load: {
+          id: "",
+          meta: { len: 0, timeframe: "1m", has_close: true },
+          cache_hit: false,
+          cache_path: "",
+          load_source: "csv_parsed_and_cached",
+        },
+        id: "",
+        meta: { len: 0, timeframe: "1m", has_close: true },
+        cache_hit: false,
+        cache_path: "",
+        load_source: "csv_parsed_and_cached",
+      })
+      .mockResolvedValueOnce({
+        csv_path: "C:/polygon/AAPL_1m.csv",
+        downloaded_bars: 0,
+        used_cache_only: false,
+        base_load: {
+          id: "",
+          meta: { len: 0, timeframe: "1m", has_close: true },
+          cache_hit: false,
+          cache_path: "",
+          load_source: "csv_parsed_and_cached",
+        },
+        id: "",
+        meta: { len: 0, timeframe: "1m", has_close: true },
+        cache_hit: false,
+        cache_path: "",
+        load_source: "csv_parsed_and_cached",
+      });
+
+    await expect(
+      downloadPolygonDataset({
+        market: "stocks",
+        symbol: "AAPL",
+        from: "2024-01-01",
+        to: "2024-01-02",
+        adjusted: true,
+        timeframe: "1m",
+      }),
+    ).rejects.toThrow("Polygon download returned an invalid csv path.");
+
+    await expect(
+      topOffPolygonDataset({
+        csvPath: "C:/polygon/AAPL_1m.csv",
+        timeframe: "1m",
+      }),
+    ).rejects.toThrow("Polygon top-off returned an invalid base dataset.");
+  });
+
+  it("rejects empty Polygon dataset paths for top-off, validate, and repair actions", async () => {
+    await expect(topOffPolygonDataset({ csvPath: "   " })).rejects.toThrow(
+      "Select a Polygon dataset first.",
+    );
+    await expect(validatePolygonDataset("   ")).rejects.toThrow(
+      "Select a Polygon dataset first.",
+    );
+    await expect(repairPolygonDataset("   ")).rejects.toThrow(
+      "Select a Polygon dataset first.",
+    );
+  });
+
+  it("preserves native ticker and market-specific request shapes for Polygon downloads", async () => {
+    invokeCommandMock
+      .mockResolvedValueOnce({
+        csv_path: "C:/polygon/BTCUSD_1m.csv",
+        downloaded_bars: 15,
+        used_cache_only: true,
+        base_load: {
+          id: "crypto-base",
+          meta: { len: 15, timeframe: "1m", has_close: true },
+          cache_hit: true,
+          cache_path: "C:/cache/crypto.bin",
+          load_source: "binary_cache",
+        },
+        id: "crypto-base",
+        meta: {
+          len: 15,
+          timeframe: "1m",
+          has_close: true,
+        },
+        cache_hit: true,
+        cache_path: "C:/cache/crypto.bin",
+        load_source: "binary_cache",
+      })
+      .mockResolvedValueOnce({
+        csv_path: "C:/polygon/EURUSD_1m.csv",
+        downloaded_bars: 12,
+        used_cache_only: false,
+        base_load: {
+          id: "fx-base",
+          meta: { len: 12, timeframe: "1m", has_close: true },
+          cache_hit: false,
+          cache_path: "C:/cache/fx.bin",
+          load_source: "csv_parsed_and_cached",
+        },
+        id: "fx-base",
+        meta: {
+          len: 12,
+          timeframe: "1m",
+          has_close: true,
+        },
+        cache_hit: false,
+        cache_path: "C:/cache/fx.bin",
+        load_source: "csv_parsed_and_cached",
+      });
+
+    await downloadPolygonDataset({
+      market: "crypto",
+      symbol: "x:btcusd",
+      from: "2024-01-01",
+      to: "2024-01-02",
+      adjusted: false,
+      timeframe: "",
+    });
+    await downloadPolygonDataset({
+      market: "fx",
+      symbol: "eur/usd",
+      from: "2024-01-01",
+      to: "2024-01-02",
+      adjusted: false,
+      timeframe: "1m",
+    });
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      1,
+      "polygon_download_1m_and_load",
+      {
+        req: {
+          market: "crypto",
+          symbol: "X:BTCUSD",
+          from: "2024-01-01",
+          to: "2024-01-02",
+          adjusted: false,
+          timeframe: "1m",
+        },
+      },
+    );
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(
+      2,
+      "polygon_download_1m_and_load",
+      {
+        req: {
+          market: "fx",
+          symbol: "EUR/USD",
+          from: "2024-01-01",
+          to: "2024-01-02",
+          adjusted: false,
+          timeframe: "1m",
+        },
+      },
+    );
   });
 });

@@ -111,6 +111,38 @@ CPU-only app run:
 cargo run -p ta_desktop_demo_app --release
 ```
 
+## Local Quality Gate
+
+Use the repo-level quality gate before handoff for broad non-options changes and public-facing cleanup:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1
+```
+
+The default lane runs:
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace`
+- `cargo clippy --workspace --all-targets --no-deps`
+- `npm --prefix web run lint`
+- `npm --prefix web run typecheck`
+
+Add desktop-harness type checking when desktop test code changes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeDesktopTypecheck
+```
+
+Add workspace tests for higher-risk backend or cross-layer changes:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -IncludeWorkspaceTests
+```
+
+Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
+
+For contributor-facing routing, verification ownership, and the broader workflow map, use `REPO_MAP.md` rather than expanding this README into a routing document.
+
 ## Reproduce The Benchmark
 
 Run the real-workflow `250,000`-pair warm faceoff scenario:

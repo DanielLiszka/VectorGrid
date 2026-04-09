@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every root-related field returned to the frontend.
-- [ ] Document set/reset/browse/open behaviors and current fallback posture.
-- [ ] Document move-existing semantics and current safety expectations.
-- [ ] Document path rewriting for moved Polygon roots.
-- [ ] Add or tighten tests for root moves and settings-store synchronization if behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every root-related field returned to the frontend.
+- [x] Document set/reset/browse/open behaviors and current fallback posture.
+- [x] Document move-existing semantics and current safety expectations.
+- [x] Document path rewriting for moved Polygon roots.
+- [x] Add or tighten tests for root moves and settings-store synchronization if behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - prefer explicit rewrite behavior over silent invalidation where the app already supports safe rewrites
 - avoid introducing a new canonical root meaning without updating both data and settings surfaces together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added backend regression coverage in `src-tauri/tests/settings_tests.rs` so clearing a configured market-data root now explicitly proves the app falls back to the default app-local root instead of leaving stale configured state behind.
+- Expanded frontend contract coverage in `web/src/services/dataService.test.ts` and `web/src/components/SettingsWorkspacePanel.test.ts` so the current root-field model stays explicit: `openMarketDataDir()` falls back to `effectiveRootDir` when no Polygon cache path is available, and the settings panel visibly preserves the market-data root hint plus the `Move existing Polygon cache` affordance.
+- Kept the existing moved-root rewrite behavior intact in `web/src/stores/dataStore.actions.test.ts`; this slice tightened coverage around current semantics instead of moving rewrite logic or changing the canonical root/open-folder policy.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app --test settings_tests`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/components/SettingsWorkspacePanel.test.ts src/stores/settingsStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, `cargo check -p ta_desktop_demo_app`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

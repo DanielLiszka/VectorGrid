@@ -7,7 +7,7 @@ import { initializeDesktopProductization } from './services/desktopProductizatio
 import { applySettingsBootstrapFromStorage } from './services/settingsBootstrap'
 import { applyWorkflowBootstrapFromStorage } from './services/workflowBootstrap'
 import { bindRuntimePinia } from './stores/runtimePinia'
-import { useRuntimeStore } from './stores/runtimeStore'
+import { BOOT_STAGES, useRuntimeStore } from './stores/runtimeStore'
 import { installTauriInstrumentation } from './tauri/instrumentation'
 import { runStorageMigrations } from './utils/storage'
 
@@ -28,7 +28,7 @@ export async function startVectorGridApp(root: HTMLElement): Promise<void> {
   const runtimeStore = useRuntimeStore(pinia)
   const app = createApp(App)
   app.use(pinia)
-  runtimeStore.markBooting('Restoring workspace state')
+  runtimeStore.markBooting(BOOT_STAGES.RESTORING_WORKSPACE_STATE)
   app.mount(root)
 
   try {
@@ -37,17 +37,17 @@ export async function startVectorGridApp(root: HTMLElement): Promise<void> {
     const startupDataPromise = applyWorkflowBootstrapFromStorage({ includeDeferredData: false })
     applyRecommendedOptimizationDefaults()
 
-    runtimeStore.setBootStage('Initializing desktop services')
+    runtimeStore.setBootStage(BOOT_STAGES.INITIALIZING_DESKTOP_SERVICES)
     await initializeDesktopProductization().catch((error) => {
       const message = String(error instanceof Error ? error.message : error ?? 'Unknown desktop startup error')
       runtimeStore.pushDesktopLog('warn', `Desktop startup service failed: ${message}`)
       console.warn(error)
     })
 
-    runtimeStore.setBootStage('Finalizing dataset readiness')
+    runtimeStore.setBootStage(BOOT_STAGES.FINALIZING_DATASET_READINESS)
     await startupDataPromise
 
-    runtimeStore.setBootStage('Mounting workspace shell')
+    runtimeStore.setBootStage(BOOT_STAGES.MOUNTING_WORKSPACE_SHELL)
     await waitForNextPaint()
     runtimeStore.markReady()
   } catch (error) {

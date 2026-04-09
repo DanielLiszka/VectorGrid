@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the critical boot sequence from `main.ts` through workflow bootstrap into the data store.
-- [ ] Document the core-vs-deferred split inside `hydrateStartupState()`.
-- [ ] Document which startup snapshot fields are active restore inputs versus passive metadata.
-- [ ] Document the interaction between startup restore and moved Polygon roots.
-- [ ] Add or strengthen tests covering concurrent bootstrap and panel-mount hydration.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the critical boot sequence from `main.ts` through workflow bootstrap into the data store.
+- [x] Document the core-vs-deferred split inside `hydrateStartupState()`.
+- [x] Document which startup snapshot fields are active restore inputs versus passive metadata.
+- [x] Document the interaction between startup restore and moved Polygon roots.
+- [x] Add or strengthen tests covering concurrent bootstrap and panel-mount hydration.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -125,6 +125,13 @@ Public-repo quality focus:
 - prefer additive truthfulness and stronger tests over changing the visible boot model
 - if stronger provenance checks are introduced later, make them explicit rather than silently changing restore behavior
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Kept the production boot path unchanged and tightened the evidence instead. `main.ts` still awaits `applyWorkflowBootstrapFromStorage({ includeDeferredData: false })`, `workflowBootstrap.ts` still forwards that into `dataStore.hydrateStartupState()`, and the store remains the detailed owner of restore sequencing.
+- Added two targeted store tests in `web/src/stores/dataStore.actions.test.ts` to freeze the missing startup contract details. One proves deferred sample-affordance loading waits for critical hydration to resolve, and the other proves a deferred follow-up caller shares the same in-flight critical startup work as an existing critical-only caller instead of duplicating it.
+- Reused the existing boot-facing tests rather than widening the visible startup model. `main.test.ts`, `workflowBootstrap.test.ts`, and the updated data-store tests together now cover critical readiness waiting, failure propagation, startup restore truthfulness, and overlapping hydration callers.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/main.test.ts src/services/workflowBootstrap.test.ts src/stores/dataStore.actions.test.ts src/components/DataWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

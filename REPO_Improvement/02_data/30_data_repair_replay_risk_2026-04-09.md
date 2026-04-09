@@ -90,16 +90,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current source-identity and startup-snapshot safeguards.
-- [ ] Document which flows mutate cached Polygon datasets in place.
-- [ ] Document where path-only assumptions remain risky.
-- [ ] Document the current availability of content fingerprinting for future strengthening.
-- [ ] Link mutable-dataset risk into downstream validation/artifact/result docs that depend on data identity.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document current source-identity and startup-snapshot safeguards.
+- [x] Document which flows mutate cached Polygon datasets in place.
+- [x] Document where path-only assumptions remain risky.
+- [x] Document the current availability of content fingerprinting for future strengthening.
+- [x] Link mutable-dataset risk into downstream validation/artifact/result docs that depend on data identity.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -117,6 +117,13 @@ Public-repo quality focus:
 - prefer additive provenance strengthening over removing existing restore functionality
 - treat mutable-dataset replay risk as a cross-cutting compatibility concern, not a one-off warning
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the startup-snapshot/store evidence in `web/src/stores/dataStore.actions.test.ts`: base source size and mtime are now asserted when the app loads a dataset, when it restores a startup snapshot, and when it shifts between base and derived timeframe views.
+- Reused the existing backend source-identity and content-fingerprint tests instead of adding speculative new provenance machinery. `src-tauri/src/data_cache.rs` continues to prove both size/mtime identity behavior and content-fingerprint stability/change detection.
+- Kept the current mutable-file posture explicit rather than papering over it: Polygon repair/top-off still mutate cache files in place, and this slice hardens the replay-safety evidence that downstream consumers must rely on source identity and provenance, not path strings alone.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app data_cache --lib`, `cargo test -p ta_desktop_demo_app state --lib`, `npm.cmd --prefix web run test -- src/stores/dataStore.actions.test.ts src/services/validationService.test.ts src/utils/core/artifactIdentity.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

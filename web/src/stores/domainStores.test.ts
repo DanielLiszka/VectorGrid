@@ -7,7 +7,7 @@ import { useDataStore } from './dataStore'
 import { useExecutionStore } from './executionStore'
 import { useHistoryStore } from './historyStore'
 import { useOptimizeStore } from './optimizeStore'
-import { useRuntimeStore } from './runtimeStore'
+import { BOOT_STAGES, useRuntimeStore } from './runtimeStore'
 import { useSettingsStore } from './settingsStore'
 import { useStrategyStore } from './strategyStore'
 import { useValidationStore } from './validationStore'
@@ -177,12 +177,15 @@ describe('domain stores', () => {
 
   it('tracks runtime boot phase transitions', () => {
     const store = useRuntimeStore()
-    store.markBooting('boot')
+    store.markBooting(BOOT_STAGES.STARTING_FRONTEND_RUNTIME)
     expect(store.bootPhase).toBe('booting')
+    expect(store.bootStage).toBe(BOOT_STAGES.STARTING_FRONTEND_RUNTIME)
     store.markReady()
     expect(store.bootPhase).toBe('ready')
+    expect(store.bootStage).toBe(BOOT_STAGES.FRONTEND_RUNTIME_READY)
     store.markError('oops')
     expect(store.bootPhase).toBe('error')
+    expect(store.bootStage).toBe(BOOT_STAGES.FRONTEND_RUNTIME_FAILED)
     expect(store.bootError).toContain('oops')
   })
 

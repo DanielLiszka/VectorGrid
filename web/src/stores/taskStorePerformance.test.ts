@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
-import { applyDoubleMaProgress, beginTrackedCommand, useTaskStore } from './taskStore'
+import { applyDoubleMaProgress, beginTrackedCommand, resetTaskStoreForTests, useTaskStore } from './taskStore'
 import { bindRuntimePinia } from './runtimePinia'
 
 class MemoryStorage implements Storage {
@@ -44,6 +44,7 @@ describe('task-store progress throughput', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     ;(globalThis as Record<string, unknown>).window = { localStorage: new MemoryStorage() }
+    resetTaskStoreForTests()
     const store = useTaskStore(pinia)
     store.$reset()
   })

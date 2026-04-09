@@ -13,15 +13,14 @@ import {
   openReportsDir as openReportsDirService,
   openRunsDir as openRunsDirService,
   setWindowEffect,
-  type WindowEffect,
 } from '../services/settingsService'
 import { useDataStore } from './dataStore'
 import { resolveRuntimePinia } from './runtimePinia'
 import { useWorkflowStore } from './workflowStore'
 import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
+import { normalizeWindowEffect, type WindowEffect } from '../utils/windowEffects'
 
 const THEME_KEYS = new Set(['light', 'dark', 'system'])
-const EFFECT_KEYS = new Set(['none', 'mica', 'acrylic', 'vibrancy'])
 const HELP_MODE_KEYS = new Set(['full', 'concise', 'off'])
 const DENSITY_MODE_KEYS = new Set(['comfortable', 'standard', 'dense'])
 const DESKTOP_NOTIFICATION_MODE_KEYS = new Set(['off', 'failures', 'important'])
@@ -55,8 +54,7 @@ function normalizeTheme(value: unknown): string {
 }
 
 function normalizeEffect(value: unknown): string {
-  const next = String(value ?? '').trim().toLowerCase()
-  return EFFECT_KEYS.has(next) ? next : 'none'
+  return normalizeWindowEffect(value)
 }
 
 function normalizeHelpMode(value: unknown): HelpMode {
@@ -141,42 +139,50 @@ function persistPerspectives(perspectives: WorkstationPerspective[]): void {
   writeStorageString(WORKSTATION_PERSPECTIVES_KEY, JSON.stringify(perspectives))
 }
 
-function applyDensityModeLocally(mode: DensityMode): void {
-  const normalized = normalizeDensityMode(mode)
-  setRootDataAttr('density', normalized)
-  persistDensityMode(normalized)
+interface LocalApplyOptions {
+  persist?: boolean
 }
 
-function applyThemeLocally(pref: string): void {
+function shouldPersistLocally(options?: LocalApplyOptions): boolean {
+  return options?.persist !== false
+}
+
+function applyDensityModeLocally(mode: DensityMode, options?: LocalApplyOptions): void {
+  const normalized = normalizeDensityMode(mode)
+  setRootDataAttr('density', normalized)
+  if (shouldPersistLocally(options)) persistDensityMode(normalized)
+}
+
+function applyThemeLocally(pref: string, options?: LocalApplyOptions): void {
   const normalized = normalizeTheme(pref)
   setRootDataAttr('themePref', normalized)
   setRootDataAttr('theme', resolveTheme(normalized))
-  persistTheme(normalized)
+  if (shouldPersistLocally(options)) persistTheme(normalized)
 }
 
-function applyEffectLocally(effect: string): void {
+function applyEffectLocally(effect: string, options?: LocalApplyOptions): void {
   const normalized = normalizeEffect(effect) as WindowEffect
-  setRootDataAttr('windowEffect', normalized)
-  persistEffect(normalized)
+  setRootDataAttr('windowEffect', normalized === 'none' ? '' : normalized)
+  if (shouldPersistLocally(options)) persistEffect(normalized)
   if (typeof document === 'undefined') return
   const dark = String(document.documentElement.dataset.theme || 'light').trim() === 'dark'
   void setWindowEffect(normalized, dark).catch(() => undefined)
 }
 
-function applyWorkflowAdvancedLocally(enabled: boolean): void {
+function applyWorkflowAdvancedLocally(enabled: boolean, options?: LocalApplyOptions): void {
   setRootDataAttr('workflowAdvanced', enabled ? '1' : '')
-  persistBoolFlag(WORKFLOW_ADVANCED_KEY, enabled)
+  if (shouldPersistLocally(options)) persistBoolFlag(WORKFLOW_ADVANCED_KEY, enabled)
 }
 
-function applyControlsCollapsedLocally(enabled: boolean): void {
+function applyControlsCollapsedLocally(enabled: boolean, options?: LocalApplyOptions): void {
   setRootDataAttr('controlsCollapsed', enabled ? '1' : '')
-  persistBoolFlag(CONTROLS_COLLAPSED_KEY, enabled)
+  if (shouldPersistLocally(options)) persistBoolFlag(CONTROLS_COLLAPSED_KEY, enabled)
 }
 
-function applyHelpModeLocally(mode: HelpMode): void {
+function applyHelpModeLocally(mode: HelpMode, options?: LocalApplyOptions): void {
   const normalized = normalizeHelpMode(mode)
   setRootDataAttr('helpMode', normalized)
-  persistHelpMode(normalized)
+  if (shouldPersistLocally(options)) persistHelpMode(normalized)
 }
 
 const BUILTIN_PERSPECTIVES: WorkstationPerspective[] = [
@@ -351,6 +357,16 @@ interface SettingsState {
   updatedAtUnixMs: number
 }
 
+export interface SettingsBootstrapSnapshot {
+  theme?: string
+  effect?: string
+  helpMode?: string
+  densityMode?: string
+  desktopNotificationMode?: string
+  workflowAdvanced?: boolean | null
+  controlsCollapsed?: boolean | null
+}
+
 export const useSettingsStore = defineStore('settings', {
   state: (): SettingsState => ({
     theme: 'system',
@@ -417,6 +433,57 @@ export const useSettingsStore = defineStore('settings', {
       this.updatedAtUnixMs = Date.now()
     },
 
+    applyBootstrapState(snapshot: SettingsBootstrapSnapshot): void {
+      let changed = false
+
+      if (snapshot.theme) {
+        const normalized = normalizeTheme(snapshot.theme)
+        this.theme = normalized
+        applyThemeLocally(normalized, { persist: false })
+        changed = true
+      }
+
+      if (snapshot.effect) {
+        const normalized = normalizeEffect(snapshot.effect)
+        this.effect = normalized
+        applyEffectLocally(normalized, { persist: false })
+        changed = true
+      }
+
+      if (snapshot.helpMode) {
+        const normalized = normalizeHelpMode(snapshot.helpMode)
+        this.helpMode = normalized
+        applyHelpModeLocally(normalized, { persist: false })
+        changed = true
+      }
+
+      if (snapshot.densityMode) {
+        const normalized = normalizeDensityMode(snapshot.densityMode)
+        this.densityMode = normalized
+        applyDensityModeLocally(normalized, { persist: false })
+        changed = true
+      }
+
+      if (snapshot.desktopNotificationMode) {
+        this.desktopNotificationMode = normalizeDesktopNotificationMode(snapshot.desktopNotificationMode)
+        changed = true
+      }
+
+      if (snapshot.workflowAdvanced != null) {
+        this.workflowAdvanced = !!snapshot.workflowAdvanced
+        applyWorkflowAdvancedLocally(this.workflowAdvanced, { persist: false })
+        changed = true
+      }
+
+      if (snapshot.controlsCollapsed != null) {
+        this.controlsCollapsed = !!snapshot.controlsCollapsed
+        applyControlsCollapsedLocally(this.controlsCollapsed, { persist: false })
+        changed = true
+      }
+
+      if (changed) this.markVueUpdate()
+    },
+
     setInputField(field: string, value: string): void {
       const key = String(field || '').trim()
       const next = String(value || '')
@@ -432,28 +499,33 @@ export const useSettingsStore = defineStore('settings', {
       const next = String(value || '')
       if (key === 'settingsThemeSelect') {
         const normalized = normalizeTheme(next)
+        if (this.theme === normalized) return
         this.theme = normalized
         applyThemeLocally(normalized)
         // Theme affects the dark/light payload for native window effects.
-        applyEffectLocally(this.effect)
+        if (this.effect !== 'none') applyEffectLocally(this.effect)
         this.markVueUpdate()
       } else if (key === 'settingsEffectSelect') {
         const normalized = normalizeEffect(next)
+        if (this.effect === normalized) return
         this.effect = normalized
         applyEffectLocally(normalized)
         this.markVueUpdate()
       } else if (key === 'settingsHelpMode') {
         const normalized = normalizeHelpMode(next)
+        if (this.helpMode === normalized) return
         this.helpMode = normalized
         applyHelpModeLocally(normalized)
         this.markVueUpdate()
       } else if (key === 'settingsDensityMode') {
         const normalized = normalizeDensityMode(next)
+        if (this.densityMode === normalized) return
         this.densityMode = normalized
         applyDensityModeLocally(normalized)
         this.markVueUpdate()
       } else if (key === 'settingsDesktopNotifications') {
         const normalized = normalizeDesktopNotificationMode(next)
+        if (this.desktopNotificationMode === normalized) return
         this.desktopNotificationMode = normalized
         persistDesktopNotificationMode(normalized)
         this.markVueUpdate()
@@ -464,14 +536,17 @@ export const useSettingsStore = defineStore('settings', {
       const key = String(field || '').trim()
       const next = !!checked
       if (key === 'settingsWorkflowAdvanced') {
+        if (this.workflowAdvanced === next) return
         this.workflowAdvanced = next
         applyWorkflowAdvancedLocally(next)
         this.markVueUpdate()
       } else if (key === 'settingsControlsCollapsed') {
+        if (this.controlsCollapsed === next) return
         this.controlsCollapsed = next
         applyControlsCollapsedLocally(next)
         this.markVueUpdate()
       } else if (key === 'settingsMoveExisting') {
+        if (this.moveExisting === next) return
         this.moveExisting = next
         this.markVueUpdate()
       }

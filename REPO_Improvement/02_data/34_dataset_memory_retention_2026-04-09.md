@@ -94,16 +94,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current default residency budgets and environment overrides.
-- [ ] Document protect-set expansion and derived-tree removal behavior.
-- [ ] Document how identical base reloads reuse live dataset ids.
-- [ ] Document how live updates invalidate derived descendants.
-- [ ] Add or strengthen unit tests for eviction ordering and protected-parent behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current default residency budgets and environment overrides.
+- [x] Document protect-set expansion and derived-tree removal behavior.
+- [x] Document how identical base reloads reuse live dataset ids.
+- [x] Document how live updates invalidate derived descendants.
+- [x] Add or strengthen unit tests for eviction ordering and protected-parent behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,13 @@ Public-repo quality focus:
 - if retention defaults change, update validation and ML-signal expectations in the same change
 - keep in-memory reuse truthfulness aligned with source-identity checks
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added a direct backend test in `src-tauri/src/state.rs` proving retention prefers evicting an unshared entry before an `Arc`-shared live dataset. That freezes the intended public contract behind the existing eviction ordering instead of leaving it as a subtle implementation detail.
+- Hardened the residency test suite for normal `cargo test` operation by serializing the env-sensitive retention tests with a local test mutex. This fixes an existing public-repo quality problem where parallel test execution could cross-contaminate retention limits and produce flaky failures in otherwise-correct residency tests.
+- Revalidated the rest of the residency contract rather than altering runtime behavior. The updated `state` suite still proves base replacement invalidates older derived descendants, identical base reloads reuse live ids when source identity matches, and protected derived datasets keep their parent base alive under bounded retention.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app state --lib`, `cargo test -p ta_desktop_demo_app data_cache --lib`, `npm.cmd --prefix web run test -- src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

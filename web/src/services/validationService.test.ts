@@ -1663,19 +1663,27 @@ describe('validationService', () => {
     }
 
     useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
-      currentRun: {
-        ts: '2026-03-09T18:00:00Z',
-        csv_path: 'C:/data/AAPL.csv',
-        dataset_meta: {
+        currentRun: {
+          ts: '2026-03-09T18:00:00Z',
           csv_path: 'C:/data/AAPL.csv',
-          timeframe: '1h',
-          label: 'AAPL artifact',
-          symbol: 'AAPL',
-          len: 4321,
-          source: 'artifact-source',
-        },
-        ml_signal: {
-          stage: 'stage5',
+          dataset_meta: {
+            csv_path: 'C:/data/AAPL.csv',
+            timeframe: '1h',
+            base_timeframe: '1m',
+            derived_timeframe: '1h',
+            resample_applied: true,
+            resample_rule: 'session_relative_ohlcv',
+            resample_anchor: 'day_first_timestamp',
+            label: 'AAPL artifact',
+            symbol: 'AAPL',
+            len: 4321,
+            source: 'artifact-source',
+            source_size_bytes: 2048,
+            source_mtime_utc_ms: 1700005000000,
+            source_content_fingerprint: 'fp-aapl-1m',
+          },
+          ml_signal: {
+            stage: 'stage5',
           model_summary: 'cached model',
         },
         req: {
@@ -1697,27 +1705,43 @@ describe('validationService', () => {
 
     const saveCall = invokeCommandMock.mock.calls.find(([command]) => command === 'save_run_artifact')
     const artifact = (saveCall?.[1] as { artifact?: Record<string, unknown> } | undefined)?.artifact
-    expect(artifact?.dataset_meta).toMatchObject({
-      csv_path: 'C:/data/AAPL.csv',
-      timeframe: '1h',
-      label: 'AAPL artifact',
-      symbol: 'AAPL',
-      len: 4321,
-      source: 'artifact-source',
-    })
+      expect(artifact?.dataset_meta).toMatchObject({
+        csv_path: 'C:/data/AAPL.csv',
+        timeframe: '1h',
+        base_timeframe: '1m',
+        derived_timeframe: '1h',
+        resample_applied: true,
+        resample_rule: 'session_relative_ohlcv',
+        resample_anchor: 'day_first_timestamp',
+        label: 'AAPL artifact',
+        symbol: 'AAPL',
+        len: 4321,
+        source: 'artifact-source',
+        source_size_bytes: 2048,
+        source_mtime_utc_ms: 1700005000000,
+        source_content_fingerprint: 'fp-aapl-1m',
+      })
     expect(artifact?.ml_signal).toMatchObject({
       stage: 'stage5',
     })
 
     const workflowStore = useWorkflowArtifactsStore(pinia)
-    expect(workflowStore.currentRun?.datasetMeta).toMatchObject({
-      csv_path: 'C:/data/AAPL.csv',
-      timeframe: '1h',
-      label: 'AAPL artifact',
-      symbol: 'AAPL',
-      len: 4321,
-      source: 'artifact-source',
-    })
+      expect(workflowStore.currentRun?.datasetMeta).toMatchObject({
+        csv_path: 'C:/data/AAPL.csv',
+        timeframe: '1h',
+        base_timeframe: '1m',
+        derived_timeframe: '1h',
+        resample_applied: true,
+        resample_rule: 'session_relative_ohlcv',
+        resample_anchor: 'day_first_timestamp',
+        label: 'AAPL artifact',
+        symbol: 'AAPL',
+        len: 4321,
+        source: 'artifact-source',
+        source_size_bytes: 2048,
+        source_mtime_utc_ms: 1700005000000,
+        source_content_fingerprint: 'fp-aapl-1m',
+      })
     expect(workflowStore.currentRun?.mlSignal).toMatchObject({
       stage: 'stage5',
     })

@@ -354,6 +354,10 @@ describe("historyService", () => {
         dataset_meta: {
           csv_path: "C:/data/aapl.csv",
           timeframe: "15m",
+          base_timeframe: "1m",
+          derived_timeframe: "15m",
+          resample_applied: true,
+          source_content_fingerprint: "fp-aapl-1m",
           symbol: "AAPL",
           label: "AAPL",
         },
@@ -380,6 +384,10 @@ describe("historyService", () => {
     expect(artifacts.currentRun?.datasetMeta).toEqual({
       csv_path: "C:/data/aapl.csv",
       timeframe: "15m",
+      base_timeframe: "1m",
+      derived_timeframe: "15m",
+      resample_applied: true,
+      source_content_fingerprint: "fp-aapl-1m",
       symbol: "AAPL",
       label: "AAPL",
     });

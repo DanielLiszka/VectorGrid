@@ -53,14 +53,14 @@ So the repo can be understandable to an insider while still feeling under-specif
 - GitHub repository community-profile review once the repo is public
 - contributor onboarding attempts using only public docs
 
-## Current Strengths Already Present
+## Strengths Already Present
 
 - the technical routing docs are already much better than a typical repo of this size
 - the improvement program already cares about truthfulness and documentation hygiene
 - benchmark and release posture are already documented more carefully than usual
 - non-options scope boundaries are already explicit
 
-## Current Weaknesses and Failure Modes
+## Weaknesses / Failure Modes
 
 - public contributors do not have a defined contribution path
 - there is no clear security-reporting instruction surface
@@ -124,7 +124,7 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
-## Step-by-Step Checklist
+## Checklist
 
 - [ ] Inventory which public community-health files are currently absent.
 - [ ] Decide the minimum viable community-health file set for this repo.

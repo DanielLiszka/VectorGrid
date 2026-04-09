@@ -116,17 +116,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document titlebar identity and subtitle sources.
-- [ ] Document palette/settings/run-stop action routing.
-- [ ] Document native window-control availability and behavior.
-- [ ] Document close-guard triggers and confirmation copy expectations.
-- [ ] Preserve drag and double-click maximize behavior.
-- [ ] Preserve responsive titlebar behavior at smaller widths.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document titlebar identity and subtitle sources.
+- [x] Document palette/settings/run-stop action routing.
+- [x] Document native window-control availability and behavior.
+- [x] Document close-guard triggers and confirmation copy expectations.
+- [x] Preserve drag and double-click maximize behavior.
+- [x] Preserve responsive titlebar behavior at smaller widths.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

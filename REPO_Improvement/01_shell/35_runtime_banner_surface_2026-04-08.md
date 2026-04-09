@@ -94,21 +94,28 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- preserved the current instant-mount posture: the runtime banner still renders only for `booting` and `error` while the startup overlay remains dormant
+- added direct banner coverage in `AppRuntimeBanner.test.ts` proving the banner stays hidden after `runtimeStore.markReady()`
+- kept the current accessibility split intact: boot progress remains a polite status region while fatal boot errors remain assertive
+- left degraded-startup behavior on the current contract, where recoverable desktop warnings stay visible in diagnostics/logs without blocking the shell
+
 ## Checklist
 
-- [ ] Lock a canonical runtime-banner state catalog and phase-to-copy mapping.
-- [ ] Define whether degraded desktop initialization stays visible after `ready`.
-- [ ] Document exact visibility rules for booting, degraded, and error states.
-- [ ] Choose and document ARIA behavior for non-fatal vs fatal states.
-- [ ] Define whether the banner exposes a direct diagnostics action and where it routes.
-- [ ] Document stacking expectations against Task Center, Command Palette, and any future overlays.
-- [ ] Add tests for boot success, degraded startup, and fatal startup presentation.
-- [ ] Add smoke coverage that confirms the banner is visible when expected and absent when not expected.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Lock a canonical runtime-banner state catalog and phase-to-copy mapping.
+- [x] Define whether degraded desktop initialization stays visible after `ready`.
+- [x] Document exact visibility rules for booting, degraded, and error states.
+- [x] Choose and document ARIA behavior for non-fatal vs fatal states.
+- [x] Define whether the banner exposes a direct diagnostics action and where it routes.
+- [x] Document stacking expectations against Task Center, Command Palette, and any future overlays.
+- [x] Add tests for boot success, degraded startup, and fatal startup presentation.
+- [x] Add smoke coverage that confirms the banner is visible when expected and absent when not expected.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

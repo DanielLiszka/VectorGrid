@@ -425,8 +425,8 @@ fn write_cache(cache_path: &Path, candles: &Candles, src_id: SourceIdentity) -> 
 #[cfg(test)]
 mod tests {
     use super::{
-        content_fingerprint_for_source, identity_for_source, load_or_build,
-        load_or_build_with_identity, SourceIdentity,
+        content_fingerprint_for_source, fallback_cache_path, identity_for_source, load_or_build,
+        load_or_build_with_identity, write_cache, SourceIdentity,
     };
     use std::fs;
     use std::io::Write;
@@ -455,6 +455,18 @@ mod tests {
             ),
         )
         .expect("write candles csv");
+    }
+
+    fn write_short_candles_csv(path: &Path) {
+        fs::write(
+            path,
+            concat!(
+                "timestamp,open,high,low,close,volume\n",
+                "1700000000000,10,10.5,9.5,10.25,100\n",
+                "1700000060000,11,11.5,10.5,11.25,200\n"
+            ),
+        )
+        .expect("write short candles csv");
     }
 
     fn temp_file_path(name: &str) -> std::path::PathBuf {
@@ -533,5 +545,73 @@ mod tests {
         assert_eq!(first.candles.timestamp, second.candles.timestamp);
         assert_eq!(first.candles.close, second.candles.close);
         assert_eq!(first.cache_path, second.cache_path);
+    }
+
+    #[test]
+    fn loader_uses_fallback_cache_when_sidecar_is_missing() {
+        let temp = make_temp_dir("data_cache_fallback");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+        let src_id = identity_for_source(&csv).expect("source identity");
+        let candles =
+            ta_app_core::read_candles_from_csv_compat(csv.to_string_lossy().as_ref()).expect("csv");
+        let fallback = fallback_cache_path(&cache_dir, &csv);
+        write_cache(&fallback, &candles, src_id).expect("write fallback cache");
+
+        let load = load_or_build_with_identity(&csv, &cache_dir, src_id).expect("fallback load");
+        assert!(load.cache_hit);
+        assert_eq!(load.cache_path, Some(fallback));
+        assert_eq!(load.candles.timestamp, candles.timestamp);
+    }
+
+    #[test]
+    fn loader_prefers_sidecar_cache_over_fallback_when_both_exist() {
+        let temp = make_temp_dir("data_cache_sidecar_precedence");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("candles.csv");
+        let fallback_csv = temp.join("fallback.csv");
+        write_candles_csv(&csv);
+        write_short_candles_csv(&fallback_csv);
+        let src_id = identity_for_source(&csv).expect("source identity");
+
+        let sidecar_candles =
+            ta_app_core::read_candles_from_csv_compat(csv.to_string_lossy().as_ref()).expect("csv");
+        let fallback_candles =
+            ta_app_core::read_candles_from_csv_compat(fallback_csv.to_string_lossy().as_ref())
+                .expect("fallback csv");
+
+        let sidecar = csv.with_extension("vta");
+        let fallback = fallback_cache_path(&cache_dir, &csv);
+        write_cache(&sidecar, &sidecar_candles, src_id).expect("write sidecar cache");
+        write_cache(&fallback, &fallback_candles, src_id).expect("write fallback cache");
+
+        let load = load_or_build_with_identity(&csv, &cache_dir, src_id).expect("sidecar load");
+        assert!(load.cache_hit);
+        assert_eq!(load.cache_path, Some(sidecar));
+        assert_eq!(load.candles.timestamp, sidecar_candles.timestamp);
+        assert_eq!(load.candles.close, sidecar_candles.close);
+        assert_ne!(load.candles.timestamp, fallback_candles.timestamp);
+    }
+
+    #[test]
+    fn corrupt_cache_is_ignored_and_source_is_reparsed() {
+        let temp = make_temp_dir("data_cache_corrupt");
+        let cache_dir = temp.join("cache");
+        fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv = temp.join("candles.csv");
+        write_candles_csv(&csv);
+        let sidecar = csv.with_extension("vta");
+        fs::write(&sidecar, b"bad-cache").expect("write corrupt sidecar");
+
+        let load = load_or_build(&csv, &cache_dir).expect("load after corrupt cache");
+        assert!(!load.cache_hit);
+        assert_eq!(load.candles.timestamp.len(), 3);
+        assert!(load.cache_path.is_some());
     }
 }

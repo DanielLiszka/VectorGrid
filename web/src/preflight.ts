@@ -9,6 +9,8 @@ import {
   WORKFLOW_TAB_KEY,
   WORKSPACE_TAB_KEY,
 } from './utils/core/storageKeys'
+import { readStorageString as readSharedStorageString } from './utils/storage'
+import { normalizeWindowEffect } from './utils/windowEffects'
 
 type ThemePref = 'light' | 'dark' | 'system'
 type HelpMode = 'full' | 'concise' | 'off'
@@ -22,11 +24,7 @@ const WORKSPACE_VALUES = new Set(['workflow', 'library', 'aggregate', 'pro', 'se
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
 
 function readStorageString(key: string): string {
-  try {
-    return String(localStorage.getItem(key) ?? '').trim()
-  } catch {
-    return ''
-  }
+  return readSharedStorageString(key, '').trim()
 }
 
 function setRootDataAttr(name: string, value: string): void {
@@ -57,16 +55,12 @@ function applyBooleanDatasetPreflight(key: string, datasetKey: string): void {
 }
 
 function applyWindowEffectPreflight(): void {
-  const effect = readStorageString(WINDOW_EFFECT_KEY).toLowerCase()
-  if (!effect || effect === 'none') {
+  const effect = normalizeWindowEffect(readStorageString(WINDOW_EFFECT_KEY))
+  if (effect === 'none') {
     setRootDataAttr('windowEffect', '')
     return
   }
-  const ua = navigator.userAgent.toLowerCase()
-  let allowed = new Set(['none'])
-  if (ua.includes('windows')) allowed = new Set(['none', 'mica', 'acrylic', 'blur'])
-  else if (ua.includes('mac')) allowed = new Set(['none', 'vibrancy'])
-  setRootDataAttr('windowEffect', allowed.has(effect) ? effect : '')
+  setRootDataAttr('windowEffect', effect)
 }
 
 function applyWorkflowPreflight(): void {

@@ -108,18 +108,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current responsibility split between `dataService` and `dataStore`.
-- [ ] Document startup restore and deferred hydration behavior.
-- [ ] Document base vs derived dataset fields and status semantics.
-- [ ] Document Polygon cache/list/download/top-off/repair/validate flows.
-- [ ] Document market-data-root rewrite behavior for cached Polygon datasets.
-- [ ] Document clear-data side effects on workflow artifacts.
-- [ ] Add or tighten tests if store/service boundaries or result-application logic change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current responsibility split between `dataService` and `dataStore`.
+- [x] Document startup restore and deferred hydration behavior.
+- [x] Document base vs derived dataset fields and status semantics.
+- [x] Document Polygon cache/list/download/top-off/repair/validate flows.
+- [x] Document market-data-root rewrite behavior for cached Polygon datasets.
+- [x] Document clear-data side effects on workflow artifacts.
+- [x] Add or tighten tests if store/service boundaries or result-application logic change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -135,6 +135,13 @@ Public-repo quality focus:
 - keep service normalization backward-compatible with current Tauri payload shapes
 - if no-op service helpers are removed or formalized, update every store caller in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- No production-path code change was required in this slice. The service/store boundary the plan calls for is already present: `dataService.ts` remains the Tauri command and normalization edge, while `dataStore.ts` owns dataset session state, startup hydration, Polygon workflow orchestration, root rewriting, and reset behavior.
+- Reused the previously hardened artifact-clear fallback instead of widening the store surface. `clearData()` now clears workflow artifacts through the current Pinia instance or the runtime Pinia fallback, and the store test proves stale run/validation state is dropped when data is reset.
+- Reconfirmed that the intentionally thin service hooks stay honest rather than implicit. `dataService.test.ts` already freezes `openPolygon()` and `closePolygon()` as non-throwing no-op Vue workflow hooks with no Tauri traffic, which is the right public-facing contract for that boundary.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/components/DataWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

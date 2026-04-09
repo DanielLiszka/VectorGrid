@@ -9,6 +9,7 @@ import { useRuntimeStore } from '../stores/runtimeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useTaskStore } from '../stores/taskStore'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { SETTINGS_SHORTCUT_SUMMARY_ROWS } from '../utils/shellShortcutRegistry'
 
 vi.mock('../services/desktopProductization', () => ({
   requestDesktopNotificationPermission: vi.fn(async () => undefined),
@@ -16,6 +17,7 @@ vi.mock('../services/desktopProductization', () => ({
 
 describe('SettingsWorkspacePanel', () => {
   beforeEach(() => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' })
     localStorage.clear()
     document.body.innerHTML = `
       <div id="settingsShellGrid">
@@ -167,6 +169,148 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Save current to selected')
   })
 
+  it('renders appearance and layout controls from the current store-backed settings state', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setSelectField('settingsThemeSelect', 'dark')
+    settingsStore.setSelectField('settingsEffectSelect', 'mica')
+    settingsStore.setSelectField('settingsHelpMode', 'concise')
+    settingsStore.setSelectField('settingsDensityMode', 'dense')
+    settingsStore.setCheckboxField('settingsWorkflowAdvanced', true)
+    settingsStore.setCheckboxField('settingsControlsCollapsed', true)
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    expect((document.querySelector('#vueSettingsTheme') as HTMLSelectElement | null)?.value).toBe('dark')
+    expect((document.querySelector('#vueSettingsEffect') as HTMLSelectElement | null)?.value).toBe('mica')
+    expect((document.querySelector('#vueSettingsHelpMode') as HTMLSelectElement | null)?.value).toBe('concise')
+    expect((document.querySelector('#vueSettingsDensityMode') as HTMLSelectElement | null)?.value).toBe('dense')
+
+    const checks = Array.from(document.querySelectorAll<HTMLInputElement>('.checks input[type="checkbox"]'))
+    expect(checks).toHaveLength(2)
+    expect(checks.every((input) => input.checked)).toBe(true)
+    expect(document.body.textContent || '').toContain('Appearance')
+    expect(document.body.textContent || '').toContain('Window effect')
+    expect(document.body.textContent || '').toContain('Help and guidance')
+  })
+
+  it('renders market-data root controls and current storage hint text', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.setInputField('settingsMarketDataDir', 'C:/custom')
+    settingsStore.setCheckboxField('settingsMoveExisting', false)
+    settingsStore.marketDataDirHint =
+      'Using custom root: C:/custom · Polygon cache: C:/custom/polygon-cache'
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    expect((document.querySelector('#vueSettingsMarketDataDir') as HTMLInputElement | null)?.value).toBe('C:/custom')
+    expect(document.body.textContent || '').toContain('Data and storage')
+    expect(document.body.textContent || '').toContain('Move existing Polygon cache')
+    expect(document.body.textContent || '').toContain('Using custom root: C:/custom · Polygon cache: C:/custom/polygon-cache')
+  })
+
+  it('renders and applies appearance and layout controls through the settings store', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+    const settingsStore = useSettingsStore(pinia)
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const theme = document.querySelector<HTMLSelectElement>('#vueSettingsTheme')
+    const effect = document.querySelector<HTMLSelectElement>('#vueSettingsEffect')
+    const help = document.querySelector<HTMLSelectElement>('#vueSettingsHelpMode')
+    const density = document.querySelector<HTMLSelectElement>('#vueSettingsDensityMode')
+    const checks = Array.from(document.querySelectorAll<HTMLInputElement>('.checks input[type="checkbox"]'))
+    const advanced = checks[0] ?? null
+    const collapsed = checks[1] ?? null
+
+    expect(theme).toBeTruthy()
+    expect(effect).toBeTruthy()
+    expect(help).toBeTruthy()
+    expect(density).toBeTruthy()
+    expect(advanced).toBeTruthy()
+    expect(collapsed).toBeTruthy()
+
+    theme!.value = 'dark'
+    theme!.dispatchEvent(new Event('change', { bubbles: true }))
+    effect!.value = 'mica'
+    effect!.dispatchEvent(new Event('change', { bubbles: true }))
+    help!.value = 'concise'
+    help!.dispatchEvent(new Event('change', { bubbles: true }))
+    density!.value = 'dense'
+    density!.dispatchEvent(new Event('change', { bubbles: true }))
+    advanced!.checked = true
+    advanced!.dispatchEvent(new Event('change', { bubbles: true }))
+    collapsed!.checked = true
+    collapsed!.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    await nextTick()
+
+    expect(settingsStore.theme).toBe('dark')
+    expect(settingsStore.effect).toBe('mica')
+    expect(settingsStore.helpMode).toBe('concise')
+    expect(settingsStore.densityMode).toBe('dense')
+    expect(settingsStore.workflowAdvanced).toBe(true)
+    expect(settingsStore.controlsCollapsed).toBe(true)
+    expect(document.documentElement.dataset.themePref).toBe('dark')
+    expect(document.documentElement.dataset.helpMode).toBe('concise')
+    expect(document.documentElement.dataset.density).toBe('dense')
+    expect(document.documentElement.dataset.workflowAdvanced).toBe('1')
+    expect(document.documentElement.dataset.controlsCollapsed).toBe('1')
+  })
+
+  it('renders only the window effects supported on the current platform', async () => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)' })
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const effectOptions = Array.from(
+      document.querySelectorAll<HTMLSelectElement>('#vueSettingsEffect option'),
+    ).map((option) => String(option.value || '').trim())
+
+    expect(effectOptions).toEqual(['none', 'vibrancy'])
+  })
+
   it('filters saved perspectives with local fuzzy search without replacing global command search', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -194,6 +338,36 @@ describe('SettingsWorkspacePanel', () => {
     )
     expect(optionText.some((label) => label.includes('Run Library'))).toBe(true)
     expect(document.body.textContent || '').toContain('Search stays local to saved perspectives; use Ctrl+K for global actions.')
+  })
+
+  it('keeps built-in perspectives protected while leaving restore and overwrite available', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+
+    const settingsStore = useSettingsStore(pinia)
+    settingsStore.selectPerspective('builtin_top_results_triage')
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const buttons = Array.from(document.querySelectorAll('button'))
+    const renameButton = buttons.find((button) => String(button.textContent || '').includes('Rename')) as HTMLButtonElement | undefined
+    const duplicateButton = buttons.find((button) => String(button.textContent || '').includes('Duplicate')) as HTMLButtonElement | undefined
+    const deleteButton = buttons.find((button) => String(button.textContent || '').includes('Delete')) as HTMLButtonElement | undefined
+    const overwriteButton = buttons.find((button) => String(button.textContent || '').includes('Save current to selected')) as HTMLButtonElement | undefined
+
+    expect(document.body.textContent || '').toContain('Top Results Triage (built-in)')
+    expect(renameButton?.disabled).toBe(true)
+    expect(deleteButton?.disabled).toBe(true)
+    expect(duplicateButton?.disabled).toBe(false)
+    expect(overwriteButton?.disabled).toBe(false)
   })
 
   it('renders desktop-notification controls and requests permission on demand', async () => {
@@ -228,6 +402,27 @@ describe('SettingsWorkspacePanel', () => {
     await nextTick()
 
     expect(desktopProductization.requestDesktopNotificationPermission).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders the shared keyboard shortcut summary rows from the shell shortcut registry', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkspace('settings')
+
+    mount(SettingsWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    for (const row of SETTINGS_SHORTCUT_SUMMARY_ROWS) {
+      expect(text).toContain(row.keysLabel)
+      expect(text).toContain(row.label)
+    }
   })
 
   it('copies a desktop diagnostics snapshot for operator troubleshooting', async () => {

@@ -181,6 +181,7 @@ html[data-theme="dark"] {
 
 html[data-window-effect="mica"],
 html[data-window-effect="acrylic"],
+html[data-window-effect="blur"],
 html[data-window-effect="vibrancy"] {
   --app-bg:
     radial-gradient(1200px 600px at 15% 10%, rgba(14, 165, 233, 0.08), transparent 62%),

@@ -89,6 +89,7 @@ describe('settings store actions', () => {
   let pinia: ReturnType<typeof createPinia>
 
   beforeEach(() => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' })
     pinia = createPinia()
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
@@ -116,6 +117,7 @@ describe('settings store actions', () => {
     expect(harness.fields.marketDataDir?.value).toBe('')
     expect(store.theme).toBe('dark')
     expect(harness.dataset.themePref).toBe('dark')
+    expect(harness.dataset.windowEffect).toBe('mica')
     expect(store.helpMode).toBe('off')
     expect(harness.dataset.helpMode).toBe('off')
     expect(store.densityMode).toBe('dense')
@@ -128,6 +130,47 @@ describe('settings store actions', () => {
     expect(store.moveExisting).toBe(false)
     expect(harness.fields.marketDataMoveExisting?.checked).toBe(true)
     expect(setWindowEffectMock).toHaveBeenCalledWith('mica', true)
+
+    store.setSelectField('settingsEffectSelect', 'none')
+
+    expect(store.effect).toBe('none')
+    expect(harness.dataset.windowEffect).toBeUndefined()
+    expect(setWindowEffectMock).toHaveBeenLastCalledWith('none', true)
+  })
+
+  it('treats unchanged settings selections and checkboxes as no-ops', () => {
+    const store = useSettingsStore()
+    store.setSelectField('settingsThemeSelect', 'dark')
+    store.setSelectField('settingsEffectSelect', 'mica')
+    store.setSelectField('settingsHelpMode', 'concise')
+    store.setSelectField('settingsDensityMode', 'dense')
+    store.setSelectField('settingsDesktopNotifications', 'important')
+    store.setCheckboxField('settingsWorkflowAdvanced', true)
+    store.setCheckboxField('settingsControlsCollapsed', true)
+    store.setCheckboxField('settingsMoveExisting', false)
+
+    const updatedAt = store.updatedAtUnixMs
+    setWindowEffectMock.mockClear()
+
+    store.setSelectField('settingsThemeSelect', 'dark')
+    store.setSelectField('settingsEffectSelect', 'mica')
+    store.setSelectField('settingsHelpMode', 'concise')
+    store.setSelectField('settingsDensityMode', 'dense')
+    store.setSelectField('settingsDesktopNotifications', 'important')
+    store.setCheckboxField('settingsWorkflowAdvanced', true)
+    store.setCheckboxField('settingsControlsCollapsed', true)
+    store.setCheckboxField('settingsMoveExisting', false)
+
+    expect(store.updatedAtUnixMs).toBe(updatedAt)
+    expect(setWindowEffectMock).not.toHaveBeenCalled()
+    expect(store.theme).toBe('dark')
+    expect(store.effect).toBe('mica')
+    expect(store.helpMode).toBe('concise')
+    expect(store.densityMode).toBe('dense')
+    expect(store.desktopNotificationMode).toBe('important')
+    expect(store.workflowAdvanced).toBe(true)
+    expect(store.controlsCollapsed).toBe(true)
+    expect(store.moveExisting).toBe(false)
   })
 
   it('dispatches market-data directory actions via data service', () => {
@@ -201,6 +244,68 @@ describe('settings store actions', () => {
 
     settingsStore.deletePerspective(String(duplicate?.id || ''))
     expect(settingsStore.perspectives.some((entry) => entry.id === duplicate?.id)).toBe(false)
+  })
+
+  it('protects built-in perspectives from rename and delete while allowing overwrite in place', () => {
+    const settingsStore = useSettingsStore()
+    const workflowStore = useWorkflowStore()
+    const builtinBefore = settingsStore.perspectives.find((entry) => entry.id === 'builtin_optimize')
+
+    expect(builtinBefore).toBeTruthy()
+    expect(builtinBefore?.builtIn).toBe(true)
+
+    settingsStore.renamePerspective('builtin_optimize', 'Renamed builtin')
+    settingsStore.deletePerspective('builtin_optimize')
+
+    const builtinProtected = settingsStore.perspectives.find((entry) => entry.id === 'builtin_optimize')
+    expect(builtinProtected?.name).toBe(builtinBefore?.name)
+    expect(settingsStore.perspectives.some((entry) => entry.id === 'builtin_optimize')).toBe(true)
+
+    workflowStore.selectWorkflowStep('analyze', { persist: false })
+    workflowStore.selectResultsTab('top')
+    workflowStore.setSplitFraction(0.41, { persist: false })
+    settingsStore.setSelectField('settingsDensityMode', 'dense')
+
+    settingsStore.overwritePerspective('builtin_optimize')
+
+    const builtinAfter = settingsStore.perspectives.find((entry) => entry.id === 'builtin_optimize')
+    expect(builtinAfter?.name).toBe(builtinBefore?.name)
+    expect(builtinAfter?.builtIn).toBe(true)
+    expect(builtinAfter?.snapshot.workflowStep).toBe('analyze')
+    expect(builtinAfter?.snapshot.resultsTab).toBe('top')
+    expect(builtinAfter?.snapshot.splitFraction).toBeCloseTo(0.41, 5)
+    expect(builtinAfter?.snapshot.densityMode).toBe('dense')
+    expect(settingsStore.statusLine).toContain('Updated perspective:')
+  })
+
+  it('overwrites an existing perspective snapshot and preserves built-in protection rules', () => {
+    const settingsStore = useSettingsStore()
+    const workflowStore = useWorkflowStore()
+
+    settingsStore.selectPerspective('builtin_optimize')
+    workflowStore.selectWorkflowStep('analyze')
+    workflowStore.selectResultsTab('pareto')
+    workflowStore.setSplitFraction(0.52, { persist: false })
+    settingsStore.setSelectField('settingsDensityMode', 'dense')
+
+    settingsStore.overwritePerspective('builtin_optimize')
+
+    const overwritten = settingsStore.perspectives.find((entry) => entry.id === 'builtin_optimize')
+    expect(overwritten?.snapshot.workspace).toBe('workflow')
+    expect(overwritten?.snapshot.workflowStep).toBe('analyze')
+    expect(overwritten?.snapshot.resultsTab).toBe('pareto')
+    expect(overwritten?.snapshot.splitFraction).toBeCloseTo(0.52, 5)
+    expect(overwritten?.snapshot.densityMode).toBe('dense')
+    expect(settingsStore.statusLine).toContain('Updated perspective: Optimize.')
+
+    const beforeRename = overwritten?.name
+    const beforeDeleteCount = settingsStore.perspectives.length
+    settingsStore.renamePerspective('builtin_optimize', 'Should Not Rename')
+    settingsStore.deletePerspective('builtin_optimize')
+
+    const builtinAfterProtection = settingsStore.perspectives.find((entry) => entry.id === 'builtin_optimize')
+    expect(builtinAfterProtection?.name).toBe(beforeRename)
+    expect(settingsStore.perspectives).toHaveLength(beforeDeleteCount)
   })
 
   it('syncs market-data fields from data store and applies runtime mutability flags', () => {

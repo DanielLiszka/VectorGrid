@@ -92,16 +92,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document `BARS_PER_REQUEST_LIMIT`, `CHUNK_DAYS`, and `FREE_PLAN_LOOKBACK_DAYS`.
-- [ ] Document retry and `Retry-After` behavior.
-- [ ] Document full-hit, append, and full-refresh decision rules.
-- [ ] Document top-off lookback rejection semantics.
-- [ ] Add or tighten tests for chunk branching and retry behavior if the implementation changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document `BARS_PER_REQUEST_LIMIT`, `CHUNK_DAYS`, and `FREE_PLAN_LOOKBACK_DAYS`.
+- [x] Document retry and `Retry-After` behavior.
+- [x] Document full-hit, append, and full-refresh decision rules.
+- [x] Document top-off lookback rejection semantics.
+- [x] Add or tighten tests for chunk branching and retry behavior if the implementation changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -118,6 +118,13 @@ Public-repo quality focus:
 - do not change constants independently from tests and status/copy review
 - keep the frontend abstracted from internal chunk math unless a user-facing need emerges
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Extracted and hardened the cache-coverage branch logic in `src-tauri/src/polygon.rs` through `plan_download_cache_strategy()`, which now freezes the three current behaviors as explicit testable outcomes: full cache hit, append-only fill, and full refresh.
+- Added backend unit coverage for the branch decisions and preserved the current `Retry-After`/backoff implementation unchanged; this slice intentionally improved decision transparency and regression safety without changing chunk constants or retry timing.
+- Added store-level UX coverage in `web/src/stores/dataStore.actions.test.ts` so the user-visible status notes remain explicit for `cache reused` and `no new bars available` paths instead of regressing into generic success text.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/stores/dataStore.actions.test.ts src/services/dataService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, `cargo check -p ta_desktop_demo_app`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

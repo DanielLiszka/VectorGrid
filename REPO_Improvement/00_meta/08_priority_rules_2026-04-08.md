@@ -99,17 +99,35 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Priority Heuristic
+
+Use this ranked heuristic when choosing the next implementation document to execute:
+
+1. foundational governance or safety blocker
+2. cross-cutting quality gate or verification unblocker
+3. high-risk user-facing regression surface
+4. high-leverage routing surface that affects many later docs
+5. narrow leaf surface with clear additive value
+
+## Tie-Breaker Order
+
+- prerequisite before dependent doc
+- cross-cutting doc before local doc when both affect the same area
+- safety and verification before presentation polish
+- smaller blast radius before larger blast radius when leverage is equal
+- serial order inside a folder only after the higher-priority rules above are satisfied
+
 ## Checklist
 
-- [ ] Define the priority heuristic for future waves.
-- [ ] Define a tie-breaker order between candidate docs.
-- [ ] Prefer cross-cutting unblockers before leaf docs.
-- [ ] Keep waves topically coherent and additive-only.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define the priority heuristic for future waves.
+- [x] Define a tie-breaker order between candidate docs.
+- [x] Prefer cross-cutting unblockers before leaf docs.
+- [x] Keep waves topically coherent and additive-only.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

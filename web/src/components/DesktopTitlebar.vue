@@ -285,7 +285,7 @@ onBeforeUnmount(() => {
           type="button"
           class="windowControl"
           :disabled="!desktopRuntimeAvailable"
-          :aria-label="isMaximized ? 'Restore window' : 'Maximize window'"
+          aria-label="Maximize or restore window"
           :title="isMaximized ? 'Restore' : 'Maximize'"
           @click="toggleMaximizeWindow"
         >

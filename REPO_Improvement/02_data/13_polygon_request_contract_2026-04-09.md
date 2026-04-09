@@ -91,16 +91,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every request field and default.
-- [ ] Document supported market values and symbol forms.
-- [ ] Document requested timeframe versus cached base timeframe semantics.
-- [ ] Document top-off request derivation from manifest datasets.
-- [ ] Add or tighten tests if normalization rules or defaults change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every request field and default.
+- [x] Document supported market values and symbol forms.
+- [x] Document requested timeframe versus cached base timeframe semantics.
+- [x] Document top-off request derivation from manifest datasets.
+- [x] Add or tighten tests if normalization rules or defaults change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -117,6 +117,13 @@ Public-repo quality focus:
 - prefer clearer documentation over silent narrowing of accepted requests
 - keep base-1m caching as an explicit product rule until the architecture changes materially
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added backend request-contract tests in `src-tauri/src/polygon.rs` for market-specific and native symbol normalization, covering stocks, FX pair notation, crypto pair notation, and native `X:` tickers without narrowing the accepted request forms.
+- Added frontend service coverage in `web/src/services/dataService.test.ts` so request normalization now explicitly preserves native ticker and slash-pair shapes while still uppercasing symbols and defaulting blank timeframes to `1m`.
+- Kept the command-layer product rule intact: the UI still requests display timeframes, while `polygon_download_1m_and_load` remains the authority that caches `1m` first and derives larger display timeframes later.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, `cargo check -p ta_desktop_demo_app`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

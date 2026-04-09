@@ -50,9 +50,9 @@ The current product meaning is explicit: this is an operator/developer troublesh
 
 ## Current Verification Surface
 
+- `web/src/components/DebugWorkspacePanel.test.ts`
 - indirect coverage through `web/src/components/VueWorkspaceShell.test.ts`
 - analysis-store tests that protect debug-output state indirectly
-- there is currently no dedicated `DebugWorkspacePanel` test
 
 ## Strengths Already Present
 
@@ -108,20 +108,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current debug workspace posture and mount path.
-- [ ] Document the source of `debugOutputPreview`.
-- [ ] Add direct component coverage for `DebugWorkspacePanel.vue`.
-- [ ] Preserve separation between debug troubleshooting and the main analysis flow.
-- [ ] Keep debug shell posture synchronized with workflow-store grammar.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current debug workspace posture and mount path.
+- [x] Document the source of `debugOutputPreview`.
+- [x] Add direct component coverage for `DebugWorkspacePanel.vue`.
+- [x] Preserve separation between debug troubleshooting and the main analysis flow.
+- [x] Keep debug shell posture synchronized with workflow-store grammar.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- add and run a dedicated `DebugWorkspacePanel` test
+- run `npm --prefix web run test -- src/components/DebugWorkspacePanel.test.ts`
 - run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
 - run relevant analysis-store tests if debug-output behavior changes
 - manually verify the debug workspace still mounts and shows raw output in the `pro` posture

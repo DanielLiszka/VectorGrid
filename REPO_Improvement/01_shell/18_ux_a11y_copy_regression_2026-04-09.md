@@ -65,6 +65,8 @@ This means shell copy is already part of the product contract. The text is not d
 - `web/src/components/DesktopTitlebar.test.ts`
 - `web/src/components/SettingsWorkspacePanel.test.ts`
 - `web/src/components/HistoryWorkspacePanel.test.ts`
+- `web/src/components/AppRuntimeBanner.test.ts`
+- `web/src/components/ContextHelpTip.test.ts`
 
 ## Strengths Already Present
 
@@ -121,16 +123,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the shell’s current semantic surfaces and their owners.
-- [ ] Document local/global search guidance as a contract item.
-- [ ] Document close-confirm and runtime-status wording as regression-sensitive copy.
-- [ ] Document help-mode-driven contextual guidance expectations.
-- [ ] Add or tighten tests when shell semantics or operator copy changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the shell’s current semantic surfaces and their owners.
+- [x] Document local/global search guidance as a contract item.
+- [x] Document close-confirm and runtime-status wording as regression-sensitive copy.
+- [x] Document help-mode-driven contextual guidance expectations.
+- [x] Add or tighten tests when shell semantics or operator copy changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -139,6 +141,8 @@ Public-repo quality focus:
 - run `npm --prefix web run test -- src/components/DesktopTitlebar.test.ts`
 - run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`
 - run `npm --prefix web run test -- src/components/HistoryWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/AppRuntimeBanner.test.ts`
+- run `npm --prefix web run test -- src/components/ContextHelpTip.test.ts`
 - run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
 - run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
 - capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate

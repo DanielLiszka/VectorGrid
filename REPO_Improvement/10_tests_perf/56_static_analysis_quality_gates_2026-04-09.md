@@ -25,14 +25,14 @@ Out of scope:
 
 ## Current User-Facing Behavior
 
-Users do not interact with static-analysis tooling directly, but public trust in the repo depends on it. The current repo already has some useful quality commands:
+Users do not interact with static-analysis tooling directly, but public trust in the repo depends on it. The current repo now has one explicit local-first quality entrypoint in `scripts/run_repo_quality_gate.ps1` plus the existing underlying commands:
 
 - frontend linting in `web/package.json` via `npm run lint`
 - frontend type checking via `npm run typecheck` and `npm run typecheck:desktop`
 - Rust compile verification via `cargo check` and crate-specific `cargo test`
 - command-regeneration and parity checks wired into frontend lint/build scripts
 
-At the same time, the current repo still lacks one explicit cross-language quality-gate plan. The repo root does not currently expose a single documented quality sequence for:
+The repo root now documents one cross-language quality-gate plan for:
 
 - `cargo check`
 - `cargo test`
@@ -41,7 +41,7 @@ At the same time, the current repo still lacks one explicit cross-language quali
 - `npm --prefix web run lint`
 - `npm --prefix web run typecheck`
 
-The result is that code quality is partly present in tooling but under-specified in the planning layer.
+The result is that code quality is now centralized in one repo-level script and reflected in the top-level docs, while keeping stricter Clippy-as-error rollout optional until the repo is intentionally warning-free.
 
 ## Current Code Surface
 
@@ -67,7 +67,7 @@ The result is that code quality is partly present in tooling but under-specified
 - `npm --prefix web run typecheck:desktop`
 - targeted desktop/browser smoke runs after static gates pass
 
-## Current Strengths Already Present
+## Strengths Already Present
 
 - the frontend already has explicit lint and typecheck scripts
 - the frontend lint script already includes command-regeneration checks instead of only syntax/style rules
@@ -75,7 +75,7 @@ The result is that code quality is partly present in tooling but under-specified
 - the improvement-program docs already require explicit verification plans for every implementation item
 - the repo already distinguishes parity/perf validation from general correctness validation
 
-## Current Weaknesses and Failure Modes
+## Weaknesses / Failure Modes
 
 - there is no first-class implementation-plan lane for static analysis and formatting quality
 - Rust lint/format expectations are implied rather than codified
@@ -121,6 +121,7 @@ The result is that code quality is partly present in tooling but under-specified
 3. Treat Rust formatting and linting as first-class expectations, but tune them conservatively:
    - avoid enabling entire aggressive lint groups blindly
    - prefer deny-on-merge for correctness-critical issues and explicit allowlists for intentional exceptions
+   - keep repo-level `rustfmt.toml` and `clippy.toml` absent until there is a repo-specific need that defaults cannot express cleanly
 4. Keep frontend linting and typechecking distinct:
    - lint for code-health and rule enforcement
    - typecheck for static type safety
@@ -134,27 +135,28 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
-## Step-by-Step Checklist
+## Checklist
 
-- [ ] Inventory the current Rust and frontend static-analysis commands already present in the repo.
-- [ ] Decide the canonical non-options local quality-gate order.
-- [ ] Document which commands are required on every code change versus only on scoped/high-risk changes.
-- [ ] Add a Rust formatting expectation using `cargo fmt --check`.
-- [ ] Add a Rust lint expectation using `cargo clippy` with a deliberate scope.
-- [ ] Review whether a repo-level `rustfmt.toml` or `clippy.toml` is needed or whether defaults should remain authoritative.
-- [ ] Keep frontend lint and typecheck commands explicitly separate in the quality bar.
-- [ ] Document when narrower crate/test targets are acceptable instead of full-workspace runs.
-- [ ] Tie static-analysis expectations to public-repo contribution guidance once that doc exists.
-- [ ] Mirror the same quality sequence into future CI only after the local lane is stable.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory the current Rust and frontend static-analysis commands already present in the repo.
+- [x] Decide the canonical non-options local quality-gate order.
+- [x] Document which commands are required on every code change versus only on scoped/high-risk changes.
+- [x] Add a Rust formatting expectation using `cargo fmt --check`.
+- [x] Add a Rust lint expectation using `cargo clippy` with a deliberate scope.
+- [x] Review whether a repo-level `rustfmt.toml` or `clippy.toml` is needed or whether defaults should remain authoritative.
+- [x] Keep frontend lint and typecheck commands explicitly separate in the quality bar.
+- [x] Document when narrower crate/test targets are acceptable instead of full-workspace runs.
+- [x] Tie static-analysis expectations to the current public-repo-facing guidance in `README.md`, `AGENTS.md`, `REPO_MAP.md`, and the archived CI notes.
+- [x] Mirror the same quality sequence into future CI only after the local lane is stable.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
+- run `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1`
 - run `cargo check --workspace`
 - run `cargo test --workspace`
 - run `cargo fmt --check`

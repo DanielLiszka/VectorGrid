@@ -110,18 +110,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document base-versus-derived dataset identity fields and meanings.
-- [ ] Document current no-redownload expectations for derived timeframes.
-- [ ] Document reuse and invalidation semantics for derived datasets.
-- [ ] Document how derived identity is preserved in artifacts and reports.
-- [ ] Add tests for base replacement invalidating prior derived identity.
-- [ ] Add tests proving artifacts preserve base and derived timeframe fields distinctly.
-- [ ] Add tests that shell context stays aligned with artifact/meta identity for derived datasets.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document base-versus-derived dataset identity fields and meanings.
+- [x] Document current no-redownload expectations for derived timeframes.
+- [x] Document reuse and invalidation semantics for derived datasets.
+- [x] Document how derived identity is preserved in artifacts and reports.
+- [x] Add tests for base replacement invalidating prior derived identity.
+- [x] Add tests proving artifacts preserve base and derived timeframe fields distinctly.
+- [x] Add tests that shell context stays aligned with artifact/meta identity for derived datasets.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -138,6 +138,13 @@ Public-repo quality focus:
 - add new derivation metadata rather than mutating current base/derived fields silently
 - keep raw/base identity authoritative even when a derived timeframe is active
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened `web/src/stores/dataStore.actions.test.ts` so derived-timeframe activation now proves the base-versus-derived split explicitly: `baseDataId`, `baseCsvPath`, and base-source identity stay anchored to the base load while `dataId` advances to the derived dataset.
+- Reused the existing backend invalidation authority in `src-tauri/src/state.rs` as acceptance evidence instead of moving identity rules into the frontend: base replacement, derived reuse, and live-update invalidation were all re-verified with the targeted state test suite.
+- Extended downstream artifact consumers rather than introducing a new identity model. `web/src/services/validationService.test.ts` and `src-tauri/src/commands_reports.rs` now both assert that base/derived timeframe fields and resample identity survive artifact persistence/report-building together.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app state --lib`, `cargo test -p ta_desktop_demo_app run_artifacts --lib`, `cargo test -p ta_desktop_demo_app commands_reports --lib`, `npm.cmd --prefix web run test -- src/stores/dataStore.actions.test.ts src/services/validationService.test.ts src/utils/core/artifactIdentity.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

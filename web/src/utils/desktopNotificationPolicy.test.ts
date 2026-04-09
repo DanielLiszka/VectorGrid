@@ -2,6 +2,23 @@ import { describe, expect, it } from 'vitest'
 import { desktopNotificationIntentForTask } from './desktopNotificationPolicy'
 
 describe('desktopNotificationIntentForTask', () => {
+  it('returns no intent when notification mode is off', () => {
+    const intent = desktopNotificationIntentForTask(
+      {
+        id: 'task_off',
+        command: 'run_double_ma_optimization',
+        label: 'Optimization',
+        status: 'failed',
+        startedAt: 1,
+        endedAt: 2,
+        error: 'No notification expected.',
+      },
+      'off',
+    )
+
+    expect(intent).toBeNull()
+  })
+
   it('suppresses success notifications when failures-only mode is enabled', () => {
     const intent = desktopNotificationIntentForTask(
       {
@@ -71,6 +88,39 @@ describe('desktopNotificationIntentForTask', () => {
       },
       'important',
       { documentVisibility: 'visible' },
+    )
+
+    expect(intent).toBeNull()
+  })
+
+  it('suppresses non-terminal tasks even in important mode', () => {
+    const intent = desktopNotificationIntentForTask(
+      {
+        id: 'task_running',
+        command: 'run_double_ma_validation',
+        label: 'Validation',
+        status: 'running',
+        startedAt: 1,
+        message: 'Still running.',
+      },
+      'important',
+    )
+
+    expect(intent).toBeNull()
+  })
+
+  it('suppresses successful commands outside the important allowlist', () => {
+    const intent = desktopNotificationIntentForTask(
+      {
+        id: 'task_success_unimportant',
+        command: 'open_reports_dir',
+        label: 'Open Reports Dir',
+        status: 'success',
+        startedAt: 1,
+        endedAt: 2,
+        message: 'Opened reports directory.',
+      },
+      'important',
     )
 
     expect(intent).toBeNull()

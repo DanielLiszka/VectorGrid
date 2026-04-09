@@ -14,6 +14,7 @@ let initialized = false
 let consoleDetach: (() => void) | null = null
 let loggerDetach: (() => void) | null = null
 let taskWatchStop: WatchStopHandle | null = null
+let windowStatePersistHandler: (() => void) | null = null
 let saveWindowStateBound = false
 const notifiedTaskIds = new Set<string>()
 const documentVisibility = typeof document === 'undefined' ? null : useDocumentVisibility()
@@ -57,6 +58,7 @@ async function bindWindowStateSaving(): Promise<void> {
       )
     })
   }
+  windowStatePersistHandler = persist
   window.addEventListener('pagehide', persist)
   window.addEventListener('beforeunload', persist)
   saveWindowStateBound = true
@@ -187,6 +189,11 @@ export function teardownDesktopProductizationForTests(): void {
   }
   const runtimeStore = runtimeStoreOrNull()
   runtimeStore?.setDesktopLogConsoleAttached(false)
+  if (typeof window !== 'undefined' && windowStatePersistHandler) {
+    window.removeEventListener('pagehide', windowStatePersistHandler)
+    window.removeEventListener('beforeunload', windowStatePersistHandler)
+    windowStatePersistHandler = null
+  }
   initialized = false
   saveWindowStateBound = false
   notifiedTaskIds.clear()

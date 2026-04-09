@@ -146,21 +146,28 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- updated `web/src/stores/taskStore.ts` so the persisted task-center payload now includes bounded `toasts` alongside `history`, `events`, and `timeline`
+- preserved backward compatibility by hydrating both legacy version `1` payloads and the newer version `2` payload written after this change
+- added direct lifecycle coverage for persisted hydration, bounded toast retention, and persisted toast dismissal in `web/src/stores/taskStore.lifecycle.test.ts`
+- normalized task-store test setup with explicit module-state resets so throttling, hydration, and persistence tests do not leak timing or singleton state between cases
+
 ## Checklist
 
-- [ ] Document task-store state families and invariants.
-- [ ] Document lifecycle transitions and helper ownership.
-- [ ] Document retention limits and persistence behavior.
-- [ ] Document overall-progress semantics and event-throttle policies.
-- [ ] Document cancel-command mapping expectations.
-- [ ] Add tests for persistence hydration and bounded retention.
-- [ ] Add tests for cancellation restore and terminal-state transitions.
-- [ ] Add tests for tracked-command posture snapshots and summary counts.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document task-store state families and invariants.
+- [x] Document lifecycle transitions and helper ownership.
+- [x] Document retention limits and persistence behavior.
+- [x] Document overall-progress semantics and event-throttle policies.
+- [x] Document cancel-command mapping expectations.
+- [x] Add tests for persistence hydration and bounded retention.
+- [x] Add tests for cancellation restore and terminal-state transitions.
+- [x] Add tests for tracked-command posture snapshots and summary counts.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

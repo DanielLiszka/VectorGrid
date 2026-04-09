@@ -869,6 +869,12 @@ mod state_residency_tests {
     use super::*;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::sync::{Mutex, OnceLock};
+
+    fn residency_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     fn make_trending_candles(len: usize, step: f64) -> Candles {
         let mut ts = Vec::with_capacity(len);
@@ -921,6 +927,7 @@ mod state_residency_tests {
 
     #[test]
     fn load_replaces_prior_dataset_and_discards_prior_derived_cache() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
         let temp = make_temp_dir("state_load_replace");
         let cache_dir = temp.join("cache");
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -951,7 +958,45 @@ mod state_residency_tests {
     }
 
     #[test]
+    fn base_replacement_builds_a_new_derived_identity_for_the_new_base() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let temp = make_temp_dir("state_load_replace_new_derived");
+        let cache_dir = temp.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        let csv_a = temp.join("a.csv");
+        let csv_b = temp.join("b.csv");
+        write_candles_csv(&csv_a, &make_trending_candles(32, 0.2));
+        write_candles_csv(&csv_b, &make_trending_candles(48, 0.4));
+
+        let state = AppState::default();
+        let load_a = state
+            .load_price_data(csv_a.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load a");
+        let derived_a = state
+            .resample_loaded_data(&load_a.id, "5m")
+            .expect("resample a");
+
+        let load_b = state
+            .load_price_data(csv_b.to_str().unwrap_or_default(), &cache_dir)
+            .expect("load b");
+        let derived_b = state
+            .resample_loaded_data(&load_b.id, "5m")
+            .expect("resample b");
+
+        assert_ne!(load_a.id, load_b.id);
+        assert_ne!(derived_a.id, derived_b.id);
+        assert!(state.get_candles(&derived_a.id).is_err());
+        assert!(state.get_candles(&derived_b.id).is_ok());
+        assert!(matches!(
+            derived_b.load_source,
+            LoadSource::DerivedFreshResample
+        ));
+    }
+
+    #[test]
     fn base_live_update_replaces_arc_and_invalidates_active_derived_dataset() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
         let temp = make_temp_dir("state_live_update");
         let cache_dir = temp.join("cache");
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -982,6 +1027,7 @@ mod state_residency_tests {
 
     #[test]
     fn resample_reuses_active_derived_dataset_until_base_changes() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
         let temp = make_temp_dir("state_resample_reuse");
         let cache_dir = temp.join("cache");
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -1019,6 +1065,7 @@ mod state_residency_tests {
 
     #[test]
     fn identical_base_load_reuses_existing_id_and_preserves_derived_cache() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
         let temp = make_temp_dir("state_base_reuse");
         let cache_dir = temp.join("cache");
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -1057,6 +1104,7 @@ mod state_residency_tests {
 
     #[test]
     fn matching_base_load_updates_access_sequence() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
         let temp = make_temp_dir("state_access_seq_reuse");
         let cache_dir = temp.join("cache");
         std::fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -1093,6 +1141,7 @@ mod state_residency_tests {
 
     #[test]
     fn retention_limits_can_be_overridden_by_env() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
         let prev_base = std::env::var("VECTORBT_MAX_ACTIVE_BASE_DATASETS").ok();
         let prev_derived = std::env::var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS").ok();
 
@@ -1112,6 +1161,122 @@ mod state_residency_tests {
             std::env::set_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS", value);
         } else {
             std::env::remove_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS");
+        }
+    }
+
+    #[test]
+    fn retention_protects_parent_base_when_only_child_is_protected() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let prev_base = std::env::var("VECTORBT_MAX_ACTIVE_BASE_DATASETS").ok();
+        let prev_derived = std::env::var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS").ok();
+        std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", "1");
+        std::env::set_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS", "1");
+
+        let shared = Arc::new(make_trending_candles(8, 0.2));
+        let mut map = HashMap::new();
+        map.insert(
+            "base-a".to_string(),
+            DatasetEntry {
+                candles: shared.clone(),
+                version_meta: DatasetVersionMeta {
+                    version: 1,
+                    kind: DatasetKind::Base,
+                    source_version: Some(1),
+                },
+                last_access_seq: 1,
+            },
+        );
+        map.insert(
+            "base-b".to_string(),
+            DatasetEntry {
+                candles: shared.clone(),
+                version_meta: DatasetVersionMeta {
+                    version: 2,
+                    kind: DatasetKind::Base,
+                    source_version: Some(2),
+                },
+                last_access_seq: 2,
+            },
+        );
+        map.insert(
+            "base-b@5m".to_string(),
+            DatasetEntry {
+                candles: shared,
+                version_meta: DatasetVersionMeta {
+                    version: 1,
+                    kind: DatasetKind::Derived {
+                        parent_data_id: "base-b".to_string(),
+                        timeframe: "5m".to_string(),
+                    },
+                    source_version: Some(2),
+                },
+                last_access_seq: 3,
+            },
+        );
+
+        let protected = HashSet::from(["base-b@5m".to_string()]);
+        let removed = enforce_dataset_retention_locked(&mut map, &protected);
+
+        assert_eq!(removed, vec!["base-a".to_string()]);
+        assert!(map.contains_key("base-b"));
+        assert!(map.contains_key("base-b@5m"));
+
+        if let Some(value) = prev_base {
+            std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", value);
+        } else {
+            std::env::remove_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS");
+        }
+        if let Some(value) = prev_derived {
+            std::env::set_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS", value);
+        } else {
+            std::env::remove_var("VECTORBT_MAX_ACTIVE_DERIVED_DATASETS");
+        }
+    }
+
+    #[test]
+    fn retention_prefers_evicting_unshared_entries_before_arc_shared_entries() {
+        let _env_guard = residency_env_lock().lock().expect("lock env");
+        let prev_base = std::env::var("VECTORBT_MAX_ACTIVE_BASE_DATASETS").ok();
+        std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", "1");
+
+        let shared = Arc::new(make_trending_candles(8, 0.2));
+        let shared_external = shared.clone();
+        let mut map = HashMap::new();
+        map.insert(
+            "shared-hot".to_string(),
+            DatasetEntry {
+                candles: shared,
+                version_meta: DatasetVersionMeta {
+                    version: 1,
+                    kind: DatasetKind::Base,
+                    source_version: Some(1),
+                },
+                last_access_seq: 1,
+            },
+        );
+        map.insert(
+            "cold-unshared".to_string(),
+            DatasetEntry {
+                candles: Arc::new(make_trending_candles(8, 0.4)),
+                version_meta: DatasetVersionMeta {
+                    version: 2,
+                    kind: DatasetKind::Base,
+                    source_version: Some(2),
+                },
+                last_access_seq: 2,
+            },
+        );
+
+        let removed = enforce_dataset_retention_locked(&mut map, &HashSet::new());
+
+        assert_eq!(removed, vec!["cold-unshared".to_string()]);
+        assert!(map.contains_key("shared-hot"));
+        assert_eq!(Arc::strong_count(&shared_external), 2);
+
+        if let Some(value) = prev_base {
+            std::env::set_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS", value);
+        } else {
+            std::env::remove_var("VECTORBT_MAX_ACTIVE_BASE_DATASETS");
         }
     }
 }

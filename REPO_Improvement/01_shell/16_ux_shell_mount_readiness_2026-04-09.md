@@ -62,9 +62,10 @@ So shell-mount readiness is already a cross-shell infrastructure surface.
 
 ## Current Verification Surface
 
+- `web/src/composables/useShellMount.test.ts`
 - indirect panel/component tests that rely on successful teleport readiness
 - `web/src/components/VueWorkspaceShell.test.ts`
-- there is currently no dedicated `useShellMount` test surface
+- `web/src/components/DrillWorkspacePanel.test.ts`
 
 ## Strengths Already Present
 
@@ -122,20 +123,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current `useShellMount` behavior and options.
-- [ ] Document which panels depend on shell mount readiness.
-- [ ] Add dedicated test coverage for mount-ready and cleanup behavior.
-- [ ] Preserve pane dataset marker add/remove behavior.
-- [ ] Keep host selectors synchronized with shell mount targets.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document current `useShellMount` behavior and options.
+- [x] Document which panels depend on shell mount readiness.
+- [x] Add dedicated test coverage for mount-ready and cleanup behavior.
+- [x] Preserve pane dataset marker add/remove behavior.
+- [x] Keep host selectors synchronized with shell mount targets.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- add and run a dedicated `useShellMount` unit test
+- run `npm --prefix web run test -- src/composables/useShellMount.test.ts`
+- run `npm --prefix web run test -- src/components/DrillWorkspacePanel.test.ts`
 - run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
 - run representative panel tests that depend on teleport readiness
 - manually verify panel hosts still receive teleported content after shell changes

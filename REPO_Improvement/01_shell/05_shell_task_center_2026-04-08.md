@@ -129,19 +129,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document launcher visibility, quiet-mode, and expanded-mode rules.
-- [ ] Document persisted launcher-position behavior and viewport clamping.
-- [ ] Document focus management, escape handling, and return-focus behavior.
-- [ ] Document recent event/timeline/toast truncation policy.
-- [ ] Document cancellation affordance rules and when they should appear.
-- [ ] Add tests for persisted-position recovery and off-screen clamping.
-- [ ] Add tests for focus trap and return-focus behavior.
-- [ ] Add tests for quiet-mode display and cancellation-path UI behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document launcher visibility, quiet-mode, and expanded-mode rules.
+- [x] Document persisted launcher-position behavior and viewport clamping.
+- [x] Document focus management, escape handling, and return-focus behavior.
+- [x] Document recent event/timeline/toast truncation policy.
+- [x] Document cancellation affordance rules and when they should appear.
+- [x] Add tests for persisted-position recovery and off-screen clamping.
+- [x] Add tests for focus trap and return-focus behavior.
+- [x] Add tests for quiet-mode display and cancellation-path UI behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

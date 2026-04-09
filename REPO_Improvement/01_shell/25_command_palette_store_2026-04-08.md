@@ -48,6 +48,7 @@ Consumers already include the command-palette overlay, desktop titlebar entrypoi
 
 ## Current Verification Surface
 
+- `web/src/stores/commandPaletteStore.test.ts`
 - `web/src/components/CommandPaletteOverlay.test.ts`
 - `web/src/components/DesktopTitlebar.test.ts`
 - `web/src/components/GlobalShortcutBridge.test.ts`
@@ -106,20 +107,26 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- added direct store-level coverage in `web/src/stores/commandPaletteStore.test.ts` for open/close resets, selection clamping, selection movement, and query-reset behavior
+- verified the overlay consumer remains keyboard-safe through `CommandPaletteOverlay.test.ts`, with `DesktopTitlebar.test.ts` and `GlobalShortcutBridge.test.ts` covering the other mutation entrypoints
+- left the palette state intentionally ephemeral and bounded; no persistence or feature expansion was introduced
+
 ## Checklist
 
-- [ ] Document the palette store state inventory and invariants.
-- [ ] Document open/close/query reset behavior explicitly.
-- [ ] Document selection clamping and movement rules.
-- [ ] Document which shell consumers are allowed to mutate the store.
-- [ ] Add tests for open/close reset behavior.
-- [ ] Add tests for selection clamping on result-count shrink.
-- [ ] Add tests for keyboard navigation through the overlay consumer.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the palette store state inventory and invariants.
+- [x] Document open/close/query reset behavior explicitly.
+- [x] Document selection clamping and movement rules.
+- [x] Document which shell consumers are allowed to mutate the store.
+- [x] Add tests for open/close reset behavior.
+- [x] Add tests for selection clamping on result-count shrink.
+- [x] Add tests for keyboard navigation through the overlay consumer.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

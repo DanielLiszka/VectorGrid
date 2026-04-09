@@ -4,7 +4,12 @@ import { ref } from 'vue'
 const virtualMockState = vi.hoisted(() => ({
   virtualItems: [] as Array<{ index: number; start: number; end: number }>,
   totalSize: 0,
+  measureCalls: 0,
   scrollCalls: [] as number[],
+}))
+
+const resizeObserverState = vi.hoisted(() => ({
+  trigger: null as null | (() => void),
 }))
 
 vi.mock('@tanstack/vue-virtual', () => ({
@@ -12,11 +17,23 @@ vi.mock('@tanstack/vue-virtual', () => ({
     value: {
       getVirtualItems: () => virtualMockState.virtualItems,
       getTotalSize: () => virtualMockState.totalSize,
+      measure: () => {
+        virtualMockState.measureCalls += 1
+      },
       scrollToOffset: (offset: number) => {
         virtualMockState.scrollCalls.push(offset)
       },
     },
   }),
+}))
+
+vi.mock('@vueuse/core', () => ({
+  useResizeObserver: (_target: unknown, callback: () => void) => {
+    resizeObserverState.trigger = callback
+    return {
+      stop: vi.fn(),
+    }
+  },
 }))
 
 import { useVirtualTableRows } from './useVirtualTableRows'
@@ -25,7 +42,9 @@ describe('useVirtualTableRows', () => {
   beforeEach(() => {
     virtualMockState.virtualItems = []
     virtualMockState.totalSize = 0
+    virtualMockState.measureCalls = 0
     virtualMockState.scrollCalls = []
+    resizeObserverState.trigger = null
   })
 
   it('maps virtual rows to source rows and computes spacer bounds', () => {
@@ -80,5 +99,15 @@ describe('useVirtualTableRows', () => {
 
     expect(scrollHost.scrollTop).toBe(0)
     expect(virtualMockState.scrollCalls).toEqual([0])
+  })
+
+  it('remeasures the virtualizer when the scroll host is resized', () => {
+    const rows = ref([{ id: 'r0' }, { id: 'r1' }])
+    const table = useVirtualTableRows(rows)
+    table.scrollElementRef.value = {} as HTMLElement
+
+    resizeObserverState.trigger?.()
+
+    expect(virtualMockState.measureCalls).toBe(1)
   })
 })

@@ -198,6 +198,22 @@ export interface PolygonDownloadAndLoadSummary {
   load: DataLoadResult;
 }
 
+function ensureValidPolygonDownloadAndLoadSummary(
+  summary: PolygonDownloadAndLoadSummary,
+  action: "download" | "top-off",
+): PolygonDownloadAndLoadSummary {
+  if (!summary.csvPath) {
+    throw new Error(`Polygon ${action} returned an invalid csv path.`);
+  }
+  if (!summary.baseLoad.dataId) {
+    throw new Error(`Polygon ${action} returned an invalid base dataset.`);
+  }
+  if (!summary.load.dataId) {
+    throw new Error(`Polygon ${action} returned an invalid loaded dataset.`);
+  }
+  return summary;
+}
+
 function buildMarketDataDirHint(summary: MarketDataDirInfoSummary): string {
   const polygonCache = summary.polygonCacheDir || "—";
   if (summary.configuredRootDir) {
@@ -529,7 +545,7 @@ export async function downloadPolygonDataset(
   const row = (
     raw && typeof raw === "object" ? raw : {}
   ) as PolygonDownloadAndLoadResponse;
-  return {
+  return ensureValidPolygonDownloadAndLoadSummary({
     csvPath: normalizeText(row.csv_path),
     downloadedBars: normalizeInteger(row.downloaded_bars),
     usedCacheOnly: Boolean(row.used_cache_only),
@@ -538,7 +554,7 @@ export async function downloadPolygonDataset(
       normalizeText(row.csv_path),
     ),
     load: normalizeLoadPriceDataResponse(row, normalizeText(row.csv_path)),
-  };
+  }, "download");
 }
 
 export async function topOffPolygonDataset(
@@ -556,7 +572,7 @@ export async function topOffPolygonDataset(
   const row = (
     raw && typeof raw === "object" ? raw : {}
   ) as PolygonDownloadAndLoadResponse;
-  return {
+  return ensureValidPolygonDownloadAndLoadSummary({
     csvPath: normalizeText(row.csv_path),
     downloadedBars: normalizeInteger(row.downloaded_bars),
     usedCacheOnly: Boolean(row.used_cache_only),
@@ -565,7 +581,7 @@ export async function topOffPolygonDataset(
       normalizeText(row.csv_path),
     ),
     load: normalizeLoadPriceDataResponse(row, normalizeText(row.csv_path)),
-  };
+  }, "top-off");
 }
 
 export async function validatePolygonDataset(

@@ -436,8 +436,12 @@ function applyNormalizedArtifacts(
   }
 
   const sourceChanged = store.source !== source;
+  const storeNeedsExplicitClear =
+    !run &&
+    !validation &&
+    (store.currentRun !== null || store.currentValidation !== null);
 
-  if (!runChanged && !validationChanged) {
+  if (!runChanged && !validationChanged && !storeNeedsExplicitClear) {
     if (sourceChanged) store.source = source;
     return {
       applied: sourceChanged,

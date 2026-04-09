@@ -100,19 +100,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every current cache family and its owner.
-- [ ] List all current `LoadSource` values and their meanings.
-- [ ] Distinguish backend truth from frontend inference in the source-display pipeline.
-- [ ] Document the exact scope of `market_data_root_dir`.
-- [ ] Document sidecar vs app-local fallback precedence.
-- [ ] Clarify the current source-identity contract and any non-contract helpers.
-- [ ] Add tests that exercise all current load-source variants.
-- [ ] Improve settings/help copy so users know where different cache families live.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every current cache family and its owner.
+- [x] List all current `LoadSource` values and their meanings.
+- [x] Distinguish backend truth from frontend inference in the source-display pipeline.
+- [x] Document the exact scope of `market_data_root_dir`.
+- [x] Document sidecar vs app-local fallback precedence.
+- [x] Clarify the current source-identity contract and any non-contract helpers.
+- [x] Add tests that exercise all current load-source variants.
+- [x] Improve settings/help copy so users know where different cache families live.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -130,6 +130,13 @@ Public-repo quality focus:
 - if additional source fields are surfaced from Rust, keep the current frontend copy working until the new contract is fully consumed
 - keep cache-write failures non-fatal unless the repo explicitly decides otherwise
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added explicit legacy-response fallback coverage in `web/src/services/dataService.test.ts` for omitted `load_source` fields so `in_memory_base_reuse` and `derived_in_memory_reuse` remain visible, truthful outcomes even when older backend payloads are normalized in the frontend.
+- Kept backend `LoadSource` authoritative and unchanged; this slice intentionally hardened consumer truthfulness rather than widening the contract or introducing new cache families.
+- Preserved the documented cache-family split: CSV binary caches remain distinct from Polygon manifest/cache ownership and `market_data_root_dir` scope remains unchanged.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/components/DataWorkspacePanel.test.ts src/services/optimizeService.test.ts src/services/validationService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_app_core`.
 
 ## Related Docs
 

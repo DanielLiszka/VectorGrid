@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document `cacheDir`, `hasApiKey`, and `datasets` as one response contract.
-- [ ] Document lazy-load and refresh behavior.
-- [ ] Document selected-path preservation and fallback selection.
-- [ ] Document current ordering behavior and known recency-versus-manifest subtlety.
-- [ ] Add or tighten tests if listing order or lazy-load semantics change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document `cacheDir`, `hasApiKey`, and `datasets` as one response contract.
+- [x] Document lazy-load and refresh behavior.
+- [x] Document selected-path preservation and fallback selection.
+- [x] Document current ordering behavior and known recency-versus-manifest subtlety.
+- [x] Add or tighten tests if listing order or lazy-load semantics change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,13 @@ Public-repo quality focus:
 - prefer documenting ordering semantics before changing them
 - preserve the full response shape for current consumers
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added backend tests in `src-tauri/src/polygon.rs` that freeze the current manifest-backed listing contract: `get_cache_info()` returns `cache_dir`, `has_api_key`, and dataset rows in manifest key order, not recency order.
+- Added frontend store/component coverage in `web/src/stores/dataStore.actions.test.ts` and `web/src/components/DataWorkspacePanel.test.ts` so lazy listing stays explicit: `openPolygon()` still loads lazily, `refreshPolygon()` can drop an invalid prior selection back to the first available dataset, and the empty-list prompt plus cache summary remain visible.
+- Preserved the current mixed ordering posture deliberately: freshly downloaded datasets may still be temporarily unshifted in-memory, while refresh restores backend manifest order. This slice tightened tests around that contract instead of changing ordering semantics midstream.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/components/DataWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

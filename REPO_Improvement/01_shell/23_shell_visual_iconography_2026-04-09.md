@@ -49,6 +49,7 @@ That means the icon layer is already part of product behavior, not just styling.
 
 ## Current Verification Surface
 
+- `web/src/components/AppVisualIcon.test.ts`
 - `web/src/components/VueWorkspaceShell.test.ts`
 - `web/src/components/TaskCenterOverlay.test.ts`
 - `web/src/components/SettingsWorkspacePanel.test.ts`
@@ -65,7 +66,7 @@ That means the icon layer is already part of product behavior, not just styling.
 
 - non-options and options icon assets currently live in the same registry file, which makes scope discipline easy to lose
 - there is no direct implementation doc that freezes which surfaces should use asset icons versus Lucide fallbacks
-- there is no direct component test for `AppVisualIcon.vue` render-path and alt behavior
+- shared icon accessibility can still drift if contributors bypass `AppVisualIcon.vue` semantics in consumers
 - icon copy, asset labels, and usage semantics can drift if contributors treat visuals as purely decorative
 
 ## Regressions To Avoid
@@ -99,19 +100,26 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- added direct component coverage in `web/src/components/AppVisualIcon.test.ts` for asset-backed and Lucide/component-backed icons
+- froze the shared renderer contract in `web/src/components/AppVisualIcon.vue` so non-decorative component-path icons carry an accessible name and `role="img"` while decorative icons remain hidden from assistive technology
+- verified representative shell consumers through `SettingsWorkspacePanel.test.ts`, `DesktopTitlebar.test.ts`, and the shared command/task shell test bundle
+- left the shared asset registry intact to avoid widening scope into options ownership refactors during the non-options lane
+
 ## Checklist
 
-- [ ] Inventory all non-options asset icons and the shell/result surfaces that use them.
-- [ ] Document the current asset-versus-Lucene/Lucide fallback rule set.
-- [ ] Add a direct test plan for `AppVisualIcon.vue` asset and component rendering.
-- [ ] Separate non-options icon ownership from out-of-scope options icons at the documentation level.
-- [ ] Document alt-text and decorative-image expectations for shell icons and empty-state illustrations.
-- [ ] Record any places where current icon meanings or labels are inconsistent.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Inventory all non-options asset icons and the shell/result surfaces that use them.
+- [x] Document the current asset-versus-Lucene/Lucide fallback rule set.
+- [x] Add a direct test plan for `AppVisualIcon.vue` asset and component rendering.
+- [x] Separate non-options icon ownership from out-of-scope options icons at the documentation level.
+- [x] Document alt-text and decorative-image expectations for shell icons and empty-state illustrations.
+- [x] Record any places where current icon meanings or labels are inconsistent.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

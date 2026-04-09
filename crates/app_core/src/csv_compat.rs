@@ -1,6 +1,6 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
 
+use csv::{ReaderBuilder, StringRecord, Trim};
 use vector_ta::utilities::data_loader::{CandleFieldFlags, Candles};
 
 #[derive(Clone, Copy, Debug)]
@@ -150,6 +150,30 @@ fn parse_f64_or_nan(s: Option<&str>) -> Result<f64, String> {
     t.parse::<f64>().map_err(|_| format!("invalid float '{t}'"))
 }
 
+fn csv_record_is_empty(record: &StringRecord) -> bool {
+    record.iter().all(|field| field.trim().is_empty())
+}
+
+fn csv_record_line_num(record: &StringRecord, fallback: usize) -> usize {
+    record
+        .position()
+        .and_then(|position| usize::try_from(position.line()).ok())
+        .filter(|line_num| *line_num > 0)
+        .unwrap_or(fallback)
+}
+
+fn format_csv_read_error(context: &str, error: csv::Error) -> String {
+    let line_num = error
+        .position()
+        .and_then(|position| usize::try_from(position.line()).ok())
+        .filter(|line| *line > 0);
+    let detail = error.to_string();
+    match line_num {
+        Some(line_num) => format!("failed to read CSV {context} at line {line_num}: {detail}"),
+        None => format!("failed to read CSV {context}: {detail}"),
+    }
+}
+
 /// CSV reader used by the desktop app.
 ///
 /// Supports:
@@ -157,23 +181,27 @@ fn parse_f64_or_nan(s: Option<&str>) -> Result<f64, String> {
 /// - Polygon "raw aggregates" CSV: `v,vw,o,c,h,l,t,n,...` (maps `t,o,c,h,l,v`)
 pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> {
     let file = File::open(file_path).map_err(|e| format!("failed to open CSV: {e}"))?;
-    let mut lines = BufReader::new(file).lines();
+    let mut reader = ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .trim(Trim::All)
+        .from_reader(file);
+    let mut records = reader.records();
 
-    let header_line = loop {
-        match lines.next() {
-            Some(Ok(line)) => {
-                let t = line.trim();
-                if t.is_empty() {
+    let header_record = loop {
+        match records.next() {
+            Some(Ok(record)) => {
+                if csv_record_is_empty(&record) {
                     continue;
                 }
-                break t.to_string();
+                break record;
             }
-            Some(Err(e)) => return Err(format!("failed to read CSV header: {e}")),
+            Some(Err(error)) => return Err(format_csv_read_error("header", error)),
             None => return Err("CSV is empty".to_string()),
         }
     };
 
-    let headers: Vec<String> = header_line.split(',').map(normalize_header).collect();
+    let headers: Vec<String> = header_record.iter().map(normalize_header).collect();
 
     let (idx, fields_hdr) = infer_column_mapping(&headers)?;
     let wanted_max = idx.max_idx();
@@ -190,86 +218,51 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
     let mut has_low_any = false;
     let mut has_volume_any = false;
 
-    for (line_idx, line) in lines.enumerate() {
-        let line = line.map_err(|e| format!("failed to read CSV line {}: {e}", line_idx + 2))?;
-        let t = line.trim();
-        if t.is_empty() {
+    for (row_idx, record) in records.enumerate() {
+        let record = record.map_err(|error| format_csv_read_error("record", error))?;
+        if csv_record_is_empty(&record) {
             continue;
         }
+        let line_num = csv_record_line_num(&record, row_idx + 2);
 
-        let mut ts_s: Option<&str> = None;
-        let mut c_s: Option<&str> = None;
-        let mut o_s: Option<&str> = None;
-        let mut h_s: Option<&str> = None;
-        let mut l_s: Option<&str> = None;
-        let mut v_s: Option<&str> = None;
-
-        let need_open = idx.open.is_some();
-        let need_high = idx.high.is_some();
-        let need_low = idx.low.is_some();
-        let need_vol = idx.volume.is_some();
-
-        let mut got_ts = false;
-        let mut got_c = false;
-        let mut got_o = !need_open;
-        let mut got_h = !need_high;
-        let mut got_l = !need_low;
-        let mut got_v = !need_vol;
-
-        for (i, part) in t.split(',').enumerate() {
-            if i == idx.ts {
-                ts_s = Some(part);
-                got_ts = true;
+        if record.len() <= wanted_max {
+            if record.get(idx.ts).is_none() {
+                return Err(format!("missing timestamp column at line {line_num}"));
             }
-            if i == idx.close {
-                c_s = Some(part);
-                got_c = true;
-            }
-            if idx.open == Some(i) {
-                o_s = Some(part);
-                got_o = true;
-            }
-            if idx.high == Some(i) {
-                h_s = Some(part);
-                got_h = true;
-            }
-            if idx.low == Some(i) {
-                l_s = Some(part);
-                got_l = true;
-            }
-            if idx.volume == Some(i) {
-                v_s = Some(part);
-                got_v = true;
-            }
-
-            if i >= wanted_max && got_ts && got_c && got_o && got_h && got_l && got_v {
-                break;
+            if record.get(idx.close).is_none() {
+                return Err(format!("missing close column at line {line_num}"));
             }
         }
 
-        let ts_raw =
-            ts_s.ok_or_else(|| format!("missing timestamp column at line {}", line_idx + 2))?;
+        let ts_raw = record
+            .get(idx.ts)
+            .ok_or_else(|| format!("missing timestamp column at line {line_num}"))?;
         let ts = parse_i64_flexible(ts_raw).map_err(|e| {
             format!(
-                "invalid timestamp '{}' at line {} ({e})",
+                "invalid timestamp '{}' at line {line_num} ({e})",
                 ts_raw.trim(),
-                line_idx + 2
             )
         })?;
 
-        let c_raw = c_s.ok_or_else(|| format!("missing close column at line {}", line_idx + 2))?;
+        let c_raw = record
+            .get(idx.close)
+            .ok_or_else(|| format!("missing close column at line {line_num}"))?;
         let c = c_raw
             .trim()
             .parse::<f64>()
-            .map_err(|_| format!("invalid close '{}' at line {}", c_raw.trim(), line_idx + 2))?;
+            .map_err(|_| format!("invalid close '{}' at line {line_num}", c_raw.trim()))?;
         if !c.is_finite() {
-            return Err(format!("close is not finite at line {}", line_idx + 2));
+            return Err(format!("close is not finite at line {line_num}"));
         }
 
-        let o = parse_f64_or_nan(o_s).map_err(|e| format!("{e} at line {}", line_idx + 2))?;
-        let h = parse_f64_or_nan(h_s).map_err(|e| format!("{e} at line {}", line_idx + 2))?;
-        let l = parse_f64_or_nan(l_s).map_err(|e| format!("{e} at line {}", line_idx + 2))?;
-        let v = parse_f64_or_nan(v_s).map_err(|e| format!("{e} at line {}", line_idx + 2))?;
+        let o = parse_f64_or_nan(idx.open.and_then(|index| record.get(index)))
+            .map_err(|e| format!("{e} at line {line_num}"))?;
+        let h = parse_f64_or_nan(idx.high.and_then(|index| record.get(index)))
+            .map_err(|e| format!("{e} at line {line_num}"))?;
+        let l = parse_f64_or_nan(idx.low.and_then(|index| record.get(index)))
+            .map_err(|e| format!("{e} at line {line_num}"))?;
+        let v = parse_f64_or_nan(idx.volume.and_then(|index| record.get(index)))
+            .map_err(|e| format!("{e} at line {line_num}"))?;
 
         if o.is_finite() {
             has_open_any = true;
@@ -312,23 +305,29 @@ pub fn read_candles_from_csv_compat(file_path: &str) -> Result<Candles, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
-    #[test]
-    fn parses_polygon_raw_csv_columns() {
+    fn write_temp_csv(prefix: &str, csv: &str) -> PathBuf {
         let tmp = std::env::temp_dir().join(format!(
-            "vta_csv_compat_test_{}.csv",
+            "{prefix}_{}_{}.csv",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis()
         ));
+        std::fs::write(&tmp, csv).expect("write tmp csv");
+        tmp
+    }
 
+    #[test]
+    fn parses_polygon_raw_csv_columns() {
         let csv = concat!(
             "v,vw,o,c,h,l,t,n,a,op\n",
             "13468.0,23.2143,23.2143,23.2143,23.2143,23.2143,1350460800000,2.0,,\n",
             "3192.0,23.2318,23.2318,23.2318,23.2318,23.2318,1350460920000,1.0,,\n"
         );
-        std::fs::write(&tmp, csv).expect("write tmp csv");
+        let tmp = write_temp_csv("vta_csv_compat_test_polygon", csv);
 
         let candles = read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("parse");
         assert_eq!(candles.timestamp.len(), 2);
@@ -341,5 +340,79 @@ mod tests {
         assert!(candles.fields.volume);
         assert!(candles.fields.high);
         assert!(candles.fields.low);
+    }
+
+    #[test]
+    fn parses_named_alias_headers_and_drops_all_blank_optional_fields() {
+        let csv = concat!(
+            "time,o,c,h,l,v\n",
+            "1350460800000,23.2143,23.5143,,,\n",
+            "1350460920000,23.2318,23.5318,,,\n"
+        );
+        let tmp = write_temp_csv("vta_csv_compat_test_named_aliases", csv);
+
+        let candles =
+            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("parse named aliases");
+        assert_eq!(candles.timestamp, vec![1350460800000, 1350460920000]);
+        assert_eq!(candles.open[0], 23.2143);
+        assert_eq!(candles.close[1], 23.5318);
+        assert!(candles.fields.open);
+        assert!(candles.fields.close);
+        assert!(!candles.fields.high);
+        assert!(!candles.fields.low);
+        assert!(!candles.fields.volume);
+        assert!(candles.high.iter().all(|value| value.is_nan()));
+        assert!(candles.low.iter().all(|value| value.is_nan()));
+        assert!(candles.volume.iter().all(|value| value.is_nan()));
+    }
+
+    #[test]
+    fn falls_back_to_positional_layout_when_named_headers_are_not_recognized() {
+        let csv = concat!(
+            "timestamp,opening,closing,high,low,volume\n",
+            "1350460800000,23.2143,23.5143,23.8143,23.0143,100.0\n"
+        );
+        let tmp = write_temp_csv("vta_csv_compat_test_positional_fallback", csv);
+
+        let candles =
+            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("parse positional fallback");
+        assert_eq!(candles.timestamp[0], 1350460800000);
+        assert_eq!(candles.open[0], 23.2143);
+        assert_eq!(candles.close[0], 23.5143);
+        assert_eq!(candles.high[0], 23.8143);
+        assert_eq!(candles.low[0], 23.0143);
+        assert_eq!(candles.volume[0], 100.0);
+        assert!(candles.fields.open);
+        assert!(candles.fields.high);
+        assert!(candles.fields.low);
+        assert!(candles.fields.volume);
+    }
+
+    #[test]
+    fn reports_invalid_timestamps_clearly() {
+        let csv = concat!("timestamp,close\n", "not_a_timestamp,23.5143\n");
+        let tmp = write_temp_csv("vta_csv_compat_test_bad_timestamp", csv);
+
+        let error = read_candles_from_csv_compat(tmp.to_str().unwrap())
+            .expect_err("invalid timestamp should fail");
+        assert!(error.contains("invalid timestamp"));
+    }
+
+    #[test]
+    fn parses_quoted_headers_and_unused_fields_with_commas() {
+        let csv = concat!(
+            "\"timestamp\",\"close\",\"note\"\n",
+            "\"1350460800000\",\"23.5143\",\"hello, world\"\n"
+        );
+        let tmp = write_temp_csv("vta_csv_compat_test_quoted_fields", csv);
+
+        let candles =
+            read_candles_from_csv_compat(tmp.to_str().unwrap()).expect("parse quoted csv");
+        assert_eq!(candles.timestamp, vec![1350460800000]);
+        assert_eq!(candles.close, vec![23.5143]);
+        assert!(!candles.fields.open);
+        assert!(!candles.fields.high);
+        assert!(!candles.fields.low);
+        assert!(!candles.fields.volume);
     }
 }

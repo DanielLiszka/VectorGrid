@@ -25,6 +25,7 @@ Out of scope:
 
 The repo already treats local verification as the primary truth surface. The strongest evidence currently comes from locally runnable scripts and tests:
 
+- the repo-level static-quality entrypoint in `scripts/run_repo_quality_gate.ps1`
 - frontend typecheck/test/parity/build
 - Rust tests
 - workflow/perf gates
@@ -37,13 +38,16 @@ This means the current operating model is local-first, with CI expected to mirro
 
 - `README.md`
 - `RELEASE.md`
+- `REPO_MAP.md`
 - `web/package.json`
+- `scripts/run_repo_quality_gate.ps1`
 - `scripts/run_cpu_perf_gate.ps1`
 - `scripts/run_gpu_perf_gate.ps1`
 - `scripts/run_workflow_gate.ps1`
 - `scripts/check_output_parity.mjs`
 - `scripts/check_tauri_config_sync.mjs`
 - `scripts/export_baseline_samples.mjs`
+- `.github/workflows.disabled/README.md`
 
 ## Current Verification Surface
 
@@ -103,18 +107,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which checks are locally authoritative today.
-- [ ] Document which checks are suitable for CI mirroring.
-- [ ] Document which checks remain environment-sensitive local proofs.
-- [ ] Keep CI/design discussions downstream of the local command contract.
-- [ ] Review release/readme wording so it does not overstate CI authority.
-- [ ] Add or tighten docs when new local gates are introduced.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document which checks are locally authoritative today.
+- [x] Document which checks are suitable for CI mirroring.
+- [x] Document which checks remain environment-sensitive local proofs.
+- [x] Keep CI/design discussions downstream of the local command contract.
+- [x] Review release/readme wording so it does not overstate CI authority.
+- [x] Add or tighten docs when new local gates are introduced.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 

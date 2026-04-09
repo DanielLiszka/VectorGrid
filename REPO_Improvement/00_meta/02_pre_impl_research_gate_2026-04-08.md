@@ -92,19 +92,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Identify the exact plan-doc slug and scope boundary.
-- [ ] Read `REPO_MAP.md` and topic-specific routing files first.
-- [ ] Inspect the current code paths, request/response shapes, and relevant tests.
-- [ ] Inspect current scripts, harnesses, and artifact files if the topic touches them.
-- [ ] Gather external primary sources and official docs relevant to the topic.
-- [ ] Record at least one repo-specific risk and one external constraint before drafting.
-- [ ] Draft the implementation plan only after repo and external research are complete.
-- [ ] Include a concrete checklist and verification plan in the finished doc.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Identify the exact plan-doc slug and scope boundary.
+- [x] Read `REPO_MAP.md` and topic-specific routing files first.
+- [x] Inspect the current code paths, request/response shapes, and relevant tests.
+- [x] Inspect current scripts, harnesses, and artifact files if the topic touches them.
+- [x] Gather external primary sources and official docs relevant to the topic.
+- [x] Record at least one repo-specific risk and one external constraint before drafting.
+- [x] Draft the implementation plan only after repo and external research are complete.
+- [x] Include a concrete checklist and verification plan in the finished doc.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

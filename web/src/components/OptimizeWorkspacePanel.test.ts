@@ -5,6 +5,7 @@ import { nextTick } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import OptimizeWorkspacePanel from "./OptimizeWorkspacePanel.vue";
 import { useOptimizeStore } from "../stores/optimizeStore";
+import { useStrategyStore } from "../stores/strategyStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 
 function installOptimizePanelMountShell(): void {
@@ -70,6 +71,58 @@ describe("OptimizeWorkspacePanel", () => {
     wrapper.unmount();
   });
 
+  it("normalizes legacy GPU backend aliases into the unified GPU panel messaging", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    workflow.selectControlsTab("opt", { persist: false });
+    optimize.strategyKind = "DoubleMa";
+    optimize.backend = "GpuOnly";
+    vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
+
+    const wrapper = mount(OptimizeWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const bodyText = document.body.textContent || "";
+    expect(bodyText).toContain("Route: GPU unified");
+    expect(bodyText).toContain("Unified route:");
+    expect(bodyText).not.toContain("GpuOnly");
+
+    wrapper.unmount();
+  });
+
+  it("shows the hybrid composite route preview when CompositeTrend keeps ADX enabled", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    const strategy = useStrategyStore(pinia);
+    workflow.selectControlsTab("opt", { persist: false });
+    optimize.strategyKind = "CompositeTrend";
+    optimize.backend = "Auto";
+    strategy.trendUseAdx = true;
+    vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
+
+    const wrapper = mount(OptimizeWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const bodyText = document.body.textContent || "";
+    expect(bodyText).toContain("Route: GPU hybrid");
+    expect(bodyText).toContain(
+      "Composite route preview: current inputs resolve to the hybrid GPU route.",
+    );
+    expect(bodyText).toContain("Export-all stays disabled on hybrid execution.");
+
+    wrapper.unmount();
+  });
+
   it("shows constrained dynamic builder controls for DynamicDoubleMa and keeps the normal search-space pane visible", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -128,6 +181,47 @@ describe("OptimizeWorkspacePanel", () => {
     );
     expect(document.querySelector("#mlSignalDatasetExportPath")).toBeNull();
     expect(document.body.textContent || "").toContain("Run optimization");
+
+    wrapper.unmount();
+  });
+
+  it("renders live optimize status and action readiness from store state", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    workflow.selectControlsTab("opt", { persist: false });
+    optimize.strategyKind = "DoubleMa";
+    optimize.strategyHint = "Live strategy hint.";
+    optimize.pairsPreview = "Pairs: 120";
+    optimize.progressMeta = "42% complete";
+    optimize.statusLine = "Optimization ready.";
+    optimize.runDisabled = true;
+    optimize.validateDisabled = false;
+    vi.spyOn(optimize, "refreshGpuStatus").mockImplementation(() => {});
+
+    const wrapper = mount(OptimizeWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    const bodyText = document.body.textContent || "";
+    expect(bodyText).toContain("Live strategy hint.");
+    expect(bodyText).toContain("Pairs: 120");
+    expect(bodyText).toContain("42% complete");
+    expect(bodyText).toContain("Optimization ready.");
+    const buttons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("button"),
+    );
+    const runButton = buttons.find((button) =>
+      String(button.textContent || "").includes("Run optimization"),
+    );
+    const validateButton = buttons.find((button) =>
+      String(button.textContent || "").includes("Run validation"),
+    );
+    expect(runButton?.disabled).toBe(true);
+    expect(validateButton?.disabled).toBe(false);
 
     wrapper.unmount();
   });

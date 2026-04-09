@@ -94,21 +94,28 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- `web/src/services/settingsBootstrap.ts` now reads through the shared storage helpers and routes boot-time hydration through `settingsStore.applyBootstrapState(...)` instead of the ordinary mutating setters
+- that keeps startup hydration additive and deterministic: persisted settings still normalize and apply, native window-effect calls still occur intentionally, but unchanged persisted values are no longer rewritten during bootstrap
+- `web/src/services/settingsBootstrap.test.ts` now asserts the bootstrap path does not re-persist unchanged values and treats storage-access failures as an empty, safe bootstrap state
+- `web/src/main.test.ts` remains the ordering proof that settings bootstrap still happens before desktop initialization completes and before the runtime is marked ready
+
 ## Checklist
 
-- [ ] Inventory every boot-time settings field and its owner.
-- [ ] Separate pure hydration from side-effectful native application.
-- [ ] Normalize effect/value catalogs across preflight, bootstrap, store, UI, and backend.
-- [ ] Define how invalid storage values are logged, ignored, or migrated.
-- [ ] Document ordering relative to workflow bootstrap and dataset readiness.
-- [ ] Verify that hydration does not unnecessarily re-persist unchanged values.
-- [ ] Add tests for theme/effect/help/density/bootstrap ordering and invalid-value handling.
-- [ ] Add at least one integration-style test for boot-time settings application.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Inventory every boot-time settings field and its owner.
+- [x] Separate pure hydration from side-effectful native application.
+- [x] Normalize effect/value catalogs across preflight, bootstrap, store, UI, and backend.
+- [x] Define how invalid storage values are logged, ignored, or migrated.
+- [x] Document ordering relative to workflow bootstrap and dataset readiness.
+- [x] Verify that hydration does not unnecessarily re-persist unchanged values.
+- [x] Add tests for theme/effect/help/density/bootstrap ordering and invalid-value handling.
+- [x] Add at least one integration-style test for boot-time settings application.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

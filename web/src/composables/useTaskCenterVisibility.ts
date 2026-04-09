@@ -1,4 +1,5 @@
 import { ref, type Ref } from 'vue'
+import { readStorageString, writeStorageString } from '../utils/storage'
 
 export const TASK_CENTER_OPEN_STORAGE_KEY = 'VTA_TASK_CENTER_OPEN_V1'
 export const TASK_CENTER_PANEL_ID = 'vta-task-center-panel'
@@ -18,13 +19,11 @@ function taskCenterWindow(): TaskCenterWindow | null {
 function readPersistedTaskCenterState(): boolean {
   const browserWindow = taskCenterWindow()
   if (!browserWindow) return fallbackTaskCenterOpen.value
-  return browserWindow.localStorage.getItem(TASK_CENTER_OPEN_STORAGE_KEY) === 'true'
+  return readStorageString(TASK_CENTER_OPEN_STORAGE_KEY, 'false') === 'true'
 }
 
 function writePersistedTaskCenterState(value: boolean): void {
-  const browserWindow = taskCenterWindow()
-  if (!browserWindow) return
-  browserWindow.localStorage.setItem(TASK_CENTER_OPEN_STORAGE_KEY, value ? 'true' : 'false')
+  writeStorageString(TASK_CENTER_OPEN_STORAGE_KEY, value ? 'true' : 'false')
 }
 
 function sharedTaskCenterOpenRef(): Ref<boolean> {

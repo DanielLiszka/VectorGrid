@@ -105,20 +105,26 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- strengthened `web/src/utils/statusPresentation.test.ts` so lifecycle-tone and level-tone normalization are now covered directly alongside the existing wording-format tests
+- verified the current status vocabulary remains aligned across `AppRuntimeBanner`, `TaskCenterOverlay`, `RunFooterPanel`, `SettingsWorkspacePanel`, and `VueWorkspaceShell`
+- preserved the existing accessibility posture: normal shell status stays polite, while fatal runtime error presentation remains assertive in the banner surface
+
 ## Checklist
 
-- [ ] Enumerate the current format helpers and what each one is for.
-- [ ] Document the canonical lifecycle labels and tones.
-- [ ] Document runtime-phase labels and descriptive output behavior.
-- [ ] Document when to use terse labels versus full descriptive status strings.
-- [ ] Document current status-region accessibility expectations for existing shell surfaces.
-- [ ] Identify components that already rely on these helpers.
-- [ ] Add or tighten tests if wording, tone, or accessibility usage changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the current format helpers and what each one is for.
+- [x] Document the canonical lifecycle labels and tones.
+- [x] Document runtime-phase labels and descriptive output behavior.
+- [x] Document when to use terse labels versus full descriptive status strings.
+- [x] Document current status-region accessibility expectations for existing shell surfaces.
+- [x] Identify components that already rely on these helpers.
+- [x] Add or tighten tests if wording, tone, or accessibility usage changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

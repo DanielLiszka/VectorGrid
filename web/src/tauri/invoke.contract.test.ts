@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TAURI_COMMANDS } from './commands'
+import { TauriRuntimeError } from './runtimeError'
 import { invokeByName, invokeCommand, tauriRuntimeAvailable } from './invoke'
 
 interface InvokeCall {
@@ -56,5 +57,10 @@ describe('tauri invoke contract smoke', () => {
     expect(tauriRuntimeAvailable()).toBe(true)
     isTauriMock.mockReturnValue(false)
     expect(tauriRuntimeAvailable()).toBe(false)
+  })
+
+  it('rejects unknown command names before they reach the raw invoke path', async () => {
+    await expect(invokeByName('unknown_command')).rejects.toBeInstanceOf(TauriRuntimeError)
+    expect(calls).toEqual([])
   })
 })

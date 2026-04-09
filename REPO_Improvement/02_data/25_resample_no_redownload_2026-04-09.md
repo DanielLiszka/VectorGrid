@@ -94,16 +94,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the no-redownload posture for local CSV and Polygon paths.
-- [ ] Document the current load-source labels and meanings.
-- [ ] Document the 1m-first Polygon architecture and requested-timeframe resample behavior.
-- [ ] Document the current timeframe hint copy in the Data panel.
-- [ ] Add or tighten tests if load-source semantics or hints change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the no-redownload posture for local CSV and Polygon paths.
+- [x] Document the current load-source labels and meanings.
+- [x] Document the 1m-first Polygon architecture and requested-timeframe resample behavior.
+- [x] Document the current timeframe hint copy in the Data panel.
+- [x] Add or tighten tests if load-source semantics or hints change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -121,6 +121,13 @@ Public-repo quality focus:
 - treat load-source labels and timeframe hints as user-facing contract
 - prefer better docs and tests before changing resample-copy language
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Hardened the no-redownload acceptance evidence in `web/src/stores/dataStore.actions.test.ts`: derived-timeframe application now explicitly proves the “no extra downloads” hint, and switching back to the base timeframe proves the base-hint/reset posture instead of leaving it implicit.
+- Added service-level precondition coverage in `web/src/services/dataService.test.ts` so malformed timeframe-change requests fail before any backend invoke, which keeps the no-redownload contract tied to valid base-data reuse instead of permissive request shaping.
+- Kept the shipped backend architecture unchanged: `src-tauri/src/commands_data.rs` still follows the 1m-first Polygon load/top-off path and `src-tauri/src/state.rs` remains the authority for in-memory base reuse versus fresh derived resample.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app state --lib`, `cargo test -p ta_app_core timeframe`, `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/utils/core/datasetMeta.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

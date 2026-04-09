@@ -93,18 +93,25 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- preserved the existing canonical OHLCV field-flag behavior in `csv_compat.rs` while moving parsing onto a standards-aware CSV reader
+- verified that blank optional fields still stay `NaN` and do not incorrectly mark `open`, `high`, `low`, or `volume` as available
+- revalidated the downstream consumer chain: `dataService.test.ts` still normalizes backend metadata the same way, `dataStore.actions.test.ts` still uses the current `dataFieldHint` contract, and strategy-gating behavior remains tied to the same field booleans
+- kept the current close-first safety posture intact, so missing close remains fatal while missing other fields continues to degrade capability instead of inventing data
+
 ## Checklist
 
-- [ ] Document the canonical OHLCV field flags and how they are populated.
-- [ ] Document which strategy or source families require each field group.
-- [ ] Document current `dataFieldHint` messaging rules.
-- [ ] Document how resampled datasets preserve or drop field flags.
-- [ ] Add or tighten tests if field semantics change in loaders, stores, or request builders.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical OHLCV field flags and how they are populated.
+- [x] Document which strategy or source families require each field group.
+- [x] Document current `dataFieldHint` messaging rules.
+- [x] Document how resampled datasets preserve or drop field flags.
+- [x] Add or tighten tests if field semantics change in loaders, stores, or request builders.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

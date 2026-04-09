@@ -44,6 +44,8 @@ The current result is functional and user-facing:
 
 ## Current Verification Surface
 
+- `web/src/composables/useTaskCenterVisibility.test.ts`
+- `web/src/composables/useShellMount.test.ts`
 - `web/src/components/TaskCenterOverlay.test.ts`
 - `web/src/components/VueWorkspaceShell.test.ts`
 - `panel-level tests that mount shell hosts before teleported content`
@@ -91,19 +93,25 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- added direct `web/src/composables/useTaskCenterVisibility.test.ts` coverage for persisted open state, toggle/open/close storage writes, and return-focus capture/consumption semantics
+- kept the earlier `useShellMount.test.ts` and Task Center consumer tests as the mount-readiness and focus-restore regression layers for the real shell panels
+- preserved the current split of responsibilities: `useTaskCenterVisibility.ts` owns visibility/focus persistence, while `useShellMount.ts` owns teleport host readiness and pane dataset markers
+
 ## Checklist
 
-- [ ] Document the current Task Center storage key and open/close/toggle contract.
-- [ ] Document return-focus capture and consumption semantics.
-- [ ] Document shell-host resolution and mount-ready behavior for teleported panels.
-- [ ] Document pane dataset marker expectations and cleanup.
-- [ ] Add or tighten tests for focus restore, persisted open state, missing hosts, and unmount cleanup.
-- [ ] Record which panels currently depend on `useShellMount.ts`.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current Task Center storage key and open/close/toggle contract.
+- [x] Document return-focus capture and consumption semantics.
+- [x] Document shell-host resolution and mount-ready behavior for teleported panels.
+- [x] Document pane dataset marker expectations and cleanup.
+- [x] Add or tighten tests for focus restore, persisted open state, missing hosts, and unmount cleanup.
+- [x] Record which panels currently depend on `useShellMount.ts`.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

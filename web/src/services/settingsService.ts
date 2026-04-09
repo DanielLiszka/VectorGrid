@@ -1,6 +1,5 @@
 import { invokeCommand } from '../tauri/invoke'
-
-export type WindowEffect = 'none' | 'mica' | 'acrylic' | 'vibrancy'
+import type { WindowEffect } from '../utils/windowEffects'
 
 export async function setWindowEffect(effect: WindowEffect, dark: boolean): Promise<void> {
   await invokeCommand('set_window_effect', {

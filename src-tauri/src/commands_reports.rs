@@ -3320,18 +3320,26 @@ mod tests {
             "surface": "core17",
             "fields": ["pnl", "trades", "max_dd"]
           },
-          "dataset_meta": {
-            "csv_path": "C:/data/AAPL.csv",
-            "timeframe": "1h",
-            "label": "AAPL artifact",
-            "symbol": "AAPL",
-            "len": 4321,
-            "min_ts": 111,
-            "max_ts": 222,
-            "source": "artifact-source"
-          },
-          "run": {
-            "req": { "strategy_kind": "DoubleMa" },
+            "dataset_meta": {
+              "csv_path": "C:/data/AAPL.csv",
+              "timeframe": "1h",
+              "base_timeframe": "1m",
+              "derived_timeframe": "1h",
+              "resample_applied": true,
+              "resample_rule": "session_relative_ohlcv",
+              "resample_anchor": "day_first_timestamp",
+              "label": "AAPL artifact",
+              "symbol": "AAPL",
+              "len": 4321,
+              "min_ts": 111,
+              "max_ts": 222,
+              "source": "artifact-source",
+              "source_size_bytes": 2048,
+              "source_mtime_utc_ms": 1700005000000i64,
+              "source_content_fingerprint": "fp-aapl-1m"
+            },
+            "run": {
+              "req": { "strategy_kind": "DoubleMa" },
             "res": { "top": [] }
           },
           "validation": {
@@ -3348,8 +3356,50 @@ mod tests {
             Some("1h")
         );
         assert_eq!(
+            report
+                .pointer("/data/meta/base_timeframe")
+                .and_then(Value::as_str),
+            Some("1m")
+        );
+        assert_eq!(
+            report
+                .pointer("/data/meta/derived_timeframe")
+                .and_then(Value::as_str),
+            Some("1h")
+        );
+        assert_eq!(
+            report
+                .pointer("/data/meta/resample_rule")
+                .and_then(Value::as_str),
+            Some("session_relative_ohlcv")
+        );
+        assert_eq!(
+            report
+                .pointer("/data/meta/resample_anchor")
+                .and_then(Value::as_str),
+            Some("day_first_timestamp")
+        );
+        assert_eq!(
+            report
+                .pointer("/data/meta/source_content_fingerprint")
+                .and_then(Value::as_str),
+            Some("fp-aapl-1m")
+        );
+        assert_eq!(
             report.pointer("/data/meta/len").and_then(Value::as_i64),
             Some(4321)
+        );
+        assert_eq!(
+            report
+                .pointer("/data/meta/source_size_bytes")
+                .and_then(Value::as_i64),
+            Some(2048)
+        );
+        assert_eq!(
+            report
+                .pointer("/data/meta/source_mtime_utc_ms")
+                .and_then(Value::as_i64),
+            Some(1700005000000)
         );
         assert_eq!(
             report.pointer("/data/ctx/label").and_then(Value::as_str),
@@ -3361,9 +3411,33 @@ mod tests {
         );
         assert_eq!(
             report
+                .pointer("/data/ctx/base_timeframe")
+                .and_then(Value::as_str),
+            Some("1m")
+        );
+        assert_eq!(
+            report
+                .pointer("/data/ctx/derived_timeframe")
+                .and_then(Value::as_str),
+            Some("1h")
+        );
+        assert_eq!(
+            report
+                .pointer("/data/ctx/resample_applied")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report
                 .pointer("/optimization_metric_surface/surface")
                 .and_then(Value::as_str),
             Some("core17")
+        );
+        assert_eq!(
+            report
+                .pointer("/data/ctx/resample_applied")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 

@@ -94,19 +94,25 @@ Public-repo quality focus:
 - prefer additive hardening over broad cleanup-only refactors that widen blast radius
 - update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
+## Execution Notes
+
+- expanded `web/src/utils/desktopNotificationPolicy.test.ts` to cover `off` mode, non-terminal task suppression, and successful-command suppression outside the explicit important allowlist
+- kept the runtime delivery flow additive: `desktopProductization.test.ts` still owns permission and plugin-path behavior, while policy selection stays isolated in `desktopNotificationPolicy.ts`
+- preserved the product stance that Task Center is authoritative and desktop notifications are background-only attention cues
+
 ## Checklist
 
-- [ ] Document the three desktop notification modes and their current semantics.
-- [ ] Document the current success-command allowlist for notifications.
-- [ ] Document background-only suppression when the app is visible.
-- [ ] Document permission refresh and manual permission request behavior.
-- [ ] Add or tighten tests for visible-window suppression, failures-only mode, and unsupported platforms.
-- [ ] Keep Task Center referenced as the authoritative detail surface in UI copy and docs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the three desktop notification modes and their current semantics.
+- [x] Document the current success-command allowlist for notifications.
+- [x] Document background-only suppression when the app is visible.
+- [x] Document permission refresh and manual permission request behavior.
+- [x] Add or tighten tests for visible-window suppression, failures-only mode, and unsupported platforms.
+- [x] Keep Task Center referenced as the authoritative detail surface in UI copy and docs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 

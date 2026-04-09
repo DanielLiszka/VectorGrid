@@ -85,6 +85,7 @@ This release line includes the completed frontend migration from the legacy stat
 
 ### Migration validation gates
 
+- `powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1`
 - `npm --prefix web run typecheck`
 - `npm --prefix web run test`
 - `npm --prefix web run lint`

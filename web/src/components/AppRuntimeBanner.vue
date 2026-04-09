@@ -3,11 +3,13 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import AppVisualIcon from './AppVisualIcon.vue'
 import { useRuntimeStore } from '../stores/runtimeStore'
+import { useWorkflowStore } from '../stores/workflowStore'
 import { runtimeReadyIcon } from '../utils/appSvgAssets'
 import { taskLevelIcon } from '../utils/iconography'
 import { describeRuntimePhase, runtimePhaseLabel } from '../utils/statusPresentation'
 
 const runtime = useRuntimeStore()
+const workflowStore = useWorkflowStore()
 const { bootPhase, bootStage, bootError, bootErrorDetail, bootElapsedMs } = storeToRefs(runtime)
 
 const visible = computed(() => bootPhase.value === 'booting' || bootPhase.value === 'error')
@@ -32,16 +34,30 @@ const errorDetail = computed(() => {
 })
 
 const bannerIcon = computed(() => (bootPhase.value === 'error' ? taskLevelIcon('error') : runtimeReadyIcon))
+
+function openDiagnostics(): void {
+  workflowStore.selectWorkspace('settings')
+}
 </script>
 
 <template>
-  <div v-if="visible" class="runtimeBanner" :class="bootPhase">
+  <div
+    v-if="visible"
+    class="runtimeBanner"
+    :class="bootPhase"
+    role="status"
+    :aria-live="bootPhase === 'error' ? 'assertive' : 'polite'"
+    aria-atomic="true"
+  >
     <div class="runtimeLead">
       <AppVisualIcon :icon="bannerIcon" class="runtimeIcon" />
       <div class="runtimeCopy">
         <div class="runtimeLabel">{{ phaseLabel }}</div>
         <div class="runtimeDetail">{{ detail }}</div>
       </div>
+      <button v-if="bootPhase === 'error'" type="button" class="runtimeAction" @click="openDiagnostics">
+        Open diagnostics
+      </button>
     </div>
     <details v-if="errorDetail" class="runtimeErrorTrace">
       <summary>Stack trace</summary>
@@ -86,6 +102,11 @@ const bannerIcon = computed(() => (bootPhase.value === 'error' ? taskLevelIcon('
   height: 1rem;
   flex: 0 0 auto;
   margin-top: 1px;
+}
+
+.runtimeAction {
+  margin-left: auto;
+  align-self: center;
 }
 
 .runtimeBanner.error {

@@ -93,16 +93,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document timestamp ordering assumptions during CSV load and resample.
-- [ ] Document current duplicate, out-of-order, and same-day-gap integrity meanings.
-- [ ] Document how timeframe and range text are computed for the UI.
-- [ ] Document which chronology failures block resample versus remain repairable.
-- [ ] Add or tighten tests if timestamp semantics or integrity wording changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document timestamp ordering assumptions during CSV load and resample.
+- [x] Document current duplicate, out-of-order, and same-day-gap integrity meanings.
+- [x] Document how timeframe and range text are computed for the UI.
+- [x] Document which chronology failures block resample versus remain repairable.
+- [x] Add or tighten tests if timestamp semantics or integrity wording changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -120,6 +120,13 @@ Public-repo quality focus:
 - prefer documenting timestamp semantics before broadening accepted formats
 - keep frontend range/timeframe summaries aligned with backend timestamp truths
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added `resample_rejects_unsorted_timestamps` in `crates/app_core/src/timeframe.rs` so chronology violations remain a hard resample failure instead of a silent reorder or coercion path.
+- Strengthened startup-restore and data-surface coverage in `web/src/stores/dataStore.actions.test.ts` and `web/src/components/DataWorkspacePanel.test.ts` so chronology-derived range and readiness cues stay visible through pending, restored, and failed restore states.
+- Preserved current backend chronology split: CSV and timeframe logic remain authoritative for ordering failures, while Polygon integrity scanning continues to classify duplicates, out-of-order rows, and same-day gaps without silently repairing them during load.
+- Acceptance evidence captured during execution: `cargo test -p ta_app_core timeframe`, `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/stores/dataStore.actions.test.ts src/services/dataService.test.ts src/services/optimizeService.test.ts src/services/validationService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_app_core`.
 
 ## Related Docs
 

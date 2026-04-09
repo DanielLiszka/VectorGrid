@@ -92,16 +92,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document validate preconditions and error cases.
-- [ ] Document every integrity metric refreshed by validation.
-- [ ] Document row-count and min/max timestamp refresh behavior.
-- [ ] Document frontend validate action and post-validate selection behavior.
-- [ ] Add or tighten tests if validation semantics or response shape changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document validate preconditions and error cases.
+- [x] Document every integrity metric refreshed by validation.
+- [x] Document row-count and min/max timestamp refresh behavior.
+- [x] Document frontend validate action and post-validate selection behavior.
+- [x] Add or tighten tests if validation semantics or response shape changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -119,6 +119,13 @@ Public-repo quality focus:
 - prefer clearer UI copy before changing backend semantics
 - keep manifest-backed preconditions explicit
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added backend failure-path coverage in `src-tauri/src/polygon.rs` so validation now explicitly proves its manifest-membership prerequisite in tests instead of relying on the happy path only.
+- Added service and store coverage in `web/src/services/dataService.test.ts` and `web/src/stores/dataStore.actions.test.ts` for validate-path guardrails: empty paths still reject immediately, and a successful validate refresh now proves row count, time range, selection, and cache summary updates stay synchronized.
+- Kept validate visibly non-destructive. This slice hardened failure posture and metadata-refresh coverage without changing CSV-rewrite behavior or blurring validate into repair.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app polygon --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

@@ -108,18 +108,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate the current `dataset_meta` fields used by artifacts and reports.
-- [ ] Document source-identity fields, including size, mtime, and content fingerprint.
-- [ ] Document timeframe, base-timeframe, and derived-timeframe behavior.
-- [ ] Document where validation-admission provenance is separate from dataset provenance.
-- [ ] Document frontend dataset-meta normalization behavior.
-- [ ] Document how history/replay uses persisted provenance.
-- [ ] Add or tighten tests if provenance fields or precedence rules change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the current `dataset_meta` fields used by artifacts and reports.
+- [x] Document source-identity fields, including size, mtime, and content fingerprint.
+- [x] Document timeframe, base-timeframe, and derived-timeframe behavior.
+- [x] Document where validation-admission provenance is separate from dataset provenance.
+- [x] Document frontend dataset-meta normalization behavior.
+- [x] Document how history/replay uses persisted provenance.
+- [x] Add or tighten tests if provenance fields or precedence rules change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -136,6 +136,13 @@ Public-repo quality focus:
 - preserve current fingerprint and timeframe identity behavior unless a stronger replacement is implemented
 - do not narrow provenance to only path-based identity
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added `web/src/utils/core/datasetMeta.test.ts` to pin the frontend artifact-provenance builder to the shipped field inventory: schema version, base-versus-derived timeframe fields, resample identity, and source-content fingerprint handling are now asserted directly.
+- Tightened `web/src/services/historyService.test.ts` so hydrated run artifacts keep dataset provenance explicit during replay paths, including `base_timeframe`, `derived_timeframe`, `resample_applied`, and `source_content_fingerprint`.
+- Matched the frontend expectation to the backend-normalized contract already implemented in `src-tauri/src/run_artifacts.rs`: even when `resample_applied` is false, persisted metadata still carries the canonical resample rule/anchor when a derived-timeframe field is present.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app state --lib`, `cargo test -p ta_desktop_demo_app run_artifacts --lib`, `cargo test -p ta_app_core timeframe`, `npm.cmd --prefix web run test -- src/components/DataWorkspacePanel.test.ts src/services/dataService.test.ts src/stores/dataStore.actions.test.ts src/utils/core/datasetMeta.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

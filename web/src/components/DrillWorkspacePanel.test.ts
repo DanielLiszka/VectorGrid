@@ -9,8 +9,9 @@ import { useWorkflowStore } from '../stores/workflowStore'
 
 function installDrillPanelMountShell(): void {
   document.body.innerHTML = `
-    <section data-vue-panel="drill"></section>
-    <div id="drillVueShellMount"></div>
+    <section data-vue-panel="drill">
+      <div id="drillVueShellMount"></div>
+    </section>
   `
 }
 
@@ -47,5 +48,6 @@ describe('DrillWorkspacePanel', () => {
     await flushPanel()
 
     expect(workflowStore.resultsTab).toBe('top')
+    expect(document.querySelector("[data-vue-panel='drill']")?.getAttribute('data-vue-drill')).toBe('1')
   })
 })

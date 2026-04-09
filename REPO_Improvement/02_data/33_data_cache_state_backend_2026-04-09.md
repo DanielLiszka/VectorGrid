@@ -99,16 +99,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the separate ownership of `.vta` parse cache, `AppState` dataset state, and Polygon cache.
-- [ ] Document the current cache precedence and failure-tolerance rules.
-- [ ] Document every `LoadSource` value and what frontend consumers may infer from it.
-- [ ] Document that content fingerprinting is available but not yet the active reuse contract.
-- [ ] Add or tighten backend tests for corrupt-cache, fallback-hit, and write-failure scenarios.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the separate ownership of `.vta` parse cache, `AppState` dataset state, and Polygon cache.
+- [x] Document the current cache precedence and failure-tolerance rules.
+- [x] Document every `LoadSource` value and what frontend consumers may infer from it.
+- [x] Document that content fingerprinting is available but not yet the active reuse contract.
+- [x] Add or tighten backend tests for corrupt-cache, fallback-hit, and write-failure scenarios.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -128,6 +128,13 @@ Public-repo quality focus:
 - keep cache writes best-effort and non-fatal unless the product explicitly changes that policy
 - treat stronger provenance as a future additive layer, not a hidden reinterpretation of current state
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added a backend contract-freeze test in `src-tauri/src/data_cache.rs` proving that when both caches exist for the same source identity, the loader prefers the `.vta` sidecar over the app-local fallback cache. This closes the main missing precedence-evidence gap without changing the runtime path.
+- Revalidated the surrounding cache contract instead of redefining it. The targeted Rust suite still proves fallback-cache reuse, corrupt-cache reparsing, source-identity stability, and non-fatal cache-write behavior, while the frontend service/store tests continue to consume the existing `LoadSource` contract unchanged.
+- Kept this slice additive and documentation-oriented: no production cache behavior changed, and no frontend inference rules were widened. The improvement is that the public repo now has direct tests for the real cache authority ordering contributors are expected to preserve.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app data_cache --lib`, `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 
