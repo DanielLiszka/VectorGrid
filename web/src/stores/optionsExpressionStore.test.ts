@@ -53,6 +53,263 @@ vi.mock('../services/optionsExpressionService', () => ({
   runOptionsExpression: runOptionsExpressionMock,
 }))
 
+function makeDiagnosticsSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+    optionsDatasetId: 'spy_options',
+    rootSymbol: 'SPY',
+    totalEvents: 10,
+    bullishEvents: 6,
+    bearishEvents: 4,
+    searchEvents: 6,
+    holdoutEvents: 2,
+    sealedTestEvents: 2,
+    datasetContracts: 3,
+    datasetRows: 42,
+    coverageStart: null,
+    coverageEnd: null,
+    ...overrides,
+  }
+}
+
+function makeOverlapWindow(overrides: Record<string, unknown> = {}) {
+  return {
+    contractReferenceAsOfUtc: null,
+    totalEventsInDatasetWindow: 0,
+    searchEventsInDatasetWindow: 0,
+    holdoutEventsInDatasetWindow: 0,
+    sealedTestEventsInDatasetWindow: 0,
+    totalEventsBeforeDatasetWindow: 0,
+    totalEventsAfterDatasetWindow: 0,
+    searchEventsBeforeDatasetWindow: 0,
+    searchEventsAfterDatasetWindow: 0,
+    holdoutEventsBeforeDatasetWindow: 0,
+    holdoutEventsAfterDatasetWindow: 0,
+    sealedTestEventsBeforeDatasetWindow: 0,
+    sealedTestEventsAfterDatasetWindow: 0,
+    totalEventsBeforeContractReferenceAsOf: 0,
+    searchEventsBeforeContractReferenceAsOf: 0,
+    holdoutEventsBeforeContractReferenceAsOf: 0,
+    sealedTestEventsBeforeContractReferenceAsOf: 0,
+    totalOverlapRate: 0,
+    searchOverlapRate: 0,
+    holdoutOverlapRate: 0,
+    sealedTestOverlapRate: 0,
+    ...overrides,
+  }
+}
+
+function makeCoverageAdequacy(overrides: Record<string, unknown> = {}) {
+  return {
+    verdict: 'unknown' as const,
+    nonPromotable: false,
+    reasons: [],
+    searchCandidateCoverageRate: 0,
+    holdoutCandidateCoverageRate: 0,
+    sealedTestCandidateCoverageRate: 0,
+    searchBaselineOutcomeCoverageRate: 0,
+    holdoutBaselineOutcomeCoverageRate: 0,
+    sealedTestBaselineOutcomeCoverageRate: 0,
+    dominantInvalidReason: '',
+    dominantInvalidReasonShare: 0,
+    ...overrides,
+  }
+}
+
+function makeSplitInvalidReasons(overrides: Record<string, unknown> = {}) {
+  return {
+    searchInvalidReasons: [],
+    holdoutInvalidReasons: [],
+    sealedTestInvalidReasons: [],
+    ...overrides,
+  }
+}
+
+function makeRunSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+    artifactTs: '2026-04-05T12:00:00Z',
+    parentArtifactId: 'vectorgrid_run_1',
+    optionsDatasetHash: 'hash-1',
+    backendUsed: 'cpu_reference',
+    priceSemantics: 'minute_aggregate',
+    tupleCount: 0,
+    request: null,
+    diagnostics: makeDiagnosticsSummary(),
+    staging: null,
+    overlapWindow: makeOverlapWindow(),
+    coverageAdequacy: makeCoverageAdequacy(),
+    splitInvalidReasons: makeSplitInvalidReasons(),
+    rankedResults: [],
+    ...overrides,
+  }
+}
+
+function makeFeasibilitySummary(overrides: Record<string, unknown> = {}) {
+  return {
+    replayBuildMs: 18,
+    totalPreviewMs: 41,
+    diagnostics: makeDiagnosticsSummary(),
+    priceSemantics: 'minute_aggregate',
+    fillModel: 'aggregate_research',
+    bestAvailableBackend: 'cpu_reference',
+    autoBackendDecision: {
+      recommendedBackend: 'cpu_reference',
+      gpuEligible: false,
+      reasons: [],
+    },
+    compiledTupleCount: 0,
+    perEventCandidateSlots: 0,
+    perCandidateExitSummaries: 0,
+    candidateSlotCount: 0,
+    compiledCandidateCount: 0,
+    candidateDensity: 0,
+    invalidSlotCount: 0,
+    invalidSlotRate: 0,
+    baselineExitSummaryCount: 0,
+    baselineCompiledExitSummaryCount: 0,
+    baselineExitSummaryDensity: 0,
+    conservativeExitSummaryCount: 0,
+    conservativeCompiledExitSummaryCount: 0,
+    conservativeExitSummaryDensity: 0,
+    harsherExitSummaryCount: 0,
+    harsherCompiledExitSummaryCount: 0,
+    harsherExitSummaryDensity: 0,
+    projectedEventTupleEvaluations: 0,
+    structuralCacheBytesEstimate: 0,
+    baselineSummaryBytesEstimate: 0,
+    conservativeSummaryBytesEstimate: 0,
+    harsherSummaryBytesEstimate: 0,
+    timings: {
+      tupleCompileMs: 0,
+      baselineCandidateCompileMs: 0,
+      baselineExitSummaryCompileMs: 0,
+      conservativeCandidateCompileMs: 0,
+      conservativeExitSummaryCompileMs: 0,
+      harsherCandidateCompileMs: 0,
+      harsherExitSummaryCompileMs: 0,
+      cpuRankingMs: 0,
+      cpuRankingUs: 0,
+      gpuRankingMs: null,
+      gpuRankingUs: null,
+      gpuTensorScoreMs: null,
+      gpuTensorScoreUs: null,
+      gpuExactifyMs: null,
+      gpuExactifyUs: null,
+      gpuSealedStageMs: null,
+      gpuSealedStageUs: null,
+      gpuSpeedupVsCpu: null,
+    },
+    eventCoverage: {
+      totalEventsWithCandidates: 0,
+      searchEventsWithCandidates: 0,
+      holdoutEventsWithCandidates: 0,
+      sealedTestEventsWithCandidates: 0,
+      totalEventsWithBaselineOutcomes: 0,
+      searchEventsWithBaselineOutcomes: 0,
+      holdoutEventsWithBaselineOutcomes: 0,
+      sealedTestEventsWithBaselineOutcomes: 0,
+      totalEventsWithConservativeOutcomes: 0,
+      searchEventsWithConservativeOutcomes: 0,
+      holdoutEventsWithConservativeOutcomes: 0,
+      sealedTestEventsWithConservativeOutcomes: 0,
+      totalEventsWithHarsherOutcomes: 0,
+      searchEventsWithHarsherOutcomes: 0,
+      holdoutEventsWithHarsherOutcomes: 0,
+      sealedTestEventsWithHarsherOutcomes: 0,
+    },
+    overlapWindow: makeOverlapWindow(),
+    splitInvalidReasons: makeSplitInvalidReasons(),
+    coverageAdequacy: makeCoverageAdequacy(),
+    cacheStats: {
+      structuralCacheHits: 0,
+      structuralCacheMisses: 0,
+      structuralCacheEntries: 0,
+      summaryCacheHits: 0,
+      summaryCacheMisses: 0,
+      summaryCacheEntries: 0,
+      gpuSharedInputCacheHits: 0,
+      gpuSharedInputCacheMisses: 0,
+      gpuOutcomeInputCacheHits: 0,
+      gpuOutcomeInputCacheMisses: 0,
+      gpuOutputBufferReuses: 0,
+      gpuOutputBufferAllocations: 0,
+      gpuTupleChunkCount: 0,
+      gpuTupleChunkSize: 0,
+      gpuKernelLaunchCount: 0,
+      gpuTupleBudgetBytes: 0,
+      gpuOutcomeTensorBytes: 0,
+      gpuSharedInputBytesPerChunk: 0,
+      gpuOutputBytesPerChunk: 0,
+      gpuTotalDeviceBytesPerChunk: 0,
+      gpuDeviceTotalMemoryBytes: 0,
+      gpuDeviceFreeMemoryBytes: 0,
+      gpuDeviceUsableMemoryBytes: 0,
+      gpuMemoryBudgetSource: '',
+      gpuOutcomeTensorFitsInMemory: false,
+      gpuChunkPlanFitsInMemory: false,
+      gpuPlanNotes: [],
+    },
+    invalidReasons: [],
+    axisCoverage: {
+      delayMinutes: [],
+      dteDays: [],
+      moneynessBuckets: [],
+    },
+    ...overrides,
+  }
+}
+
+function makeArtifactRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    kind: 'vectorgrid_options_expression_v1',
+    ts: '2026-04-05T12:00:00Z',
+    artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+    parentArtifactId: 'vectorgrid_run_1',
+    rootSymbol: 'SPY',
+    optionsDatasetId: 'spy_options',
+    optionsDatasetHash: 'hash-1',
+    backendUsed: 'cpu_reference',
+    priceSemantics: 'minute_aggregate',
+    request: {
+      parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+      parentCandidateIndex: null,
+      optionsDatasetId: 'spy_options',
+      splitAssignmentMode: 'event_chronological',
+      delayMinutes: [0],
+      dteBuckets: [1],
+      moneynessBuckets: ['atm'],
+      holdMinutes: [15],
+      targetReturnBuckets: [0.25],
+      stopReturnBuckets: [0.25],
+      exitTemplate: 'fixed_hold_or_target_stop',
+      fillModel: 'aggregate_research',
+      filters: {
+        maxEntryLagMinutes: 5,
+        maxPremium: null,
+        minPremium: null,
+        minVolume: null,
+        minOpenInterest: null,
+      },
+      topK: 25,
+      minValidTrades: null,
+      splitRatioSearch: 0.6,
+      splitRatioHoldout: 0.2,
+      sealedFinalistCount: 5,
+      backendPreference: 'auto',
+      structureFamily: 'long_single',
+    },
+    diagnostics: makeDiagnosticsSummary(),
+    staging: null,
+    overlapWindow: makeOverlapWindow(),
+    coverageAdequacy: makeCoverageAdequacy(),
+    splitInvalidReasons: makeSplitInvalidReasons(),
+    selectionMetrics: [],
+    ...overrides,
+  }
+}
+
 describe('optionsExpressionStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -252,7 +509,7 @@ describe('optionsExpressionStore', () => {
       },
     ])
     listOptionsExpressionArtifactsMock.mockResolvedValue([])
-    analyzeOptionsExpressionFeasibilityMock.mockResolvedValue({
+    analyzeOptionsExpressionFeasibilityMock.mockResolvedValue(makeFeasibilitySummary({
       replayBuildMs: 18,
       totalPreviewMs: 41,
       diagnostics: {
@@ -354,7 +611,7 @@ describe('optionsExpressionStore', () => {
         gpuChunkPlanFitsInMemory: false,
         gpuPlanNotes: [],
       },
-    })
+    }))
 
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
@@ -407,7 +664,7 @@ describe('optionsExpressionStore', () => {
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
     await store.importDatasetFromPicker()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -439,7 +696,7 @@ describe('optionsExpressionStore', () => {
         coverageEnd: null,
       },
       rankedResults: [],
-    }
+    })
     await store.revealActiveArtifact()
 
     expect(importOptionsDatasetMock).toHaveBeenCalledWith(
@@ -578,7 +835,7 @@ describe('optionsExpressionStore', () => {
     })
 
   it('loads saved options expression artifacts', async () => {
-    loadOptionsExpressionArtifactMock.mockResolvedValue({
+    loadOptionsExpressionArtifactMock.mockResolvedValue(makeArtifactRecord({
       version: 1,
       kind: 'vectorgrid_options_expression_v1',
       ts: '2026-04-05T12:00:00Z',
@@ -638,7 +895,7 @@ describe('optionsExpressionStore', () => {
         coverageEnd: null,
       },
       selectionMetrics: [],
-    })
+    }))
 
     const store = useOptionsExpressionStore()
     await store.loadArtifact('C:/runs/vectorgrid_options_expression_1.json')
@@ -710,7 +967,7 @@ describe('optionsExpressionStore', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '2026-04-05T12:00:00Z',
       parentArtifactId: 'vectorgrid_run_1',
@@ -785,7 +1042,7 @@ describe('optionsExpressionStore', () => {
           stressMetrics: null,
         },
       ],
-    }
+    })
 
     await store.loadTupleInspection(1)
 
@@ -857,7 +1114,7 @@ describe('optionsExpressionStore', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '2026-04-05T12:00:00Z',
       parentArtifactId: 'vectorgrid_run_1',
@@ -932,7 +1189,7 @@ describe('optionsExpressionStore', () => {
           stressMetrics: null,
         },
       ],
-    }
+    })
 
     await store.loadEventPathInspection(1, 0)
 
@@ -981,7 +1238,7 @@ describe('optionsExpressionStore', () => {
 
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1013,7 +1270,7 @@ describe('optionsExpressionStore', () => {
         coverageEnd: null,
       },
       rankedResults,
-    }
+    })
 
     await store.exportActiveCsv()
 
@@ -1035,17 +1292,8 @@ describe('optionsExpressionStore', () => {
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
     store.selectedArtifactPath = 'C:/runs/vectorgrid_options_expression_old.json'
-    store.activeArtifact = {
-      version: 1,
-      kind: 'vectorgrid_options_expression_v1',
-      ts: '2026-04-05T12:00:00Z',
+    store.activeArtifact = makeArtifactRecord({
       artifactPath: 'C:/runs/vectorgrid_options_expression_old.json',
-      parentArtifactId: 'vectorgrid_run_1',
-      rootSymbol: 'SPY',
-      optionsDatasetId: 'spy_options',
-      optionsDatasetHash: 'hash-1',
-      backendUsed: 'cpu_reference',
-      priceSemantics: 'minute_aggregate',
       staging: {
         candidateSlotCount: 12,
         compiledCandidateCount: 9,
@@ -1094,8 +1342,8 @@ describe('optionsExpressionStore', () => {
         coverageEnd: null,
       },
       selectionMetrics: [],
-    }
-    store.latestRun = {
+    })
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_latest.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1127,7 +1375,7 @@ describe('optionsExpressionStore', () => {
         coverageEnd: null,
       },
       rankedResults: [],
-    }
+    })
 
     store.attachParent('C:/runs/vectorgrid_run_2.json', 'DoubleMa', 'QQQ.csv')
 
@@ -1149,7 +1397,7 @@ describe('optionsExpressionStore', () => {
 
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1175,7 +1423,7 @@ describe('optionsExpressionStore', () => {
         coverageEnd: null,
       },
       rankedResults: [],
-    }
+    })
     store.activeTupleInspection = {
       tupleIndex: 0,
       tupleCount: 1,
@@ -1267,7 +1515,7 @@ describe('optionsExpressionStore', () => {
     })
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1318,7 +1566,7 @@ describe('optionsExpressionStore', () => {
           stressMetrics: null,
         },
       ],
-    }
+    })
 
     await store.exportActiveCsv()
 
@@ -1336,7 +1584,7 @@ describe('optionsExpressionStore', () => {
 
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1362,7 +1610,7 @@ describe('optionsExpressionStore', () => {
         coverageEnd: null,
       },
       rankedResults: [],
-    }
+    })
     store.activeEventPathInspection = {
       tupleIndex: 0,
       eventIndex: 0,

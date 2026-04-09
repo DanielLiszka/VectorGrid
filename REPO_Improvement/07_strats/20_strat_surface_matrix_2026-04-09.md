@@ -1,0 +1,130 @@
+# Strategy Surface Matrix Plan
+
+Last updated: 2026-04-09
+
+## Purpose
+
+Define the improvement plan for the repo's overall non-options strategy surface matrix: which strategy kinds exist, what capabilities they advertise, where they are supported, and how that matrix is reflected across optimize, advanced controls, and meta/campaign surfaces.
+
+## Scope Boundaries
+
+In scope:
+
+- strategy capability summaries and route-preview messaging
+- optimize and advanced-panel gating driven by strategy kind
+- strategy availability across optimize, validation, and campaign/meta surfaces
+- the cross-layer matrix that maps a strategy kind to supported controls and workflows
+
+Out of scope:
+
+- options-related surfaces
+- implementation details of any one strategy family beyond their matrix implications
+- new strategy invention
+
+## Current User-Facing Behavior
+
+The repo already has a real strategy matrix even if it is not named that way in the code. Current behavior is spread across:
+
+- `web/src/utils/strategyOptimizationCapabilities.ts`
+- `web/src/strategies/compositeProfileGpuPolicy.ts`
+- `web/src/components/OptimizeWorkspacePanel.vue`
+- `web/src/components/AdvancedWorkspacePanel.vue`
+- `web/src/services/metaService.ts`
+
+That matrix already controls:
+
+- whether a strategy uses the global backend selector
+- whether it uses the global mode selector
+- whether heatmaps, top-k, include-all, export-all, and advanced shortlist controls apply
+- how composite route previews are described
+- whether a strategy can participate in campaign/meta flows
+
+## Current Code Surface
+
+- `web/src/utils/strategyOptimizationCapabilities.ts`
+- `web/src/strategies/compositeProfileGpuPolicy.ts`
+- `web/src/components/OptimizeWorkspacePanel.vue`
+- `web/src/components/AdvancedWorkspacePanel.vue`
+- `web/src/services/optimizeRequestBuilder.ts`
+- `web/src/services/metaRequestBuilder.ts`
+- `web/src/services/metaService.ts`
+
+## Current Verification Surface
+
+- `web/src/utils/strategyOptimizationCapabilities.test.ts`
+- `web/src/services/optimizeRequestBuilder.test.ts`
+- `web/src/components/OptimizeWorkspacePanel.test.ts`
+- `web/src/components/AdvancedWorkspacePanel.test.ts`
+- `web/src/services/metaServiceCampaignStrategy.test.ts`
+- `web/src/services/metaRequestBuilder.test.ts`
+
+## Strengths Already Present
+
+- the repo already has explicit capability-summary code rather than leaving all gating implicit in components
+- composite route-preview behavior is already centralized instead of duplicated in copy strings everywhere
+- optimize and advanced panels already consume the same capability summary
+- meta/campaign restrictions such as the current `DynamicDoubleMa` exclusion are already surfaced intentionally
+- the matrix already spans more than just backend support; it includes control and workflow availability
+
+## Weaknesses / Failure Modes
+
+- the matrix is spread across several files and therefore easy to drift
+- strategy kinds can be supported in one surface and rejected in another if the matrix is not explicitly maintained
+- capability copy can overstate route guarantees if it drifts from backend truth
+- lower-traffic strategy kinds can regress quietly because the matrix is mostly exercised through common strategies
+- the matrix is conceptually central, but it does not yet have its own dedicated implementation doc
+
+## Regressions To Avoid
+
+- showing controls that the request builder or backend will later reject
+- hiding supported controls because one layer's capability matrix lagged behind another
+- changing strategy availability in campaigns or meta flows without synchronized messaging and tests
+- drifting composite route previews away from actual backend route policy
+- letting one-off component logic bypass the shared matrix
+
+## External Research Summary
+
+- [Vue state management guide](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because a strategy matrix should remain centralized shared logic rather than fragmenting across components.
+- [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because matrix-driven gating is best protected with service/store/component contract tests.
+- [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because strategy-surface promises eventually become typed backend requests and rejections.
+- [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because the matrix effectively governs which request/result contract variants are valid for which strategies.
+- [Playwright best practices](https://playwright.dev/docs/best-practices) are relevant because matrix drift often shows up first as visible control and copy mismatches in real UI flows.
+
+## Proposed Improvement Approach
+
+1. Treat the strategy surface matrix as a first-class contract across optimize, advanced, and meta/campaign flows.
+2. Freeze the authority order: backend truth and request-builder legality first, then matrix copy and UI gating.
+3. Keep every strategy kind mapped explicitly rather than relying on scattered special cases.
+4. Add targeted tests for lower-traffic strategy kinds and cross-surface mismatches.
+5. Keep matrix changes additive, synchronized, and evidence-backed.
+
+## Checklist
+
+- [ ] Document every current non-options strategy kind and its major workflow availability.
+- [ ] Document which layer owns hard legality versus explanatory copy.
+- [ ] Document cross-surface differences such as campaign/meta exclusions.
+- [ ] Add or tighten tests for strategy-specific advanced-control visibility and request legality.
+- [ ] Add or tighten tests for matrix reuse between Optimize, Advanced, and Meta surfaces.
+- [ ] Review whether any component still bypasses the shared matrix with local special cases.
+
+## Verification Plan
+
+- run `npm --prefix web test -- src/utils/strategyOptimizationCapabilities.test.ts`
+- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web test -- src/components/OptimizeWorkspacePanel.test.ts`
+- run `npm --prefix web test -- src/components/AdvancedWorkspacePanel.test.ts`
+- run `npm --prefix web test -- src/services/metaServiceCampaignStrategy.test.ts`
+
+## Rollout / Fallback / Compatibility Notes
+
+- preserve current strategy ids and user-facing strategy labels
+- update matrix-driven copy and gating in the same change as any legality change
+- prefer central capability updates over component-local conditionals
+- if a strategy remains unsupported in a surface, keep the restriction explicit and user-visible
+
+## Related Docs
+
+- `REPO_Improvement/07_strats/02_strat_dynamic_double_ma_2026-04-09.md`
+- `REPO_Improvement/07_strats/06_strat_composite_cpu_2026-04-09.md`
+- `REPO_Improvement/07_strats/07_strat_composite_mo_2026-04-09.md`
+- `REPO_Improvement/07_strats/08_strat_ml_signal_2026-04-08.md`

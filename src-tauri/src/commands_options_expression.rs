@@ -12,7 +12,9 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
-use ta_app_core::options_types::OptionsExpressionValidationVerdict;
+use ta_app_core::options_types::{
+    OptionsExpressionCoverageAdequacyVerdict, OptionsExpressionValidationVerdict,
+};
 use ta_app_core::{
     analyze_options_expression_feasibility_blocking,
     compute_double_ma_drilldown_blocking_with_candles, dataset_manifest_path,
@@ -70,6 +72,17 @@ pub struct OptionsExpressionArtifactSummary {
     pub request_fill_model: String,
     pub request_structure_family: String,
     pub request_split_assignment_mode: String,
+    pub coverage_adequacy_verdict: OptionsExpressionCoverageAdequacyVerdict,
+    pub coverage_non_promotable: bool,
+    pub search_overlap_rate: f64,
+    pub holdout_overlap_rate: f64,
+    pub sealed_test_overlap_rate: f64,
+    pub search_candidate_coverage_rate: f64,
+    pub holdout_candidate_coverage_rate: f64,
+    pub sealed_test_candidate_coverage_rate: f64,
+    pub search_baseline_outcome_coverage_rate: f64,
+    pub holdout_baseline_outcome_coverage_rate: f64,
+    pub sealed_test_baseline_outcome_coverage_rate: f64,
     pub tuple_count: usize,
     pub best_robust_score: f64,
     pub best_selection_expectancy_per_premium: f64,
@@ -627,6 +640,9 @@ fn build_options_expression_artifact(
         request,
         diagnostics: result.diagnostics.clone(),
         staging: result.staging.clone(),
+        overlap_window: result.overlap_window.clone(),
+        coverage_adequacy: result.coverage_adequacy.clone(),
+        split_invalid_reasons: result.split_invalid_reasons.clone(),
         selection_metrics: result.ranked_results.clone(),
     }
 }
@@ -794,6 +810,25 @@ pub(crate) fn summarize_options_expression_artifact(
         request_split_assignment_mode: serialize_scalar_to_string(
             &artifact.request.split_assignment_mode,
         ),
+        coverage_adequacy_verdict: artifact.coverage_adequacy.verdict,
+        coverage_non_promotable: artifact.coverage_adequacy.non_promotable,
+        search_overlap_rate: artifact.overlap_window.search_overlap_rate,
+        holdout_overlap_rate: artifact.overlap_window.holdout_overlap_rate,
+        sealed_test_overlap_rate: artifact.overlap_window.sealed_test_overlap_rate,
+        search_candidate_coverage_rate: artifact.coverage_adequacy.search_candidate_coverage_rate,
+        holdout_candidate_coverage_rate: artifact.coverage_adequacy.holdout_candidate_coverage_rate,
+        sealed_test_candidate_coverage_rate: artifact
+            .coverage_adequacy
+            .sealed_test_candidate_coverage_rate,
+        search_baseline_outcome_coverage_rate: artifact
+            .coverage_adequacy
+            .search_baseline_outcome_coverage_rate,
+        holdout_baseline_outcome_coverage_rate: artifact
+            .coverage_adequacy
+            .holdout_baseline_outcome_coverage_rate,
+        sealed_test_baseline_outcome_coverage_rate: artifact
+            .coverage_adequacy
+            .sealed_test_baseline_outcome_coverage_rate,
         tuple_count: artifact.selection_metrics.len(),
         best_robust_score,
         best_selection_expectancy_per_premium,
@@ -1721,6 +1756,55 @@ mod tests {
                 coverage_end: None,
             },
             staging: None,
+            overlap_window: ta_app_core::options_types::OptionsExpressionOverlapWindowSummary {
+                contract_reference_as_of_utc: Some("2026-04-06T00:00:00Z".to_string()),
+                total_events_in_dataset_window: 10,
+                search_events_in_dataset_window: 6,
+                holdout_events_in_dataset_window: 2,
+                sealed_test_events_in_dataset_window: 2,
+                total_events_before_dataset_window: 0,
+                total_events_after_dataset_window: 0,
+                search_events_before_dataset_window: 0,
+                search_events_after_dataset_window: 0,
+                holdout_events_before_dataset_window: 0,
+                holdout_events_after_dataset_window: 0,
+                sealed_test_events_before_dataset_window: 0,
+                sealed_test_events_after_dataset_window: 0,
+                total_events_before_contract_reference_as_of: 0,
+                search_events_before_contract_reference_as_of: 0,
+                holdout_events_before_contract_reference_as_of: 0,
+                sealed_test_events_before_contract_reference_as_of: 0,
+                total_overlap_rate: 1.0,
+                search_overlap_rate: 1.0,
+                holdout_overlap_rate: 1.0,
+                sealed_test_overlap_rate: 1.0,
+            },
+            coverage_adequacy:
+                ta_app_core::options_types::OptionsExpressionCoverageAdequacySummary {
+                    verdict: OptionsExpressionCoverageAdequacyVerdict::Healthy,
+                    non_promotable: false,
+                    reasons: vec!["Overlap and split coverage are currently adequate.".to_string()],
+                    search_candidate_coverage_rate: 1.0,
+                    holdout_candidate_coverage_rate: 1.0,
+                    sealed_test_candidate_coverage_rate: 1.0,
+                    search_baseline_outcome_coverage_rate: 1.0,
+                    holdout_baseline_outcome_coverage_rate: 1.0,
+                    sealed_test_baseline_outcome_coverage_rate: 1.0,
+                    dominant_invalid_reason: None,
+                    dominant_invalid_reason_share: 0.0,
+                },
+            split_invalid_reasons:
+                ta_app_core::options_types::OptionsExpressionSplitInvalidReasonSummary {
+                    search_invalid_reasons: vec![
+                        ta_app_core::options_types::OptionsCandidateInvalidReasonCount {
+                            reason:
+                                ta_app_core::OptionsCandidateInvalidReason::NoExpirationInBucket,
+                            count: 1,
+                        },
+                    ],
+                    holdout_invalid_reasons: vec![],
+                    sealed_test_invalid_reasons: vec![],
+                },
             selection_metrics: vec![tuple],
         };
 
@@ -1739,6 +1823,14 @@ mod tests {
         assert_eq!(summary.request_fill_model, "aggregate_research");
         assert_eq!(summary.request_structure_family, "long_single");
         assert_eq!(summary.request_split_assignment_mode, "event_chronological");
+        assert_eq!(
+            summary.coverage_adequacy_verdict,
+            OptionsExpressionCoverageAdequacyVerdict::Healthy
+        );
+        assert!(!summary.coverage_non_promotable);
+        assert_eq!(summary.search_overlap_rate, 1.0);
+        assert_eq!(summary.search_candidate_coverage_rate, 1.0);
+        assert_eq!(summary.search_baseline_outcome_coverage_rate, 1.0);
         assert_eq!(summary.validated_tuple_count, 1);
         assert_eq!(summary.stress_fragile_tuple_count, 1);
 

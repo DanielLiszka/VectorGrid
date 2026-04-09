@@ -177,6 +177,9 @@ $report = $summary.response.report
 Write-Section "Phase 0.5 Summary"
 Write-Host ("artifact:      {0}" -f $summary.artifact_path)
 Write-Host ("dataset:       {0}" -f $summary.options_dataset_id)
+if ($summary.request_split_assignment_mode) {
+  Write-Host ("split mode:    {0}" -f $summary.request_split_assignment_mode)
+}
 Write-Host ("density:       {0:P1}" -f [double]$report.candidate_density)
 Write-Host ("invalid rate:  {0:P1}" -f [double]$report.invalid_slot_rate)
 

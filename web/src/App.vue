@@ -37,6 +37,7 @@ const workflowStore = useWorkflowStore()
 workflowStore.syncRuntimeState()
 
 const { controlsTab, mode, resultsTab, workflow, workspace } = storeToRefs(workflowStore)
+const startupAnimationEnabled = false
 
 const settingsWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'settings')
 const workflowWorkspaceActive = computed(() => String(workspace.value || '').trim() === 'workflow')
@@ -106,7 +107,7 @@ mountWhenActive('overview', () => overviewPanelActive.value)
 </script>
 
 <template>
-  <StartupAnimationOverlay />
+  <StartupAnimationOverlay v-if="startupAnimationEnabled" />
   <DesktopTitlebar />
   <VueWorkspaceShell />
   <CommandPaletteOverlay />

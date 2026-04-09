@@ -37,6 +37,8 @@ Do not treat this as the full implementation spec. Use it together with:
 - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md` for the current shipped-slice options-expression tracker, current checklist, and repo-fit implementation status
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md` for the refocused future roadmap that is now limited to improving the existing options optimization + embedded validation workflow
 - `options_research/options_expression_overlap_quality_hardening_implementation_guide_2026-04-08.md` for the current execution guide covering overlap-quality hardening, adequacy reporting, conditional default-profile clamps, and verification gates inside the existing options workflow
+- `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md` for the current Prompt 2 follow-up execution guide covering the one-factor `event_chronological` versus `session_chronological` split-assignment ablation, fixed SPY/QQQ sign-off pair, and reject/defer/promote checklist
+- `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md` for the current Prompt 4 follow-up execution guide covering realism-lane semantic lock-in, aggregate-only provider-download scope freeze, and quote-aware versus derived-mid clarity hardening
 
 ## How To Use This Map
 
@@ -105,6 +107,8 @@ If the task is about the current options backtest optimization / embedded valida
   - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
   - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
   - `options_research/options_expression_overlap_quality_hardening_implementation_guide_2026-04-08.md`
+  - `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md`
+  - `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md`
 - frontend host / request shaping
   - `web/src/components/OptionsExpressionPanel.vue`
   - `web/src/stores/optionsExpressionStore.ts`

@@ -2,12 +2,15 @@ use crate::options_types::{
     ImportedOptionsDataset, OptionType, OptionsCandidateAxisCoverage,
     OptionsCandidateInvalidReason, OptionsCandidateInvalidReasonCount, OptionsContractSeries,
     OptionsDelayBucketCoverage, OptionsDteBucketCoverage, OptionsEvaluationSplit,
-    OptionsExitTemplateFamily, OptionsExpressionAutoBackendDecision, OptionsExpressionDiagnostics,
-    OptionsExpressionEventDetailRow, OptionsExpressionEventPathInspectionResult,
-    OptionsExpressionEventPathPoint, OptionsExpressionEventStatus, OptionsExpressionExitReason,
+    OptionsExitTemplateFamily, OptionsExpressionAutoBackendDecision,
+    OptionsExpressionCoverageAdequacySummary, OptionsExpressionCoverageAdequacyVerdict,
+    OptionsExpressionDiagnostics, OptionsExpressionEventDetailRow,
+    OptionsExpressionEventPathInspectionResult, OptionsExpressionEventPathPoint,
+    OptionsExpressionEventStatus, OptionsExpressionExitReason,
     OptionsExpressionFeasibilityCacheStats, OptionsExpressionFeasibilityEventCoverage,
     OptionsExpressionFeasibilityReport, OptionsExpressionFeasibilityTimingStats,
-    OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    OptionsExpressionMetrics, OptionsExpressionOverlapWindowSummary, OptionsExpressionRunRequest,
+    OptionsExpressionRunResult, OptionsExpressionSplitInvalidReasonSummary,
     OptionsExpressionStagingStats, OptionsExpressionTupleInspectionResult,
     OptionsExpressionTupleResult, OptionsFillModelFamily, OptionsMoneynessBucket,
     OptionsMoneynessBucketCoverage, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
@@ -47,6 +50,13 @@ const OPTIONS_AUTO_GPU_MIN_COMPILED_TUPLES: usize = 256;
 const OPTIONS_AUTO_GPU_MIN_SEARCH_EVENTS: usize = 8;
 const OPTIONS_AUTO_GPU_MIN_PROJECTED_EVENT_TUPLES: u64 = 10_000;
 const OPTIONS_AUTO_GPU_MIN_MEASURED_SPEEDUP: f64 = 1.25;
+const OPTIONS_MIN_HEALTHY_SEARCH_OVERLAP_RATE: f64 = 0.75;
+const OPTIONS_MIN_HEALTHY_TOTAL_OVERLAP_RATE: f64 = 0.75;
+const OPTIONS_MIN_HEALTHY_SEARCH_CANDIDATE_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_MIN_HEALTHY_SEARCH_BASELINE_OUTCOME_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE: f64 = 0.50;
+const OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD: f64 = 0.40;
 
 #[cfg(test)]
 fn forced_options_expression_cuda_device_id() -> &'static Mutex<Option<Option<u32>>> {
@@ -1856,6 +1866,7 @@ struct PreparedOptionsExpressionRun {
     harsher_candidate_cache: StructuralCandidateCache,
     harsher_exit_summary_cache: ExitSummaryCache,
     diagnostics: OptionsExpressionDiagnostics,
+    overlap_window: OptionsExpressionOverlapWindowSummary,
     staging: OptionsExpressionStagingStats,
     timings: OptionsExpressionFeasibilityTimingStats,
     cache_stats: OptionsExpressionFeasibilityCacheStats,
@@ -2311,6 +2322,7 @@ fn prepare_options_expression_run(
         coverage_start: Some(dataset.manifest.coverage_start),
         coverage_end: Some(dataset.manifest.coverage_end),
     };
+    let overlap_window = build_overlap_window_summary(&events, &diagnostics, dataset);
     let timings = OptionsExpressionFeasibilityTimingStats {
         tuple_compile_ms,
         baseline_candidate_compile_ms,
@@ -2342,6 +2354,7 @@ fn prepare_options_expression_run(
         harsher_candidate_cache,
         harsher_exit_summary_cache,
         diagnostics,
+        overlap_window,
         staging,
         timings,
         cache_stats,
@@ -3665,6 +3678,452 @@ where
     (total, search, holdout, sealed)
 }
 
+fn build_event_coverage_summary(
+    prepared: &PreparedOptionsExpressionRun,
+) -> OptionsExpressionFeasibilityEventCoverage {
+    let (
+        total_events_with_candidates,
+        search_events_with_candidates,
+        holdout_events_with_candidates,
+        sealed_test_events_with_candidates,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_candidate(&prepared.baseline_candidate_cache, event_index)
+    });
+    let (
+        total_events_with_baseline_outcomes,
+        search_events_with_baseline_outcomes,
+        holdout_events_with_baseline_outcomes,
+        sealed_test_events_with_baseline_outcomes,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_outcome(
+            &prepared.baseline_candidate_cache,
+            &prepared.baseline_exit_summary_cache,
+            event_index,
+        )
+    });
+    let (
+        total_events_with_conservative_outcomes,
+        search_events_with_conservative_outcomes,
+        holdout_events_with_conservative_outcomes,
+        sealed_test_events_with_conservative_outcomes,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_outcome(
+            &prepared.conservative_candidate_cache,
+            &prepared.conservative_exit_summary_cache,
+            event_index,
+        )
+    });
+    let (
+        total_events_with_harsher_outcomes,
+        search_events_with_harsher_outcomes,
+        holdout_events_with_harsher_outcomes,
+        sealed_test_events_with_harsher_outcomes,
+    ) = split_coverage_counts(&prepared.events, |event_index| {
+        event_has_any_outcome(
+            &prepared.harsher_candidate_cache,
+            &prepared.harsher_exit_summary_cache,
+            event_index,
+        )
+    });
+    OptionsExpressionFeasibilityEventCoverage {
+        total_events_with_candidates,
+        search_events_with_candidates,
+        holdout_events_with_candidates,
+        sealed_test_events_with_candidates,
+        total_events_with_baseline_outcomes,
+        search_events_with_baseline_outcomes,
+        holdout_events_with_baseline_outcomes,
+        sealed_test_events_with_baseline_outcomes,
+        total_events_with_conservative_outcomes,
+        search_events_with_conservative_outcomes,
+        holdout_events_with_conservative_outcomes,
+        sealed_test_events_with_conservative_outcomes,
+        total_events_with_harsher_outcomes,
+        search_events_with_harsher_outcomes,
+        holdout_events_with_harsher_outcomes,
+        sealed_test_events_with_harsher_outcomes,
+    }
+}
+
+fn summarize_event_split_counts(
+    events: &[OptionsSignalEvent],
+    predicate: impl Fn(&OptionsSignalEvent) -> bool,
+) -> (usize, usize, usize, usize) {
+    let mut total = 0usize;
+    let mut search = 0usize;
+    let mut holdout = 0usize;
+    let mut sealed = 0usize;
+    for event in events {
+        if !predicate(event) {
+            continue;
+        }
+        total += 1;
+        match event.fold {
+            OptionsEvaluationSplit::Search => search += 1,
+            OptionsEvaluationSplit::Holdout => holdout += 1,
+            OptionsEvaluationSplit::SealedTest => sealed += 1,
+        }
+    }
+    (total, search, holdout, sealed)
+}
+
+fn parse_contract_reference_timestamp_ms(value: Option<&str>) -> Option<i64> {
+    value
+        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+        .map(|ts| ts.timestamp_millis())
+}
+
+fn build_overlap_window_summary(
+    events: &[OptionsSignalEvent],
+    diagnostics: &OptionsExpressionDiagnostics,
+    dataset: &ImportedOptionsDataset,
+) -> OptionsExpressionOverlapWindowSummary {
+    let coverage_start = dataset.manifest.coverage_start;
+    let coverage_end = dataset.manifest.coverage_end;
+    let (
+        total_events_in_dataset_window,
+        search_events_in_dataset_window,
+        holdout_events_in_dataset_window,
+        sealed_test_events_in_dataset_window,
+    ) = summarize_event_split_counts(events, |event| {
+        let basis_ts = event.earliest_tradable_timestamp;
+        basis_ts >= coverage_start && basis_ts <= coverage_end
+    });
+    let (
+        total_events_before_dataset_window,
+        search_events_before_dataset_window,
+        holdout_events_before_dataset_window,
+        sealed_test_events_before_dataset_window,
+    ) = summarize_event_split_counts(events, |event| {
+        event.earliest_tradable_timestamp < coverage_start
+    });
+    let (
+        total_events_after_dataset_window,
+        search_events_after_dataset_window,
+        holdout_events_after_dataset_window,
+        sealed_test_events_after_dataset_window,
+    ) = summarize_event_split_counts(events, |event| {
+        event.earliest_tradable_timestamp > coverage_end
+    });
+    let contract_reference_as_of_utc = dataset.manifest.contract_reference_as_of_utc.clone();
+    let contract_reference_as_of_ms =
+        parse_contract_reference_timestamp_ms(contract_reference_as_of_utc.as_deref());
+    let (
+        total_events_before_contract_reference_as_of,
+        search_events_before_contract_reference_as_of,
+        holdout_events_before_contract_reference_as_of,
+        sealed_test_events_before_contract_reference_as_of,
+    ) = if let Some(as_of_ms) = contract_reference_as_of_ms {
+        summarize_event_split_counts(events, |event| event.earliest_tradable_timestamp < as_of_ms)
+    } else {
+        (0, 0, 0, 0)
+    };
+    OptionsExpressionOverlapWindowSummary {
+        contract_reference_as_of_utc,
+        total_events_in_dataset_window,
+        search_events_in_dataset_window,
+        holdout_events_in_dataset_window,
+        sealed_test_events_in_dataset_window,
+        total_events_before_dataset_window,
+        total_events_after_dataset_window,
+        search_events_before_dataset_window,
+        search_events_after_dataset_window,
+        holdout_events_before_dataset_window,
+        holdout_events_after_dataset_window,
+        sealed_test_events_before_dataset_window,
+        sealed_test_events_after_dataset_window,
+        total_events_before_contract_reference_as_of,
+        search_events_before_contract_reference_as_of,
+        holdout_events_before_contract_reference_as_of,
+        sealed_test_events_before_contract_reference_as_of,
+        total_overlap_rate: ratio_or_zero(total_events_in_dataset_window, diagnostics.total_events),
+        search_overlap_rate: ratio_or_zero(
+            search_events_in_dataset_window,
+            diagnostics.search_events,
+        ),
+        holdout_overlap_rate: ratio_or_zero(
+            holdout_events_in_dataset_window,
+            diagnostics.holdout_events,
+        ),
+        sealed_test_overlap_rate: ratio_or_zero(
+            sealed_test_events_in_dataset_window,
+            diagnostics.sealed_test_events,
+        ),
+    }
+}
+
+fn build_split_invalid_reason_summary(
+    events: &[OptionsSignalEvent],
+    candidate_cache: &StructuralCandidateCache,
+) -> OptionsExpressionSplitInvalidReasonSummary {
+    let per_event = candidate_cache.axis.slot_count_per_event();
+    if per_event == 0 || events.is_empty() {
+        return OptionsExpressionSplitInvalidReasonSummary::default();
+    }
+    let mut search_counts: BTreeMap<OptionsCandidateInvalidReason, usize> = BTreeMap::new();
+    let mut holdout_counts: BTreeMap<OptionsCandidateInvalidReason, usize> = BTreeMap::new();
+    let mut sealed_counts: BTreeMap<OptionsCandidateInvalidReason, usize> = BTreeMap::new();
+    for (slot_index, reason) in candidate_cache.invalid_reasons.iter().enumerate() {
+        let Some(reason) = reason else {
+            continue;
+        };
+        let event_index = slot_index / per_event;
+        let Some(event) = events.get(event_index) else {
+            continue;
+        };
+        let counts = match event.fold {
+            OptionsEvaluationSplit::Search => &mut search_counts,
+            OptionsEvaluationSplit::Holdout => &mut holdout_counts,
+            OptionsEvaluationSplit::SealedTest => &mut sealed_counts,
+        };
+        *counts.entry(*reason).or_default() += 1;
+    }
+    let map_counts = |counts: BTreeMap<OptionsCandidateInvalidReason, usize>| {
+        counts
+            .into_iter()
+            .map(|(reason, count)| OptionsCandidateInvalidReasonCount { reason, count })
+            .collect()
+    };
+    OptionsExpressionSplitInvalidReasonSummary {
+        search_invalid_reasons: map_counts(search_counts),
+        holdout_invalid_reasons: map_counts(holdout_counts),
+        sealed_test_invalid_reasons: map_counts(sealed_counts),
+    }
+}
+
+fn dominant_invalid_reason(
+    invalid_reasons: &[OptionsCandidateInvalidReasonCount],
+) -> Option<(OptionsCandidateInvalidReason, f64)> {
+    let total: usize = invalid_reasons.iter().map(|entry| entry.count).sum();
+    let best = invalid_reasons.iter().max_by_key(|entry| entry.count)?;
+    let share = if total == 0 {
+        0.0
+    } else {
+        best.count as f64 / total as f64
+    };
+    Some((best.reason, share))
+}
+
+fn push_adequacy_reason(reasons: &mut Vec<String>, reason: impl Into<String>) {
+    let next = reason.into();
+    if !reasons.iter().any(|existing| existing == &next) {
+        reasons.push(next);
+    }
+}
+
+fn build_coverage_adequacy_summary(
+    diagnostics: &OptionsExpressionDiagnostics,
+    overlap_window: &OptionsExpressionOverlapWindowSummary,
+    event_coverage: &OptionsExpressionFeasibilityEventCoverage,
+    split_invalid_reasons: &OptionsExpressionSplitInvalidReasonSummary,
+    invalid_reasons: &[OptionsCandidateInvalidReasonCount],
+) -> OptionsExpressionCoverageAdequacySummary {
+    let search_candidate_coverage_rate = ratio_or_zero(
+        event_coverage.search_events_with_candidates,
+        overlap_window.search_events_in_dataset_window,
+    );
+    let holdout_candidate_coverage_rate = ratio_or_zero(
+        event_coverage.holdout_events_with_candidates,
+        overlap_window.holdout_events_in_dataset_window,
+    );
+    let sealed_test_candidate_coverage_rate = ratio_or_zero(
+        event_coverage.sealed_test_events_with_candidates,
+        overlap_window.sealed_test_events_in_dataset_window,
+    );
+    let search_baseline_outcome_coverage_rate = ratio_or_zero(
+        event_coverage.search_events_with_baseline_outcomes,
+        overlap_window.search_events_in_dataset_window,
+    );
+    let holdout_baseline_outcome_coverage_rate = ratio_or_zero(
+        event_coverage.holdout_events_with_baseline_outcomes,
+        overlap_window.holdout_events_in_dataset_window,
+    );
+    let sealed_test_baseline_outcome_coverage_rate = ratio_or_zero(
+        event_coverage.sealed_test_events_with_baseline_outcomes,
+        overlap_window.sealed_test_events_in_dataset_window,
+    );
+    let dominant_search_invalid =
+        dominant_invalid_reason(&split_invalid_reasons.search_invalid_reasons);
+    let dominant_overall_invalid = dominant_invalid_reason(invalid_reasons);
+    let (dominant_invalid_reason, dominant_invalid_reason_share) = dominant_search_invalid
+        .or(dominant_overall_invalid)
+        .unwrap_or((OptionsCandidateInvalidReason::NoPriceRowAfterEntry, 0.0));
+    let dominant_invalid_reason = if dominant_invalid_reason_share > 0.0 {
+        Some(dominant_invalid_reason)
+    } else {
+        None
+    };
+    let mut reasons = Vec::new();
+    let mut verdict = OptionsExpressionCoverageAdequacyVerdict::Healthy;
+    let mut non_promotable = false;
+
+    if diagnostics.search_events > 0 && overlap_window.search_events_in_dataset_window == 0 {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::SearchOverlapMissing;
+        non_promotable = true;
+        push_adequacy_reason(
+            &mut reasons,
+            "No search events fall inside the imported options dataset window.",
+        );
+    } else if diagnostics.search_events > 0
+        && (overlap_window.search_overlap_rate < OPTIONS_MIN_HEALTHY_SEARCH_OVERLAP_RATE
+            || overlap_window.total_overlap_rate < OPTIONS_MIN_HEALTHY_TOTAL_OVERLAP_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::WeakDatasetOverlap;
+        non_promotable = true;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Only {:.1}% of search events and {:.1}% of total events overlap the current dataset window.",
+                overlap_window.search_overlap_rate * 100.0,
+                overlap_window.total_overlap_rate * 100.0
+            ),
+        );
+    } else if overlap_window.search_events_in_dataset_window > 0
+        && (search_candidate_coverage_rate < OPTIONS_MIN_HEALTHY_SEARCH_CANDIDATE_COVERAGE_RATE
+            || search_baseline_outcome_coverage_rate
+                < OPTIONS_MIN_HEALTHY_SEARCH_BASELINE_OUTCOME_COVERAGE_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::SearchCoverageWeak;
+        non_promotable = true;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Only {:.1}% of in-window search events reach candidates and {:.1}% reach baseline outcomes.",
+                search_candidate_coverage_rate * 100.0,
+                search_baseline_outcome_coverage_rate * 100.0
+            ),
+        );
+    } else if diagnostics.holdout_events > 0
+        && overlap_window.holdout_events_in_dataset_window > 0
+        && (holdout_candidate_coverage_rate < OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE
+            || holdout_baseline_outcome_coverage_rate < OPTIONS_MIN_HEALTHY_HOLDOUT_COVERAGE_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::HoldoutCoverageWeak;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Holdout coverage is thin: {:.1}% candidate-ready and {:.1}% baseline-outcome coverage for in-window holdout events.",
+                holdout_candidate_coverage_rate * 100.0,
+                holdout_baseline_outcome_coverage_rate * 100.0
+            ),
+        );
+    } else if diagnostics.sealed_test_events > 0
+        && overlap_window.sealed_test_events_in_dataset_window > 0
+        && (sealed_test_candidate_coverage_rate < OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE
+            || sealed_test_baseline_outcome_coverage_rate
+                < OPTIONS_MIN_HEALTHY_SEALED_COVERAGE_RATE)
+    {
+        verdict = OptionsExpressionCoverageAdequacyVerdict::SealedCoverageWeak;
+        push_adequacy_reason(
+            &mut reasons,
+            format!(
+                "Sealed coverage is thin: {:.1}% candidate-ready and {:.1}% baseline-outcome coverage for in-window sealed events.",
+                sealed_test_candidate_coverage_rate * 100.0,
+                sealed_test_baseline_outcome_coverage_rate * 100.0
+            ),
+        );
+    } else if dominant_invalid_reason_share >= OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD {
+        match dominant_invalid_reason {
+            Some(OptionsCandidateInvalidReason::ContractNotEligibleAsOfEvent) => {
+                verdict = OptionsExpressionCoverageAdequacyVerdict::ContractEligibilityFragile;
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Contract eligibility timing dominates structural invalidity ({:.1}% of invalid slots).",
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+                if overlap_window.search_events_before_contract_reference_as_of > 0 {
+                    push_adequacy_reason(
+                        &mut reasons,
+                        format!(
+                            "{} search event{} occur before the dataset contract-reference as-of timestamp.",
+                            overlap_window.search_events_before_contract_reference_as_of,
+                            if overlap_window.search_events_before_contract_reference_as_of == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ),
+                    );
+                }
+            }
+            Some(OptionsCandidateInvalidReason::EntryPastCutoff) => {
+                verdict = OptionsExpressionCoverageAdequacyVerdict::LateEntryFragile;
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Late-entry cutoff misses dominate structural invalidity ({:.1}% of invalid slots).",
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+            }
+            Some(OptionsCandidateInvalidReason::NoStrikeInTolerance) => {
+                verdict = OptionsExpressionCoverageAdequacyVerdict::StrikeWindowFragile;
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Strike-window misses dominate structural invalidity ({:.1}% of invalid slots).",
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if verdict == OptionsExpressionCoverageAdequacyVerdict::Healthy {
+        if overlap_window.search_events_before_contract_reference_as_of > 0
+            || dominant_invalid_reason_share >= OPTIONS_DOMINANT_INVALID_REASON_SHARE_THRESHOLD
+        {
+            verdict = OptionsExpressionCoverageAdequacyVerdict::MixedFragile;
+            if overlap_window.search_events_before_contract_reference_as_of > 0 {
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "{} search event{} occur before the dataset contract-reference as-of timestamp.",
+                        overlap_window.search_events_before_contract_reference_as_of,
+                        if overlap_window.search_events_before_contract_reference_as_of == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ),
+                );
+            }
+            if let Some(reason) = dominant_invalid_reason {
+                push_adequacy_reason(
+                    &mut reasons,
+                    format!(
+                        "Dominant structural invalid reason: {:?} ({:.1}% of invalid slots).",
+                        reason,
+                        dominant_invalid_reason_share * 100.0
+                    ),
+                );
+            }
+        } else {
+            push_adequacy_reason(
+                &mut reasons,
+                "Search overlap and split-level candidate/outcome coverage are currently adequate for this slice.",
+            );
+        }
+    }
+
+    OptionsExpressionCoverageAdequacySummary {
+        verdict,
+        non_promotable,
+        reasons,
+        search_candidate_coverage_rate,
+        holdout_candidate_coverage_rate,
+        sealed_test_candidate_coverage_rate,
+        search_baseline_outcome_coverage_rate,
+        holdout_baseline_outcome_coverage_rate,
+        sealed_test_baseline_outcome_coverage_rate,
+        dominant_invalid_reason,
+        dominant_invalid_reason_share,
+    }
+}
+
 pub fn run_options_expression_blocking(
     req: OptionsExpressionRunRequest,
     signal_manifest: &OptionsSignalEventManifestV1,
@@ -3672,6 +4131,16 @@ pub fn run_options_expression_blocking(
 ) -> Result<OptionsExpressionRunResult, String> {
     let prepared = prepare_options_expression_run(&req, signal_manifest, dataset)?;
     let ranked_pass = rank_compiled_tuples(&req, &prepared, dataset)?;
+    let event_coverage = build_event_coverage_summary(&prepared);
+    let split_invalid_reasons =
+        build_split_invalid_reason_summary(&prepared.events, &prepared.baseline_candidate_cache);
+    let coverage_adequacy = build_coverage_adequacy_summary(
+        &prepared.diagnostics,
+        &prepared.overlap_window,
+        &event_coverage,
+        &split_invalid_reasons,
+        &prepared.baseline_candidate_cache.invalid_reason_counts(),
+    );
     let ranked_results: Vec<OptionsExpressionTupleResult> = ranked_pass
         .ranked
         .into_iter()
@@ -3685,6 +4154,9 @@ pub fn run_options_expression_blocking(
         price_semantics: dataset.manifest.price_semantics,
         tuple_count: ranked_results.len(),
         staging: Some(prepared.staging),
+        overlap_window: prepared.overlap_window,
+        coverage_adequacy,
+        split_invalid_reasons,
         ranked_results,
     })
 }
@@ -3772,50 +4244,6 @@ pub fn analyze_options_expression_feasibility_blocking(
         .iter()
         .filter(|entry| entry.is_some())
         .count();
-    let (
-        total_events_with_candidates,
-        search_events_with_candidates,
-        holdout_events_with_candidates,
-        sealed_test_events_with_candidates,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_candidate(&prepared.baseline_candidate_cache, event_index)
-    });
-    let (
-        total_events_with_baseline_outcomes,
-        search_events_with_baseline_outcomes,
-        holdout_events_with_baseline_outcomes,
-        sealed_test_events_with_baseline_outcomes,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_outcome(
-            &prepared.baseline_candidate_cache,
-            &prepared.baseline_exit_summary_cache,
-            event_index,
-        )
-    });
-    let (
-        total_events_with_conservative_outcomes,
-        search_events_with_conservative_outcomes,
-        holdout_events_with_conservative_outcomes,
-        sealed_test_events_with_conservative_outcomes,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_outcome(
-            &prepared.conservative_candidate_cache,
-            &prepared.conservative_exit_summary_cache,
-            event_index,
-        )
-    });
-    let (
-        total_events_with_harsher_outcomes,
-        search_events_with_harsher_outcomes,
-        holdout_events_with_harsher_outcomes,
-        sealed_test_events_with_harsher_outcomes,
-    ) = split_coverage_counts(&prepared.events, |event_index| {
-        event_has_any_outcome(
-            &prepared.harsher_candidate_cache,
-            &prepared.harsher_exit_summary_cache,
-            event_index,
-        )
-    });
     let mut timings = prepared.timings.clone();
     timings.cpu_ranking_ms = cpu_ranking_ms;
     timings.cpu_ranking_us = cpu_ranking_us;
@@ -3911,24 +4339,17 @@ pub fn analyze_options_expression_feasibility_blocking(
             observed_gpu_cache_usage.gpu_chunk_plan_fits_in_memory;
         cache_stats.gpu_plan_notes = observed_gpu_cache_usage.gpu_plan_notes;
     }
-    let event_coverage = OptionsExpressionFeasibilityEventCoverage {
-        total_events_with_candidates,
-        search_events_with_candidates,
-        holdout_events_with_candidates,
-        sealed_test_events_with_candidates,
-        total_events_with_baseline_outcomes,
-        search_events_with_baseline_outcomes,
-        holdout_events_with_baseline_outcomes,
-        sealed_test_events_with_baseline_outcomes,
-        total_events_with_conservative_outcomes,
-        search_events_with_conservative_outcomes,
-        holdout_events_with_conservative_outcomes,
-        sealed_test_events_with_conservative_outcomes,
-        total_events_with_harsher_outcomes,
-        search_events_with_harsher_outcomes,
-        holdout_events_with_harsher_outcomes,
-        sealed_test_events_with_harsher_outcomes,
-    };
+    let split_invalid_reasons =
+        build_split_invalid_reason_summary(&prepared.events, &prepared.baseline_candidate_cache);
+    let invalid_reasons = prepared.baseline_candidate_cache.invalid_reason_counts();
+    let event_coverage = build_event_coverage_summary(&prepared);
+    let coverage_adequacy = build_coverage_adequacy_summary(
+        &prepared.diagnostics,
+        &prepared.overlap_window,
+        &event_coverage,
+        &split_invalid_reasons,
+        &invalid_reasons,
+    );
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     let gpu_available = current_preferred_cuda_device_id().is_some();
     #[cfg(not(all(feature = "cuda", feature = "cuda-backtest-kernel")))]
@@ -4001,8 +4422,11 @@ pub fn analyze_options_expression_feasibility_blocking(
             * std::mem::size_of::<Option<TradeOutcome>>(),
         timings,
         event_coverage,
+        overlap_window: prepared.overlap_window.clone(),
+        split_invalid_reasons,
+        coverage_adequacy,
         cache_stats,
-        invalid_reasons: prepared.baseline_candidate_cache.invalid_reason_counts(),
+        invalid_reasons,
         axis_coverage: prepared.baseline_candidate_cache.axis_coverage(),
     })
 }
@@ -4805,9 +5229,110 @@ mod tests {
                 .total_events_with_conservative_outcomes,
             3
         );
+        assert_eq!(report.overlap_window.total_events_in_dataset_window, 3);
+        assert_eq!(report.overlap_window.search_events_in_dataset_window, 1);
+        assert_eq!(report.overlap_window.holdout_events_in_dataset_window, 1);
+        assert_eq!(
+            report.overlap_window.sealed_test_events_in_dataset_window,
+            1
+        );
+        assert_eq!(report.overlap_window.total_overlap_rate, 1.0);
+        assert_eq!(report.overlap_window.search_overlap_rate, 1.0);
+        assert_eq!(
+            report.coverage_adequacy.verdict,
+            OptionsExpressionCoverageAdequacyVerdict::MixedFragile
+        );
+        assert!(!report.coverage_adequacy.non_promotable);
+        assert_eq!(report.coverage_adequacy.search_candidate_coverage_rate, 1.0);
+        assert_eq!(
+            report
+                .coverage_adequacy
+                .search_baseline_outcome_coverage_rate,
+            1.0
+        );
+        assert_eq!(
+            report.coverage_adequacy.dominant_invalid_reason,
+            Some(OptionsCandidateInvalidReason::NoExpirationInBucket)
+        );
+        assert!(report
+            .coverage_adequacy
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("Dominant structural invalid reason")));
+        assert_eq!(report.split_invalid_reasons.search_invalid_reasons.len(), 1);
+        assert_eq!(
+            report.split_invalid_reasons.search_invalid_reasons[0].reason,
+            OptionsCandidateInvalidReason::NoExpirationInBucket
+        );
+        assert_eq!(
+            report.split_invalid_reasons.search_invalid_reasons[0].count,
+            1
+        );
+        assert_eq!(
+            report.split_invalid_reasons.holdout_invalid_reasons.len(),
+            1
+        );
+        assert_eq!(
+            report
+                .split_invalid_reasons
+                .sealed_test_invalid_reasons
+                .len(),
+            1
+        );
         assert!(report.structural_cache_bytes_estimate > 0);
         assert!(report.baseline_summary_bytes_estimate > 0);
         assert!(report.conservative_summary_bytes_estimate > 0);
+    }
+
+    #[test]
+    fn options_expression_feasibility_report_flags_missing_search_overlap_as_non_promotable() {
+        let _env = lock_test_env();
+        reset_options_expression_prepare_caches();
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        };
+        let mut manifest = test_manifest();
+        for event in &mut manifest.events {
+            event.decision_timestamp += 14 * DAY_MS;
+            event.earliest_tradable_timestamp += 14 * DAY_MS;
+            event.base_entry_timestamp =
+                event.base_entry_timestamp.map(|value| value + 14 * DAY_MS);
+            event.base_exit_timestamp = event.base_exit_timestamp.map(|value| value + 14 * DAY_MS);
+        }
+
+        let report =
+            analyze_options_expression_feasibility_blocking(req, &manifest, &test_dataset())
+                .expect("report");
+
+        assert_eq!(report.overlap_window.total_events_in_dataset_window, 0);
+        assert_eq!(report.overlap_window.search_events_in_dataset_window, 0);
+        assert_eq!(report.event_coverage.search_events_with_candidates, 0);
+        assert_eq!(
+            report.coverage_adequacy.verdict,
+            OptionsExpressionCoverageAdequacyVerdict::SearchOverlapMissing
+        );
+        assert!(report.coverage_adequacy.non_promotable);
+        assert!(report.coverage_adequacy.reasons.iter().any(|reason| reason
+            .contains("No search events fall inside the imported options dataset window")));
     }
 
     #[test]

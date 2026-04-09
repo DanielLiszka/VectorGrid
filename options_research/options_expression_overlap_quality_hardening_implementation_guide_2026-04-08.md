@@ -748,56 +748,64 @@ Checklist semantics:
 
 ### Phase 1 — Types and contracts
 
-- [ ] Add `OptionsExpressionOverlapWindowSummary` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
-- [ ] Add `OptionsExpressionSplitInvalidReasonSummary` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
-- [ ] Add `OptionsExpressionCoverageAdequacyVerdict` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
-- [ ] Add `OptionsExpressionCoverageAdequacySummary` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
-- [ ] Extend `OptionsExpressionFeasibilityReport` with overlap and adequacy fields.
-- [ ] Extend run/artifact types with the minimum persisted adequacy fields needed for reopen/compare flows.
+- [x] Add `OptionsExpressionOverlapWindowSummary` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
+- [x] Add `OptionsExpressionSplitInvalidReasonSummary` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
+- [x] Add `OptionsExpressionCoverageAdequacyVerdict` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
+- [x] Add `OptionsExpressionCoverageAdequacySummary` to [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs).
+- [x] Extend `OptionsExpressionFeasibilityReport` with overlap and adequacy fields.
+- [x] Extend run/artifact types with the minimum persisted adequacy fields needed for reopen/compare flows.
 
 ### Phase 2 — App-core derivation
 
-- [ ] Add overlap-window summary derivation in [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs).
-- [ ] Add split invalid-reason aggregation in [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs).
-- [ ] Add adequacy-verdict derivation in [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs).
-- [ ] Populate the new fields in `analyze_options_expression_feasibility_blocking(...)`.
-- [ ] Populate the persisted run/artifact fields in `run_options_expression_blocking(...)`.
-- [ ] Keep `evaluate_auto_backend_decision(...)` and `runtime_auto_backend_decision(...)` behavior unchanged in this pass.
+- [x] Add overlap-window summary derivation in [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs).
+- [x] Add split invalid-reason aggregation in [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs).
+- [x] Add adequacy-verdict derivation in [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs).
+- [x] Populate the new fields in `analyze_options_expression_feasibility_blocking(...)`.
+- [x] Populate the persisted run/artifact fields in `run_options_expression_blocking(...)`.
+- [x] Keep `evaluate_auto_backend_decision(...)` and `runtime_auto_backend_decision(...)` behavior unchanged in this pass.
 
 ### Phase 3 — Tauri persistence
 
-- [ ] Plumb the new fields through [commands_options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_expression.rs).
-- [ ] Persist the new fields in `OptionsExpressionArtifactV1`.
-- [ ] Add compact adequacy/overlap columns to `OptionsExpressionArtifactSummary`.
-- [ ] Keep replay-input reconstruction logic stable except for serialization/plumbing needs.
+- [x] Plumb the new fields through [commands_options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_expression.rs).
+- [x] Persist the new fields in `OptionsExpressionArtifactV1`.
+- [x] Add compact adequacy/overlap columns to `OptionsExpressionArtifactSummary`.
+- [x] Keep replay-input reconstruction logic stable except for serialization/plumbing needs.
 
 ### Phase 4 — Frontend surfacing
 
-- [ ] Normalize the new feasibility/report fields in [optionsExpressionService.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/optionsExpressionService.ts).
-- [ ] Surface adequacy and overlap state in [optionsExpressionStore.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/optionsExpressionStore.ts).
-- [ ] Add a feasibility adequacy block to [OptionsExpressionPanel.vue](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue).
-- [ ] Add reopened-artifact adequacy display to [OptionsExpressionPanel.vue](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue).
-- [ ] Add compact adequacy/overlap columns to saved-artifact comparison in [OptionsExpressionPanel.vue](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue).
+- [x] Normalize the new feasibility/report fields in [optionsExpressionService.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/optionsExpressionService.ts).
+- [x] Surface adequacy and overlap state in [optionsExpressionStore.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/optionsExpressionStore.ts).
+- [x] Add a feasibility adequacy block to [OptionsExpressionPanel.vue](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue).
+- [x] Add reopened-artifact adequacy display to [OptionsExpressionPanel.vue](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue).
+- [x] Add compact adequacy/overlap columns to saved-artifact comparison in [OptionsExpressionPanel.vue](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue).
 
 ### Phase 5 — Conditional default-profile hardening
 
-- [ ] Review the new benchmark outputs for chronic `EntryPastCutoff` weakness.
-- [ ] Review the new benchmark outputs for chronic `NoStrikeInTolerance` weakness.
-- [ ] Only if both are stable and reproducible, adopt one narrow default guidance or clamp change.
-- [ ] Verify the clamp improves weak-slice health without reducing split-level candidate/outcome coverage.
-- [ ] Do not change `auto` thresholds as part of the clamp pass.
+- [x] Review the new benchmark outputs for chronic `EntryPastCutoff` weakness.
+- [x] Review the new benchmark outputs for chronic `NoStrikeInTolerance` weakness.
+- [x] Decide not to adopt a default guidance or clamp change in this pass because the late-entry weakness is not paired with a stable cross-root strike-window weakness.
+- [x] Keep the current default profile unchanged because no candidate clamp was proven to improve weak slices without reducing split-level candidate/outcome coverage.
+- [x] Keep `auto` thresholds unchanged as part of this pass.
+
+Phase 5 sign-off outcome:
+
+- SPY remains a healthy overlap slice with `52.5%` density, `47.5%` invalid-slot rate, `100.0%` search overlap, and a `holdout_coverage_weak` verdict driven by `entry_past_cutoff` (`76.6%` dominant-invalid share).
+- QQQ remains an interpretable but fragile slice with `25.1%` density, `74.9%` invalid-slot rate, `23.0%` search overlap, `50.5%` total overlap, and a `weak_dataset_overlap` verdict driven primarily by `contract_not_eligible_as_of_event` (`89.4%` dominant-invalid share).
+- `EntryPastCutoff` is reproducibly present in both roots and is now surfaced explicitly by the new adequacy reporting.
+- `NoStrikeInTolerance` is meaningful in SPY but negligible in QQQ, so it is not a stable cross-root default-profile problem.
+- The correct implementation result for this pass is to ship the new overlap/adequacy diagnostics and keep the current aggregate-lane defaults steady.
 
 ### Phase 6 — Verification and sign-off
 
-- [ ] Run Rust unit tests for app-core feasibility/reporting changes.
-- [ ] Run Rust tests for Tauri command serialization/persistence changes.
-- [ ] Run frontend typecheck and targeted options tests.
-- [ ] Run the fixed SPY benchmark pair cold.
-- [ ] Run the fixed QQQ benchmark pair cold.
-- [ ] Run the same pair warm.
-- [ ] Compare density, invalid-rate, overlap, and split-coverage deltas.
-- [ ] Confirm no meaningful preview-time regression.
-- [ ] Confirm the current live `auto` route still stands without retuning.
+- [x] Run Rust unit tests for app-core feasibility/reporting changes.
+- [x] Run Rust tests for Tauri command serialization/persistence changes.
+- [x] Run frontend typecheck and targeted options tests.
+- [x] Run the fixed SPY benchmark pair cold.
+- [x] Run the fixed QQQ benchmark pair cold.
+- [x] Run the same pair warm.
+- [x] Compare density, invalid-rate, overlap, and split-coverage deltas.
+- [x] Confirm no meaningful preview-time regression.
+- [x] Confirm the current live `auto` route still stands without retuning.
 
 ---
 
@@ -824,6 +832,25 @@ Recommended sequence:
 2. cold QQQ feasibility/promotion run
 3. warm SPY rerun
 4. warm QQQ rerun
+
+Executed sign-off evidence:
+
+1. SPY cold:
+   - [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/spy_cold/2026-04-08T21-01-49/phase05_summary.json)
+2. QQQ cold:
+   - [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/qqq_cold/2026-04-08T21-03-05/phase05_summary.json)
+3. SPY warm:
+   - [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/spy_warm/2026-04-08T21-03-50/phase05_summary.json)
+4. QQQ warm:
+   - [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/qqq_warm/2026-04-08T21-04-35/phase05_summary.json)
+
+Sign-off readout:
+
+- SPY cold/warm remained stable on density, invalid rate, overlap, split coverage, and backend selection.
+- QQQ cold/warm remained stable on density, invalid rate, overlap, split coverage, and backend selection.
+- Warm reruns showed `100%` structural and summary cache reuse for both roots.
+- No meaningful preview-time regression was introduced by the overlap-quality reporting and persistence changes.
+- The live `auto` route still recommends the accelerated backend on both bounded roots without threshold retuning.
 
 ### Metrics to compare before vs after
 
@@ -856,3 +883,7 @@ Primary source set for this guide:
 - [commands_options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_expression.rs)
 - [spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json)
 - [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_phase05_gpu_gate/2026-04-08T09-50-23/2026-04-08T09-50-23/phase05_summary.json)
+- [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/spy_cold/2026-04-08T21-01-49/phase05_summary.json)
+- [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/spy_warm/2026-04-08T21-03-50/phase05_summary.json)
+- [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/qqq_cold/2026-04-08T21-03-05/phase05_summary.json)
+- [phase05_summary.json](/C:/Rust%20Projects/ta_desktop_demo/output/options_expression_overlap_quality_signoff/qqq_warm/2026-04-08T21-04-35/phase05_summary.json)

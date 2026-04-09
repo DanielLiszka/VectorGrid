@@ -722,11 +722,13 @@ This is the best deep-dive prompt if Prompt 1 concludes that the GPU scorer is a
 Current repo evidence already says:
 
 - the scorer path exists
-- the latest canonical artifact still shows only middling candidate density
-- the invalid-slot rate is still materially non-zero
-- `entry_past_cutoff` dominates the current invalid breakdown
-- `no_strike_in_tolerance` is the secondary recurring invalid reason
-- bounded provider-backed slices can also surface overlap/eligibility failures such as `contract_not_eligible_as_of_event`
+- overlap-quality and adequacy diagnostics are already shipped
+- the fixed SPY/QQQ sign-off pair is now stable cold and warm
+- candidate density and invalid-slot rate are still materially imperfect on bounded provider-backed slices
+- `entry_past_cutoff` is reproducibly present across both sign-off roots
+- `no_strike_in_tolerance` is meaningful in SPY but not stable across the sign-off pair
+- bounded provider-backed slices can surface overlap/eligibility failures such as `contract_not_eligible_as_of_event`
+- the overlap-quality hardening pass explicitly did **not** justify a default clamp yet
 
 That makes density, invalid-slot causes, and search-shape design a real implementation question. Another generic GPU optimization pass is not.
 
@@ -736,12 +738,14 @@ It also means split-assignment policy is not just a validation afterthought. In 
 
 Required:
 
-- `output/options_expression_phase05_gpu_gate/2026-04-07T20-41-53/2026-04-07T20-41-53/phase05_summary.json`
-- `output/options_expression_phase05/spy_phase05_multi_day_large_grid_compare_cuda_precise_cached_dte7_cuda_features.json`
+- `options_research/options_expression_overlap_quality_hardening_implementation_guide_2026-04-08.md`
+- `output/options_expression_overlap_quality_signoff/spy_warm/2026-04-08T21-03-50/phase05_summary.json`
+- `output/options_expression_overlap_quality_signoff/qqq_warm/2026-04-08T21-04-35/phase05_summary.json`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_data_store.rs`
 - `crates/app_core/src/options_signal_manifest.rs`
+- `src-tauri/src/commands_options_expression.rs`
 - `src-tauri/src/commands_options_data.rs`
 
 Optional:
@@ -757,7 +761,7 @@ You are reviewing candidate density and invalid-slot causes in the options-expre
 
 Using only the attached files, answer this repo-specific question:
 
-What is the single best implementable way to improve useful candidate density and search coverage for the current options-expression full-GPU path without weakening realism or broadening product scope?
+After the shipped overlap-quality hardening pass, is there still one implementable search-shape intervention worth doing now to improve useful candidate density and decision-grade coverage for the current options-expression full-GPU path, or should the repo stop here and keep the current defaults?
 
 Constraints:
 - do not broaden supported parent families or structure families
@@ -765,6 +769,8 @@ Constraints:
 - do not recommend raw-chain GPU simulation
 - keep compiled-tensor scoring as the hot path
 - use the latest invalid-reason evidence rather than generic options intuition
+- treat the current overlap/adequacy reporting as already implemented baseline, not as a proposed fix
+- explicitly respect that the latest sign-off pass did not justify a default clamp yet
 - explicitly consider whether split-assignment policy is part of the real search-quality / validation-quality solution rather than a separate workflow concern
 - explicitly consider whether provider-slice overlap / as-of eligibility is part of the real problem rather than treating every invalid as a pure tuple-grid issue
 - distinguish clearly between:
@@ -776,7 +782,7 @@ Constraints:
   - ideas that should be rejected
 
 Deliverables:
-1. Summarize what the attached evidence already proves about candidate density, invalid-slot rate, invalid reasons, and event coverage.
+1. Summarize what the attached evidence already proves about candidate density, invalid-slot rate, overlap, adequacy, invalid reasons, and split-level event coverage.
 2. Distinguish which invalid reasons are:
    - productively reducible
    - better handled by search-space defaults
@@ -784,13 +790,18 @@ Deliverables:
    - signals that the provider-backed slice itself is not representative enough for this test
    - or not worth "fixing"
 3. State explicitly whether split-assignment mode should be treated as a first-class search/coverage lever for this repo now.
-4. Propose the single best next intervention.
-5. Explain why it is better than at least one narrower default tweak and one broader search-space redesign.
-6. Identify concrete code touch points by file and symbol.
-7. Define the smallest ablation and benchmark plan needed to validate or reject the idea.
-8. State the exact measurements that would cause you to reject the intervention before or after implementation.
+4. State explicitly whether the correct answer is:
+   - one narrow next intervention
+   - or no further change right now beyond the shipped diagnostics
+5. If you recommend an intervention, propose the single best next intervention.
+6. Explain why your answer is better than at least one narrower default tweak and one broader search-space redesign.
+7. Explain why your answer is better than simply stopping after the current overlap-quality pass, if you are recommending more work.
+8. If you recommend stopping, explain exactly why the current evidence is insufficient to justify another search-shape change.
+9. Identify concrete code touch points by file and symbol.
+10. Define the smallest ablation and benchmark plan needed to validate or reject the idea.
+11. State the exact measurements that would cause you to reject the intervention before or after implementation.
 
-Be concrete, repo-specific, and hostile to fake progress.
+Be concrete, repo-specific, and hostile to fake progress. If the evidence does not justify another change, say so explicitly.
 ```
 
 ### Second-Pass Prompt
@@ -802,19 +813,21 @@ I want you to pressure-test whether your density/search-shape recommendation act
 
 Tasks:
 1. Identify where your proposal may be gaming candidate density or invalid-slot rate without improving decision-grade coverage.
-2. Identify where your proposal may be overfitting the current `entry_past_cutoff` signal and underweighting other structural limits.
-3. If targeted current web research would materially improve the answer, use it selectively to study:
+2. Identify where your proposal may be overfitting the current `entry_past_cutoff` signal and underweighting overlap or contract-eligibility limits.
+3. Identify where your proposal may be overfitting the current SPY sign-off slice and underweighting the bounded QQQ fragility control.
+4. If targeted current web research would materially improve the answer, use it selectively to study:
    - strike-window design tradeoffs for compiled option-search systems
    - practical moneyness-grid design under sparse contract availability
    - late-entry policy tradeoffs when density and realism conflict
-4. Compare your proposal against:
+5. Compare your proposal against:
+   - keeping the current defaults unchanged
    - a conservative default-tightening alternative
    - a more aggressive tuple-grid or axis-redesign alternative
-5. Decide which direction should actually win for this repo now, if any.
+6. Decide which direction should actually win for this repo now, if any.
 
 Deliverables:
 1. `Keep / revise / reject` verdict on your first-pass recommendation
-2. The refined winning intervention
+2. The refined winning intervention, or an explicit `stop here` verdict
 3. The biggest false-win risk
 4. The benchmark signals that would confirm the improvement is real
 5. The defer conditions that should stop implementation
@@ -832,15 +845,16 @@ Write the output as if it will become:
 
 The document must contain:
 1. Executive summary
-2. Current density and invalid-slot evidence summary
+2. Current density, overlap, and invalid-slot evidence summary
 3. Final recommendation
 4. Explicitly retained current strengths
 5. Explicitly deferred ideas
 6. Explicitly rejected ideas
-7. Concrete code touch points by file and symbol
-8. Ablation plan
-9. Benchmark and verification plan
-10. Rejection criteria and stop conditions
+7. Explicit `stop here` criteria if the recommendation is no further change
+8. Concrete code touch points by file and symbol
+9. Ablation plan
+10. Benchmark and verification plan
+11. Rejection criteria and stop conditions
 
 Do not restate all brainstormed options equally. Make one decision and present one coherent direction for this repo.
 ```
@@ -857,6 +871,11 @@ Current repo evidence already says:
 - the latest canonical workload can pass the live gates
 - the benchmark story is still narrow enough that overly aggressive promotion could be misleading
 - the docs-vs-code mismatch itself is now a real productization risk
+- Prompt 2 is now closed:
+  - the split-assignment ablation was executed
+  - `session_chronological` was not promoted
+  - `event_chronological` remains the default
+  - split assignment remains a manual/non-default lever rather than an unresolved default-policy blocker
 
 That makes backend policy and promotion hardening a real research question. A broad feature expansion prompt is not.
 
@@ -866,6 +885,7 @@ Required:
 
 - `options_research/options_expression_optimizer_viable_plan_2026-04-02.md`
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
 - `src-tauri/src/commands_options_expression.rs`
@@ -892,6 +912,7 @@ Constraints:
 - do not suggest manual-user-toggle-first as the main answer unless the evidence forces it
 - do not ignore the current code thresholds or latest local artifact results
 - keep CPU fallback behavior intact
+- do not reopen split-assignment default policy unless the attached Prompt 2 implementation guide leaves a real unresolved backend-policy dependency
 - distinguish clearly between:
   - static threshold tuning
   - benchmark-derived calibration

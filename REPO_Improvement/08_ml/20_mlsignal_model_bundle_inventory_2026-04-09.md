@@ -1,0 +1,143 @@
+# ML Signal Model Bundle Inventory Plan
+
+Last updated: 2026-04-09
+
+## Purpose
+
+Define the current ML Signal model-bundle inventory and status contract so manifest health, app-local storage layout, optional-bundle UX, and artifact/history retention remain explicit and auditable.
+
+## Scope Boundaries
+
+In scope:
+
+- model-bundle manifest schema and health classification
+- app-local bundle discovery and status lookups
+- frontend bundle picker and status-line behavior
+- artifact/history retention of bundle identity
+- compatibility expectations between model bundles and feature-schema versions
+
+Out of scope:
+
+- model training pipelines
+- score-cache CSV ingestion or score-cache file generation rules
+- Stage 3 / Stage 4 meta-analysis
+- non-ML-signal model registries
+
+## Current User-Facing Behavior
+
+The ML Signal workspace lets users refresh bundle options, pick a bundle from the app-local inventory, and refresh status for a specific bundle. The current UX intentionally treats bundles as optional for score-cache-backed validation, but when a bundle is selected the app surfaces its status and manifest path. Current behavior includes:
+
+- bundle options are listed from the app-local models directory
+- each option is summarized as `bundleId • family • state`
+- per-bundle status is fetched on demand and rendered as a single status line
+- bundle identity is carried into ML artifact payloads so saved runs can be inspected later
+- missing manifests are reported as `missing` state rather than crashing the UI
+
+## Current Code Surface
+
+- `web/src/components/MlSignalWorkspacePanel.vue`
+  - bundle picker, refresh actions, and current status line
+- `web/src/services/mlSignalService.ts`
+  - option-list normalization, status refresh, and artifact payload enrichment
+- `web/src/stores/optimizeStore.ts`
+  - persisted `mlSignalModelBundleId` and `mlSignalModelStatus`
+- `src-tauri/src/commands_ml_signal.rs`
+  - app-local models directory resolution, bundle listing, and status lookup
+- `crates/app_core/src/ml_signal.rs`
+  - `MlSignalModelBundleManifest`
+  - `MlSignalModelBundleStatus`
+  - `list_ml_signal_model_bundle_summaries()`
+  - `classify_ml_signal_manifest()`
+- `src-tauri/src/run_artifacts.rs`
+  - retention of bundle identity in saved run details
+- `web/src/services/historyService.ts`
+  - replay/hydration of ML bundle-related artifact context
+
+## Current Verification Surface
+
+- `web/src/services/mlSignalService.test.ts`
+- `web/src/components/MlSignalWorkspacePanel.test.ts`
+- `web/src/services/historyService.test.ts`
+- ML-signal tests in `crates/app_core/src/ml_signal.rs`
+- artifact/detail tests that touch ML payload hydration
+
+## Strengths Already Present
+
+- bundle health is already computed in one canonical backend classifier
+- bundle discovery is constrained to an app-local models directory rather than scattered paths
+- frontend does not crash when bundles are absent or optional
+- manifest path, bundle id, and model family/format already exist as structured inventory fields
+- saved artifacts already retain bundle identity alongside score-cache and schema metadata
+
+## Weaknesses / Failure Modes
+
+- user-facing bundle status is currently compressed into a single string, which can hide which part of the manifest is actually unhealthy
+- manifest health semantics live in Rust, but the UI largely reduces them to one status label
+- bundle inventory is related to, but distinct from, score-cache inventory; those surfaces are easy to conflate
+- report/workbook surfaces do not currently serve as the main audit point for bundle health, so artifact/history inspection matters more than it might appear
+- missing or stale bundle manifests can degrade to warning/missing states without a richer remediation surface
+
+## Regressions To Avoid
+
+- breaking the current app-local models directory layout
+- weakening `feature_schema_version` compatibility checks
+- treating bundle absence as a hard error when score-cache-backed validation is intentionally allowed without a selected bundle
+- dropping bundle identity from saved artifacts or history detail views
+- flattening manifest issues into an unstructured string without preserving the underlying issue list
+
+## External Research Summary
+
+- [MLflow Model Signatures and Input Examples](https://mlflow.org/docs/3.0.1/model/signatures)
+  - relevant because stable model packaging benefits from explicit schema/signature thinking rather than opaque file drops
+- [Model Cards for Model Reporting](https://research.google/pubs/model-cards-for-model-reporting/)
+  - relevant because bundle inventories are more useful when they expose health, caveats, and compatibility metadata rather than only filenames
+- [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step)
+  - relevant because the manifest is a versioned JSON contract
+- [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
+  - relevant because bundle discovery and status inspection are command-mediated desktop flows
+
+## Proposed Improvement Approach
+
+1. Document the bundle inventory as a first-class app-local registry with a concrete directory convention.
+2. Record the manifest schema explicitly, including optional versus required child files.
+3. Separate bundle list summaries from per-bundle status details so future UI work can stay structured.
+4. Preserve the current optional-bundle posture while documenting exactly when the bundle still adds value.
+5. Make feature-schema compatibility a visible contract concern instead of a hidden classifier detail.
+6. Ensure artifact/history docs keep bundle id, manifest path, and score-cache/schema context aligned.
+7. Expand tests if the bundle manifest or health states evolve.
+
+## Checklist
+
+- [ ] Document the app-local models directory path and bundle folder convention.
+- [ ] Document the `manifest.json` schema and required fields.
+- [ ] Document optional `long_model_path`, `short_model_path`, and `calibration_path` semantics.
+- [ ] Document current health states and issue-generation rules.
+- [ ] Document current frontend summary labels and status-line behavior.
+- [ ] Document that bundle selection is optional for score-cache-backed validation.
+- [ ] Document feature-schema-version compatibility as a first-class invariant.
+- [ ] Document which bundle fields are persisted into artifacts and replayed later.
+- [ ] Add or maintain tests for missing manifests, warning states, and UI normalization.
+- [ ] Preserve backward compatibility for currently saved bundle-aware artifacts.
+
+## Verification Plan
+
+- run `npm --prefix web test -- src/services/mlSignalService.test.ts`
+- run `npm --prefix web test -- src/components/MlSignalWorkspacePanel.test.ts`
+- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run targeted ML-signal tests in `crates/app_core/src/ml_signal.rs`
+- manually verify one healthy bundle, one warning bundle, and one missing bundle path through the UI/service boundary
+
+## Rollout / Fallback / Compatibility Notes
+
+- preserve the current bundle manifest layout and issue semantics unless a versioned manifest migration is introduced
+- prefer richer issue display over silently relaxing manifest checks
+- keep the “bundle optional” user message accurate while the backend still supports score-cache-backed validation without one
+- if bundle metadata expands, keep current fields stable until older artifacts and UI surfaces are updated
+
+## Related Docs
+
+- `REPO_Improvement/08_ml/03_ml_score_cache_bundles_2026-04-08.md`
+- `REPO_Improvement/08_ml/16_mlsignal_score_cache_build_2026-04-08.md`
+- `REPO_Improvement/08_ml/17_mlsignal_score_cache_validation_2026-04-09.md`
+- `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`
+- `REPO_Improvement/08_ml/35_stage4_request_contract_2026-04-08.md`

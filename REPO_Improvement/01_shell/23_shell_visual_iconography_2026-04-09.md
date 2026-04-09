@@ -1,0 +1,117 @@
+# Shell Visual Iconography Plan
+
+Last updated: 2026-04-09
+
+## Purpose
+
+Plan improvements to the shared non-options shell iconography system so asset-backed visuals, Lucide fallbacks, and illustration usage stay coherent without regressing current workflows or accessibility.
+
+## Scope Boundaries
+
+In scope:
+
+- non-options SVG asset inventory in `appSvgAssets.ts`
+- fallback icon mapping in `iconography.ts`
+- `AppVisualIcon.vue` rendering behavior and alt/decorative rules
+- current shell/result/task/artifact icon usage in shared panels
+
+Out of scope:
+
+- options-specific icon assets and options workspace illustrations
+- full visual redesign of the application
+- adding brand-new workflow surfaces
+
+## Current User-Facing Behavior
+
+The app already ships a mixed iconography system rather than raw ad hoc icons. `web/src/utils/appSvgAssets.ts` defines generated SVG asset specs for shell posture, task state, artifacts, compare actions, runtime readiness, provenance cues, and empty-state illustrations. `web/src/utils/iconography.ts` maps task levels, task statuses, artifact actions, and compare actions onto either asset icons or Lucide fallbacks. `web/src/components/AppVisualIcon.vue` is the shared renderer: it emits an `<img>` for asset specs and a component render path for Lucide icons, while preserving a decorative default and allowing alt text for non-decorative cases.
+
+Current usage is spread across real surfaces:
+
+- `VueWorkspaceShell.vue` shows the shell posture icon
+- `TaskCenterOverlay.vue` and `SettingsWorkspacePanel.vue` show task and level icons
+- `TopWorkspacePanel.vue`, `OverviewWorkspacePanel.vue`, and `MetaWorkspacePanel.vue` use compare/artifact icons and empty-state illustrations
+- `AppRuntimeBanner.vue` uses the runtime-ready versus error posture icon
+
+That means the icon layer is already part of product behavior, not just styling.
+
+## Current Code Surface
+
+- `web/src/utils/appSvgAssets.ts`
+- `web/src/utils/iconography.ts`
+- `web/src/components/AppVisualIcon.vue`
+- `web/src/components/AppRuntimeBanner.vue`
+- `web/src/components/TaskCenterOverlay.vue`
+- `web/src/components/SettingsWorkspacePanel.vue`
+- `web/src/components/VueWorkspaceShell.vue`
+- `web/src/components/TopWorkspacePanel.vue`
+- `web/src/components/MetaWorkspacePanel.vue`
+- `web/src/components/OverviewWorkspacePanel.vue`
+
+## Current Verification Surface
+
+- `web/src/components/VueWorkspaceShell.test.ts`
+- `web/src/components/TaskCenterOverlay.test.ts`
+- `web/src/components/SettingsWorkspacePanel.test.ts`
+- `web/src/components/DesktopTitlebar.test.ts`
+
+## Strengths Already Present
+
+- icon definitions are already centralized instead of duplicated inline across templates
+- `AppVisualIcon.vue` already gives the app one rendering boundary for asset versus component icons
+- important shell states already have dedicated visuals instead of generic defaults
+- asset-backed empty states and provenance cues already improve scanability in review surfaces
+
+## Weaknesses / Failure Modes
+
+- non-options and options icon assets currently live in the same registry file, which makes scope discipline easy to lose
+- there is no direct implementation doc that freezes which surfaces should use asset icons versus Lucide fallbacks
+- there is no direct component test for `AppVisualIcon.vue` render-path and alt behavior
+- icon copy, asset labels, and usage semantics can drift if contributors treat visuals as purely decorative
+
+## Regressions To Avoid
+
+- dropping existing task/artifact/shell posture icons back to generic placeholders
+- breaking decorative versus non-decorative alt behavior in `AppVisualIcon.vue`
+- mixing options icon work into the non-options improvement lane
+- changing visual meaning for task or artifact actions without updating tests and usage guidance together
+
+## External Research Summary
+
+- [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because shared UI semantics such as status and action meaning are easiest to keep stable when the icon layer is centralized.
+- [MDN prefers-color-scheme](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-color-scheme) is relevant because icon assets and fallbacks need to remain legible across the app theme modes already exposed in settings.
+- [MDN prefers-reduced-motion](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-reduced-motion) is relevant because decorative shell visuals should not quietly reintroduce motion-heavy behavior when the app already respects reduced-motion settings elsewhere.
+
+## Proposed Improvement Approach
+
+1. Write a non-options icon inventory that separates shell posture, runtime, task center, artifact, compare, provenance, and empty-state visuals from the out-of-scope options lane.
+2. Freeze the current rendering contract for `AppVisualIcon.vue`, including asset-spec detection, decorative defaults, and non-decorative alt usage.
+3. Define when a surface should use a dedicated asset icon, a Lucide fallback, or no icon at all.
+4. Add direct verification for shared icon rendering and keep one small usage matrix for the major shell panels.
+5. Document any places where current asset labels or icon meanings are overloaded and should be normalized later without removing functionality.
+
+## Checklist
+
+- [ ] Inventory all non-options asset icons and the shell/result surfaces that use them.
+- [ ] Document the current asset-versus-Lucene/Lucide fallback rule set.
+- [ ] Add a direct test plan for `AppVisualIcon.vue` asset and component rendering.
+- [ ] Separate non-options icon ownership from out-of-scope options icons at the documentation level.
+- [ ] Document alt-text and decorative-image expectations for shell icons and empty-state illustrations.
+- [ ] Record any places where current icon meanings or labels are inconsistent.
+
+## Verification Plan
+
+- run targeted frontend tests for shell and task-center surfaces that currently assert icon presence
+- add direct component coverage for `AppVisualIcon.vue` before changing render semantics
+- manually inspect the shell, task center, overview, top, and meta panels after any iconography refactor
+
+## Rollout / Fallback / Compatibility Notes
+
+- treat icon changes as user-facing behavior, not cosmetic cleanup
+- prefer additive documentation and test coverage before moving assets or renaming labels
+- keep current visuals in place unless a replacement is clearly safer and already covered
+
+## Related Docs
+
+- `REPO_Improvement/01_shell/30_status_presentation_format_2026-04-08.md`
+- `REPO_Improvement/01_shell/35_runtime_banner_surface_2026-04-08.md`
+- `REPO_Improvement/04_results/08_results_display_adequacy_2026-04-08.md`

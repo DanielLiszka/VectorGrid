@@ -48,6 +48,213 @@ vi.mock('../services/optionsExpressionService', () => ({
   runOptionsExpression: runOptionsExpressionMock,
 }))
 
+function makeDiagnosticsSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+    optionsDatasetId: 'spy_options',
+    rootSymbol: 'SPY',
+    totalEvents: 10,
+    bullishEvents: 6,
+    bearishEvents: 4,
+    searchEvents: 6,
+    holdoutEvents: 2,
+    sealedTestEvents: 2,
+    datasetContracts: 3,
+    datasetRows: 42,
+    coverageStart: null,
+    coverageEnd: null,
+    ...overrides,
+  }
+}
+
+function makeOverlapWindow(overrides: Record<string, unknown> = {}) {
+  return {
+    contractReferenceAsOfUtc: null,
+    totalEventsInDatasetWindow: 0,
+    searchEventsInDatasetWindow: 0,
+    holdoutEventsInDatasetWindow: 0,
+    sealedTestEventsInDatasetWindow: 0,
+    totalEventsBeforeDatasetWindow: 0,
+    totalEventsAfterDatasetWindow: 0,
+    searchEventsBeforeDatasetWindow: 0,
+    searchEventsAfterDatasetWindow: 0,
+    holdoutEventsBeforeDatasetWindow: 0,
+    holdoutEventsAfterDatasetWindow: 0,
+    sealedTestEventsBeforeDatasetWindow: 0,
+    sealedTestEventsAfterDatasetWindow: 0,
+    totalEventsBeforeContractReferenceAsOf: 0,
+    searchEventsBeforeContractReferenceAsOf: 0,
+    holdoutEventsBeforeContractReferenceAsOf: 0,
+    sealedTestEventsBeforeContractReferenceAsOf: 0,
+    totalOverlapRate: 0,
+    searchOverlapRate: 0,
+    holdoutOverlapRate: 0,
+    sealedTestOverlapRate: 0,
+    ...overrides,
+  }
+}
+
+function makeCoverageAdequacy(overrides: Record<string, unknown> = {}) {
+  return {
+    verdict: 'unknown' as const,
+    nonPromotable: false,
+    reasons: [],
+    searchCandidateCoverageRate: 0,
+    holdoutCandidateCoverageRate: 0,
+    sealedTestCandidateCoverageRate: 0,
+    searchBaselineOutcomeCoverageRate: 0,
+    holdoutBaselineOutcomeCoverageRate: 0,
+    sealedTestBaselineOutcomeCoverageRate: 0,
+    dominantInvalidReason: '',
+    dominantInvalidReasonShare: 0,
+    ...overrides,
+  }
+}
+
+function makeSplitInvalidReasons(overrides: Record<string, unknown> = {}) {
+  return {
+    searchInvalidReasons: [],
+    holdoutInvalidReasons: [],
+    sealedTestInvalidReasons: [],
+    ...overrides,
+  }
+}
+
+function makeRunSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+    artifactTs: '2026-04-05T12:00:00Z',
+    parentArtifactId: 'vectorgrid_run_1',
+    optionsDatasetHash: 'hash-1',
+    backendUsed: 'cpu_reference',
+    priceSemantics: 'minute_aggregate',
+    tupleCount: 0,
+    request: null,
+    diagnostics: makeDiagnosticsSummary(),
+    staging: null,
+    overlapWindow: makeOverlapWindow(),
+    coverageAdequacy: makeCoverageAdequacy(),
+    splitInvalidReasons: makeSplitInvalidReasons(),
+    rankedResults: [],
+    ...overrides,
+  }
+}
+
+function makeFeasibilitySummary(overrides: Record<string, unknown> = {}) {
+  return {
+    replayBuildMs: 18,
+    totalPreviewMs: 41,
+    diagnostics: makeDiagnosticsSummary(),
+    priceSemantics: 'minute_aggregate',
+    fillModel: 'aggregate_research',
+    bestAvailableBackend: 'cpu_reference',
+    autoBackendDecision: {
+      recommendedBackend: 'cpu_reference',
+      gpuEligible: false,
+      reasons: [],
+    },
+    compiledTupleCount: 0,
+    perEventCandidateSlots: 0,
+    perCandidateExitSummaries: 0,
+    candidateSlotCount: 0,
+    compiledCandidateCount: 0,
+    candidateDensity: 0,
+    invalidSlotCount: 0,
+    invalidSlotRate: 0,
+    baselineExitSummaryCount: 0,
+    baselineCompiledExitSummaryCount: 0,
+    baselineExitSummaryDensity: 0,
+    conservativeExitSummaryCount: 0,
+    conservativeCompiledExitSummaryCount: 0,
+    conservativeExitSummaryDensity: 0,
+    harsherExitSummaryCount: 0,
+    harsherCompiledExitSummaryCount: 0,
+    harsherExitSummaryDensity: 0,
+    projectedEventTupleEvaluations: 0,
+    structuralCacheBytesEstimate: 0,
+    baselineSummaryBytesEstimate: 0,
+    conservativeSummaryBytesEstimate: 0,
+    harsherSummaryBytesEstimate: 0,
+    timings: {
+      tupleCompileMs: 0,
+      baselineCandidateCompileMs: 0,
+      baselineExitSummaryCompileMs: 0,
+      conservativeCandidateCompileMs: 0,
+      conservativeExitSummaryCompileMs: 0,
+      harsherCandidateCompileMs: 0,
+      harsherExitSummaryCompileMs: 0,
+      cpuRankingMs: 0,
+      cpuRankingUs: 0,
+      gpuRankingMs: null,
+      gpuRankingUs: null,
+      gpuTensorScoreMs: null,
+      gpuTensorScoreUs: null,
+      gpuExactifyMs: null,
+      gpuExactifyUs: null,
+      gpuSealedStageMs: null,
+      gpuSealedStageUs: null,
+      gpuSpeedupVsCpu: null,
+    },
+    eventCoverage: {
+      totalEventsWithCandidates: 0,
+      searchEventsWithCandidates: 0,
+      holdoutEventsWithCandidates: 0,
+      sealedTestEventsWithCandidates: 0,
+      totalEventsWithBaselineOutcomes: 0,
+      searchEventsWithBaselineOutcomes: 0,
+      holdoutEventsWithBaselineOutcomes: 0,
+      sealedTestEventsWithBaselineOutcomes: 0,
+      totalEventsWithConservativeOutcomes: 0,
+      searchEventsWithConservativeOutcomes: 0,
+      holdoutEventsWithConservativeOutcomes: 0,
+      sealedTestEventsWithConservativeOutcomes: 0,
+      totalEventsWithHarsherOutcomes: 0,
+      searchEventsWithHarsherOutcomes: 0,
+      holdoutEventsWithHarsherOutcomes: 0,
+      sealedTestEventsWithHarsherOutcomes: 0,
+    },
+    overlapWindow: makeOverlapWindow(),
+    splitInvalidReasons: makeSplitInvalidReasons(),
+    coverageAdequacy: makeCoverageAdequacy(),
+    cacheStats: {
+      structuralCacheHits: 0,
+      structuralCacheMisses: 0,
+      structuralCacheEntries: 0,
+      summaryCacheHits: 0,
+      summaryCacheMisses: 0,
+      summaryCacheEntries: 0,
+      gpuSharedInputCacheHits: 0,
+      gpuSharedInputCacheMisses: 0,
+      gpuOutcomeInputCacheHits: 0,
+      gpuOutcomeInputCacheMisses: 0,
+      gpuOutputBufferReuses: 0,
+      gpuOutputBufferAllocations: 0,
+      gpuTupleChunkCount: 0,
+      gpuTupleChunkSize: 0,
+      gpuKernelLaunchCount: 0,
+      gpuTupleBudgetBytes: 0,
+      gpuOutcomeTensorBytes: 0,
+      gpuSharedInputBytesPerChunk: 0,
+      gpuOutputBytesPerChunk: 0,
+      gpuTotalDeviceBytesPerChunk: 0,
+      gpuDeviceTotalMemoryBytes: 0,
+      gpuDeviceFreeMemoryBytes: 0,
+      gpuDeviceUsableMemoryBytes: 0,
+      gpuMemoryBudgetSource: '',
+      gpuOutcomeTensorFitsInMemory: false,
+      gpuChunkPlanFitsInMemory: false,
+      gpuPlanNotes: [],
+    },
+    invalidReasons: [],
+    axisCoverage: {
+      delayMinutes: [],
+      dteDays: [],
+      moneynessBuckets: [],
+    },
+    ...overrides,
+  }
+}
+
 describe('OptionsExpressionPanel', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -108,6 +315,17 @@ describe('OptionsExpressionPanel', () => {
         requestFillModel: 'aggregate_research',
         requestStructureFamily: 'long_single',
         requestSplitAssignmentMode: 'event_chronological',
+        coverageAdequacyVerdict: 'mixed_fragile',
+        coverageNonPromotable: true,
+        searchOverlapRate: 0.8333,
+        holdoutOverlapRate: 1,
+        sealedTestOverlapRate: 1,
+        searchCandidateCoverageRate: 1,
+        holdoutCandidateCoverageRate: 1,
+        sealedTestCandidateCoverageRate: 1,
+        searchBaselineOutcomeCoverageRate: 0.8,
+        holdoutBaselineOutcomeCoverageRate: 1,
+        sealedTestBaselineOutcomeCoverageRate: 1,
         tupleCount: 2,
         bestRobustScore: 0.18,
         bestSelectionExpectancyPerPremium: 0.2,
@@ -142,6 +360,17 @@ describe('OptionsExpressionPanel', () => {
         requestFillModel: 'quote_conservative',
         requestStructureFamily: 'long_single',
         requestSplitAssignmentMode: 'event_chronological',
+        coverageAdequacyVerdict: 'healthy',
+        coverageNonPromotable: false,
+        searchOverlapRate: 1,
+        holdoutOverlapRate: 1,
+        sealedTestOverlapRate: 1,
+        searchCandidateCoverageRate: 1,
+        holdoutCandidateCoverageRate: 1,
+        sealedTestCandidateCoverageRate: 1,
+        searchBaselineOutcomeCoverageRate: 1,
+        holdoutBaselineOutcomeCoverageRate: 1,
+        sealedTestBaselineOutcomeCoverageRate: 1,
         tupleCount: 2,
         bestRobustScore: 0.19,
         bestSelectionExpectancyPerPremium: 0.18,
@@ -176,6 +405,17 @@ describe('OptionsExpressionPanel', () => {
         requestFillModel: 'quote_conservative',
         requestStructureFamily: 'debit_vertical',
         requestSplitAssignmentMode: 'session_chronological',
+        coverageAdequacyVerdict: 'weak_dataset_overlap',
+        coverageNonPromotable: true,
+        searchOverlapRate: 0.6667,
+        holdoutOverlapRate: 1,
+        sealedTestOverlapRate: 1,
+        searchCandidateCoverageRate: 1,
+        holdoutCandidateCoverageRate: 1,
+        sealedTestCandidateCoverageRate: 1,
+        searchBaselineOutcomeCoverageRate: 0.75,
+        holdoutBaselineOutcomeCoverageRate: 1,
+        sealedTestBaselineOutcomeCoverageRate: 1,
         tupleCount: 3,
         bestRobustScore: 0.24,
         bestSelectionExpectancyPerPremium: 0.22,
@@ -255,6 +495,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('Aggregate -> Quote-aware')
     expect(wrapper.text()).toContain('Lane')
     expect(wrapper.text()).toContain('Validation')
+    expect(wrapper.text()).toContain('Adequacy')
+    expect(wrapper.text()).toContain('Overlap')
     expect(wrapper.text()).toContain('Validated %')
     expect(wrapper.text()).toContain('Stress %')
     expect(wrapper.text()).toContain('Val Δ')
@@ -266,6 +508,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('aggregate_research')
     expect(wrapper.text()).toContain('validation Stress-fragile')
     expect(wrapper.text()).toContain('quote_conservative')
+    expect(wrapper.text()).toContain('Mixed fragile · no-promote')
+    expect(wrapper.text()).toContain('83.3% / 100.0% / 100.0%')
     expect(wrapper.text()).toContain('robust 0.180')
     expect(wrapper.text()).toContain('hold 0.100')
     expect(wrapper.text()).toContain('sealed 0.070')
@@ -466,7 +710,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -523,7 +767,7 @@ describe('OptionsExpressionPanel', () => {
           stressMetrics: null,
         },
       ],
-    }
+    })
 
     await wrapper.vm.$nextTick()
 
@@ -567,7 +811,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '2026-04-07T14:00:00Z',
       parentArtifactId: 'vectorgrid_run_1',
@@ -626,7 +870,7 @@ describe('OptionsExpressionPanel', () => {
         coverageEnd: null,
       },
       rankedResults: [],
-    }
+    })
 
     await wrapper.vm.$nextTick()
 
@@ -660,7 +904,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestFeasibility = {
+    store.latestFeasibility = makeFeasibilitySummary({
       replayBuildMs: 18,
       totalPreviewMs: 41,
       diagnostics: {
@@ -746,6 +990,42 @@ describe('OptionsExpressionPanel', () => {
         holdoutEventsWithHarsherOutcomes: 2,
         sealedTestEventsWithHarsherOutcomes: 1,
       },
+      overlapWindow: makeOverlapWindow({
+        contractReferenceAsOfUtc: '2026-04-05T00:00:00Z',
+        totalEventsInDatasetWindow: 8,
+        searchEventsInDatasetWindow: 4,
+        holdoutEventsInDatasetWindow: 2,
+        sealedTestEventsInDatasetWindow: 2,
+        totalEventsBeforeDatasetWindow: 2,
+        searchEventsBeforeDatasetWindow: 2,
+        totalOverlapRate: 0.8,
+        searchOverlapRate: 0.6667,
+        holdoutOverlapRate: 1,
+        sealedTestOverlapRate: 1,
+        totalEventsBeforeContractReferenceAsOf: 1,
+        searchEventsBeforeContractReferenceAsOf: 1,
+      }),
+      splitInvalidReasons: makeSplitInvalidReasons({
+        searchInvalidReasons: [
+          { reason: 'entry_past_cutoff', count: 10 },
+          { reason: 'premium_too_high', count: 8 },
+        ],
+        holdoutInvalidReasons: [{ reason: 'premium_too_high', count: 4 }],
+        sealedTestInvalidReasons: [{ reason: 'no_expiration_in_bucket', count: 3 }],
+      }),
+      coverageAdequacy: makeCoverageAdequacy({
+        verdict: 'weak_dataset_overlap',
+        nonPromotable: true,
+        reasons: ['Only 66.7% of search events and 80.0% of total events overlap the current dataset window.'],
+        searchCandidateCoverageRate: 1,
+        holdoutCandidateCoverageRate: 1,
+        sealedTestCandidateCoverageRate: 1,
+        searchBaselineOutcomeCoverageRate: 0.8,
+        holdoutBaselineOutcomeCoverageRate: 1,
+        sealedTestBaselineOutcomeCoverageRate: 1,
+        dominantInvalidReason: 'entry_past_cutoff',
+        dominantInvalidReasonShare: 0.5,
+      }),
       cacheStats: {
         structuralCacheHits: 2,
         structuralCacheMisses: 2,
@@ -859,7 +1139,7 @@ describe('OptionsExpressionPanel', () => {
           },
         ],
       },
-    }
+    })
 
     await wrapper.vm.$nextTick()
 
@@ -870,6 +1150,8 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('cpu 6.400 ms / gpu hybrid 3.100 ms (2.00x)')
     expect(wrapper.text()).toContain('tensor 1.200 ms · exactify 1.100 ms · sealed 0.800 ms')
     expect(wrapper.text()).toContain('GPU viability')
+    expect(wrapper.text()).toContain('Coverage Weak dataset overlap · non-promotable')
+    expect(wrapper.text()).toContain('Only 66.7% of search events and 80.0% of total events overlap the current dataset window.')
     expect(wrapper.text()).toContain('Candidate density >= 30%')
     expect(wrapper.text()).toContain('GPU hybrid speedup >= 3.0x')
     expect(wrapper.text()).toContain('Auto backend')
@@ -880,6 +1162,12 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('chunks 3×4096 · launches 6')
     expect(wrapper.text()).toContain('free_memory_headroom · free 512.00 MiB · usable 256.00 MiB · budget 4.00 MiB')
     expect(wrapper.text()).toContain('outcome fits · chunk fits')
+    expect(wrapper.text()).toContain('Overlap adequacy')
+    expect(wrapper.text()).toContain('Split invalid reasons')
+    expect(wrapper.text()).toContain('Events in dataset window')
+    expect(wrapper.text()).toContain('8 / 10 (80.0%)')
+    expect(wrapper.text()).toContain('Search invalid reasons')
+    expect(wrapper.text()).toContain('entry_past_cutoff')
     expect(wrapper.text()).toContain('no_expiration_in_bucket (20)')
     expect(wrapper.text()).toContain('Bucket coverage')
     expect(wrapper.text()).toContain('Delay buckets')
@@ -925,7 +1213,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '2026-04-05T12:00:00Z',
       parentArtifactId: 'vectorgrid_run_1',
@@ -1088,7 +1376,7 @@ describe('OptionsExpressionPanel', () => {
           },
         },
       ],
-    }
+    })
 
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('session_chronological | 0.60 / 0.20')
@@ -1161,7 +1449,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: 'vectorgrid_run_1',
@@ -1335,7 +1623,7 @@ describe('OptionsExpressionPanel', () => {
           },
         },
       ],
-    }
+    })
 
     await wrapper.vm.$nextTick()
 
@@ -1393,7 +1681,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1474,7 +1762,7 @@ describe('OptionsExpressionPanel', () => {
           stressMetrics: null,
         },
       ],
-    }
+    })
 
     await wrapper.vm.$nextTick()
 
@@ -1522,7 +1810,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1765,7 +2053,7 @@ describe('OptionsExpressionPanel', () => {
           },
         },
       ],
-    }
+    })
 
     await wrapper.vm.$nextTick()
 
@@ -1827,7 +2115,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_disagreement.json',
       artifactTs: '',
       parentArtifactId: '',
@@ -1976,7 +2264,7 @@ describe('OptionsExpressionPanel', () => {
           },
         },
       ],
-    }
+    })
 
     await wrapper.vm.$nextTick()
 
@@ -2171,7 +2459,7 @@ describe('OptionsExpressionPanel', () => {
     })
 
     const store = useOptionsExpressionStore()
-    store.latestRun = {
+    store.latestRun = makeRunSummary({
       artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
       artifactTs: '2026-04-05T12:00:00Z',
       parentArtifactId: 'vectorgrid_run_1',
@@ -2246,7 +2534,7 @@ describe('OptionsExpressionPanel', () => {
           stressMetrics: null,
         },
       ],
-    }
+    })
 
     await wrapper.vm.$nextTick()
 

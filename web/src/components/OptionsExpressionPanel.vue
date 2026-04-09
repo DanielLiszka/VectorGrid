@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import AppVisualIcon from './AppVisualIcon.vue'
 import type {
+  OptionsExpressionCoverageAdequacyVerdict,
   OptionsExpressionArtifactSummary,
   OptionsExpressionMetricsSummary,
   OptionsExpressionTupleSummary,
@@ -217,6 +218,28 @@ interface BackendRoutePresentationSummary {
   detail: string
 }
 
+interface CoverageAdequacyPresentationSummary {
+  verdict: OptionsExpressionCoverageAdequacyVerdict
+  label: string
+  tone: ValidationTone
+  detail: string
+}
+
+interface CoverageAdequacyPayload {
+  verdict: OptionsExpressionCoverageAdequacyVerdict
+  nonPromotable: boolean
+  reasons?: string[]
+  searchOverlapRate: number | null | undefined
+  holdoutOverlapRate: number | null | undefined
+  sealedTestOverlapRate: number | null | undefined
+  searchCandidateCoverageRate: number | null | undefined
+  holdoutCandidateCoverageRate: number | null | undefined
+  sealedTestCandidateCoverageRate: number | null | undefined
+  searchBaselineOutcomeCoverageRate: number | null | undefined
+  holdoutBaselineOutcomeCoverageRate: number | null | undefined
+  sealedTestBaselineOutcomeCoverageRate: number | null | undefined
+}
+
 interface ArtifactMetaOverviewRow {
   key: string
   label: string
@@ -265,6 +288,106 @@ function formatBucketInvalidReasons(
 function formatMoneynessBucketLabel(value: string | null | undefined): string {
   const normalized = normalizeText(value)
   return normalized.length > 0 ? normalized.split('_').join(' ') : '—'
+}
+
+function formatCoverageAdequacyLabel(value: OptionsExpressionCoverageAdequacyVerdict): string {
+  switch (value) {
+    case 'healthy':
+      return 'Healthy'
+    case 'weak_dataset_overlap':
+      return 'Weak dataset overlap'
+    case 'search_overlap_missing':
+      return 'Search overlap missing'
+    case 'search_coverage_weak':
+      return 'Search coverage weak'
+    case 'holdout_coverage_weak':
+      return 'Holdout coverage weak'
+    case 'sealed_coverage_weak':
+      return 'Sealed coverage weak'
+    case 'contract_eligibility_fragile':
+      return 'Contract-eligibility fragile'
+    case 'late_entry_fragile':
+      return 'Late-entry fragile'
+    case 'strike_window_fragile':
+      return 'Strike-window fragile'
+    case 'mixed_fragile':
+      return 'Mixed fragile'
+    case 'unknown':
+    default:
+      return 'Unknown'
+  }
+}
+
+function coverageAdequacyTone(
+  verdict: OptionsExpressionCoverageAdequacyVerdict,
+  nonPromotable: boolean,
+): ValidationTone {
+  if (verdict === 'healthy') return 'pass'
+  if (verdict === 'unknown') return 'pending'
+  return nonPromotable ? 'mixed' : 'pending'
+}
+
+function describeCoverageAdequacy(
+  payload: CoverageAdequacyPayload | null | undefined,
+): CoverageAdequacyPresentationSummary | null {
+  if (!payload) return null
+  const verdict = payload.verdict || 'unknown'
+  const overlapBits = [
+    `search overlap ${formatPercent(payload.searchOverlapRate, 1)}`,
+    `holdout ${formatPercent(payload.holdoutOverlapRate, 1)}`,
+    `sealed ${formatPercent(payload.sealedTestOverlapRate, 1)}`,
+  ]
+  const coverageBits = [
+    `search cand ${formatPercent(payload.searchCandidateCoverageRate, 1)}`,
+    `search out ${formatPercent(payload.searchBaselineOutcomeCoverageRate, 1)}`,
+  ]
+  let detail = `${overlapBits.join(' · ')} | ${coverageBits.join(' · ')}`
+  if (payload.reasons?.length) {
+    detail = payload.reasons.slice(0, 2).join(' ')
+  } else {
+    switch (verdict) {
+      case 'healthy':
+        detail = `Overlap and search-stage coverage are currently adequate. ${detail}`
+        break
+      case 'search_overlap_missing':
+        detail = `The imported options dataset does not cover any search events. ${detail}`
+        break
+      case 'weak_dataset_overlap':
+        detail = `The parent artifact and current options dataset only overlap partially. ${detail}`
+        break
+      case 'search_coverage_weak':
+        detail = `Search events overlap the dataset, but too few become executable candidates or outcomes. ${detail}`
+        break
+      case 'holdout_coverage_weak':
+        detail = `Search looks usable, but holdout coverage is too thin to trust the current validation story. ${detail}`
+        break
+      case 'sealed_coverage_weak':
+        detail = `Sealed coverage is too thin to treat the current finalist stage as robust. ${detail}`
+        break
+      case 'contract_eligibility_fragile':
+        detail = `Contract-eligibility timing is dominating structural invalidity. ${detail}`
+        break
+      case 'late_entry_fragile':
+        detail = `Late-entry pressure is dominating structural invalidity. ${detail}`
+        break
+      case 'strike_window_fragile':
+        detail = `Strike-window misses are dominating structural invalidity. ${detail}`
+        break
+      case 'mixed_fragile':
+        detail = `This slice remains fragile for mixed overlap/coverage reasons. ${detail}`
+        break
+      case 'unknown':
+      default:
+        detail = `Legacy or incomplete adequacy signal. ${detail}`
+        break
+    }
+  }
+  return {
+    verdict,
+    label: `${formatCoverageAdequacyLabel(verdict)}${payload.nonPromotable ? ' · non-promotable' : ''}`,
+    tone: coverageAdequacyTone(verdict, payload.nonPromotable),
+    detail,
+  }
 }
 
 function strongestTupleValidationBaseMetrics(
@@ -1220,6 +1343,54 @@ const selectedArtifactDerivedMetrics = computed(() => {
     },
   ]
 })
+const selectedArtifactCoverageAdequacy = computed(() => {
+  const artifact = selectedArtifactSummary.value
+  if (!artifact) return null
+  return describeCoverageAdequacy({
+    verdict: artifact.coverageAdequacyVerdict,
+    nonPromotable: artifact.coverageNonPromotable,
+    searchOverlapRate: artifact.searchOverlapRate,
+    holdoutOverlapRate: artifact.holdoutOverlapRate,
+    sealedTestOverlapRate: artifact.sealedTestOverlapRate,
+    searchCandidateCoverageRate: artifact.searchCandidateCoverageRate,
+    holdoutCandidateCoverageRate: artifact.holdoutCandidateCoverageRate,
+    sealedTestCandidateCoverageRate: artifact.sealedTestCandidateCoverageRate,
+    searchBaselineOutcomeCoverageRate: artifact.searchBaselineOutcomeCoverageRate,
+    holdoutBaselineOutcomeCoverageRate: artifact.holdoutBaselineOutcomeCoverageRate,
+    sealedTestBaselineOutcomeCoverageRate: artifact.sealedTestBaselineOutcomeCoverageRate,
+  })
+})
+const selectedArtifactCoverageRows = computed(() => {
+  const artifact = selectedArtifactSummary.value
+  if (!artifact) return []
+  return [
+    {
+      key: 'artifact-adequacy',
+      label: 'Coverage adequacy',
+      value: formatCoverageAdequacyLabel(artifact.coverageAdequacyVerdict),
+    },
+    {
+      key: 'artifact-non-promotable',
+      label: 'Non-promotable',
+      value: artifact.coverageNonPromotable ? 'yes' : 'no',
+    },
+    {
+      key: 'artifact-overlap',
+      label: 'Search / Holdout / Sealed overlap',
+      value: `${formatPercent(artifact.searchOverlapRate, 1)} / ${formatPercent(artifact.holdoutOverlapRate, 1)} / ${formatPercent(artifact.sealedTestOverlapRate, 1)}`,
+    },
+    {
+      key: 'artifact-candidate-coverage',
+      label: 'Search / Holdout / Sealed candidates',
+      value: `${formatPercent(artifact.searchCandidateCoverageRate, 1)} / ${formatPercent(artifact.holdoutCandidateCoverageRate, 1)} / ${formatPercent(artifact.sealedTestCandidateCoverageRate, 1)}`,
+    },
+    {
+      key: 'artifact-outcome-coverage',
+      label: 'Search / Holdout / Sealed outcomes',
+      value: `${formatPercent(artifact.searchBaselineOutcomeCoverageRate, 1)} / ${formatPercent(artifact.holdoutBaselineOutcomeCoverageRate, 1)} / ${formatPercent(artifact.sealedTestBaselineOutcomeCoverageRate, 1)}`,
+    },
+  ]
+})
 
 const artifactComparisonRows = computed(() =>
   [...filteredArtifacts.value].sort((left, right) => {
@@ -1890,6 +2061,91 @@ const reportingMetricCards = computed(() => {
     })
   }
   return cards
+})
+const feasibilityCoverageAdequacy = computed(() => {
+  const preview = latestFeasibility.value
+  if (!preview) return null
+  return describeCoverageAdequacy({
+    verdict: preview.coverageAdequacy.verdict,
+    nonPromotable: preview.coverageAdequacy.nonPromotable,
+    reasons: preview.coverageAdequacy.reasons,
+    searchOverlapRate: preview.overlapWindow.searchOverlapRate,
+    holdoutOverlapRate: preview.overlapWindow.holdoutOverlapRate,
+    sealedTestOverlapRate: preview.overlapWindow.sealedTestOverlapRate,
+    searchCandidateCoverageRate: preview.coverageAdequacy.searchCandidateCoverageRate,
+    holdoutCandidateCoverageRate: preview.coverageAdequacy.holdoutCandidateCoverageRate,
+    sealedTestCandidateCoverageRate: preview.coverageAdequacy.sealedTestCandidateCoverageRate,
+    searchBaselineOutcomeCoverageRate: preview.coverageAdequacy.searchBaselineOutcomeCoverageRate,
+    holdoutBaselineOutcomeCoverageRate: preview.coverageAdequacy.holdoutBaselineOutcomeCoverageRate,
+    sealedTestBaselineOutcomeCoverageRate: preview.coverageAdequacy.sealedTestBaselineOutcomeCoverageRate,
+  })
+})
+const feasibilityOverlapRows = computed(() => {
+  const preview = latestFeasibility.value
+  if (!preview) return []
+  return [
+    {
+      key: 'overlap-events',
+      label: 'Events in dataset window',
+      value: `${preview.overlapWindow.totalEventsInDatasetWindow} / ${preview.diagnostics.totalEvents} (${formatPercent(preview.overlapWindow.totalOverlapRate, 1)})`,
+    },
+    {
+      key: 'overlap-search',
+      label: 'Search overlap',
+      value: `${preview.overlapWindow.searchEventsInDatasetWindow} / ${preview.diagnostics.searchEvents} (${formatPercent(preview.overlapWindow.searchOverlapRate, 1)})`,
+    },
+    {
+      key: 'overlap-holdout',
+      label: 'Holdout overlap',
+      value: `${preview.overlapWindow.holdoutEventsInDatasetWindow} / ${preview.diagnostics.holdoutEvents} (${formatPercent(preview.overlapWindow.holdoutOverlapRate, 1)})`,
+    },
+    {
+      key: 'overlap-sealed',
+      label: 'Sealed overlap',
+      value: `${preview.overlapWindow.sealedTestEventsInDatasetWindow} / ${preview.diagnostics.sealedTestEvents} (${formatPercent(preview.overlapWindow.sealedTestOverlapRate, 1)})`,
+    },
+    {
+      key: 'contract-ref',
+      label: 'Contract reference as-of',
+      value: preview.overlapWindow.contractReferenceAsOfUtc || '—',
+    },
+    {
+      key: 'contract-ref-search',
+      label: 'Search events before contract ref',
+      value: String(preview.overlapWindow.searchEventsBeforeContractReferenceAsOf),
+    },
+    {
+      key: 'candidate-coverage',
+      label: 'Search / Holdout / Sealed candidates',
+      value: `${formatPercent(preview.coverageAdequacy.searchCandidateCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.holdoutCandidateCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.sealedTestCandidateCoverageRate, 1)}`,
+    },
+    {
+      key: 'outcome-coverage',
+      label: 'Search / Holdout / Sealed outcomes',
+      value: `${formatPercent(preview.coverageAdequacy.searchBaselineOutcomeCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.holdoutBaselineOutcomeCoverageRate, 1)} / ${formatPercent(preview.coverageAdequacy.sealedTestBaselineOutcomeCoverageRate, 1)}`,
+    },
+  ]
+})
+const feasibilitySplitInvalidSections = computed(() => {
+  const preview = latestFeasibility.value
+  if (!preview) return []
+  return [
+    {
+      key: 'search',
+      label: 'Search invalid reasons',
+      rows: preview.splitInvalidReasons.searchInvalidReasons,
+    },
+    {
+      key: 'holdout',
+      label: 'Holdout invalid reasons',
+      rows: preview.splitInvalidReasons.holdoutInvalidReasons,
+    },
+    {
+      key: 'sealed',
+      label: 'Sealed invalid reasons',
+      rows: preview.splitInvalidReasons.sealedTestInvalidReasons,
+    },
+  ].filter((entry) => entry.rows.length > 0)
 })
 
 const feasibilitySummaryRows = computed(() => {
@@ -2956,11 +3212,32 @@ function focusTupleIndex(index: number): void {
         <div v-if="selectedArtifactSummary" class="panelMuted">
           {{ selectedArtifactBackendRoute.detail }}
         </div>
+        <div v-if="selectedArtifactCoverageAdequacy" class="gateBadgeRow">
+          <span
+            class="gateBadge"
+            :class="{
+              isPass: selectedArtifactCoverageAdequacy.tone === 'pass',
+              isPending: selectedArtifactCoverageAdequacy.tone === 'pending',
+              isMixed: selectedArtifactCoverageAdequacy.tone === 'mixed',
+            }"
+          >
+            Coverage {{ selectedArtifactCoverageAdequacy.label }}
+          </span>
+        </div>
         <details v-if="selectedArtifactDerivedMetrics.length > 0" class="panelDetails">
           <summary>Reopened artifact validation frontier</summary>
           <div class="panelDetailsBody">
+            <div v-if="selectedArtifactCoverageAdequacy" class="panelMuted">
+              {{ selectedArtifactCoverageAdequacy.detail }}
+            </div>
             <div class="detailGrid detailGridTight">
               <div v-for="row in selectedArtifactDerivedMetrics" :key="row.key">
+                <span class="panelMetricKey">{{ row.label }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+              </div>
+            </div>
+            <div class="detailGrid detailGridTight" v-if="selectedArtifactCoverageRows.length > 0">
+              <div v-for="row in selectedArtifactCoverageRows" :key="row.key">
                 <span class="panelMetricKey">{{ row.label }}</span>
                 <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
               </div>
@@ -3000,6 +3277,8 @@ function focusTupleIndex(index: number): void {
                   <th>Dataset</th>
                   <th>Lane</th>
                   <th>Backend</th>
+                  <th>Adequacy</th>
+                  <th>Overlap</th>
                   <th>Validation</th>
                   <th>Validated / Fragile</th>
                   <th>Validated %</th>
@@ -3031,6 +3310,12 @@ function focusTupleIndex(index: number): void {
                   </td>
                   <td class="mono">
                     {{ describeBackendRoute(entry.requestBackendPreference, entry.backendUsed, entry.backendFallbackReason).label }}
+                  </td>
+                  <td class="mono">
+                    {{ formatCoverageAdequacyLabel(entry.coverageAdequacyVerdict) }}<template v-if="entry.coverageNonPromotable"> · no-promote</template>
+                  </td>
+                  <td class="mono">
+                    {{ formatPercent(entry.searchOverlapRate, 1) }} / {{ formatPercent(entry.holdoutOverlapRate, 1) }} / {{ formatPercent(entry.sealedTestOverlapRate, 1) }}
                   </td>
                   <td class="mono">
                     {{ describeArtifactValidation(entry)?.label ?? 'Search only' }}
@@ -3212,12 +3497,66 @@ function focusTupleIndex(index: number): void {
             {{ row.label }} · {{ row.value }}
           </span>
         </div>
+        <div v-if="feasibilityCoverageAdequacy" class="gateBadgeRow">
+          <span
+            class="gateBadge"
+            :class="{
+              isPass: feasibilityCoverageAdequacy.tone === 'pass',
+              isPending: feasibilityCoverageAdequacy.tone === 'pending',
+              isMixed: feasibilityCoverageAdequacy.tone === 'mixed',
+            }"
+          >
+            Coverage {{ feasibilityCoverageAdequacy.label }}
+          </span>
+        </div>
+        <div v-if="feasibilityCoverageAdequacy" class="panelMuted">
+          {{ feasibilityCoverageAdequacy.detail }}
+        </div>
         <div class="detailGrid detailGridTight">
           <div v-for="row in feasibilitySummaryRows" :key="row.key">
             <span class="panelMetricKey">{{ row.label }}</span>
             <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
           </div>
         </div>
+        <details v-if="feasibilityOverlapRows.length > 0" class="panelDetails">
+          <summary>Overlap adequacy</summary>
+          <div class="panelDetailsBody">
+            <div class="detailGrid detailGridTight">
+              <div v-for="row in feasibilityOverlapRows" :key="row.key">
+                <span class="panelMetricKey">{{ row.label }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+              </div>
+            </div>
+          </div>
+        </details>
+        <details v-if="feasibilitySplitInvalidSections.length > 0" class="panelDetails">
+          <summary>Split invalid reasons</summary>
+          <div class="panelDetailsBody">
+            <div
+              v-for="section in feasibilitySplitInvalidSections"
+              :key="section.key"
+              class="coverageSection"
+            >
+              <div class="panelMuted">{{ section.label }}</div>
+              <div class="tableWrap">
+                <table class="resultTable">
+                  <thead>
+                    <tr>
+                      <th>Reason</th>
+                      <th>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in section.rows" :key="`${section.key}-${row.reason}`">
+                      <td class="mono">{{ row.reason }}</td>
+                      <td class="mono">{{ row.count }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </details>
         <details class="panelDetails">
           <summary>Lane diagnostics</summary>
           <div class="panelDetailsBody">

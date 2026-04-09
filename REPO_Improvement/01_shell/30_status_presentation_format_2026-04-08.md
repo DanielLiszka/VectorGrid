@@ -1,0 +1,126 @@
+# Status Presentation Format Plan
+
+Last updated: 2026-04-08
+
+## Purpose
+
+Define the current shell-wide status-presentation formatting layer so boot labels, task lifecycle labels, runtime descriptions, and status-oriented accessibility cues remain consistent across the non-options UI.
+
+## Scope Boundaries
+
+In scope:
+
+- `web/src/utils/statusPresentation.ts`
+- lifecycle-label formatting
+- runtime-phase formatting
+- task activity and task outcome text
+- shell/status role usage where current components already depend on it
+
+Out of scope:
+
+- restyling the entire shell
+- changing task lifecycle semantics themselves
+- options-specific panels
+
+## Current User-Facing Behavior
+
+The app already normalizes status wording across multiple shell surfaces. Task-center and footer views use `taskLifecycleLabel`, `taskLifecycleTone`, and related helpers. The runtime banner and settings workspace use `runtimePhaseLabel` and `describeRuntimePhase`. Multiple panels also use `role="status"` and `aria-live="polite"` for changing status text. This means the repo already has a real status-presentation language, but it is only partly explicit.
+
+## Current Code Surface
+
+- `web/src/utils/statusPresentation.ts`
+  - owns lifecycle tone/label formatting, runtime-phase formatting, task activity summaries, timeline/toast descriptions, and overall-progress label formatting
+- `web/src/utils/statusPresentation.test.ts`
+  - verifies label normalization and cross-surface formatting behavior
+- `web/src/components/AppRuntimeBanner.vue`
+  - renders formatted runtime status
+- `web/src/components/TaskCenterOverlay.vue`
+  - renders task status labels and task-center presentation tone
+- `web/src/components/RunFooterPanel.vue`
+  - consumes task lifecycle label helpers in the footer shell
+- `web/src/components/SettingsWorkspacePanel.vue`
+  - reuses runtime-phase formatting and task status summaries
+- `web/src/components/AdvancedWorkspacePanel.vue`
+- `web/src/components/DrillWorkspacePanel.vue`
+  - current examples of status regions using `role="status"` / `aria-live="polite"`
+
+## Current Verification Surface
+
+- `web/src/utils/statusPresentation.test.ts`
+- `web/src/components/TaskCenterOverlay.test.ts`
+- `web/src/components/SettingsWorkspacePanel.test.ts`
+- `web/src/components/VueWorkspaceShell.test.ts`
+
+## Strengths Already Present
+
+- status wording is already normalized in one utility file instead of being duplicated everywhere
+- task lifecycle values already map to consistent human-readable labels
+- runtime-phase descriptions already include elapsed time and error formatting
+- current components already use accessibility-oriented status regions in several places
+
+## Weaknesses / Failure Modes
+
+- it is easy for components to bypass `statusPresentation.ts` and hand-roll slightly different wording
+- lifecycle labels and status tones are stable enough that silent wording drift can create UI inconsistency without obvious type errors
+- `role="status"` usage exists across the repo, but the preferred pattern is not yet documented as a shell convention
+- the line between terse status chips and longer descriptive status strings is implicit
+
+## Regressions To Avoid
+
+- introducing duplicate lifecycle-label logic in components or stores
+- changing user-facing status wording inconsistently across shell surfaces
+- weakening current `aria-live` / `role="status"` usage on existing status surfaces
+- turning concise status helpers into component-specific ad hoc text formatting
+
+## External Research Summary
+
+- [MDN: ARIA `status` role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/status_role)
+  - relevant because many shell surfaces already present evolving status text and should stay polite, non-disruptive live regions
+- [MDN: ARIA `alert` role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/alert_role)
+  - relevant because the repo should keep ordinary status updates distinct from genuinely urgent error announcements
+- [Vue: State Management](https://vuejs.org/guide/scaling-up/state-management.html)
+  - relevant because formatted status output should consume shared state instead of duplicating it
+- [Pinia: Getters](https://pinia.vuejs.org/core-concepts/getters.html)
+  - relevant because status formatting often sits between raw store state and user-facing text
+
+## Proposed Improvement Approach
+
+1. Document the current status-formatting vocabulary:
+   - lifecycle labels
+   - lifecycle tones
+   - runtime-phase labels
+   - runtime-phase descriptions
+   - task activity summaries
+2. Distinguish raw state from presentation state so components know when they should call the formatter instead of inventing strings.
+3. Record current accessibility expectations for status surfaces that already exist in the shell.
+4. Treat wording consistency as a UX contract, not just cosmetic polish.
+
+## Checklist
+
+- [ ] Enumerate the current format helpers and what each one is for.
+- [ ] Document the canonical lifecycle labels and tones.
+- [ ] Document runtime-phase labels and descriptive output behavior.
+- [ ] Document when to use terse labels versus full descriptive status strings.
+- [ ] Document current status-region accessibility expectations for existing shell surfaces.
+- [ ] Identify components that already rely on these helpers.
+- [ ] Add or tighten tests if wording, tone, or accessibility usage changes.
+
+## Verification Plan
+
+- run `npm --prefix web test -- src/utils/statusPresentation.test.ts`
+- run `npm --prefix web test -- src/components/TaskCenterOverlay.test.ts`
+- run `npm --prefix web test -- src/components/SettingsWorkspacePanel.test.ts`
+- run `npm --prefix web test -- src/components/VueWorkspaceShell.test.ts`
+
+## Rollout / Fallback / Compatibility Notes
+
+- keep wording changes coordinated across all current consumers
+- prefer central formatter updates over component-local string drift
+- preserve existing accessible status-region behavior unless a better documented pattern replaces it
+
+## Related Docs
+
+- `REPO_Improvement/01_shell/28_runtime_store_status_2026-04-08.md`
+- `REPO_Improvement/01_shell/35_runtime_banner_surface_2026-04-08.md`
+- `REPO_Improvement/09_live/14_runtime_state_bridge_2026-04-08.md`
+- `REPO_Improvement/10_tests_perf/01_fe_test_matrix_2026-04-08.md`

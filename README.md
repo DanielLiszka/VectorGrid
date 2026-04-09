@@ -6,38 +6,56 @@ The desktop product and the benchmarked execution engine are both referred to as
 
 ## Benchmark
 
-![VectorGrid vs VectorBT 250k benchmark chart](docs/assets/benchmark-double-ma-250k.svg)
+**Fastest saved benchmark snapshot**
 
-**Current headline benchmark**
+- Scenario: `Double MA`, `ALMA/ALMA`, exact grid
+- Workload: `58,300` backtests over `200,000` bars
+- Hardware: `AMD Ryzen 9 9950X`, `NVIDIA GeForce RTX 4090`
+- VectorGrid GPU kernel: `101.886 ms`
+- VectorGrid CPU: `3486.134 ms`
+- VectorBT CPU workflow: `92377.801 ms`
+
+That is about:
+
+- `907x` faster than the measured VectorBT CPU workflow
+- `34x` faster than the app's own CPU path on the same scenario
+
+**Latest saved 250k rerun set**
 
 - Scenario: `Double MA`, `ALMA/ALMA`, exact grid
 - Workload: `250,000` backtests over `200,000` bars
 - Hardware: `AMD Ryzen 9 9950X`, `NVIDIA GeForce RTX 4090`
-- VectorGrid GPU kernel: `233.660 ms`
-- VectorGrid CPU: `15202.400 ms`
-- VectorBT CPU workflow: `445240.337 ms`
+- VectorGrid GPU kernel: `166.896 ms`
+- VectorGrid CPU: `25709.363 ms`
+- VectorBT CPU workflow: `422945.901 ms`
 
 That is about:
 
-- `1905x` faster than the measured VectorBT CPU workflow
-- `65x` faster than the app's own CPU path on the same scenario
+- `2534x` faster than the latest saved VectorBT CPU workflow
+- `154x` faster than the latest saved VectorGrid CPU path on the same scenario
 
-**Secondary benchmark snapshot**
+![VectorGrid vs VectorBT 250k benchmark chart](docs/assets/benchmark-double-ma-250k.svg)
+
+_The chart above is the earlier March public `250,000`-pair snapshot. The bullets above lead with the fastest saved benchmark and the latest heavier rerun set._
+
+**Saved benchmark snapshots**
 
 | Scenario | VectorGrid GPU kernel | VectorGrid CPU | VectorBT CPU |
 | --- | --- | --- | --- |
-| `200k bars / 58,300 pairs` | `101.890 ms` | `3486.130 ms` | `92377.801 ms` |
-| `200k bars / 250,000 pairs` | `233.660 ms` | `15202.400 ms` | `445240.337 ms` |
+| `200k bars / 58,300 pairs` | `101.886 ms` | `3486.134 ms` | `92377.801 ms` |
+| `200k bars / 250,000 pairs` | `166.896 ms` | `25709.363 ms` | `422945.901 ms` |
+| `200k bars / 250,000 pairs (March public chart)` | `233.660 ms` | `15202.400 ms` | `445240.337 ms` |
 
 ## What This Measures
 
-The benchmark shown above is the **warm app-path** benchmark, not the tighter Criterion microbenchmark.
+These README benchmark snapshots are **warm app-path** faceoff numbers, not the tighter Criterion microbenchmark.
 
 - Dataset is loaded once.
 - Warmup runs happen before measured trials.
 - GPU measured trials reuse resident market-series buffers.
-- The `250,000`-pair scenario uses `top_k=10` and `heatmap_bins=0`.
-- VectorBT is measured as a CPU Python workflow on `vectorbt 0.28.4`, with local ALMA generation and app-equivalent next-bar Sharpe scoring to keep the objective semantics aligned.
+- The `58,300`-pair and `250,000`-pair snapshots use `top_k=10` and `heatmap_bins=0`.
+- The latest `250,000`-pair rerun set uses the real-workflow `10`-row benchmark lane.
+- VectorBT is measured as a CPU Python workflow on `vectorbt 0.28.4`, with local ALMA generation and local metric aggregation that keeps the faceoff semantics aligned with the app's next-bar workflow.
 
 This repo also has a tighter engine benchmark boundary for the classic `58,300`-pair ALMA case:
 
@@ -95,22 +113,29 @@ cargo run -p ta_desktop_demo_app --release
 
 ## Reproduce The Benchmark
 
-Run the `250,000`-pair warm faceoff scenario:
+Run the real-workflow `250,000`-pair warm faceoff scenario:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1 `
-  -ScenarioPath scripts/vectorbt_double_ma_faceoff_scenario_250k.json `
-  -OutDir target/vectorbt_vs_vectorgrid_faceoff_250k
+  -ScenarioPath scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json `
+  -OutDir target/vectorbt_vs_vectorgrid_faceoff_250k_real_workflow
 ```
 
 Scenario file:
 
-- [scripts/vectorbt_double_ma_faceoff_scenario_250k.json](scripts/vectorbt_double_ma_faceoff_scenario_250k.json)
+- [scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json](scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json)
 
-The app-only reruns used for the current README numbers were written to:
+The saved artifacts currently reflected in the README were written to:
 
-- `target/vectorgrid_app_faceoff_only_250k_20260313/`
-- `target/vectorbt_only_faceoff_250k_20260313/`
+- fastest saved `58,300`-pair snapshot:
+  - `target/vectorgrid_app_faceoff_only_20260313/`
+  - `target/vectorbt_vs_vectorgrid_faceoff_58300_rerun/`
+- latest saved `250,000`-pair rerun set:
+  - `target/vectorbt_vs_vectorgrid_manual_rerun_2026-04-03/`
+  - `target/vectorbt_vs_vectorgrid_faceoff_rerun_2026-04-03/`
+- March public `250,000`-pair chart snapshot:
+  - `target/vectorgrid_app_faceoff_only_250k_20260313/`
+  - `target/vectorbt_only_faceoff_250k_20260313/`
 
 ## Performance Gates And Profiling
 

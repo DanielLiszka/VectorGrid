@@ -1,0 +1,134 @@
+# Tauri Run Artifact Paths Plan
+
+Last updated: 2026-04-08
+
+## Purpose
+
+Document the current Tauri-side run artifact path rules so save/list/load/delete/tag/open flows stay compatible with current app-local storage behavior and current frontend history workflows.
+
+## Scope Boundaries
+
+In scope:
+
+- app-local run artifact directory selection
+- run artifact filename/path generation
+- path containment checks for load/delete/tag operations
+- history-facing list/detail/hydration path payloads
+- runs-directory open/reveal behavior
+
+Out of scope:
+
+- artifact JSON schema beyond the path fields it exposes
+- report workbook content
+- options artifact flows
+
+## Current User-Facing Behavior
+
+Saved run artifacts live under the app-local `runs` directory. Users can list saved runs, load hydration/detail payloads from a saved path, reveal the saved JSON file, open the containing runs directory, delete artifacts, and update tags. The history layer also consumes each artifact's persisted `report_xlsx_path` so users can reopen the last exported workbook for a saved run.
+
+## Current Code Surface
+
+- `src-tauri/src/run_artifacts.rs`
+  - owns `runs_dir`, run-artifact filename generation, artifact-library scanning, path containment checks, load/delete/tag operations, and summary/detail/hydration payload builders
+- `src-tauri/src/commands_artifacts.rs`
+  - exposes the Tauri async wrappers for save/list/load/delete/tag/open-runs-dir commands
+- `src-tauri/src/commands_reports_shared.rs`
+  - owns filename sanitization plus the shared `open_path_blocking` and `reveal_path_blocking` helpers used by history/report reopen flows
+- `src-tauri/src/commands_reports_api.rs`
+  - exposes the generic `open_path` and `reveal_path` commands that the frontend uses when reopening report files from saved runs
+- `src-tauri/src/lib.rs`
+  - registers the artifact and path-related Tauri commands
+- `web/src/services/historyService.ts`
+  - lists saved runs, normalizes saved paths, loads detail/hydration payloads, reopens report paths, reveals run JSON paths, and deletes saved runs
+- `web/src/stores/workflowArtifactsStore.ts`
+  - stores normalized artifact/report path fields in the frontend workflow-artifact model
+- `web/src/services/historyService.test.ts`
+  - covers direct command use for list/detail/reveal/delete/open-report flows
+- unit tests in `src-tauri/src/run_artifacts.rs`
+  - cover artifact-kind aliases, hydration/detail shaping, and related path-bearing payload fields
+
+## Current User-Facing Contract
+
+- run artifacts are stored under `app_local_data_dir()/runs`
+- `save_run_artifact` writes a JSON artifact using the current `ts` with the `vectorgrid_run_<ts>.json` naming pattern
+- `list_run_artifacts` returns summary rows with `path`, `ts`, `bytes`, `strategy_kind`, `has_validation`, `report_xlsx_path`, `csv_path`, timeframe metadata, and tags
+- `load_run_artifact_hydration` and `load_run_artifact_detail` require a path inside the app runs directory and reject unsupported artifact kinds
+- `delete_run_artifact` and `update_artifact_tags` require a path inside the app runs directory
+- `open_runs_dir` reveals the runs directory itself
+- history-layer report reopen uses `open_path(report_xlsx_path)` and falls back to `reveal_path(report_xlsx_path)` if direct open fails
+- legacy `vectorbt_run_artifact` kinds and `vectorbt_run_*.json` filename prefixes remain accepted by the artifact layer
+
+## Current Verification Surface
+
+- `web/src/services/historyService.test.ts`
+- unit tests in `src-tauri/src/run_artifacts.rs`
+- manual artifact save/list/reopen/delete checks
+
+## Strengths Already Present
+
+- path-sensitive load/delete/tag operations already enforce containment within the runs directory
+- the artifact layer already centralizes summary/detail/hydration shaping instead of duplicating it across commands
+- legacy run-artifact naming compatibility is already preserved in the backend
+- the frontend history service already normalizes path strings before invoking path commands
+
+## Weaknesses / Failure Modes
+
+- `save_run_artifact` does not currently use a collision-avoiding suffix helper, so repeated saves with the same timestamp can overwrite the same run-artifact filename
+- containment checks rely on canonicalization of an existing path, so nonexistent-path and out-of-dir failures currently collapse into filesystem-error behavior unless explicitly tested
+- `open_path` and `reveal_path` are generic existing-path helpers, not runs-dir-only commands, so tightening their authority later would be a compatibility change
+- artifact scanning reads every JSON file under the runs directory and silently skips unreadable/non-JSON files, which can mask drift when the directory accumulates extra JSON outputs
+- path behavior is split between `run_artifacts.rs`, shared report-path helpers, and frontend history normalization, so wording and failure handling can diverge without a dedicated path contract doc
+- the history layer depends on `report_xlsx_path` persistence even though report files themselves live under a different app-local directory
+
+## Regressions To Avoid
+
+- allowing load/delete/tag operations outside the runs directory
+- breaking current history-service assumptions about `path` and `report_xlsx_path`
+- changing canonicalization or containment semantics without targeted tests
+- silently dropping legacy run-artifact kind/filename compatibility
+- tightening generic `open_path` / `reveal_path` behavior in a way that breaks saved-run report reopen flows
+
+## External Research Summary
+
+- [Tauri calling Rust from the frontend](https://v2.tauri.app/develop/calling-rust/)
+- [Tauri `PathResolver` docs](https://docs.rs/tauri/latest/tauri/path/struct.PathResolver.html#method.app_local_data_dir)
+- [Rust `std::fs::canonicalize`](https://doc.rust-lang.org/std/fs/fn.canonicalize.html)
+- [Tauri opener plugin reference](https://v2.tauri.app/plugin/opener/)
+
+## Proposed Improvement Approach
+
+1. Document the current runs-directory path contract separately from report-directory behavior.
+2. Make path generation, containment, and legacy alias handling explicit.
+3. Document which operations are runs-dir constrained and which use the broader generic open/reveal helpers.
+4. Tie history-service behavior back to the backend path rules it relies on.
+5. Preserve current compatibility first, especially around legacy artifact names and report reopen behavior.
+
+## Checklist
+
+- [ ] Document the current app-local runs directory contract.
+- [ ] Document how `save_run_artifact` currently derives filenames.
+- [ ] Document current collision behavior and whether same-`ts` overwrites are acceptable.
+- [ ] Document containment checks for load/delete/tag operations.
+- [ ] Document legacy kind and filename alias support.
+- [ ] Document summary/detail/hydration path fields consumed by the frontend.
+- [ ] Document how history uses `report_xlsx_path` versus the artifact JSON path itself.
+- [ ] Add or tighten tests for out-of-dir, nonexistent, and same-timestamp path behavior if the contract changes.
+
+## Verification Plan
+
+- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run targeted unit tests in `src-tauri/src/run_artifacts.rs`
+- manually save a run artifact, list it, reveal it, reopen its report path, and delete it
+
+## Rollout / Fallback / Compatibility Notes
+
+- preserve existing path fields and legacy filename/kind aliases first
+- if filename collision behavior changes, document the compatibility effect on existing automation and saved-path expectations
+- if generic `open_path` or `reveal_path` authority is narrowed later, keep a migration path for report reopen flows
+
+## Related Docs
+
+- `REPO_Improvement/06_artifacts/01_run_artifact_schema_2026-04-08.md`
+- `REPO_Improvement/06_artifacts/21_report_artifact_path_persistence_2026-04-08.md`
+- `REPO_Improvement/06_artifacts/29_artifact_identity_workflow_model_2026-04-08.md`
+- `REPO_Improvement/10_tests_perf/23_tauri_report_command_api_2026-04-08.md`

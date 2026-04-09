@@ -136,6 +136,7 @@ struct FeasibilityHarnessOutput {
     app_local_data_dir: String,
     artifact_path: String,
     options_dataset_id: String,
+    request_split_assignment_mode: String,
     dataset_manifest: OptionsDatasetManifestV1,
     response: AnalyzeOptionsExpressionFeasibilityResponse,
     phase05_gates: Phase05GateEvaluation,
@@ -268,6 +269,13 @@ struct Phase05GateEvaluation {
     scorer_backend_used_for_share: String,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     notes: Vec<String>,
+}
+
+fn serialize_scalar_to_string<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(|raw| raw.to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn cache_reuse_ratio(hits: usize, misses: usize) -> Option<f64> {
@@ -844,6 +852,11 @@ fn render_markdown_summary(output: &FeasibilityHarnessOutput) -> String {
     let _ = writeln!(&mut out, "# Options Expression Phase 0.5 Summary");
     let _ = writeln!(&mut out);
     let _ = writeln!(&mut out, "- Artifact: `{}`", output.artifact_path);
+    let _ = writeln!(
+        &mut out,
+        "- Split assignment: `{}`",
+        output.request_split_assignment_mode
+    );
     let _ = writeln!(
         &mut out,
         "- Dataset: `{}` (`{}` / {:?})",
@@ -1558,6 +1571,7 @@ fn main() -> Result<(), String> {
         app_local_data_dir: resolved_app_local_data_dir.to_string_lossy().to_string(),
         artifact_path: artifact_path.to_string_lossy().to_string(),
         options_dataset_id: dataset_manifest.options_dataset_id.clone(),
+        request_split_assignment_mode: serialize_scalar_to_string(&request.split_assignment_mode),
         dataset_manifest: dataset_manifest.clone(),
         response,
         phase05_gates,

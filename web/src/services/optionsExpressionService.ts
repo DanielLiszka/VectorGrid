@@ -248,6 +248,63 @@ export interface OptionsExpressionFeasibilityEventCoverageSummary {
   sealedTestEventsWithHarsherOutcomes: number
 }
 
+export interface OptionsExpressionOverlapWindowSummary {
+  contractReferenceAsOfUtc: string | null
+  totalEventsInDatasetWindow: number
+  searchEventsInDatasetWindow: number
+  holdoutEventsInDatasetWindow: number
+  sealedTestEventsInDatasetWindow: number
+  totalEventsBeforeDatasetWindow: number
+  totalEventsAfterDatasetWindow: number
+  searchEventsBeforeDatasetWindow: number
+  searchEventsAfterDatasetWindow: number
+  holdoutEventsBeforeDatasetWindow: number
+  holdoutEventsAfterDatasetWindow: number
+  sealedTestEventsBeforeDatasetWindow: number
+  sealedTestEventsAfterDatasetWindow: number
+  totalEventsBeforeContractReferenceAsOf: number
+  searchEventsBeforeContractReferenceAsOf: number
+  holdoutEventsBeforeContractReferenceAsOf: number
+  sealedTestEventsBeforeContractReferenceAsOf: number
+  totalOverlapRate: number
+  searchOverlapRate: number
+  holdoutOverlapRate: number
+  sealedTestOverlapRate: number
+}
+
+export interface OptionsExpressionSplitInvalidReasonSummary {
+  searchInvalidReasons: OptionsCandidateInvalidReasonCountSummary[]
+  holdoutInvalidReasons: OptionsCandidateInvalidReasonCountSummary[]
+  sealedTestInvalidReasons: OptionsCandidateInvalidReasonCountSummary[]
+}
+
+export type OptionsExpressionCoverageAdequacyVerdict =
+  | 'unknown'
+  | 'healthy'
+  | 'weak_dataset_overlap'
+  | 'search_overlap_missing'
+  | 'search_coverage_weak'
+  | 'holdout_coverage_weak'
+  | 'sealed_coverage_weak'
+  | 'contract_eligibility_fragile'
+  | 'late_entry_fragile'
+  | 'strike_window_fragile'
+  | 'mixed_fragile'
+
+export interface OptionsExpressionCoverageAdequacySummary {
+  verdict: OptionsExpressionCoverageAdequacyVerdict
+  nonPromotable: boolean
+  reasons: string[]
+  searchCandidateCoverageRate: number
+  holdoutCandidateCoverageRate: number
+  sealedTestCandidateCoverageRate: number
+  searchBaselineOutcomeCoverageRate: number
+  holdoutBaselineOutcomeCoverageRate: number
+  sealedTestBaselineOutcomeCoverageRate: number
+  dominantInvalidReason: string
+  dominantInvalidReasonShare: number
+}
+
 export interface OptionsExpressionFeasibilityCacheStatsSummary {
   structuralCacheHits: number
   structuralCacheMisses: number
@@ -316,6 +373,9 @@ export interface AnalyzeOptionsExpressionFeasibilitySummary {
   harsherSummaryBytesEstimate: number
   timings: OptionsExpressionFeasibilityTimingSummary
   eventCoverage: OptionsExpressionFeasibilityEventCoverageSummary
+  overlapWindow: OptionsExpressionOverlapWindowSummary
+  splitInvalidReasons: OptionsExpressionSplitInvalidReasonSummary
+  coverageAdequacy: OptionsExpressionCoverageAdequacySummary
   cacheStats: OptionsExpressionFeasibilityCacheStatsSummary
   invalidReasons: OptionsCandidateInvalidReasonCountSummary[]
   axisCoverage: OptionsCandidateAxisCoverageSummary
@@ -333,6 +393,9 @@ export interface RunOptionsExpressionSummary {
   request: OptionsExpressionRequestSummary | null
   diagnostics: OptionsExpressionDiagnosticsSummary
   staging: OptionsExpressionStagingSummary | null
+  overlapWindow: OptionsExpressionOverlapWindowSummary
+  coverageAdequacy: OptionsExpressionCoverageAdequacySummary
+  splitInvalidReasons: OptionsExpressionSplitInvalidReasonSummary
   rankedResults: OptionsExpressionTupleSummary[]
 }
 
@@ -351,6 +414,17 @@ export interface OptionsExpressionArtifactSummary {
   requestFillModel?: string
   requestStructureFamily?: string
   requestSplitAssignmentMode?: string
+  coverageAdequacyVerdict: OptionsExpressionCoverageAdequacyVerdict
+  coverageNonPromotable: boolean
+  searchOverlapRate: number
+  holdoutOverlapRate: number
+  sealedTestOverlapRate: number
+  searchCandidateCoverageRate: number
+  holdoutCandidateCoverageRate: number
+  sealedTestCandidateCoverageRate: number
+  searchBaselineOutcomeCoverageRate: number
+  holdoutBaselineOutcomeCoverageRate: number
+  sealedTestBaselineOutcomeCoverageRate: number
   tupleCount: number
   bestRobustScore: number
   bestSelectionExpectancyPerPremium: number
@@ -389,6 +463,9 @@ export interface OptionsExpressionArtifactRecord {
   request: OptionsExpressionRequestSummary
   diagnostics: OptionsExpressionDiagnosticsSummary
   staging: OptionsExpressionStagingSummary | null
+  overlapWindow: OptionsExpressionOverlapWindowSummary
+  coverageAdequacy: OptionsExpressionCoverageAdequacySummary
+  splitInvalidReasons: OptionsExpressionSplitInvalidReasonSummary
   selectionMetrics: OptionsExpressionTupleSummary[]
 }
 
@@ -685,6 +762,59 @@ function normalizeFeasibilityEventCoverage(raw: unknown): OptionsExpressionFeasi
   }
 }
 
+function normalizeOverlapWindow(raw: unknown): OptionsExpressionOverlapWindowSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    contractReferenceAsOfUtc: normalizeText(row.contract_reference_as_of_utc) || null,
+    totalEventsInDatasetWindow: normalizeNumber(row.total_events_in_dataset_window),
+    searchEventsInDatasetWindow: normalizeNumber(row.search_events_in_dataset_window),
+    holdoutEventsInDatasetWindow: normalizeNumber(row.holdout_events_in_dataset_window),
+    sealedTestEventsInDatasetWindow: normalizeNumber(row.sealed_test_events_in_dataset_window),
+    totalEventsBeforeDatasetWindow: normalizeNumber(row.total_events_before_dataset_window),
+    totalEventsAfterDatasetWindow: normalizeNumber(row.total_events_after_dataset_window),
+    searchEventsBeforeDatasetWindow: normalizeNumber(row.search_events_before_dataset_window),
+    searchEventsAfterDatasetWindow: normalizeNumber(row.search_events_after_dataset_window),
+    holdoutEventsBeforeDatasetWindow: normalizeNumber(row.holdout_events_before_dataset_window),
+    holdoutEventsAfterDatasetWindow: normalizeNumber(row.holdout_events_after_dataset_window),
+    sealedTestEventsBeforeDatasetWindow: normalizeNumber(row.sealed_test_events_before_dataset_window),
+    sealedTestEventsAfterDatasetWindow: normalizeNumber(row.sealed_test_events_after_dataset_window),
+    totalEventsBeforeContractReferenceAsOf: normalizeNumber(row.total_events_before_contract_reference_as_of),
+    searchEventsBeforeContractReferenceAsOf: normalizeNumber(row.search_events_before_contract_reference_as_of),
+    holdoutEventsBeforeContractReferenceAsOf: normalizeNumber(row.holdout_events_before_contract_reference_as_of),
+    sealedTestEventsBeforeContractReferenceAsOf: normalizeNumber(row.sealed_test_events_before_contract_reference_as_of),
+    totalOverlapRate: normalizeNumber(row.total_overlap_rate),
+    searchOverlapRate: normalizeNumber(row.search_overlap_rate),
+    holdoutOverlapRate: normalizeNumber(row.holdout_overlap_rate),
+    sealedTestOverlapRate: normalizeNumber(row.sealed_test_overlap_rate),
+  }
+}
+
+function normalizeSplitInvalidReasons(raw: unknown): OptionsExpressionSplitInvalidReasonSummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    searchInvalidReasons: normalizeInvalidReasonCounts(row.search_invalid_reasons),
+    holdoutInvalidReasons: normalizeInvalidReasonCounts(row.holdout_invalid_reasons),
+    sealedTestInvalidReasons: normalizeInvalidReasonCounts(row.sealed_test_invalid_reasons),
+  }
+}
+
+function normalizeCoverageAdequacy(raw: unknown): OptionsExpressionCoverageAdequacySummary {
+  const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    verdict: normalizeText(row.verdict) as OptionsExpressionCoverageAdequacyVerdict || 'unknown',
+    nonPromotable: Boolean(row.non_promotable),
+    reasons: normalizeStringList(row.reasons),
+    searchCandidateCoverageRate: normalizeNumber(row.search_candidate_coverage_rate),
+    holdoutCandidateCoverageRate: normalizeNumber(row.holdout_candidate_coverage_rate),
+    sealedTestCandidateCoverageRate: normalizeNumber(row.sealed_test_candidate_coverage_rate),
+    searchBaselineOutcomeCoverageRate: normalizeNumber(row.search_baseline_outcome_coverage_rate),
+    holdoutBaselineOutcomeCoverageRate: normalizeNumber(row.holdout_baseline_outcome_coverage_rate),
+    sealedTestBaselineOutcomeCoverageRate: normalizeNumber(row.sealed_test_baseline_outcome_coverage_rate),
+    dominantInvalidReason: normalizeText(row.dominant_invalid_reason),
+    dominantInvalidReasonShare: normalizeNumber(row.dominant_invalid_reason_share),
+  }
+}
+
 function normalizeFeasibilityCacheStats(raw: unknown): OptionsExpressionFeasibilityCacheStatsSummary {
   const row = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   return {
@@ -827,6 +957,9 @@ function normalizeFeasibilityResponse(raw: unknown): AnalyzeOptionsExpressionFea
     harsherSummaryBytesEstimate: normalizeNumber(report.harsher_summary_bytes_estimate),
     timings: normalizeFeasibilityTiming(report.timings),
     eventCoverage: normalizeFeasibilityEventCoverage(report.event_coverage),
+    overlapWindow: normalizeOverlapWindow(report.overlap_window),
+    splitInvalidReasons: normalizeSplitInvalidReasons(report.split_invalid_reasons),
+    coverageAdequacy: normalizeCoverageAdequacy(report.coverage_adequacy),
     cacheStats: normalizeFeasibilityCacheStats(report.cache_stats),
     invalidReasons: normalizeInvalidReasonCounts(report.invalid_reasons),
     axisCoverage: normalizeAxisCoverage(report.axis_coverage),
@@ -850,6 +983,9 @@ function normalizeRunOptionsExpression(raw: unknown): RunOptionsExpressionSummar
     request: Object.keys(artifact).length > 0 ? normalizeRequest(artifact.request) : null,
     diagnostics: normalizeDiagnostics(result.diagnostics),
     staging: normalizeStaging(result.staging),
+    overlapWindow: normalizeOverlapWindow(result.overlap_window || artifact.overlap_window),
+    coverageAdequacy: normalizeCoverageAdequacy(result.coverage_adequacy || artifact.coverage_adequacy),
+    splitInvalidReasons: normalizeSplitInvalidReasons(result.split_invalid_reasons || artifact.split_invalid_reasons),
     rankedResults: ranked.map((entry) => normalizeTuple(entry)),
   }
 }
@@ -922,6 +1058,17 @@ function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpress
     requestFillModel: normalizeText(row.request_fill_model),
     requestStructureFamily: normalizeText(row.request_structure_family),
     requestSplitAssignmentMode: normalizeText(row.request_split_assignment_mode),
+    coverageAdequacyVerdict: (normalizeText(row.coverage_adequacy_verdict) as OptionsExpressionCoverageAdequacyVerdict) || 'unknown',
+    coverageNonPromotable: Boolean(row.coverage_non_promotable),
+    searchOverlapRate: normalizeNumber(row.search_overlap_rate),
+    holdoutOverlapRate: normalizeNumber(row.holdout_overlap_rate),
+    sealedTestOverlapRate: normalizeNumber(row.sealed_test_overlap_rate),
+    searchCandidateCoverageRate: normalizeNumber(row.search_candidate_coverage_rate),
+    holdoutCandidateCoverageRate: normalizeNumber(row.holdout_candidate_coverage_rate),
+    sealedTestCandidateCoverageRate: normalizeNumber(row.sealed_test_candidate_coverage_rate),
+    searchBaselineOutcomeCoverageRate: normalizeNumber(row.search_baseline_outcome_coverage_rate),
+    holdoutBaselineOutcomeCoverageRate: normalizeNumber(row.holdout_baseline_outcome_coverage_rate),
+    sealedTestBaselineOutcomeCoverageRate: normalizeNumber(row.sealed_test_baseline_outcome_coverage_rate),
     tupleCount: normalizeNumber(row.tuple_count),
     bestRobustScore: normalizeNumber(row.best_robust_score),
     bestSelectionExpectancyPerPremium: normalizeNumber(row.best_selection_expectancy_per_premium),
@@ -972,6 +1119,9 @@ function normalizeOptionsExpressionArtifact(raw: unknown): OptionsExpressionArti
     request: normalizeRequest(row.request),
     diagnostics: normalizeDiagnostics(row.diagnostics),
     staging: normalizeStaging(row.staging),
+    overlapWindow: normalizeOverlapWindow(row.overlap_window),
+    coverageAdequacy: normalizeCoverageAdequacy(row.coverage_adequacy),
+    splitInvalidReasons: normalizeSplitInvalidReasons(row.split_invalid_reasons),
     selectionMetrics: metrics.map((entry) => normalizeTuple(entry)),
   }
 }

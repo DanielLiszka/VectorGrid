@@ -175,6 +175,47 @@ describe('optionsExpressionService', () => {
             coverage_start: 100,
             coverage_end: 200,
           },
+          overlap_window: {
+            contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+            total_events_in_dataset_window: 9,
+            search_events_in_dataset_window: 5,
+            holdout_events_in_dataset_window: 2,
+            sealed_test_events_in_dataset_window: 2,
+            total_events_before_dataset_window: 1,
+            total_events_after_dataset_window: 0,
+            search_events_before_dataset_window: 1,
+            search_events_after_dataset_window: 0,
+            holdout_events_before_dataset_window: 0,
+            holdout_events_after_dataset_window: 0,
+            sealed_test_events_before_dataset_window: 0,
+            sealed_test_events_after_dataset_window: 0,
+            total_events_before_contract_reference_as_of: 0,
+            search_events_before_contract_reference_as_of: 0,
+            holdout_events_before_contract_reference_as_of: 0,
+            sealed_test_events_before_contract_reference_as_of: 0,
+            total_overlap_rate: 0.9,
+            search_overlap_rate: 0.8333,
+            holdout_overlap_rate: 1,
+            sealed_test_overlap_rate: 1,
+          },
+          coverage_adequacy: {
+            verdict: 'mixed_fragile',
+            non_promotable: false,
+            reasons: ['Dominant structural invalid reason: no_expiration_in_bucket (60.0% of invalid slots).'],
+            search_candidate_coverage_rate: 1,
+            holdout_candidate_coverage_rate: 1,
+            sealed_test_candidate_coverage_rate: 1,
+            search_baseline_outcome_coverage_rate: 0.8,
+            holdout_baseline_outcome_coverage_rate: 1,
+            sealed_test_baseline_outcome_coverage_rate: 1,
+            dominant_invalid_reason: 'no_expiration_in_bucket',
+            dominant_invalid_reason_share: 0.6,
+          },
+          split_invalid_reasons: {
+            search_invalid_reasons: [{ reason: 'no_expiration_in_bucket', count: 2 }],
+            holdout_invalid_reasons: [{ reason: 'premium_too_high', count: 1 }],
+            sealed_test_invalid_reasons: [],
+          },
           ranked_results: [
             {
               tuple: {
@@ -273,6 +314,17 @@ describe('optionsExpressionService', () => {
             request_fill_model: 'aggregate_research',
             request_structure_family: 'long_single',
             request_split_assignment_mode: 'event_chronological',
+            coverage_adequacy_verdict: 'mixed_fragile',
+            coverage_non_promotable: false,
+            search_overlap_rate: 0.8333,
+            holdout_overlap_rate: 1,
+            sealed_test_overlap_rate: 1,
+            search_candidate_coverage_rate: 1,
+            holdout_candidate_coverage_rate: 1,
+            sealed_test_candidate_coverage_rate: 1,
+            search_baseline_outcome_coverage_rate: 0.8,
+            holdout_baseline_outcome_coverage_rate: 1,
+            sealed_test_baseline_outcome_coverage_rate: 1,
             tuple_count: 2,
             best_robust_score: 0.18,
             best_selection_expectancy_per_premium: 0.2,
@@ -317,6 +369,10 @@ describe('optionsExpressionService', () => {
     expect(run.rankedResults[0]?.sealedHarsherStressMetrics?.expectancyPerPremium).toBe(0.01)
     expect(run.rankedResults[0]?.extremeStressMetrics?.expectancyPerPremium).toBe(-0.01)
     expect(run.rankedResults[0]?.sealedExtremeStressMetrics?.expectancyPerPremium).toBe(-0.02)
+    expect(run.overlapWindow.searchOverlapRate).toBe(0.8333)
+    expect(run.coverageAdequacy.verdict).toBe('mixed_fragile')
+    expect(run.coverageAdequacy.dominantInvalidReason).toBe('no_expiration_in_bucket')
+    expect(run.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2)
     expect(artifacts[0]?.optionsDatasetId).toBe('spy_options')
     expect(artifacts[0]?.parentStrategyKind).toBe('DoubleMa')
     expect(artifacts[0]?.tupleCount).toBe(2)
@@ -340,6 +396,9 @@ describe('optionsExpressionService', () => {
     expect(artifacts[0]?.requestFillModel).toBe('aggregate_research')
     expect(artifacts[0]?.requestStructureFamily).toBe('long_single')
     expect(artifacts[0]?.requestSplitAssignmentMode).toBe('event_chronological')
+    expect(artifacts[0]?.coverageAdequacyVerdict).toBe('mixed_fragile')
+    expect(artifacts[0]?.searchOverlapRate).toBe(0.8333)
+    expect(artifacts[0]?.searchBaselineOutcomeCoverageRate).toBe(0.8)
     expect(invokeCommandMock).toHaveBeenCalledWith('list_artifact_library')
   })
 
@@ -456,6 +515,50 @@ describe('optionsExpressionService', () => {
           { reason: 'no_expiration_in_bucket', count: 20 },
           { reason: 'premium_too_high', count: 16 },
         ],
+        overlap_window: {
+          contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+          total_events_in_dataset_window: 8,
+          search_events_in_dataset_window: 4,
+          holdout_events_in_dataset_window: 2,
+          sealed_test_events_in_dataset_window: 2,
+          total_events_before_dataset_window: 2,
+          total_events_after_dataset_window: 0,
+          search_events_before_dataset_window: 2,
+          search_events_after_dataset_window: 0,
+          holdout_events_before_dataset_window: 0,
+          holdout_events_after_dataset_window: 0,
+          sealed_test_events_before_dataset_window: 0,
+          sealed_test_events_after_dataset_window: 0,
+          total_events_before_contract_reference_as_of: 1,
+          search_events_before_contract_reference_as_of: 1,
+          holdout_events_before_contract_reference_as_of: 0,
+          sealed_test_events_before_contract_reference_as_of: 0,
+          total_overlap_rate: 0.8,
+          search_overlap_rate: 0.6667,
+          holdout_overlap_rate: 1,
+          sealed_test_overlap_rate: 1,
+        },
+        split_invalid_reasons: {
+          search_invalid_reasons: [
+            { reason: 'entry_past_cutoff', count: 10 },
+            { reason: 'premium_too_high', count: 8 },
+          ],
+          holdout_invalid_reasons: [{ reason: 'premium_too_high', count: 4 }],
+          sealed_test_invalid_reasons: [{ reason: 'no_expiration_in_bucket', count: 3 }],
+        },
+        coverage_adequacy: {
+          verdict: 'weak_dataset_overlap',
+          non_promotable: true,
+          reasons: ['Only 66.7% of search events and 80.0% of total events overlap the current dataset window.'],
+          search_candidate_coverage_rate: 1,
+          holdout_candidate_coverage_rate: 1,
+          sealed_test_candidate_coverage_rate: 1,
+          search_baseline_outcome_coverage_rate: 0.8,
+          holdout_baseline_outcome_coverage_rate: 1,
+          sealed_test_baseline_outcome_coverage_rate: 1,
+          dominant_invalid_reason: 'entry_past_cutoff',
+          dominant_invalid_reason_share: 0.5,
+        },
         axis_coverage: {
           delay_minutes: [
             {
@@ -526,6 +629,10 @@ describe('optionsExpressionService', () => {
     expect(preview.harsherExitSummaryDensity).toBe(0.6667)
     expect(preview.eventCoverage.totalEventsWithHarsherOutcomes).toBe(6)
     expect(preview.invalidReasons[0]?.reason).toBe('no_expiration_in_bucket')
+    expect(preview.overlapWindow.searchOverlapRate).toBe(0.6667)
+    expect(preview.splitInvalidReasons.searchInvalidReasons[0]?.reason).toBe('entry_past_cutoff')
+    expect(preview.coverageAdequacy.verdict).toBe('weak_dataset_overlap')
+    expect(preview.coverageAdequacy.nonPromotable).toBe(true)
     expect(preview.axisCoverage.dteDays[1]?.dteDays).toBe(5)
     expect(preview.axisCoverage.dteDays[1]?.validRate).toBe(0)
     expect(preview.axisCoverage.delayMinutes[0]?.invalidReasons[0]?.reason).toBe('premium_too_high')
@@ -588,6 +695,47 @@ describe('optionsExpressionService', () => {
         dataset_contracts: 3,
         dataset_rows: 42,
       },
+      overlap_window: {
+        contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+        total_events_in_dataset_window: 9,
+        search_events_in_dataset_window: 5,
+        holdout_events_in_dataset_window: 2,
+        sealed_test_events_in_dataset_window: 2,
+        total_events_before_dataset_window: 1,
+        total_events_after_dataset_window: 0,
+        search_events_before_dataset_window: 1,
+        search_events_after_dataset_window: 0,
+        holdout_events_before_dataset_window: 0,
+        holdout_events_after_dataset_window: 0,
+        sealed_test_events_before_dataset_window: 0,
+        sealed_test_events_after_dataset_window: 0,
+        total_events_before_contract_reference_as_of: 0,
+        search_events_before_contract_reference_as_of: 0,
+        holdout_events_before_contract_reference_as_of: 0,
+        sealed_test_events_before_contract_reference_as_of: 0,
+        total_overlap_rate: 0.9,
+        search_overlap_rate: 0.8333,
+        holdout_overlap_rate: 1,
+        sealed_test_overlap_rate: 1,
+      },
+      coverage_adequacy: {
+        verdict: 'mixed_fragile',
+        non_promotable: false,
+        reasons: ['Dominant structural invalid reason: no_expiration_in_bucket (60.0% of invalid slots).'],
+        search_candidate_coverage_rate: 1,
+        holdout_candidate_coverage_rate: 1,
+        sealed_test_candidate_coverage_rate: 1,
+        search_baseline_outcome_coverage_rate: 0.8,
+        holdout_baseline_outcome_coverage_rate: 1,
+        sealed_test_baseline_outcome_coverage_rate: 1,
+        dominant_invalid_reason: 'no_expiration_in_bucket',
+        dominant_invalid_reason_share: 0.6,
+      },
+      split_invalid_reasons: {
+        search_invalid_reasons: [{ reason: 'no_expiration_in_bucket', count: 2 }],
+        holdout_invalid_reasons: [],
+        sealed_test_invalid_reasons: [],
+      },
       selection_metrics: [
         {
           tuple: {
@@ -622,6 +770,9 @@ describe('optionsExpressionService', () => {
     expect(artifact.backendFallbackReason).toBe('GPU planner probe failed; using CPU.')
     expect(artifact.request.splitAssignmentMode).toBe('event_chronological')
     expect(artifact.request.delayMinutes).toEqual([0, 1])
+    expect(artifact.overlapWindow.searchOverlapRate).toBe(0.8333)
+    expect(artifact.coverageAdequacy.verdict).toBe('mixed_fragile')
+    expect(artifact.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2)
     expect(artifact.selectionMetrics[0]?.moneynessBucket).toBe('atm')
   })
 

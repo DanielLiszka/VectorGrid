@@ -772,6 +772,89 @@ pub struct OptionsExpressionFeasibilityEventCoverage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionOverlapWindowSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_reference_as_of_utc: Option<String>,
+    pub total_events_in_dataset_window: usize,
+    pub search_events_in_dataset_window: usize,
+    pub holdout_events_in_dataset_window: usize,
+    pub sealed_test_events_in_dataset_window: usize,
+    pub total_events_before_dataset_window: usize,
+    pub total_events_after_dataset_window: usize,
+    pub search_events_before_dataset_window: usize,
+    pub search_events_after_dataset_window: usize,
+    pub holdout_events_before_dataset_window: usize,
+    pub holdout_events_after_dataset_window: usize,
+    pub sealed_test_events_before_dataset_window: usize,
+    pub sealed_test_events_after_dataset_window: usize,
+    #[serde(default)]
+    pub total_events_before_contract_reference_as_of: usize,
+    #[serde(default)]
+    pub search_events_before_contract_reference_as_of: usize,
+    #[serde(default)]
+    pub holdout_events_before_contract_reference_as_of: usize,
+    #[serde(default)]
+    pub sealed_test_events_before_contract_reference_as_of: usize,
+    pub total_overlap_rate: f64,
+    pub search_overlap_rate: f64,
+    pub holdout_overlap_rate: f64,
+    pub sealed_test_overlap_rate: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionSplitInvalidReasonSummary {
+    #[serde(default)]
+    pub search_invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+    #[serde(default)]
+    pub holdout_invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+    #[serde(default)]
+    pub sealed_test_invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionsExpressionCoverageAdequacyVerdict {
+    #[default]
+    Unknown,
+    Healthy,
+    WeakDatasetOverlap,
+    SearchOverlapMissing,
+    SearchCoverageWeak,
+    HoldoutCoverageWeak,
+    SealedCoverageWeak,
+    ContractEligibilityFragile,
+    LateEntryFragile,
+    StrikeWindowFragile,
+    MixedFragile,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct OptionsExpressionCoverageAdequacySummary {
+    #[serde(default)]
+    pub verdict: OptionsExpressionCoverageAdequacyVerdict,
+    #[serde(default)]
+    pub non_promotable: bool,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub search_candidate_coverage_rate: f64,
+    #[serde(default)]
+    pub holdout_candidate_coverage_rate: f64,
+    #[serde(default)]
+    pub sealed_test_candidate_coverage_rate: f64,
+    #[serde(default)]
+    pub search_baseline_outcome_coverage_rate: f64,
+    #[serde(default)]
+    pub holdout_baseline_outcome_coverage_rate: f64,
+    #[serde(default)]
+    pub sealed_test_baseline_outcome_coverage_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dominant_invalid_reason: Option<OptionsCandidateInvalidReason>,
+    #[serde(default)]
+    pub dominant_invalid_reason_share: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct OptionsExpressionFeasibilityCacheStats {
     pub structural_cache_hits: usize,
     pub structural_cache_misses: usize,
@@ -863,6 +946,12 @@ pub struct OptionsExpressionFeasibilityReport {
     pub harsher_summary_bytes_estimate: usize,
     pub timings: OptionsExpressionFeasibilityTimingStats,
     pub event_coverage: OptionsExpressionFeasibilityEventCoverage,
+    #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub split_invalid_reasons: OptionsExpressionSplitInvalidReasonSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
     pub cache_stats: OptionsExpressionFeasibilityCacheStats,
     #[serde(default)]
     pub invalid_reasons: Vec<OptionsCandidateInvalidReasonCount>,
@@ -923,6 +1012,12 @@ pub struct OptionsExpressionRunResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging: Option<OptionsExpressionStagingStats>,
     #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
+    #[serde(default)]
+    pub split_invalid_reasons: OptionsExpressionSplitInvalidReasonSummary,
+    #[serde(default)]
     pub ranked_results: Vec<OptionsExpressionTupleResult>,
 }
 
@@ -944,6 +1039,12 @@ pub struct OptionsExpressionArtifactV1 {
     pub diagnostics: OptionsExpressionDiagnostics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging: Option<OptionsExpressionStagingStats>,
+    #[serde(default)]
+    pub overlap_window: OptionsExpressionOverlapWindowSummary,
+    #[serde(default)]
+    pub coverage_adequacy: OptionsExpressionCoverageAdequacySummary,
+    #[serde(default)]
+    pub split_invalid_reasons: OptionsExpressionSplitInvalidReasonSummary,
     pub selection_metrics: Vec<OptionsExpressionTupleResult>,
 }
 
