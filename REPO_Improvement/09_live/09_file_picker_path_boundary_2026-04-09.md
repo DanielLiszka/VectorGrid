@@ -89,6 +89,7 @@ These are not one unified “file picker” feature. The authority boundary is i
 - silently changing generic `open_path` / `reveal_path` authority without auditing history/report reopen flows
 - removing browser-native import fallbacks while claiming picker support is unchanged
 - conflating “user selected a path” with “the app is authorized to mutate that path”
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -100,6 +101,8 @@ These are not one unified “file picker” feature. The authority boundary is i
   - relevant because file-selection and open/reveal flows should stay scoped by explicit permissions
 - [Rust `std::fs::canonicalize`](https://doc.rust-lang.org/std/fs/fn.canonicalize.html)
   - relevant because the repo’s artifact containment checks depend on canonical path resolution
+- [Alpaca Orders](https://docs.alpaca.markets/docs/orders-at-alpaca)
+  - relevant because live execution, monitoring, and order-state handling sit behind provider contracts that must remain explicit in a public-facing trading app
 
 ## Proposed Improvement Approach
 
@@ -112,6 +115,13 @@ These are not one unified “file picker” feature. The authority boundary is i
 3. Keep market-data-root mutation rules strict and documented.
 4. Preserve current artifact containment first; only broaden host-path behavior with an explicit security/compatibility review.
 5. Tie reopen-path behavior back to the artifact/report models that currently supply those paths.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -123,14 +133,22 @@ These are not one unified “file picker” feature. The authority boundary is i
 - [ ] Document current history/report reopen behavior and the path fields it relies on.
 - [ ] Add or tighten tests if picker authority or path-containment behavior changes.
 - [ ] Review any future path broadening against Tauri capabilities and current reopen compatibility.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/services/mlSignalService.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/mlSignalService.test.ts`
 - run `cargo test -p ta_desktop_demo_app --test settings_tests`
 - run targeted unit tests in `src-tauri/src/run_artifacts.rs`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -138,6 +156,7 @@ These are not one unified “file picker” feature. The authority boundary is i
 - keep browser-native import fallback behavior intact unless a native replacement is fully verified
 - if open/reveal authority is narrowed later, provide a migration path for saved report and history actions
 - avoid platform-promising picker behavior beyond the current Windows-native implementation
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -91,6 +91,7 @@ The result is that code quality is partly present in tooling but under-specified
 - enabling overly noisy lint categories wholesale without repo-specific tuning
 - breaking CPU-only verification paths while adding Rust linting expectations
 - adding redundant gates that duplicate existing scripts without clarifying ownership
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -125,6 +126,13 @@ The result is that code quality is partly present in tooling but under-specified
    - typecheck for static type safety
 5. Keep smoke, parity, and perf gates downstream from the static-analysis layer rather than using them as substitutes.
 6. If CI is re-enabled later, mirror the local quality sequence instead of inventing a different CI-only contract.
+7. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Step-by-Step Checklist
 
@@ -138,6 +146,12 @@ The result is that code quality is partly present in tooling but under-specified
 - [ ] Document when narrower crate/test targets are acceptable instead of full-workspace runs.
 - [ ] Tie static-analysis expectations to public-repo contribution guidance once that doc exists.
 - [ ] Mirror the same quality sequence into future CI only after the local lane is stable.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -148,6 +162,7 @@ The result is that code quality is partly present in tooling but under-specified
 - run `npm --prefix web run lint`
 - run `npm --prefix web run typecheck`
 - run `npm --prefix web run typecheck:desktop` when desktop test harness code changes
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -155,6 +170,7 @@ The result is that code quality is partly present in tooling but under-specified
 - if `cargo clippy -- -D warnings` is too disruptive initially, begin with a narrower documented baseline and tighten later
 - do not add ESLint, TypeScript, or Rust rules that force large unrelated rewrites without a scoped migration plan
 - preserve current product behavior; this plan is for code quality, not feature narrowing
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

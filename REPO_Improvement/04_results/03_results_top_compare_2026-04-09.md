@@ -66,6 +66,7 @@ That means compare is already a first-class shortlist workflow, not an incidenta
 - collapsing compare into a less explicit “selected row only” model
 - letting current shortlist filters silently invalidate pinned cards without explanation
 - duplicating Overview baseline-comparison responsibilities inside Top compare
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ That means compare is already a first-class shortlist workflow, not an incidenta
 - [ARIA: status role | MDN](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Roles/status_role) is relevant because stale cues, guardrails, and compare-state updates are advisory live information rather than focus-stealing alerts.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because compare state needs a single authoritative owner instead of per-component shadow state.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because compare behavior is a sequence of deterministic state transitions that should stay covered in focused tests.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ That means compare is already a first-class shortlist workflow, not an incidenta
 3. Treat pinned-card badges and stale reasons as contract data rather than decorative extras.
 4. Keep compare identity tied to stable row ids and reconciled shortlist state, not presentation-only row position.
 5. Add or tighten tests whenever pinning, stale reconciliation, or compare-card presentation changes.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,21 @@ That means compare is already a first-class shortlist workflow, not an incidenta
 - [ ] Document pinned-card identity, summary, badge, and stale-reason expectations.
 - [ ] Document how filter changes and shortlist changes affect pinned candidates.
 - [ ] Add or tighten tests for pinning, replacing, stale-cue reconciliation, and compare-card actions.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/TopWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/AnalysisContextDock.test.ts`
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/components/TopWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/AnalysisContextDock.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
 - manually verify pin/replace/remove behavior with filtered and unfiltered shortlists
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,10 +122,11 @@ That means compare is already a first-class shortlist workflow, not an incidenta
 - prefer additive compare metadata over repurposing existing card fields
 - if compare grows later, keep shortlist-comparison and saved-baseline comparison as separate concepts
 - if row identity logic changes, update compare reconciliation and stale-cue tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/02_results_top_table_2026-04-08.md`
 - `REPO_Improvement/04_results/10_out_overview_decision_surface_2026-04-09.md`
-- `REPO_Improvement/04_results/15_dataset_stale_provenance_cues_DATE.md`
+- `REPO_Improvement/04_results/15_dataset_stale_provenance_cues_2026-04-09.md`
 - `REPO_Improvement/04_results/20_matrix_table_state_2026-04-08.md`

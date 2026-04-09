@@ -71,6 +71,7 @@ That means evidence-gap messaging is a real decision-support concern: users need
 - treating missing saved-run content as though the app simply failed to load
 - dropping compare or shortlist guardrail messages
 - leaving canvases or tables empty without an explanatory status line
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -79,6 +80,8 @@ That means evidence-gap messaging is a real decision-support concern: users need
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because most evidence-gap behavior is deterministic and should be locked in via state-driven tests.
 - [WAI-ARIA Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant because users need clear signals when to stay on a tab and when to move to another one for missing evidence.
 - [MDN `<canvas>` element reference](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/canvas) is relevant because chart panels need strong textual fallback when the chart has nothing meaningful to render.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -87,6 +90,13 @@ That means evidence-gap messaging is a real decision-support concern: users need
 3. Keep chart and table surfaces from ever failing silently; they should always carry a status or advisory line when meaningful evidence is absent.
 4. Treat compare/baseline missing states as first-class evidence gaps rather than generic errors.
 5. Add or tighten tests whenever status copy or guardrail logic changes.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -95,13 +105,20 @@ That means evidence-gap messaging is a real decision-support concern: users need
 - [ ] Document configuration-caused gaps separately from true absence of data.
 - [ ] Document saved-run and artifact-related evidence gaps.
 - [ ] Add or tighten tests for guardrails, status lines, and empty-state messaging.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run representative result-panel component tests
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
 - run readiness-related tests if `useUiReadiness` or shared status logic changes
 - manually review one current run and one saved artifact replay for evidence-gap truthfulness
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -109,6 +126,7 @@ That means evidence-gap messaging is a real decision-support concern: users need
 - prefer additive clarification over shortening copy into vagueness
 - keep surface-specific guidance intact even if shared readiness logic is refactored
 - if a new result surface is added, classify its missing-evidence states using the same vocabulary
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

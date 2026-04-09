@@ -70,6 +70,7 @@ Progress is already instrumented through the Tauri event system. `commands_optim
 - breaking `double_ma_progress` event subscription or normalization
 - losing phase-change visibility in the task center and timeline
 - allowing backend cancel intent and frontend cancel posture to drift
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -77,6 +78,8 @@ Progress is already instrumented through the Tauri event system. `commands_optim
 - [Calling the Frontend from Rust](https://v2.tauri.app/develop/calling-frontend/) is relevant because progress is emitted from Rust into the frontend event system.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because cancellation and progress behavior are tightly bound to store state and are prone to regressions without state-aware tests.
 - [Vitest Mocking](https://vitest.dev/guide/mocking.html) is relevant because the current cancellation tests depend on mocked command outcomes and deferred promise timing.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -85,6 +88,13 @@ Progress is already instrumented through the Tauri event system. `commands_optim
 3. Make the shared use of `double_ma_progress` explicit so contributors do not assume it is Double-MA-only forever.
 4. Strengthen tests around task restoration when cancellation fails.
 5. Keep status-presentation and task-store semantics aligned with cancellation and progress truth.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -93,14 +103,21 @@ Progress is already instrumented through the Tauri event system. `commands_optim
 - [ ] Document the `double_ma_progress` event path end to end.
 - [ ] Add or tighten tests for cancellation failure restoration and progress-phase handling.
 - [ ] Document cross-layer ownership for progress versus cancellation posture.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app command_runtime_wiring`
-- run `npm --prefix web test -- src/services/runControlService.test.ts`
-- run `npm --prefix web test -- src/tauri/instrumentation.test.ts`
-- run `npm --prefix web test -- src/stores/taskStore.lifecycle.test.ts`
-- run `npm --prefix web test -- src/utils/statusPresentation.test.ts`
+- run `npm --prefix web run test -- src/services/runControlService.test.ts`
+- run `npm --prefix web run test -- src/tauri/instrumentation.test.ts`
+- run `npm --prefix web run test -- src/stores/taskStore.lifecycle.test.ts`
+- run `npm --prefix web run test -- src/utils/statusPresentation.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -108,6 +125,7 @@ Progress is already instrumented through the Tauri event system. `commands_optim
 - keep `double_ma_progress` stable until all consumers migrate together
 - prefer more explicit docs and tests over silent changes to cancel semantics
 - if event channels are renamed later, migrate instrumentation and task-store handling in one change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

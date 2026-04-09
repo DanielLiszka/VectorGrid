@@ -68,6 +68,7 @@ The result is a clear special-case family in code, but the repo still needs a de
 - bypassing the shared run guard or cancel token
 - breaking progress-event behavior for Composite MO runs
 - hiding the distinction between Composite MO and the other optimization families
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ The result is a clear special-case family in code, but the repo still needs a de
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because run coordination still relies on the same backend state model as other commands.
 - [Calling the Frontend from Rust](https://v2.tauri.app/develop/calling-frontend/) is relevant because progress still returns to the frontend through events.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because Composite MO’s frontend special casing should remain explicit and centralized.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ The result is a clear special-case family in code, but the repo still needs a de
 3. Keep shared run coordination common while documenting the product-contract differences.
 4. Add or tighten service-routing tests for `CompositeMo`.
 5. Make UI capability notes reflect that Composite MO does not simply inherit all global optimize controls.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ The result is a clear special-case family in code, but the repo still needs a de
 - [ ] Document the shared run guard, cancel token, and progress sink behavior.
 - [ ] Add or tighten command-routing tests for Composite MO.
 - [ ] Document the separation between strategy-owned and product-owned route semantics.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app commands_optimize`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/components/OptimizeWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/components/OptimizeWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ The result is a clear special-case family in code, but the repo still needs a de
 - prefer clearer documentation before unifying any code paths
 - keep strategy-owned route behavior explicit in UI and service layers
 - update this plan alongside any Composite MO control-surface changes
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

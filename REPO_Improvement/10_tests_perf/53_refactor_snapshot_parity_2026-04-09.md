@@ -59,6 +59,7 @@ The repo already contains a focused snapshot bin that writes raw and canonicaliz
 - expanding snapshot scope broadly without maintaining review clarity
 - relying only on canonicalized output and ignoring raw output when ordering or exact structure matters
 - using snapshot diffs without following up on whether they represent intended or unintended contract change
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already contains a focused snapshot bin that writes raw and canonicaliz
 - [Cargo run command docs](https://doc.rust-lang.org/cargo/commands/cargo-run.html) are relevant because snapshot generation is a dedicated headless-bin workflow.
 - [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) is relevant because snapshot canonicalization and JSON diff review depend on stable JSON semantics.
 - [Criterion.rs book](https://bheisler.github.io/criterion.rs/book/) is relevant as a contrast because snapshot parity is structural review, not performance authority.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already contains a focused snapshot bin that writes raw and canonicaliz
 2. Preserve both raw and canonicalized outputs so reviewers can decide what changed meaningfully.
 3. Use snapshot diffs as a refactor aid, not as a standalone release gate.
 4. Cross-link meaningful diffs into the deeper parity or report-test surfaces when needed.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already contains a focused snapshot bin that writes raw and canonicaliz
 - [ ] Use snapshot diffs to trigger deeper review, not to replace it.
 - [ ] Avoid growing snapshot scope without a clear refactor-review payoff.
 - [ ] Preserve manual diff interpretability as the core value of this tool.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,15 +105,18 @@ The repo already contains a focused snapshot bin that writes raw and canonicaliz
 - review both raw and canonicalized outputs when meaningful diffs appear
 - follow up with deeper tests or parity checks when a diff looks suspicious
 - confirm the output tree and file names remain stable enough for repeat use
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current narrow, useful snapshot workflow
 - prefer clarity and diffability over bigger snapshot coverage
 - if snapshot noise grows, narrow the scope rather than normalizing everything away
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/43_output_parity_pack_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/45_artifact_report_shape_parity_2026-04-09.md`
-- `REPO_Improvement/06_artifacts/12_art_hydration_detail_replay_DATE.md`
+- `REPO_Improvement/06_artifacts/12_art_hydration_detail_replay_2026-04-09.md`

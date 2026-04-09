@@ -68,6 +68,7 @@ Pair-count and combo-count messaging exists today, but the logic is distributed 
 - weakening sweep-output guardrails
 - making pair or combo preview numbers less truthful
 - changing current backend-aware hint behavior without synchronized tests
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ Pair-count and combo-count messaging exists today, but the logic is distributed 
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because the editor relies on shared store state and should avoid hidden component-local truth.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because request-shaping and grid-state behavior need strong store-aware tests.
 - [WAI Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant because this editor is part of a tabbed shell and should remain predictable within the workspace model.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Pair-count and combo-count messaging exists today, but the logic is distributed 
 3. Document where pair and combo counts are computed and which layer is authoritative.
 4. Make backend-specific MA support messaging and builder rejection rules explicit in one plan.
 5. Expand sweep-plus-output legality tests if current coverage is not enough.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ Pair-count and combo-count messaging exists today, but the logic is distributed 
 - [ ] Document per-side parameter state, sweep state, and restore behavior.
 - [ ] Document how combo counts are derived and surfaced.
 - [ ] Add or tighten tests for sweep plus export or shortlist legality.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/OptimizeWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.bench.test.ts`
+- run `npm --prefix web run test -- src/components/OptimizeWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.bench.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ Pair-count and combo-count messaging exists today, but the logic is distributed 
 - prefer clearer ownership and more tests before extracting subcomponents
 - preserve current draft-and-commit behavior for queued input writes
 - if combo preview rules change, update UI wording and builder tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

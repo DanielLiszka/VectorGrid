@@ -1,6 +1,6 @@
 # Workflow Artifact Store Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -69,6 +69,7 @@ Users experience this store indirectly whenever a run is saved, hydrated, reopen
 - silently dropping `optimizationMetricSurface`, `datasetMeta`, `mlSignal`, tags, or report path
 - weakening or removing latest-identity snapshot helpers used by sync logic
 - refreshing analysis on source-only or otherwise meaningless changes
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -95,6 +96,13 @@ Users experience this store indirectly whenever a run is saved, hydrated, reopen
    - `sourceChanged`
 3. Separate public hydration identity from deep payload-equality semantics in the documentation, because both are used today for different purposes.
 4. Treat this store as shared infrastructure for multiple workflows, so changes must be synchronized across all producers.
+5. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -104,19 +112,27 @@ Users experience this store indirectly whenever a run is saved, hydrated, reopen
 - [ ] Document validation-arrives-later behavior for same-run hydration.
 - [ ] Document current producer flows that write this store.
 - [ ] Add or tighten tests if normalization or apply-result semantics change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/workflowArtifactsStore.test.ts`
-- run `npm --prefix web test -- src/services/workflowArtifactsSync.test.ts`
-- run `npm --prefix web test -- src/services/validationService.test.ts`
-- run `npm --prefix web test -- src/services/mlSignalService.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowArtifactsStore.test.ts`
+- run `npm --prefix web run test -- src/services/workflowArtifactsSync.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/services/mlSignalService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep normalized field names compatible across existing producers
 - if signatures or identity helpers change, update sync/history/validation consumers in the same change
 - preserve current source tags until all callers are migrated deliberately
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

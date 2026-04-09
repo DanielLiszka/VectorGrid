@@ -68,6 +68,7 @@ The command also enforces run-level coordination. It acquires the app run guard,
 - breaking `double_ma_progress` event emission
 - moving blocking backend work onto the async path
 - misrouting Double-MA-family strategies away from this command
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ The command also enforces run-level coordination. It acquires the app run guard,
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because run guards and cancel tokens are long-lived backend state, not frontend conveniences.
 - [Calling the Frontend from Rust](https://v2.tauri.app/develop/calling-frontend/) is relevant because progress is emitted back to the frontend through the Tauri event system.
 - [NVIDIA CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because GPU-oriented command claims should stay tied to explicit execution and verification rules rather than vague “GPU” wording.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ The command also enforces run-level coordination. It acquires the app run guard,
 3. Document the run guard, cancel token, candle fetch, and progress sink sequence as part of the command contract.
 4. Add parity checks between optimize-service command selection and the command’s documented scope.
 5. Keep frontend UX notes conservative when command-level normalization can override a requested mode.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ The command also enforces run-level coordination. It acquires the app run guard,
 - [ ] Document the run guard and cancel token sequence.
 - [ ] Document progress-event emission and the `double_ma_progress` channel.
 - [ ] Add or tighten command-selection and normalization tests if coverage is thin.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app commands_optimize`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/tauri/instrumentation.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/tauri/instrumentation.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ The command also enforces run-level coordination. It acquires the app run guard,
 - prefer additive diagnostics over silent changes to command routing
 - keep the event name `double_ma_progress` stable until all consumers migrate together
 - if strategy-family membership changes later, update service routing and this plan together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

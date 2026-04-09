@@ -1,6 +1,6 @@
 # Dataset Context Surface Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -81,6 +81,7 @@ The shell and dependent panels already use those fields to determine whether dat
 - losing field-availability hints that currently explain disabled capabilities
 - breaking startup-restore or recent-path context cues
 - letting shell context and service-level artifact context disagree
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -92,6 +93,8 @@ The shell and dependent panels already use those fields to determine whether dat
   - relevant because dataset context is really a user-facing provenance summary
 - [Window.localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage)
   - relevant because startup snapshot and related dataset preferences are persisted client-side
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -106,6 +109,13 @@ The shell and dependent panels already use those fields to determine whether dat
 3. Treat `datasetContext`, `datasetRange`, and `dataFieldHint` as authoritative explanatory surfaces, not disposable copy.
 4. Align shell-visible dataset context with artifact/meta generation so users are never shown conflicting dataset identity.
 5. Add tests around startup restore, base/current timeframe divergence, and field-hint updates.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -116,6 +126,11 @@ The shell and dependent panels already use those fields to determine whether dat
 - [ ] Add tests for shell-visible dataset context after load, clear, and timeframe change.
 - [ ] Add tests for startup restore and base/current context transitions.
 - [ ] Add tests proving artifact/meta builders stay aligned with visible dataset context.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,12 +139,16 @@ The shell and dependent panels already use those fields to determine whether dat
 - run `npm test -- src/services/validationService.test.ts`
 - run shell/component tests that consume dataset readiness
 - manually verify load, clear, startup restore, and timeframe change flows in the app shell
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current dataset-context field names unless a deliberate migration is written
 - prefer additive clarifications over changing user-visible context semantics abruptly
 - keep the base/current distinction explicit if the data surface becomes richer later
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

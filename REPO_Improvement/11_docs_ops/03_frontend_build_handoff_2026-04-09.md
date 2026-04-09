@@ -76,6 +76,7 @@ Desktop smoke and bundle builds already assume that this handoff is deterministi
 - allowing stale generated command inventory into a production build
 - letting README/RELEASE describe a different frontend handoff than the actual Tauri config
 - weakening deterministic build hygiene to save local build time
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +88,8 @@ Desktop smoke and bundle builds already assume that this handoff is deterministi
   - relevant because generated command inventory is part of keeping the built frontend compatible with the desktop backend
 - [GitHub Docs: autolinked URLs and references](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls?formCode=MG0AV3)
   - relevant because release/build docs should stay readable and consistent when documenting command/build surfaces
+- [GitHub repository documentation](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  - relevant because public-repo docs and release operations should be maintained as first-class contributor and reviewer surfaces
 
 ## Proposed Improvement Approach
 
@@ -97,6 +100,13 @@ Desktop smoke and bundle builds already assume that this handoff is deterministi
 2. Keep the config mirror and generated-command tooling tied to the same build story.
 3. Treat desktop smoke as downstream proof that the handoff remains valid.
 4. Preserve current output location and build order unless there is a deliberate migration.
+5. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -106,6 +116,12 @@ Desktop smoke and bundle builds already assume that this handoff is deterministi
 - [ ] Document how desktop smoke depends on the same handoff.
 - [ ] Keep release docs aligned with the actual handoff path.
 - [ ] Add or tighten checks if the frontend output path or generator flow changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -115,16 +131,20 @@ Desktop smoke and bundle builds already assume that this handoff is deterministi
 - run `npm --prefix web run parity`
 - run `node scripts/check_tauri_config_sync.mjs`
 - run `npm --prefix web run test:desktop:smoke`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current `web/dist` handoff unless a full migration is coordinated
 - if build script ordering changes, update smoke/build docs and command checks together
 - keep the config-mirror check active whenever Tauri config changes
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/20_tauri_runtime_wiring_2026-04-08.md`
-- `REPO_Improvement/10_tests_perf/42_tauri_command_parity_DATE.md`
-- `REPO_Improvement/10_tests_perf/47_tauri_config_sync_DATE.md`
+- `REPO_Improvement/10_tests_perf/42_tauri_command_parity_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/47_tauri_config_sync_2026-04-09.md`
 - `REPO_Improvement/11_docs_ops/04_bundle_budget_analysis_2026-04-09.md`

@@ -84,6 +84,7 @@ This means “cancel” currently means “request cooperative stop and ignore s
 - removing or weakening runner generation checks
 - clearing guarded-close protections while tasks or runners remain active
 - making cancel behavior appear instantaneous when it is still best-effort/cooperative
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -95,6 +96,8 @@ This means “cancel” currently means “request cooperative stop and ignore s
   - relevant because the app’s guarded run/runtime state is owned on the Rust side and projected into the frontend
 - [Tokio task module](https://docs.rs/tokio/latest/tokio/task/)
   - relevant because stale async completions and cancellation behavior need to be understood in the context of spawned tasks
+- [Alpaca Orders](https://docs.alpaca.markets/docs/orders-at-alpaca)
+  - relevant because live execution, monitoring, and order-state handling sit behind provider contracts that must remain explicit in a public-facing trading app
 
 ## Proposed Improvement Approach
 
@@ -106,6 +109,13 @@ This means “cancel” currently means “request cooperative stop and ignore s
 3. Tie frontend blocked/busy/close-guard behavior back to the authoritative backend guard model.
 4. Preserve the existing distinction between “request stop,” “runner no longer active,” and “all async work fully settled.”
 5. Add regression coverage before changing any guard or cancel token shape.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -117,14 +127,23 @@ This means “cancel” currently means “request cooperative stop and ignore s
 - [ ] Add or tighten tests when guard ownership, cancellation, or generation logic changes.
 - [ ] Keep close-guard UX aligned with protected-task truth.
 - [ ] Review any future concurrency broadening against the current single-slot assumptions.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
 - run targeted tests in `src-tauri/src/commands_execution.rs`
 - run `cargo test -p ta_desktop_demo_app --test command_runtime_wiring`
 - run `cargo test -p ta_desktop_demo_app --test mock_runtime_smoke`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/DesktopTitlebar.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/DesktopTitlebar.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -132,6 +151,7 @@ This means “cancel” currently means “request cooperative stop and ignore s
 - if cancellation behavior is made more structured later, keep current user-facing expectations explicit during migration
 - do not remove guarded-close behavior until an equivalent protected-shutdown story exists
 - keep cooperative cancel semantics documented even if lower-level task primitives change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

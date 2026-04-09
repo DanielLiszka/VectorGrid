@@ -1,6 +1,6 @@
 # Program Change Log Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -62,6 +62,7 @@ That history exists, but it is not yet centralized as one explicit program-chang
 - changing counts, queues, or governance rules without leaving a history trace
 - relying on chat memory instead of repo history for the document program
 - duplicating the same change narrative in too many places
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -79,6 +80,13 @@ That history exists, but it is not yet centralized as one explicit program-chang
    - governance-rule changes
 2. Keep the tracker as the detailed ledger and the change log as the higher-level summary.
 3. Avoid duplicating every created-doc bullet in the change log.
+4. Treat planning-layer quality as part of the implementation scope: keep the program auditable, explicit, refreshable, and easy for future contributors to execute without guesswork.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -86,18 +94,27 @@ That history exists, but it is not yet centralized as one explicit program-chang
 - [ ] Keep wave completions and governance changes visible.
 - [ ] Avoid duplicating the tracker’s full per-doc detail.
 - [ ] Preserve a concise historical record inside the repo.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - verify major wave transitions and governance changes are recorded consistently
 - verify tracker and change-log summaries do not contradict each other
 - verify count changes in the log match audited counts
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify the definition of done, refresh triggers, and any superseded/historical pointers are explicit enough that another contributor could continue the program without guesswork
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - start using the change-log policy for future waves rather than rewriting all earlier history
 - keep the log concise enough to maintain
 - if a wave is reverted or re-baselined, note that explicitly instead of erasing the prior state
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -78,6 +78,7 @@ Even where some product-facing strategies now route through other visible strate
 - losing drilldown/local-stability parity with optimization outputs
 - changing prescan behavior without clear request/result documentation
 - regressing CPU fallback just because GPU-aware routes are improved
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -86,6 +87,8 @@ Even where some product-facing strategies now route through other visible strate
 - [OnceLock in `std::sync`](https://doc.rust-lang.org/beta/std/sync/struct.OnceLock.html?search=std%3A%3Avec) is relevant because large strategy surfaces often accumulate caching/lazy-init behavior that must remain disciplined.
 - [serde_json `Value` docs](https://docs.rs/serde_json/latest/serde_json/value/) are relevant because CompositeCpu request and result surfaces bridge structured frontend/backend payloads.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because CompositeCpu effectively exposes a strategy-specific request/result contract that should remain stable.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -99,6 +102,13 @@ Even where some product-facing strategies now route through other visible strate
 3. Freeze which user-visible families still depend on CompositeCpu.
 4. Add verification where family-specific route diagnostics and drilldown outputs are easy to regress.
 5. Reduce conceptual sprawl through documentation and test matrices before any code reorganization is attempted.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -110,14 +120,23 @@ Even where some product-facing strategies now route through other visible strate
 - [ ] Add or tighten request-builder tests where CompositeCpu-specific shaping is still user-visible.
 - [ ] Add or tighten capability-summary tests wherever frontend text intentionally simplifies backend behavior.
 - [ ] Keep CPU fallback and GPU-aware prescan behavior both explicit in the contract.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
 - run targeted tests in `crates/app_core/src/composite_cpu.rs`
 - run targeted tests in `crates/app_core/src/composite_profile_route.rs`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
 - run targeted Tauri optimize-command tests if CompositeCpu request wiring changes
 - manually inspect one optimization result with route diagnostics and one drilldown/local-stability flow
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -125,6 +144,7 @@ Even where some product-facing strategies now route through other visible strate
 - prefer additive clarity and narrower docs/tests over large refactors
 - if a family migrates away from CompositeCpu, update request shaping, route diagnostics, and docs together
 - keep CPU fallback behavior visible and stable
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,3 +1,7 @@
+# ML Shell Handoff Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the ML Signal shell handoff so the application switches cleanly between the conventional optimization shell and the dedicated ML Signal workspace without losing context, mislabeled actions, or stale runtime affordances.
@@ -69,6 +73,7 @@ The visible promise is strong: when the app is in ML Signal mode, the shell shou
 - mounting the ML workspace without fully suppressing conflicting conventional surfaces
 - losing shell-mode restoration when loading or applying ML Signal runs
 - breaking the dedicated optimize-host mount behavior while refactoring the shell
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -77,6 +82,8 @@ The visible promise is strong: when the app is in ML Signal mode, the shell shou
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because shell handoff behavior spans several reactive stores and should remain test-driven.
 - [Tauri: calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because history/apply flows and ML actions eventually cross the Rust boundary while preserving shell-mode expectations.
 - [WAI-ARIA Authoring Practices](https://www.w3.org/WAI/ARIA/apg/) are relevant because mode-switching shells must keep action naming and focus expectations understandable.
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -92,6 +99,13 @@ The visible promise is strong: when the app is in ML Signal mode, the shell shou
    - workflow mode state
 4. Add tests that verify shell consistency rather than only single-component rendering.
 5. Keep ML Signal shell ownership additive and isolated instead of entangling it more deeply with the conventional optimize layout.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -100,6 +114,12 @@ The visible promise is strong: when the app is in ML Signal mode, the shell shou
 - [ ] Add or tighten tests for shell-mode restoration after loading/applying ML Signal runs.
 - [ ] Add or tighten tests ensuring conventional optimize content is suppressed when ML shell owns the mount.
 - [ ] Verify action text and shell labels match the actual ML workspace capabilities.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -107,12 +127,15 @@ The visible promise is strong: when the app is in ML Signal mode, the shell shou
 - run `MlSignalWorkspacePanel.test.ts`
 - run `DesktopTitlebar.test.ts`
 - run relevant `historyService.test.ts` cases covering ML run loading/applying
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the dedicated ML shell model rather than merging it back into the conventional optimize panel
 - prefer clearer mode ownership and tests over clever shared-shell abstractions
 - if a shell cleanup makes ML mode ambiguous, restore the more explicit dedicated handoff
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

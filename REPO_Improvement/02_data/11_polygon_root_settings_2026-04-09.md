@@ -69,12 +69,15 @@ Current shipped behavior includes:
 - silently changing the effective root without updating UI hints
 - breaking open/reveal folder behavior by changing which directory is treated as canonical
 - moving data destructively without explicit user intent
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Tauri Dialog Plugin](https://v2.tauri.app/plugin/dialog/) is relevant because root configuration already depends on explicit user-picked folders.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because root-info responses and startup snapshots behave like persisted contracts.
 - [MDN localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) is relevant because moved-root handling intersects with persisted startup restore state on the frontend.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Current shipped behavior includes:
 3. Document how root changes interact with selected Polygon dataset paths and startup restore snapshots.
 4. Keep root-derived hints and settings-store synchronization explicit.
 5. Add or tighten tests wherever root changes can rewrite stored paths or visible hints.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,22 +101,31 @@ Current shipped behavior includes:
 - [ ] Document move-existing semantics and current safety expectations.
 - [ ] Document path rewriting for moved Polygon roots.
 - [ ] Add or tighten tests for root moves and settings-store synchronization if behavior changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
 - perform one manual root-change flow with and without move-existing after root-related edits
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current non-destructive defaults when changing roots
 - prefer explicit rewrite behavior over silent invalidation where the app already supports safe rewrites
 - avoid introducing a new canonical root meaning without updating both data and settings surfaces together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/02_data/09_startup_dataset_restore_2026-04-09.md`
-- `REPO_Improvement/02_data/12_polygon_api_key_DATE.md`
+- `REPO_Improvement/02_data/12_polygon_api_key_2026-04-09.md`
 - `REPO_Improvement/01_shell/11_settings_storage_shortcuts_2026-04-08.md`

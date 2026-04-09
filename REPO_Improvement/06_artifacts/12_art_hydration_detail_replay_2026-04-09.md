@@ -69,6 +69,7 @@ Those payloads are intentionally different sizes and shapes. Hydration is the mi
 - widening detail or replay payloads without updating the consuming services and tests
 - silently merging payload semantics because the raw artifact JSON happens to contain enough data
 - weakening identity-based skip logic by changing the minimal hydration shape carelessly
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -85,6 +86,13 @@ Those payloads are intentionally different sizes and shapes. Hydration is the mi
 3. Keep minimal hydration small and purpose-built rather than expanding it toward detail.
 4. Keep family replay typed and result-oriented rather than turning it into raw artifact access.
 5. Expand tests that prove consumers stay on the right payload family.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -95,14 +103,21 @@ Those payloads are intentionally different sizes and shapes. Hydration is the mi
 - [ ] Add or tighten tests proving history/detail does not rely on hydration-only behavior.
 - [ ] Add or tighten tests proving workflow sync does not rely on detail-only fields.
 - [ ] Add or tighten tests proving family replay remains separate from hydration.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `run_artifacts.rs` tests
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/services/workflowArtifactsSync.test.ts`
-- run `npm --prefix web test -- src/stores/workflowArtifactsStore.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/workflowArtifactsSync.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowArtifactsStore.test.ts`
 - manually verify one history detail load, one workflow sync hydration, and one Meta-family replay flow
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -110,6 +125,7 @@ Those payloads are intentionally different sizes and shapes. Hydration is the mi
 - prefer adding a new typed payload over overloading an existing one
 - if a field moves between payload families, update every consumer and test in the same change
 - keep options-specific payloads out of this non-options contract doc
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

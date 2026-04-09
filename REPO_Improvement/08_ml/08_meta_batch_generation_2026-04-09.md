@@ -1,3 +1,7 @@
+# Meta Batch Generation Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the Meta Batch Generation surface so campaign-style batch selection, retry/resume, preload policy, and auto-meta/stage5 behavior stay understandable and operationally safe.
@@ -68,6 +72,7 @@ This is already more than a simple “run batch” button. The challenge is maki
 - letting retry/resume operate on stale or ambiguous dataset selection
 - weakening reveal-summary or resume affordances while reorganizing the tab
 - making advanced controls less transparent in the name of simplification
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +81,8 @@ This is already more than a simple “run batch” button. The challenge is maki
 - [Tauri event namespace](https://v2.tauri.app/es/reference/javascript/api/namespaceevent/) is relevant because campaign progress and summary updates are long-running runtime events surfaced to the frontend.
 - [Tauri: calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because batch generation controls ultimately map into a substantial Rust campaign request.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because batch/campaign summaries and requests are structured operational artifacts, not opaque text blobs.
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -90,6 +97,13 @@ This is already more than a simple “run batch” button. The challenge is maki
    - retry/resume
 4. Ensure batch summary preview and action buttons always reflect the current campaign state truthfully.
 5. Add tests for important control combinations and state transitions rather than only single actions.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -98,6 +112,12 @@ This is already more than a simple “run batch” button. The challenge is maki
 - [ ] Add or tighten tests for execution mode, preload policy, and auto-meta/auto-stage5 combinations.
 - [ ] Add or tighten tests for summary reveal and resume flows.
 - [ ] Improve help text and status messaging where batch controls currently assume too much user context.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -106,12 +126,15 @@ This is already more than a simple “run batch” button. The challenge is maki
 - run `metaServiceCampaignResume.test.ts`
 - run `metaServiceCampaignStrategy.test.ts`
 - run targeted campaign command tests in `commands_campaign.rs` if request semantics change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current batch capabilities and recovery flows
 - prefer clearer copy, grouping, and tests over hiding controls
 - if a UI cleanup makes retry/resume harder to trust, restore the more explicit current controls and refine incrementally
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

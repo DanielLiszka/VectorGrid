@@ -81,6 +81,7 @@ README and `RELEASE.md` already frame these as real product variants rather than
 - describing a build variant more broadly than the actual feature set supports
 - letting README/RELEASE naming drift from Cargo feature wiring
 - mixing kernel-lane benchmark numbers with non-kernel release wording
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -92,6 +93,8 @@ README and `RELEASE.md` already frame these as real product variants rather than
   - relevant because desktop packaging needs to preserve the intended variant semantics
 - [Tauri Windows installer docs](https://v2.tauri.app/ja/distribute/windows-installer/)
   - relevant because Windows packaging is the current release target described by the repo docs
+- [GitHub repository documentation](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  - relevant because public-repo docs and release operations should be maintained as first-class contributor and reviewer surfaces
 
 ## Proposed Improvement Approach
 
@@ -104,6 +107,13 @@ README and `RELEASE.md` already frame these as real product variants rather than
 3. Separate compile-time variant naming from runtime GPU availability diagnostics.
 4. Tie benchmark/report wording back to the exact variant used to produce it.
 5. Preserve CPU-only support as a first-class release requirement.
+6. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -114,6 +124,12 @@ README and `RELEASE.md` already frame these as real product variants rather than
 - [ ] Keep README and `RELEASE.md` variant language aligned.
 - [ ] Tie benchmark claims to explicit variants.
 - [ ] Add or tighten checks if variant wiring changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -121,16 +137,20 @@ README and `RELEASE.md` already frame these as real product variants rather than
 - run `powershell -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`
 - run `powershell -File scripts/run_gpu_perf_gate.ps1 -Mode candidate` when GPU is available
 - verify `README.md`, `RELEASE.md`, and Cargo feature wiring stay consistent
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep variant naming additive and explicit rather than collapsing multiple lanes into one vague “GPU” label
 - preserve CPU-only as the safe fallback path
 - if variant names change later, update release docs and benchmark wording in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/11_docs_ops/02_ptx_packaging_fallbacks_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/26_cpu_perf_gate_DATE.md`
-- `REPO_Improvement/10_tests_perf/27_gpu_perf_gate_DATE.md`
-- `REPO_Improvement/10_tests_perf/31_vectorbt_faceoff_DATE.md`
+- `REPO_Improvement/10_tests_perf/26_cpu_perf_gate_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/27_gpu_perf_gate_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/31_vectorbt_faceoff_2026-04-09.md`

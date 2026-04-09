@@ -68,6 +68,7 @@ This is already better than a single generic “no data” message, but the empt
 - mislabeling filtered-empty or top-k-disabled states as “no results”
 - hiding panel-specific prerequisites such as Top selection or Heatmap bins
 - moving copy away from live status regions where dynamic updates are currently announced
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ This is already better than a single generic “no data” message, but the empt
 - [MDN Accessibility: HTML](https://developer.mozilla.org/en-US/docs/Learn/Accessibility/HTML) is relevant because clear language and semantic structure matter most when a panel has no substantive chart or table content yet.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because readiness distinctions should come from shared workflow and analysis state instead of panel-local guesses.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because empty-state correctness is mostly a state-mapping contract that benefits from deterministic tests.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ This is already better than a single generic “no data” message, but the empt
 3. Treat next-action guidance as part of the contract for each state, not optional supporting text.
 4. Align empty-state wording with `useUiReadiness` and analysis-store truth rather than component-local heuristics.
 5. Add or tighten tests around the highest-risk distinctions, especially Top filter states and chart-panel prerequisites.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,15 +102,23 @@ This is already better than a single generic “no data” message, but the empt
 - [ ] Document when a state should include an explicit next action.
 - [ ] Document where live status text should remain attached to dynamic empty-state changes.
 - [ ] Add or tighten tests for distinct empty-state transitions across the result tabs.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/OverviewWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/TopWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/ParetoWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/DrillWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/HeatmapWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/OverviewWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/TopWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/ParetoWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/DrillWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/HeatmapWorkspacePanel.test.ts`
 - manually verify panel-specific next-action guidance with no data, loaded data, and completed runs
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -108,10 +126,11 @@ This is already better than a single generic “no data” message, but the empt
 - if a new readiness state is introduced later, update every affected results panel in one change
 - keep status-line and empty-state language synchronized so one does not contradict the other
 - prefer additive clarification over removing existing actionable hints
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/01_results_overview_2026-04-08.md`
 - `REPO_Improvement/04_results/02_results_top_table_2026-04-08.md`
 - `REPO_Improvement/04_results/08_results_display_adequacy_2026-04-08.md`
-- `REPO_Improvement/04_results/15_dataset_stale_provenance_cues_DATE.md`
+- `REPO_Improvement/04_results/15_dataset_stale_provenance_cues_2026-04-09.md`

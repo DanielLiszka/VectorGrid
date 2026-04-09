@@ -1,6 +1,6 @@
 # Stage 4 Request Contract Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -63,6 +63,7 @@ Users can configure Stage 4 from the Meta workspace using strategy kind, timefra
 - hiding Stage 4 vs Stage 5 alias behavior
 - weakening numeric clamping and fallback behavior that currently protects bad input
 - letting Stage 4 request cleanup silently change downstream meta behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -70,6 +71,8 @@ Users can configure Stage 4 from the Meta workspace using strategy kind, timefra
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because Stage 4 request semantics cross the command boundary into backend normalization.
 - [scikit-learn probability calibration](https://scikit-learn.org/stable/modules/calibration.html) is relevant because Stage 4 ranking and threshold semantics assume calibrated confidence-style scores.
 - [RFC 8259](https://datatracker.ietf.org/doc/html/rfc8259) is relevant because Stage 4 request/result payloads and saved artifact fields are JSON contracts.
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Users can configure Stage 4 from the Meta workspace using strategy kind, timefra
 4. Document source-artifact resolution and the restriction that Stage 4 sources come from saved meta artifacts under the runs directory.
 5. Document Stage 4 / Stage 5 naming and artifact compatibility aliases so the current hybrid naming is not surprising.
 6. Expand tests if any request semantics or alias behavior changes.
+7. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -97,6 +107,12 @@ Users can configure Stage 4 from the Meta workspace using strategy kind, timefra
 - [ ] Add or maintain request-builder tests for defaults and explicit overrides.
 - [ ] Keep Meta workspace UI copy aligned with the documented contract.
 - [ ] Avoid silent semantic drift when renaming compatibility aliases later.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -104,16 +120,19 @@ Users can configure Stage 4 from the Meta workspace using strategy kind, timefra
 - run `npm test -- src/services/metaService.test.ts`
 - run Meta workspace component tests
 - run targeted Stage 4 tests in `src-tauri/src/commands_meta.rs`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current field names, defaults, and alias behavior unless a documented migration is ready
 - improve clarity before changing semantics
 - if Stage 4 and Stage 5 naming is unified later, keep compatibility aliases until saved workflows are migrated
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
-- `REPO_Improvement/08_ml/40_meta_ml_status_surface_DATE.md`
-- `REPO_Improvement/06_artifacts/32_campaign_summary_checkpoint_DATE.md`
+- `REPO_Improvement/08_ml/40_meta_ml_status_surface_2026-04-09.md`
+- `REPO_Improvement/06_artifacts/32_campaign_summary_checkpoint_2026-04-09.md`
 - `REPO_Improvement/11_docs_ops/10_research_source_policy_2026-04-08.md`

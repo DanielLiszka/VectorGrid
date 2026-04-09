@@ -92,6 +92,7 @@ This makes the current system usable, but it also makes the naming overlap easy 
 - renaming score fields in ways that obscure Stage 3 versus Stage 5 ownership
 - weakening artifact/report traceability for `meta_score` and `final_score`
 - introducing silent normalization or reweighting without documenting the behavior change
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -103,6 +104,8 @@ This makes the current system usable, but it also makes the naming overlap easy 
   - relevant because these weight-bearing requests and artifacts behave like versioned contracts
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because stage naming and score ownership cross a frontend/backend boundary and need explicit contract discipline
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -115,6 +118,13 @@ This makes the current system usable, but it also makes the naming overlap easy 
 4. Document downstream consumers so future weight edits are treated as behavior changes, not local refactors.
 5. Improve artifact/report traceability by documenting where the current system exposes scores and where it does not yet expose the originating weight vector strongly enough.
 6. Keep regression and snapshot tooling in scope for any future weight change.
+7. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -128,15 +138,23 @@ This makes the current system usable, but it also makes the naming overlap easy 
 - [ ] Add or maintain regression coverage for weight-sensitive behavior.
 - [ ] Add or maintain snapshot coverage for score-field compatibility.
 - [ ] Preserve naming clarity between Stage 3 and Stage 5 score fields.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
 - run targeted tests in `crates/app_core/src/meta_select.rs`
 - run targeted Stage 4 / Stage 5 tests in `src-tauri/src/commands_meta.rs`
-- run `npm --prefix web test -- src/services/metaStage4RequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/services/metaStage4RequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
 - run the regression/snapshot bins that currently use `MetaScoreWeights`
 - inspect one Stage 3 artifact and one meta workbook to confirm `meta_score` and `final_score` still round-trip clearly
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -144,6 +162,7 @@ This makes the current system usable, but it also makes the naming overlap easy 
 - if Stage 3 weights ever become user-editable, add that surface without breaking current artifact and replay shapes
 - keep Stage 3 and Stage 5 score naming distinct even if UX copy is later simplified
 - prefer additive report metadata over changing the meaning of existing score fields
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
@@ -151,4 +170,4 @@ This makes the current system usable, but it also makes the naming overlap easy 
 - `REPO_Improvement/08_ml/23_meta_grouping_clustering_2026-04-09.md`
 - `REPO_Improvement/08_ml/25_meta_evidence_flags_2026-04-09.md`
 - `REPO_Improvement/08_ml/35_stage4_request_contract_2026-04-08.md`
-- `REPO_Improvement/06_artifacts/17_report_meta_workbook_DATE.md`
+- `REPO_Improvement/06_artifacts/17_report_meta_workbook_2026-04-09.md`

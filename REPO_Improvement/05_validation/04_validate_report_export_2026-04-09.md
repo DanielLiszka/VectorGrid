@@ -70,6 +70,7 @@ The current export path is deliberately layered: validation run -> build report 
 - losing `reportXlsxPath` updates after a successful export
 - conflating Stage 3 fallback with true validation-report generation
 - degrading output quality in saved XLSX reports while leaving status messages unchanged
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -78,6 +79,8 @@ The current export path is deliberately layered: validation run -> build report 
 - [JSON Schema - What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema) is relevant because report JSON already behaves like an explicit contract shared across service, Tauri command, and artifact persistence flows.
 - [Calling the Frontend from Rust | Tauri](https://v2.tauri.app/es/develop/calling-frontend/) is relevant because command/event boundaries affect how report generation status and follow-up actions should be surfaced to the frontend.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because export affordances and status-line outcomes should stay observable from end-user flows, not only from low-level unit tests.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -90,6 +93,13 @@ The current export path is deliberately layered: validation run -> build report 
 3. Keep report-path updates coupled to successful save operations only.
 4. Treat workbook quality/readability as a validation-surface requirement, not just a backend formatting detail.
 5. Add tests around every important branch so status lines, persisted paths, and actions stay aligned.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -100,14 +110,21 @@ The current export path is deliberately layered: validation run -> build report 
 - [ ] Document the expected status-line language for success, partial success, and fallback cases.
 - [ ] Add or tighten tests for auto-export failure, artifact-backed save, direct fallback, and Stage 3 fallback.
 - [ ] Add or tighten tests for preserved report-path behavior after successful export.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/validationService.test.ts`
-- run `npm --prefix web test -- src/components/ValidationWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/components/ValidationWorkspacePanel.test.ts`
 - run `cargo test -p ta_desktop_demo_app validation_xlsx_report_tests -- --nocapture`
 - run targeted `commands_reports.rs` report-builder tests
 - manually verify JSON export, XLSX export, and reports-folder open behavior from the validation tab
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -115,6 +132,7 @@ The current export path is deliberately layered: validation run -> build report 
 - prefer additive status clarity over changing export semantics
 - keep Stage 3 fallback explicit until a better dedicated validation fallback exists
 - if report-path semantics change, update artifact persistence and history reopen flows in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -25,6 +25,7 @@ Out of scope:
 The shell already has a dedicated debug surface:
 
 - `resultsTab = debug` maps into the debug workspace posture
+- `App.vue` only mounts the panel when `debugPanelActive` is true
 - the debug panel teleports into a dedicated shell mount host
 - it presents raw analysis JSON for troubleshooting
 - it is intentionally separated from the main review flow
@@ -36,6 +37,8 @@ The current product meaning is explicit: this is an operator/developer troublesh
 
 - `web/src/components/DebugWorkspacePanel.vue`
   - debug panel layout, raw JSON preview, timestamp, and status output
+- `web/src/App.vue`
+  - mounts the debug panel only when the debug shell state is active
 - `web/src/stores/analysisStore.ts`
   - owns `debugOutputPreview`, status, and update timestamp
 - `web/src/stores/workflowStore.ts`
@@ -71,6 +74,7 @@ The current product meaning is explicit: this is an operator/developer troublesh
 - removing the dedicated debug workspace posture from the shell grammar silently
 - breaking debug panel mount-host readiness
 - losing raw payload visibility when troubleshooting is needed most
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -82,6 +86,8 @@ The current product meaning is explicit: this is an operator/developer troublesh
   - relevant because the debug panel should stay lightweight and isolated
 - [Playwright best practices](https://playwright.dev/docs/best-practices)
   - relevant because shell-posture regressions affecting the debug workspace are easier to catch through higher-level interaction tests
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -92,6 +98,13 @@ The current product meaning is explicit: this is an operator/developer troublesh
    - analysis store owns raw payload content
 3. Add a dedicated `DebugWorkspacePanel` test.
 4. Keep the panel intentionally simple and separate from the main review experience.
+5. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -100,19 +113,28 @@ The current product meaning is explicit: this is an operator/developer troublesh
 - [ ] Add direct component coverage for `DebugWorkspacePanel.vue`.
 - [ ] Preserve separation between debug troubleshooting and the main analysis flow.
 - [ ] Keep debug shell posture synchronized with workflow-store grammar.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - add and run a dedicated `DebugWorkspacePanel` test
-- run `npm --prefix web test -- src/components/VueWorkspaceShell.test.ts`
+- run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
 - run relevant analysis-store tests if debug-output behavior changes
 - manually verify the debug workspace still mounts and shows raw output in the `pro` posture
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the debug workspace available even if most users never use it; it is a troubleshooting tool
 - if richer debug tooling is added later, preserve the current raw JSON escape hatch until parity exists
 - keep debug output separate from user-facing result narratives
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

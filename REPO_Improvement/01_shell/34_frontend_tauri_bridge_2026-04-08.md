@@ -1,6 +1,6 @@
 # Frontend Tauri Bridge Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -83,6 +83,7 @@ Users do not see this bridge directly, but many visible shell behaviors depend o
 - weakening error normalization or typed-runtime detection
 - drifting instrumentation channels away from real backend event channels
 - desynchronizing `commands.ts` from `src-tauri/src/lib.rs`
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -96,6 +97,8 @@ Users do not see this bridge directly, but many visible shell behaviors depend o
   - relevant because event subscription semantics underpin `events.ts`
 - [Tauri JS Mocks API](https://v2.tauri.app/reference/javascript/api/namespacemocks/)
   - relevant because mock-runtime coverage should stay aligned with official mock APIs
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -110,6 +113,13 @@ Users do not see this bridge directly, but many visible shell behaviors depend o
    - bridge code is the only normal place raw Tauri APIs should appear
 3. Keep generated command inventory and checker scripts part of the bridge contract, not optional tooling.
 4. Normalize plugin-bridge failures through the same diagnostics path as command invokes when practical.
+5. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -119,20 +129,29 @@ Users do not see this bridge directly, but many visible shell behaviors depend o
 - [ ] Document shared event-listener behavior, retry behavior, and teardown expectations.
 - [ ] Document instrumentation channel ownership and tracked-command policy.
 - [ ] Add or tighten bridge tests if wrappers or generation rules change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/tauri/commands.test.ts`
-- run `npm --prefix web test -- src/tauri/invoke.contract.test.ts`
-- run `npm --prefix web test -- src/tauri/invoke.mockIPC.test.ts`
-- run `npm --prefix web test -- src/tauri/events.test.ts`
-- run `npm --prefix web test -- src/tauri/instrumentation.mockIPC.test.ts`
+- run `npm --prefix web run test -- src/tauri/commands.test.ts`
+- run `npm --prefix web run test -- src/tauri/invoke.contract.test.ts`
+- run `npm --prefix web run test -- src/tauri/invoke.mockIPC.test.ts`
+- run `npm --prefix web run test -- src/tauri/events.test.ts`
+- run `npm --prefix web run test -- src/tauri/instrumentation.mockIPC.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current bridge wrapper layer even if implementation details change internally
 - update generation/check scripts in the same change as command registry format changes
 - keep mock-runtime helpers aligned with production bridge semantics, not as a separate fake protocol
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

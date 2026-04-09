@@ -68,6 +68,7 @@ The shipped broker path is Alpaca-only. Current behavior means:
 - hiding the Alpaca-only nature of the current connectivity surface
 - collapsing broker-confirmed and optimistic local state into one misleading review model
 - broadening connectivity promises beyond the currently supported strategies and broker path
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -79,6 +80,8 @@ The shipped broker path is Alpaca-only. Current behavior means:
   - relevant because broker connectivity and runner state remain authoritative on the Rust side
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because all broker-facing checks cross a structured command boundary
+- [Alpaca Orders](https://docs.alpaca.markets/docs/orders-at-alpaca)
+  - relevant because live execution, monitoring, and order-state handling sit behind provider contracts that must remain explicit in a public-facing trading app
 
 ## Proposed Improvement Approach
 
@@ -88,6 +91,13 @@ The shipped broker path is Alpaca-only. Current behavior means:
 4. Document the current credential posture honestly, including browser-storage caveats.
 5. Preserve the current supported-strategy limits in the connectivity doc.
 6. Tie connectivity docs to snapshot and execution tests, not only one-shot execution tests.
+7. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -99,22 +109,32 @@ The shipped broker path is Alpaca-only. Current behavior means:
 - [ ] Document current credential-storage posture and its limits.
 - [ ] Preserve service/store tests for connectivity and snapshot behavior.
 - [ ] Preserve targeted backend tests for broker path normalization and execution gating.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/executionService.test.ts`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/executionService.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
 - run targeted broker/execution tests in `src-tauri/src/commands_execution.rs`
 - manually verify:
   - paper connectivity check
   - live connectivity check with current credentials model
   - broker snapshot refresh after a one-shot execution
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current Alpaca-only truth in docs and UX until another broker actually exists
 - prefer additive credential hardening over pretending current storage already has OS-secret guarantees
 - keep broker snapshot semantics narrow and explicit rather than overextending into portfolio-management claims
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

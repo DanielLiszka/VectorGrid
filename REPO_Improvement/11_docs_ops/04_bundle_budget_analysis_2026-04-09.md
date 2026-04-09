@@ -68,6 +68,7 @@ This is already part of the quality posture for the shipped desktop shell, even 
 - relying on analysis mode without keeping the deterministic budget gate
 - letting large lazy chunks accumulate while total JS still looks acceptable
 - treating bundle-budget violations as frontend-only noise when they affect desktop startup and shell responsiveness
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -79,6 +80,8 @@ This is already part of the quality posture for the shipped desktop shell, even 
   - relevant because the repo already uses bundle-analysis tooling beyond raw byte counts
 - [web.dev: Code splitting with dynamic imports](https://web.dev/articles/reduce-javascript-payloads-with-code-splitting)
   - relevant because lazy-chunk behavior is part of the current budget model
+- [GitHub repository documentation](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  - relevant because public-repo docs and release operations should be maintained as first-class contributor and reviewer surfaces
 
 ## Proposed Improvement Approach
 
@@ -87,6 +90,13 @@ This is already part of the quality posture for the shipped desktop shell, even 
 3. Treat analysis-mode output as a follow-up diagnostic, not as the primary gate.
 4. Tie budget changes to real product reasoning instead of local convenience.
 5. Keep desktop startup/readiness implications in scope when reviewing bundle growth.
+6. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -96,22 +106,32 @@ This is already part of the quality posture for the shipped desktop shell, even 
 - [ ] Document how budget changes must be justified.
 - [ ] Keep bundle-budget review tied to desktop shell/startup concerns.
 - [ ] Add or tighten checks if the build-output structure changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
 - run `npm --prefix web run build`
 - run `npm --prefix web run check:bundle-budget`
 - run `npm --prefix web run analyze:bundle` when the budget gate is threatened or changed
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the current deterministic budget gate even if analysis tooling improves
 - if chunk structure changes materially, update the checker and its documentation together
 - treat threshold changes as compatibility-significant for desktop productization
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/11_docs_ops/03_frontend_build_handoff_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/08_fe_ui_baseline_capture_DATE.md`
-- `REPO_Improvement/10_tests_perf/10_browser_shell_ux_DATE.md`
-- `REPO_Improvement/10_tests_perf/39_post_release_telemetry_review_DATE.md`
+- `REPO_Improvement/10_tests_perf/08_fe_ui_baseline_capture_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/10_browser_shell_ux_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/39_post_release_telemetry_review_2026-04-09.md`

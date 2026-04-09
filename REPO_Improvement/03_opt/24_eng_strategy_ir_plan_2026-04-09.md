@@ -69,6 +69,7 @@ The frontend builder already operates against that reality through the preview p
 - silent broadening or narrowing of the GPU-v1 subset
 - breaking static-profile compatibility while editing dynamic-indicator rules
 - weakening plan determinism through implicit route-policy changes
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ The frontend builder already operates against that reality through the preview p
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because preview and formatting commands expose IR behavior across the desktop boundary.
 - [NVIDIA CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because the GPU-v1 subset should stay tied to explicit capability constraints, not wishful generalization.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because frontend builder and preview state should remain subordinate to backend schema truth.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ The frontend builder already operates against that reality through the preview p
 3. Document the reduced GPU-v1 subset as an explicit product contract.
 4. Add parity checks between builder output, preview acceptance, and plan compilation.
 5. Treat route-policy changes as compatibility-affecting plan changes, not incidental refactors.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,6 +102,11 @@ The frontend builder already operates against that reality through the preview p
 - [ ] Document CPU versus GPU-unified plan compilation behavior.
 - [ ] Document the reduced GPU-v1 subset and its purpose.
 - [ ] Add or tighten parity tests across builder, preview, and plan compilation.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -99,7 +114,9 @@ The frontend builder already operates against that reality through the preview p
 - run targeted plan-compilation tests in `crates/app_core/src/strategy_plan.rs`
 - run targeted preview and capability tests in `crates/app_core/src/strategy_dynamic.rs`
 - run `cargo test -p ta_desktop_demo_app commands_dynamic`
-- run `npm --prefix web test -- src/strategies/dynamicDoubleMaBuilder.test.ts`
+- run `npm --prefix web run test -- src/strategies/dynamicDoubleMaBuilder.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -107,6 +124,7 @@ The frontend builder already operates against that reality through the preview p
 - prefer additive preview detail over silently broadening the accepted subset
 - keep builder constraints conservative if backend support is uncertain
 - update builder, preview, and plan docs together when schema or route support changes
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

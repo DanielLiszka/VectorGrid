@@ -66,6 +66,7 @@ This doc exists to freeze that requirement: the chart image alone is not enough.
 - making the chart the only practical way to continue analysis
 - collapsing readiness warnings into vague “no chart” output
 - presenting chart output that looks authoritative when settings did not actually enable that surface
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -73,6 +74,8 @@ This doc exists to freeze that requirement: the chart image alone is not enough.
 - [WAI-ARIA Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant because readable chart output also depends on clear panel-level context within the broader results workflow.
 - [ARIA: status role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/status_role) is relevant because chart metadata and readiness cues are part of the visible analytical output.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because readability should be judged by rendered output and user paths, not internal chart state alone.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ This doc exists to freeze that requirement: the chart image alone is not enough.
 3. Preserve explicit Top-results handoff so the charts stay optional analytical lenses.
 4. Keep legend, palette, and axis cues synchronized with actual chart semantics.
 5. Add or tighten tests whenever visible chart guidance or export affordances change.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,13 +99,20 @@ This doc exists to freeze that requirement: the chart image alone is not enough.
 - [ ] Document axis, legend, and palette language as part of the output contract.
 - [ ] Document Top-results handoff visibility requirements.
 - [ ] Add or tighten tests for rendered chart guidance and readiness output.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/ParetoWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/HeatmapWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/ParetoWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/HeatmapWorkspacePanel.test.ts`
 - manually review Pareto and Heatmap on recent runs with real data
 - capture before/after screenshots if chart framing or legend copy changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -103,10 +120,11 @@ This doc exists to freeze that requirement: the chart image alone is not enough.
 - prefer additive labels and clearer legend guidance over reducing visible analytical context
 - if chart palette or axis options evolve later, update visible framing and help text in the same change
 - keep readability improvements compatible with both fresh and hydrated result views
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/04_results_pareto_2026-04-09.md`
 - `REPO_Improvement/04_results/06_results_heatmap_2026-04-09.md`
 - `REPO_Improvement/04_results/19_chart_rendering_composables_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/05_fe_results_surface_adequacy_DATE.md`
+- `REPO_Improvement/10_tests_perf/05_fe_results_surface_adequacy_2026-04-09.md`

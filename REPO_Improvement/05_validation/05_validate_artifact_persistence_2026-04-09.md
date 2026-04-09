@@ -70,6 +70,7 @@ Current behavior is intentionally forgiving: if validation artifact persistence 
 - updating workflow-artifact state with a shape that later hydration/detail flows cannot consume
 - breaking the distinction between current run payload and current validation payload inside the workflow-artifacts store
 - making saved validation artifacts non-replayable from history or sync surfaces
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -78,6 +79,8 @@ Current behavior is intentionally forgiving: if validation artifact persistence 
 - [RFC 8785 - JSON Canonicalization Scheme (JCS)](https://www.rfc-editor.org/rfc/rfc8785) is relevant because config-fingerprint and artifact identity depend on stable canonical JSON behavior.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because workflow artifacts are shared application state, not panel-local data.
 - [Pinia Testing Cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because persistence and hydration correctness should remain testable through deterministic store/service scenarios.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -86,6 +89,13 @@ Current behavior is intentionally forgiving: if validation artifact persistence 
 3. Keep `applyWorkflowArtifactsPayload` aligned with the saved artifact shape rather than allowing divergent frontend-only normalization.
 4. Treat persistence status and validation status as separate but adjacent user-facing outcomes.
 5. Add targeted tests around partial-success cases so later refactors cannot quietly blur these contracts.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -96,14 +106,21 @@ Current behavior is intentionally forgiving: if validation artifact persistence 
 - [ ] Document how current-run and current-validation payloads must remain separable in the workflow-artifacts store.
 - [ ] Add or tighten tests for successful persistence, partial persistence failure, and later hydration compatibility.
 - [ ] Add or tighten tests for persisted report-path propagation after export.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/validationService.test.ts`
-- run `npm --prefix web test -- src/stores/workflowArtifactsStore.test.ts`
-- run `npm --prefix web test -- src/services/workflowArtifactsSync.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowArtifactsStore.test.ts`
+- run `npm --prefix web run test -- src/services/workflowArtifactsSync.test.ts`
 - run targeted `run_artifacts.rs` tests
 - manually run validation, export XLSX, then reload/reopen the saved artifact path through history
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -111,6 +128,7 @@ Current behavior is intentionally forgiving: if validation artifact persistence 
 - prefer additive payload hardening over schema-breaking changes
 - if persistence semantics tighten, update history/detail/hydration docs and tests at the same time
 - keep frontend normalization compatible with existing saved artifacts first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -67,6 +67,7 @@ Current behavior includes:
 - breaking fallback root detection when running from built artifacts or unusual working directories
 - merging curated sample CSV behavior with repo inventory behavior unintentionally
 - changing truncation reporting without updating consumers
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -81,6 +82,13 @@ Current behavior includes:
 3. Freeze max-file, recursion, sorting, and truncation semantics.
 4. Make it explicit which consumers need path-only listing and which need identity-enriched listing.
 5. Preserve deterministic listing behavior across dev and built-runtime contexts.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,21 +97,30 @@ Current behavior includes:
 - [ ] Document recursive and cap behavior together with `truncated` semantics.
 - [ ] Record current consumers of both discovery paths.
 - [ ] Add tests if fallback root detection or traversal behavior changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `dataService.test.ts` coverage for sample CSVs
 - run meta-service tests for repo inventory consumers
 - perform one manual command check from the current workspace root after any discovery refactor
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep curated sample-CSV behavior intact unless a better user-facing replacement already exists
 - prefer documenting current search rules before changing them
 - avoid adding new discovery breadth without an explicit scale and perf review
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/02_data/01_repo_csv_inventory_2026-04-09.md`
 - `REPO_Improvement/02_data/08_repo_data_browser_ux_2026-04-09.md`
-- `REPO_Improvement/02_data/32_workflow_bootstrap_data_DATE.md`
+- `REPO_Improvement/02_data/32_workflow_bootstrap_data_2026-04-09.md`

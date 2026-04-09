@@ -1,6 +1,6 @@
 # Artifact Hydration Contract Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -65,6 +65,7 @@ The app can restore the current workflow shell from the latest saved run artifac
 - silently dropping `dataset_meta`, tags, or `ml_signal` from hydrated current-run state
 - changing validation hydration semantics without updating workflow sync and analysis refresh
 - making hydration depend on fields that are not guaranteed in currently valid saved artifacts
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ The app can restore the current workflow shell from the latest saved run artifac
   - relevant because hydration is a command-mediated boundary crossing
 - [Vue: State Management](https://vuejs.org/guide/scaling-up/state-management.html)
   - relevant because hydration is fundamentally shared workflow state restoration
+- [JSON Schema: What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema)
+  - relevant because artifacts, reports, manifests, and replay payloads behave like versioned serialized contracts that should stay explicit and reviewable
 
 ## Proposed Improvement Approach
 
@@ -86,6 +89,13 @@ The app can restore the current workflow shell from the latest saved run artifac
    - identity/skip logic
 3. Document which artifact fields are preserved into hydration and which stay detail-only.
 4. Tie hydration contract changes to workflow sync and analysis refresh behavior in the same plan.
+5. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -96,19 +106,27 @@ The app can restore the current workflow shell from the latest saved run artifac
 - [ ] Document how hydration interacts with workflow artifact store normalization.
 - [ ] Document which fields remain detail-only and should not be assumed in hydration.
 - [ ] Add or tighten tests if hydration shape or skip logic changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted tests in `src-tauri/src/run_artifacts.rs`
-- run `npm --prefix web test -- src/services/workflowArtifactsSync.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/stores/workflowStore.test.ts`
+- run `npm --prefix web run test -- src/services/workflowArtifactsSync.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowStore.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve hydration payload compatibility even if artifact detail grows
 - keep identity-based skip behavior conservative rather than over-eager
 - if hydration shape changes, update both builder and frontend normalization together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

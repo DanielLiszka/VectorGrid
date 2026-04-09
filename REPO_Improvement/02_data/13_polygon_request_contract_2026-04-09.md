@@ -64,12 +64,15 @@ Current user-facing behavior therefore includes:
 - dropping pair-style or native-colon symbol support by accident
 - changing stock adjusted defaults without coordinating frontend and backend together
 - breaking top-off request derivation from manifest-backed dataset identity
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Polygon Aggregates / Custom Bars](https://polygon.io/docs/rest/stocks/aggregates/custom-bars) is relevant because current request fields map directly onto Polygon aggregate requests.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because download requests behave like a versioned command payload crossing the frontend/backend boundary.
 - [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) is relevant because the invoke payload is effectively a JSON request contract where null-versus-omitted field meaning matters.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -78,6 +81,13 @@ Current user-facing behavior therefore includes:
 3. Make “always cache 1m, then resample” explicit in the contract rather than incidental code behavior.
 4. Document stock-adjusted defaults and market-specific differences clearly.
 5. Tie request changes back to both frontend tests and backend parsing tests.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -86,18 +96,27 @@ Current user-facing behavior therefore includes:
 - [ ] Document requested timeframe versus cached base timeframe semantics.
 - [ ] Document top-off request derivation from manifest datasets.
 - [ ] Add or tighten tests if normalization rules or defaults change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
 - run targeted backend Polygon tests for request parsing and top-off request construction
 - manually verify one stock, one FX/crypto, and one native-ticker request after any contract change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current accepted symbol forms unless a migration is explicit
 - prefer clearer documentation over silent narrowing of accepted requests
 - keep base-1m caching as an explicit product rule until the architecture changes materially
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

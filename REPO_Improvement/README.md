@@ -15,6 +15,10 @@ Canonical planned-slot meta docs:
 - [00_program_index_2026-04-09.md](./00_meta/00_program_index_2026-04-09.md)
 - [01_doc_creation_tracker_2026-04-09.md](./00_meta/01_doc_creation_tracker_2026-04-09.md)
 
+Current execution-status companion doc:
+
+- [execution_ledger_2026-04-09.md](./00_meta/execution_ledger_2026-04-09.md)
+
 Active scope:
 
 - every current repo/project surface except anything options-related
@@ -23,10 +27,19 @@ Current catalog status:
 
 - `356` planned docs in the active `v7` catalog
 - planned-doc creation is now complete for the current catalog
-- `365` Markdown files now exist under `REPO_Improvement/`
+- second-pass implementation-doc hardening is now complete for the current catalog
+- `363` Markdown files now exist under `REPO_Improvement/`
 - `356` unique planned-doc slots are represented on disk
 - `343` unique non-meta implementation-plan slots are represented on disk
-- `346` raw non-meta implementation-plan files exist on disk because `01_shell` still contains `3` duplicate date-variant planned-slot files
+- `343` raw non-meta implementation-plan files exist on disk
+
+Second-pass hardening highlights:
+
+- every implementation doc now carries explicit public-repo code-quality framing
+- every implementation doc now includes stronger acceptance-evidence and checklist detail
+- all missing title/metadata blocks in the implementation-doc corpus were restored
+- all `_DATE.md` placeholder links in the implementation-doc corpus were resolved
+- legacy `npm --prefix web test -- ...` verification command forms in the implementation-doc corpus were normalized
 
 External routing anchor:
 

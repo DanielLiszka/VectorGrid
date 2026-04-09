@@ -83,6 +83,7 @@ This means dynamic Double-MA is already a real product surface, but one that is 
 - breaking CPU fallback plan/context generation
 - widening the dynamic surface without catalog/runtime-plan verification
 - letting frontend request shaping imply support that backend runtime plans do not actually provide
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -92,6 +93,8 @@ This means dynamic Double-MA is already a real product surface, but one that is 
 - [serde_json `Value` docs](https://docs.rs/serde_json/latest/serde_json/value/) are relevant because dynamic IR and catalog metadata flow through structured JSON-like request/config payloads.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because the dynamic request/catalog/runtime-plan boundary is effectively a schema contract even if not yet formalized as one.
 - [Calling Rust from the frontend | Tauri](https://v2.tauri.app/develop/calling-rust/) is relevant because the dynamic builder/preview path already relies on a dedicated Tauri command boundary.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -106,6 +109,13 @@ This means dynamic Double-MA is already a real product surface, but one that is 
 3. Expand verification where product-facing exact-route features depend on dynamic plan capabilities.
 4. Keep route-note and capability reporting tied to actual runtime-plan support.
 5. Keep dynamic indicator growth catalog-driven and test-backed.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -117,14 +127,23 @@ This means dynamic Double-MA is already a real product surface, but one that is 
 - [ ] Add or tighten tests for dynamic route notes and exact-kernel feature gating.
 - [ ] Add or tighten tests for lazy CPU fallback plan/context behavior.
 - [ ] Add parity coverage between frontend request shaping and backend runtime-plan support.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
 - run targeted tests in `crates/app_core/src/double_ma.rs`
 - run targeted tests in `crates/app_core/src/strategy_dynamic.rs`
 - run targeted tests in `crates/app_core/src/indicator_catalog.rs`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
 - manually inspect one dynamic plan that stays exact-GPU-capable and one that falls back to a non-exact route
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -132,6 +151,7 @@ This means dynamic Double-MA is already a real product surface, but one that is 
 - keep CPU fallback intact even if GPU support expands
 - if new dynamic indicators are added, land catalog, runtime-plan, and route-note coverage together
 - prefer additive capability reporting over hiding unsupported dynamic-plan features
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

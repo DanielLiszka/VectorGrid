@@ -1,6 +1,6 @@
 # ML Signal Strategy Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -71,6 +71,7 @@ Those stages are driven from the dedicated ML workspace, persist through the nor
 - dropping artifact linkage or model-bundle visibility
 - making stage transitions less clear while trying to simplify the surface
 - introducing feature creep that is really a new ML product lane, not an improvement
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -80,6 +81,8 @@ Those stages are driven from the dedicated ML workspace, persist through the nor
 - [CatBoost prediction docs](https://catboost.ai/docs/en/features/prediction) is relevant because imported model-score semantics and probability/raw-margin expectations can differ depending on upstream model tooling.
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant for keeping stage payloads and artifacts contractual.
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because each ML stage crosses an explicit command boundary.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -92,6 +95,13 @@ Those stages are driven from the dedicated ML workspace, persist through the nor
 3. Document why standard optimizer analysis views intentionally stay empty for ML Signal artifacts so that “missing analysis” is not mistaken for a bug.
 4. Keep artifact attachment, model-bundle status, and stage-specific status messaging tied to this strategy-local contract.
 5. Preserve separation from the standard optimize/validate lane while improving cross-workflow artifact reuse and replay clarity.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -105,6 +115,12 @@ Those stages are driven from the dedicated ML workspace, persist through the nor
 - [ ] Add or tighten stage-specific tests if workflow semantics change.
 - [ ] Preserve strategy-local discoverability in UI, services, and backend commands.
 - [ ] Keep true new-feature ideas labeled out of improvement scope.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -112,16 +128,20 @@ Those stages are driven from the dedicated ML workspace, persist through the nor
 - run ML workspace component tests
 - run targeted Rust ML-signal tests in `ta_app_core`
 - manually review one end-to-end ML Signal run if stage semantics change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current staged ML Signal workflow
 - improve naming and stage clarity without removing existing artifact/report hooks
 - if shared infrastructure is reused more aggressively later, keep ML Signal’s distinct workflow contract visible
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
-- `REPO_Improvement/08_ml/11_mlsignal_dataset_export_DATE.md`
-- `REPO_Improvement/08_ml/16_mlsignal_score_cache_build_DATE.md`
+- `REPO_Improvement/08_ml/11_mlsignal_dataset_export_2026-04-08.md`
+- `REPO_Improvement/08_ml/16_mlsignal_score_cache_build_2026-04-08.md`
 - `REPO_Improvement/08_ml/19_mlsignal_validation_flow_2026-04-08.md`
 - `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`

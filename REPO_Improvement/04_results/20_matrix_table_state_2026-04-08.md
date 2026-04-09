@@ -1,6 +1,6 @@
 # Matrix Table State Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -63,6 +63,7 @@ Several non-options panels share table infrastructure for dense matrix-like data
 - losing sort or visibility truthfulness across hydration and replay
 - introducing a global table-state model that incorrectly couples unrelated panels
 - weakening keyboard/a11y behavior while chasing persistence features
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -70,6 +71,8 @@ Several non-options panels share table infrastructure for dense matrix-like data
 - [TanStack column visibility API](https://tanstack.com/table/v8/docs/api/features/column-visibility) is relevant for documenting stable persistence boundaries.
 - [WAI ARIA sortable table example](https://www.w3.org/WAI/ARIA/apg/patterns/table/examples/sortable-table/) is relevant for truthful sort-state announcements and controls.
 - [MDN: `localStorage`](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) is relevant for persistence and migration behavior.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -78,6 +81,13 @@ Several non-options panels share table infrastructure for dense matrix-like data
 3. Document reset and migration behavior for stored table preferences when columns are renamed, split, or removed.
 4. Tighten a11y expectations so visual sort state, stored sort state, and ARIA announcements match.
 5. Expand tests around add/remove/reorder scenarios and state persistence across hydration/replay.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,6 +99,11 @@ Several non-options panels share table infrastructure for dense matrix-like data
 - [ ] Add tests for column add/remove/reorder compatibility.
 - [ ] Add tests for persistence boundaries across Top, Validation, Meta, and Execution panels.
 - [ ] Verify dense-table performance and scanability are not degraded.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -96,17 +111,21 @@ Several non-options panels share table infrastructure for dense matrix-like data
 - run any composable-level table-state tests
 - run browser UX smoke on at least one dense table flow
 - manually verify stored-state migration behavior if column identifiers or persistence rules change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing column-visibility persistence where possible
 - if stored-state migration is too ambiguous, prefer an explicit reset path over silent corruption
 - treat new persisted state as additive and panel-aware rather than forcing one global table preference model
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/08_results_display_adequacy_2026-04-08.md`
-- `REPO_Improvement/04_results/11_out_top_results_table_DATE.md`
-- `REPO_Improvement/04_results/18_context_docks_DATE.md`
-- `REPO_Improvement/05_validation/03_validate_results_table_DATE.md`
-- `REPO_Improvement/10_tests_perf/06_fe_dense_table_virtualization_DATE.md`
+- `REPO_Improvement/04_results/11_out_top_results_table_2026-04-09.md`
+- `REPO_Improvement/04_results/18_context_docks_2026-04-08.md`
+- `REPO_Improvement/05_validation/03_validate_results_table_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/06_fe_dense_table_virtualization_2026-04-09.md`

@@ -60,6 +60,7 @@ The dashboard therefore already acts as the executive summary view for the workb
 - removing execution notes, shortlist semantics, or approval-state summary text
 - making chart titles drift from the existing exported contract without coordinated test updates
 - weakening compatibility-mode dashboard coverage
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,13 @@ The dashboard therefore already acts as the executive summary view for the workb
 3. Document the zero-survivor and compatibility-mode dashboard minimums separately.
 4. Keep dashboard text decision-oriented: recommendation, execution notes, shortlist semantics, and top warning should stay visible.
 5. Expand tests so chart presence, active-sheet behavior, and minimum explanatory blocks are all intentional.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -86,12 +94,19 @@ The dashboard therefore already acts as the executive summary view for the workb
 - [ ] Add or tighten tests for active-sheet selection and mandatory chart titles.
 - [ ] Add or tighten tests for required execution-note and shortlist-semantics text.
 - [ ] Manually review readability of one large shortlisted workbook and one zero-survivor workbook.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app validation_xlsx_report_tests -- --nocapture`
 - run focused headless report tests if separate report-builder tests are added
 - manually open generated workbooks covering normal, compatibility, and zero-survivor cases
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -99,6 +114,7 @@ The dashboard therefore already acts as the executive summary view for the workb
 - prefer additive dashboard cleanup over removing decision text
 - if chart titles or card labels change, update workbook tests and any downstream parsing assumptions together
 - keep zero-survivor dashboards informative rather than sparse
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

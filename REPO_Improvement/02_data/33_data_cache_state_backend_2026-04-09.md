@@ -71,6 +71,7 @@ This means the backend already has a real authority split, but the repo does not
 - losing sidecar-before-fallback precedence
 - turning cache-write failures into load failures
 - treating content fingerprints as active reuse keys before the rest of the plumbing exists
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -78,6 +79,8 @@ This means the backend already has a real authority split, but the repo does not
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because the backend cache/state split depends on explicit long-lived backend authority rather than frontend inference.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because `LoadSource`, cache info summaries, and dataset metadata behave like serialized contracts even when not expressed as formal schemas.
 - [Rust `Arc`](https://doc.rust-lang.org/std/sync/struct.Arc.html) is relevant because in-memory dataset retention and reuse rely on shared ownership semantics that should not be confused with durable caching.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -86,6 +89,13 @@ This means the backend already has a real authority split, but the repo does not
 3. Document what `LoadSource` does and does not promise to the frontend.
 4. Record that content fingerprinting exists today as a future-strengthening mechanism rather than an active cache-key rule.
 5. Add missing test expectations for corrupt cache rejection, fallback-cache hits, and partial cache-write behavior if those gaps remain.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,14 +104,22 @@ This means the backend already has a real authority split, but the repo does not
 - [ ] Document every `LoadSource` value and what frontend consumers may infer from it.
 - [ ] Document that content fingerprinting is available but not yet the active reuse contract.
 - [ ] Add or tighten backend tests for corrupt-cache, fallback-hit, and write-failure scenarios.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app data_cache`
 - run `cargo test -p ta_desktop_demo_app state`
 - run `cargo test -p ta_desktop_demo_app commands_data`
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -109,6 +127,7 @@ This means the backend already has a real authority split, but the repo does not
 - prefer additive metadata over silently redefining existing cache-family meanings
 - keep cache writes best-effort and non-fatal unless the product explicitly changes that policy
 - treat stronger provenance as a future additive layer, not a hidden reinterpretation of current state
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

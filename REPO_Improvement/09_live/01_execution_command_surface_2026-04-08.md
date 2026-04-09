@@ -1,6 +1,6 @@
 # Execution Command Surface Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -78,6 +78,7 @@ The frontend already blocks a number of unsafe starts before invoking Rust, but 
 - allowing invalid quantity, symbol, or credential states past either the frontend or backend guardrails
 - making runner or live-feed start behavior less truthful than the current blocked-reason model
 - hiding broker-side failure cases behind generic UI errors
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -93,6 +94,13 @@ The frontend already blocks a number of unsafe starts before invoking Rust, but 
 3. Distinguish dry-run, paper-broker, and live-broker outcomes in both request and response semantics.
 4. Tie command docs to the runtime events and status payloads that the frontend already consumes.
 5. Preserve the current execution surface as additive hardening, not as a redesign opportunity.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -104,24 +112,34 @@ The frontend already blocks a number of unsafe starts before invoking Rust, but 
 - [ ] Document which failures are local validation failures, backend failures, or broker/API failures.
 - [ ] Add or tighten tests if command payloads or result fields change.
 - [ ] Manually verify paper-mode and dry-run flows before changing live-mode behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/executionService.test.ts`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/ExecutionWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/executionService.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts`
 - run targeted execution tests in `src-tauri/src/commands_execution.rs`
 - run targeted event bridge tests if command or event payloads change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve Rust command authority and current frontend guardrails
 - keep any clarification work additive; do not remove existing safety prompts or blocked reasons as part of a docs-driven cleanup
 - if credential handling or execution modes change later, keep explicit backward-compatible copy until the migration is complete
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/09_live/03_execution_runner_lifecycle_2026-04-08.md`
 - `REPO_Improvement/09_live/07_live_candle_stream_data_2026-04-08.md`
 - `REPO_Improvement/09_live/13_execution_service_store_2026-04-08.md`
-- `REPO_Improvement/10_tests_perf/20_tauri_runtime_wiring_DATE.md`
+- `REPO_Improvement/10_tests_perf/20_tauri_runtime_wiring_2026-04-08.md`

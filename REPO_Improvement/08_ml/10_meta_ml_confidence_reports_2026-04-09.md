@@ -1,3 +1,7 @@
+# Meta ML Confidence Reports Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the Meta workspace ML confidence and Stage 5 report surfaces so model status, report reveal/open behavior, and policy-evaluation summaries stay explicit and trustworthy.
@@ -66,6 +70,7 @@ This is a lot of power, but it needs careful presentation. Model health, confide
 - conflating Stage 5 output with policy-eval results
 - breaking reveal/open behavior for saved stage5 or policy-eval reports
 - weakening the distinction between model status and artifact output
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +79,8 @@ This is a lot of power, but it needs careful presentation. Model health, confide
 - [Tauri: calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because the ML confidence UI is fundamentally a typed Rust-command report surface.
 - [Vue state management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because model status, preview text, and saved artifact selections are shared across the meta workspace.
 - [WAI-ARIA Authoring Practices](https://www.w3.org/WAI/ARIA/apg/) are relevant because preview panels, disclosures, and saved-artifact actions need clear, navigable semantics in a dense review surface.
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -86,6 +93,13 @@ This is a lot of power, but it needs careful presentation. Model health, confide
 3. Keep model-health warnings prominent and hard to miss.
 4. Add tests that verify saved stage5 and policy-eval families remain distinguishable in UI and service behavior.
 5. Prefer clearer report semantics over adding more preview density.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,6 +108,12 @@ This is a lot of power, but it needs careful presentation. Model health, confide
 - [ ] Add or tighten tests for saved stage5 and saved policy-eval reveal/load/delete behavior.
 - [ ] Ensure model-health warnings remain visible and specific when ML confidence is enabled or applied.
 - [ ] Verify open/reveal report actions still behave correctly across live and saved meta flows.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -102,12 +122,15 @@ This is a lot of power, but it needs careful presentation. Model health, confide
 - run `metaServiceCampaignResume.test.ts`
 - run `metaServiceCampaignStrategy.test.ts`
 - run targeted backend tests in `commands_meta.rs` and `ml_confidence.rs` if status/report semantics change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current saved artifact families and report paths
 - make report semantics clearer before changing any underlying ML stages
 - if a UI cleanup obscures provenance, restore the more explicit preview/status wording
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

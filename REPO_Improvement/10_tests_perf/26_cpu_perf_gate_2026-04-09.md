@@ -60,6 +60,7 @@ The current CPU perf gate already acts as a structured authority script rather t
 - treating the emitted numbers as universal product-performance claims
 - loosening compatibility checks until baseline drift becomes silent
 - adding many more Criterion cases without preserving a clear reason for each one
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The current CPU perf gate already acts as a structured authority script rather t
 - [Cargo benchmark command docs](https://doc.rust-lang.org/cargo/commands/cargo-bench.html) are relevant because the gate shells out to `cargo bench` and therefore inherits Cargo benchmark semantics.
 - [Cargo profiles reference](https://doc.rust-lang.org/cargo/reference/profiles.html) is relevant because the workflow and bench portions of the gate depend on build-profile distinctions that must stay explicit.
 - [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) is relevant because the delegated workflow gate is explicitly about deterministic time-series workflow evaluation, not generic random-split benchmarking.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The current CPU perf gate already acts as a structured authority script rather t
 2. Preserve baseline/schema/case-registry compatibility checks as a first-class safeguard against silent drift.
 3. Document the exact meaning of each emitted number so reviewers know what changed when the gate fails.
 4. Treat benchmark-set changes and baseline refreshes as explicit contract changes that require deliberate review.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The current CPU perf gate already acts as a structured authority script rather t
 - [ ] Keep schema-version and case-registry compatibility checks mandatory.
 - [ ] Keep the CPU gate non-options only.
 - [ ] Cross-link CPU gate failures back to workflow-gate or Criterion-root causes before changing thresholds.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,15 +106,18 @@ The current CPU perf gate already acts as a structured authority script rather t
 - inspect the emitted summary JSON and pass/fail lines before modifying any baseline
 - re-run the delegated workflow gate separately when CPU gate failures may be workflow-rooted
 - verify hard-coded estimate paths still match the actual Criterion output layout after bench renames
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current gate authority while improving documentation and traceability
 - prefer adding explanation and compatibility structure before broadening the benchmark set
 - if a case is no longer representative, replace it deliberately rather than silently retargeting its path
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/27_gpu_perf_gate_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/28_workflow_gate_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/52_app_core_criterion_benches_DATE.md`
+- `REPO_Improvement/10_tests_perf/52_app_core_criterion_benches_2026-04-09.md`

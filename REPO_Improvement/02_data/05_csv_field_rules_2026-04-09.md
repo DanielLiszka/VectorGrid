@@ -70,6 +70,7 @@ Current user-facing behavior therefore includes:
 - letting derived datasets report different field availability from their base dataset incorrectly
 - changing field-driven strategy gating without updating hints and tests together
 - weakening close-field requirements in a way that creates misleading downstream behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -84,6 +85,13 @@ Current user-facing behavior therefore includes:
 3. Document how field availability propagates through load, resample, store, request building, and validation.
 4. Freeze the current data-panel hint rules and their relationship to downstream request gating.
 5. Keep field-availability checks centralized through shared helpers where possible.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,19 +100,28 @@ Current user-facing behavior therefore includes:
 - [ ] Document current `dataFieldHint` messaging rules.
 - [ ] Document how resampled datasets preserve or drop field flags.
 - [ ] Add or tighten tests if field semantics change in loaders, stores, or request builders.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_app_core csv_compat` or targeted loader tests
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - run targeted request-builder tests for field-gated strategies
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - prefer documenting current field rules before refactoring gating logic
 - preserve the current close-first safety posture
 - avoid adding panel-local field heuristics when shared helpers already exist
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

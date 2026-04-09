@@ -74,12 +74,15 @@ That means the icon layer is already part of product behavior, not just styling.
 - breaking decorative versus non-decorative alt behavior in `AppVisualIcon.vue`
 - mixing options icon work into the non-options improvement lane
 - changing visual meaning for task or artifact actions without updating tests and usage guidance together
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because shared UI semantics such as status and action meaning are easiest to keep stable when the icon layer is centralized.
 - [MDN prefers-color-scheme](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-color-scheme) is relevant because icon assets and fallbacks need to remain legible across the app theme modes already exposed in settings.
 - [MDN prefers-reduced-motion](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-reduced-motion) is relevant because decorative shell visuals should not quietly reintroduce motion-heavy behavior when the app already respects reduced-motion settings elsewhere.
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -88,6 +91,13 @@ That means the icon layer is already part of product behavior, not just styling.
 3. Define when a surface should use a dedicated asset icon, a Lucide fallback, or no icon at all.
 4. Add direct verification for shared icon rendering and keep one small usage matrix for the major shell panels.
 5. Document any places where current asset labels or icon meanings are overloaded and should be normalized later without removing functionality.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -97,18 +107,27 @@ That means the icon layer is already part of product behavior, not just styling.
 - [ ] Separate non-options icon ownership from out-of-scope options icons at the documentation level.
 - [ ] Document alt-text and decorative-image expectations for shell icons and empty-state illustrations.
 - [ ] Record any places where current icon meanings or labels are inconsistent.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted frontend tests for shell and task-center surfaces that currently assert icon presence
 - add direct component coverage for `AppVisualIcon.vue` before changing render semantics
 - manually inspect the shell, task center, overview, top, and meta panels after any iconography refactor
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - treat icon changes as user-facing behavior, not cosmetic cleanup
 - prefer additive documentation and test coverage before moving assets or renaming labels
 - keep current visuals in place unless a replacement is clearly safer and already covered
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

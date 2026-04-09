@@ -1,3 +1,7 @@
+# Strategy Runtime GPU Stack Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the non-options GPU runtime stack that turns compiled strategy plans into executable GPU predicate bundles, caches them, and evaluates them through the current CUDA kernel/runtime pipeline.
@@ -87,6 +91,7 @@ Current ownership split:
 - changing fallback conditions in ways that silently alter user-visible routing
 - regressing VRAM residency or persistent-buffer behavior while keeping only correctness tests green
 - introducing performance regressions by “cleaning up” the runtime without measurement
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -95,6 +100,8 @@ Current ownership split:
 - [cust crate docs](https://docs.rs/cust/latest/cust/) are relevant because the runtime stack is built on top of Rust CUDA device-buffer, stream, and module abstractions that should be treated as contract-sensitive dependencies.
 - [Serde enum representations](https://serde.rs/enum-representations.html) are relevant because executable/cache metadata and route/program contracts are serialized across tooling surfaces.
 - [Cargo targets](https://doc.rust-lang.org/cargo/reference/cargo-targets.html) are relevant because probe binaries and runtime verification tools are part of the intended maintenance surface for this stack.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -115,6 +122,13 @@ Current ownership split:
    - route diagnostics consistency
 4. Create an inventory of environment flags and diagnostic switches so runtime behavior is auditable.
 5. Only after the contract is clear, consider surgical file decomposition inside `gpu_backtest_kernel.rs`.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -126,6 +140,12 @@ Current ownership split:
 - [ ] Inventory runtime env flags, diagnostics toggles, and persistence switches in `gpu_backtest_kernel.rs`.
 - [ ] Decide whether a surgical internal split of `gpu_backtest_kernel.rs` improves auditability without altering behavior.
 - [ ] Re-run targeted perf/probe tooling for any cache or residency change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -134,6 +154,9 @@ Current ownership split:
 - run targeted tests in `gpu_backtest_kernel.rs`
 - run route/probe binaries such as `profile_gpu_dynamic_runner.rs` and `ta_profile_route_matrix.rs`
 - run performance-sensitive checks such as `crates/app_core/benches/double_ma_opt.rs` or the repo perf gates when cache/runtime behavior changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -141,6 +164,7 @@ Current ownership split:
 - do not merge structural cleanup without before/after probe evidence
 - preserve CPU fallback and existing route gating throughout
 - if a cleanup makes route or cache behavior harder to explain, stop and restore the simpler shape
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Double-MA Family Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -67,12 +67,15 @@ The Double-MA family is the main optimization lane. It exposes CPU, Auto, and GP
 - moving strategy-family rules into generic layers that make ownership harder to follow
 - changing backend-route semantics without updating validation, artifact, and capability surfaces
 - letting overlay strategies drift from the family contract they rely on
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because this family is the main GPU-sensitive execution lane and should keep correctness, profiling, and host/device data-flow discipline explicit.
 - [scikit-learn: TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) is relevant because this family's value is not only faster optimization but trustworthy time-ordered validation.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the family already emits rich request/result/report payloads that benefit from explicit contract thinking.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ The Double-MA family is the main optimization lane. It exposes CPU, Auto, and GP
 2. Separate family-level ownership from overlay-specific policy.
 3. Keep exact evaluation as the reference surface for parity and fidelity checks.
 4. Add or tighten family-level docs/tests whenever a new overlay, metric contract, or route policy is added.
+5. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -95,6 +105,12 @@ The Double-MA family is the main optimization lane. It exposes CPU, Auto, and GP
 - [ ] Review whether `double_ma.rs` should be split further by ownership area without losing discoverability.
 - [ ] Keep frontend request-shaping and backend route behavior aligned.
 - [ ] Avoid introducing new hidden special cases into the family without tests.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -103,12 +119,16 @@ The Double-MA family is the main optimization lane. It exposes CPU, Auto, and GP
 - run `npm test -- src/services/optimizeRequestBuilder.test.ts`
 - run `npm test -- src/services/optimizeService.test.ts`
 - run `npm test -- src/services/validationRequestBuilder.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current exact path as the truth anchor
 - prefer strategy-local docs and helpers over adding more generic abstraction first
 - if family ownership is refactored, keep route/report behavior stable and test-covered
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -76,6 +76,7 @@ The Meta workspace batch-generation surface is orchestrated from the frontend se
 - forgetting that `MlSignal` and `DynamicDoubleMa` are excluded from the shipped campaign strategy surface
 - breaking summary persistence while refactoring batch UI or task handling
 - weakening mixed-timeframe checks or execution-mode constraints
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +88,8 @@ The Meta workspace batch-generation surface is orchestrated from the frontend se
   - relevant because the campaign path is a structured frontend/backend orchestration workflow
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step)
   - relevant because summary envelopes and batch requests are persisted structured contracts
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -101,6 +104,13 @@ The Meta workspace batch-generation surface is orchestrated from the frontend se
 4. Keep execution-mode consequences explicit in the campaign doc, not only in the builder doc.
 5. Record the summary-path lifecycle clearly because recovery depends on it.
 6. Tie campaign docs to progress/task tests and recovery tests instead of only request-builder tests.
+7. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -112,21 +122,30 @@ The Meta workspace batch-generation surface is orchestrated from the frontend se
 - [ ] Preserve tests for campaign strategy filtering, resume/retry, and progress behavior.
 - [ ] Preserve backend campaign tests in `commands_campaign.rs`.
 - [ ] Treat major campaign-service refactors as compatibility-sensitive because they affect UI, tasking, and recovery at once.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaService.test.ts`
-- run `npm --prefix web test -- src/services/metaServiceCampaignStrategy.test.ts`
-- run `npm --prefix web test -- src/services/metaServiceCampaignResume.test.ts`
-- run `npm --prefix web test -- src/components/MetaWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/taskStoreCampaignProgress.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignStrategy.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignResume.test.ts`
+- run `npm --prefix web run test -- src/components/MetaWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/taskStoreCampaignProgress.test.ts`
 - run targeted campaign tests in `src-tauri/src/commands_campaign.rs`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current summary-recovery compatibility while campaign architecture is still service-centric
 - if the repo later gains richer summary browsing, add it without breaking current last-summary recovery flows
 - keep unsupported-strategy exclusions explicit until there is deliberate campaign support for those families
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Settings Storage And Shortcuts Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -77,6 +77,7 @@ The settings workspace already does more than cosmetic preferences. It persists 
 - removing or silently changing current runs/reports/data/Polygon shortcut actions
 - changing perspective apply/duplicate/rename/delete behavior without test updates
 - breaking queued market-data input flush or the `data-running` mutability lock for storage utilities
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -90,6 +91,8 @@ The settings workspace already does more than cosmetic preferences. It persists 
   - relevant because settings bootstrap and persistence depend on stable local-storage behavior
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because several settings shortcuts are command-mediated desktop actions
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -103,6 +106,13 @@ The settings workspace already does more than cosmetic preferences. It persists 
    - forwarded through Tauri command wrappers
 3. Make the shortcut summary data-driven so the panel, store, and any future command-palette/help surface do not drift.
 4. Align window-effect normalization rules across `preflight`, bootstrap, store, and backend bridge behavior before expanding effects further.
+5. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -112,19 +122,28 @@ The settings workspace already does more than cosmetic preferences. It persists 
 - [ ] Document perspective CRUD/apply behavior and persistence.
 - [ ] Document runtime mutability rules that disable storage actions during active runs.
 - [ ] Add or tighten tests if settings persistence or shortcut routing changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
-- run `npm --prefix web test -- src/services/settingsBootstrap.test.ts`
-- run `npm --prefix web test -- src/services/settingsService.test.ts`
-- run `npm --prefix web test -- src/components/SettingsWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/settingsBootstrap.test.ts`
+- run `npm --prefix web run test -- src/services/settingsService.test.ts`
+- run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current storage keys unless a deliberate migration path is added
 - preserve current utility shortcuts in Settings even if the layout is reorganized
 - if market-data actions move, keep `dataStore` as the authoritative state owner
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

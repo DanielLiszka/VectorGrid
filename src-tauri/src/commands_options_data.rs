@@ -411,6 +411,37 @@ fn underlying_reference_source_label(root_symbol: &str) -> String {
     format!("polygon_stocks_1m_raw:{root_symbol}")
 }
 
+fn build_polygon_download_import_request(
+    req: &PolygonOptionsDatasetDownloadRequest,
+    dataset_id: &str,
+    dataset_path: &std::path::Path,
+    root_symbol: &str,
+    as_of: &NaiveDate,
+) -> ImportedOptionsDatasetCsvBuildRequest {
+    ImportedOptionsDatasetCsvBuildRequest {
+        options_dataset_id: dataset_id.to_string(),
+        dataset_path: dataset_path.to_string_lossy().to_string(),
+        root_symbol: Some(root_symbol.to_string()),
+        provider_name: default_provider_name(),
+        provider_source_surface: default_provider_source_surface(),
+        provider_entitlement_profile: req.provider_entitlement_profile.clone(),
+        quote_resolution: default_quote_resolution(),
+        price_semantics: OptionsPriceSemantics::MinuteAggregate,
+        calendar_id: default_calendar_id(),
+        timezone: default_timezone(),
+        normalization_version: 1,
+        quote_semantics_version: 1,
+        corporate_action_mapping_version: 1,
+        contract_reference_source: default_contract_reference_source(),
+        contract_reference_as_of_utc: format_contract_reference_as_of_utc(
+            req.contract_reference_as_of_utc.as_deref(),
+            as_of,
+        ),
+        underlier_reference_source: underlying_reference_source_label(root_symbol),
+        aggregate_price_field: Some("close".to_string()),
+    }
+}
+
 fn read_underlying_close_map(csv_path: &std::path::Path) -> Result<BTreeMap<i64, f64>, String> {
     let file = std::fs::File::open(csv_path).map_err(|e| {
         format!(
@@ -916,28 +947,13 @@ fn download_polygon_options_dataset_into_store(
             );
         }
 
-        let build_req = ImportedOptionsDatasetCsvBuildRequest {
-            options_dataset_id: dataset_id.clone(),
-            dataset_path: dataset_csv.to_string_lossy().to_string(),
-            root_symbol: Some(root_symbol.clone()),
-            provider_name: default_provider_name(),
-            provider_source_surface: default_provider_source_surface(),
-            provider_entitlement_profile: req.provider_entitlement_profile.clone(),
-            quote_resolution: default_quote_resolution(),
-            price_semantics: OptionsPriceSemantics::MinuteAggregate,
-            calendar_id: default_calendar_id(),
-            timezone: default_timezone(),
-            normalization_version: 1,
-            quote_semantics_version: 1,
-            corporate_action_mapping_version: 1,
-            contract_reference_source: default_contract_reference_source(),
-            contract_reference_as_of_utc: format_contract_reference_as_of_utc(
-                req.contract_reference_as_of_utc.as_deref(),
-                &as_of,
-            ),
-            underlier_reference_source: underlying_reference_source_label(&root_symbol),
-            aggregate_price_field: Some("close".to_string()),
-        };
+        let build_req = build_polygon_download_import_request(
+            req,
+            &dataset_id,
+            &dataset_csv,
+            &root_symbol,
+            &as_of,
+        );
         let dataset = load_imported_options_dataset_from_csv(&build_req)?;
         let manifest_path = dataset_manifest_path(&datasets_dir, &dataset_id);
         write_options_dataset_manifest(&manifest_path, &dataset.manifest)?;
@@ -1131,6 +1147,20 @@ pub async fn download_polygon_options_dataset(
 mod tests {
     use super::*;
 
+    fn temp_app_local_data_dir(test_name: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "ta_options_data_cmds_{}_{}",
+            test_name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
     #[test]
     fn contract_type_filter_parses_common_aliases() {
         assert!(matches!(
@@ -1179,5 +1209,115 @@ mod tests {
             derive_polygon_download_dataset_id(&req),
             "spy_options_1m_2026_04_01_2026_04_05"
         );
+    }
+
+    #[test]
+    fn provider_source_surface_defaults_follow_price_semantics() {
+        assert_eq!(
+            canonicalize_provider_source_surface("", OptionsPriceSemantics::MinuteAggregate)
+                .expect("minute aggregate default"),
+            "minute_aggregate"
+        );
+        assert_eq!(
+            canonicalize_provider_source_surface("", OptionsPriceSemantics::DerivedMidSnapshot)
+                .expect("derived mid default"),
+            "derived_mid_snapshot"
+        );
+        assert_eq!(
+            canonicalize_provider_source_surface("", OptionsPriceSemantics::TopOfBookQuote)
+                .expect("quote default"),
+            "top_of_book_quote"
+        );
+    }
+
+    #[test]
+    fn polygon_download_import_request_freezes_aggregate_lane_invariants() {
+        let req = PolygonOptionsDatasetDownloadRequest {
+            root_symbol: "SPY".to_string(),
+            from: "2026-04-01".to_string(),
+            to: "2026-04-05".to_string(),
+            options_dataset_id: None,
+            contract_type: None,
+            expiration_date_from: None,
+            expiration_date_to: None,
+            max_dte_days: None,
+            strike_min: None,
+            strike_max: None,
+            max_contracts: None,
+            provider_entitlement_profile: Some("options_business".to_string()),
+            contract_reference_as_of_utc: Some("2026-04-05T23:59:00Z".to_string()),
+        };
+        let dataset_path = std::path::Path::new("C:/datasets/spy_options/rows.csv");
+        let as_of = NaiveDate::from_ymd_opt(2026, 4, 5).expect("as_of");
+
+        let build_req = build_polygon_download_import_request(
+            &req,
+            "spy_options_1m",
+            dataset_path,
+            "SPY",
+            &as_of,
+        );
+
+        assert_eq!(build_req.options_dataset_id, "spy_options_1m");
+        assert_eq!(build_req.dataset_path, dataset_path.to_string_lossy());
+        assert_eq!(build_req.root_symbol.as_deref(), Some("SPY"));
+        assert_eq!(build_req.provider_name, "massive");
+        assert_eq!(build_req.provider_source_surface, "minute_aggregate");
+        assert_eq!(build_req.quote_resolution, "1m");
+        assert_eq!(
+            build_req.price_semantics,
+            OptionsPriceSemantics::MinuteAggregate
+        );
+        assert_eq!(
+            build_req.contract_reference_source,
+            "massive_contract_reference"
+        );
+        assert_eq!(
+            build_req.contract_reference_as_of_utc.as_deref(),
+            Some("2026-04-05T23:59:00Z")
+        );
+        assert_eq!(
+            build_req.underlier_reference_source,
+            "polygon_stocks_1m_raw:SPY"
+        );
+        assert_eq!(build_req.aggregate_price_field.as_deref(), Some("close"));
+    }
+
+    #[test]
+    fn minute_aggregate_import_rejects_non_close_aggregate_price_field() {
+        let app_local_data_dir = temp_app_local_data_dir("aggregate_price_field_reject");
+        let source_csv = app_local_data_dir.join("source.csv");
+        std::fs::write(&source_csv, "contract_id,timestamp_ms,close\nstub,1,1.0\n")
+            .expect("write source csv");
+
+        let req = OptionsDatasetImportRequest {
+            csv_path: source_csv.to_string_lossy().to_string(),
+            options_dataset_id: Some("spy_bad_aggregate_field".to_string()),
+            root_symbol: Some("SPY".to_string()),
+            provider_name: "massive".to_string(),
+            provider_source_surface: "minute_aggregate".to_string(),
+            provider_entitlement_profile: None,
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::MinuteAggregate,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: Some(1),
+            quote_semantics_version: Some(1),
+            corporate_action_mapping_version: Some(1),
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: None,
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: Some("open".to_string()),
+        };
+
+        let error =
+            import_options_dataset_blocking_headless(req, &app_local_data_dir).expect_err("reject");
+        assert!(error.contains("aggregate_price_field='close'"));
+
+        let datasets_dir = options_datasets_dir(&app_local_data_dir).expect("datasets dir");
+        let manifest_path = dataset_manifest_path(&datasets_dir, "spy_bad_aggregate_field");
+        assert!(!manifest_path.exists());
+
+        let _ = std::fs::remove_dir_all(&app_local_data_dir);
     }
 }

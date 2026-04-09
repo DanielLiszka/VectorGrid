@@ -61,6 +61,7 @@ The repo already provides a baseline-sample export path that collects a represen
 - treating the sample set as interchangeable with the full parity pack
 - silently changing sample-export behavior without updating the manifest contract
 - dropping representative file types from the sample set
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -79,6 +80,13 @@ The repo already provides a baseline-sample export path that collects a represen
 2. Keep the manifest explicit about outputs, counts, and source paths.
 3. Preserve multi-format evidence: JSON, CSV, and XLSX.
 4. Review the source-candidate order whenever report/artifact generation paths change.
+5. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -88,6 +96,12 @@ The repo already provides a baseline-sample export path that collects a represen
 - [ ] Keep sample artifacts distinct from the broader parity pack.
 - [ ] Review sample freshness when report or artifact contracts change.
 - [ ] Add or tighten checks if the sample manifest shape changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -95,16 +109,20 @@ The repo already provides a baseline-sample export path that collects a represen
 - inspect `scripts/baselines/samples/manifest.json`
 - confirm the exported file set and counts match current script behavior
 - spot-check CSV/XLSX outputs for readable, non-empty sample evidence
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current sample-manifest shape unless a coordinated consumer update exists
 - if source-candidate order changes, update the manifest documentation in the same change
 - keep sample artifacts small and reviewable rather than expanding them into a full archival store
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/40_xlsx_regression_tooling_2026-04-08.md`
-- `REPO_Improvement/10_tests_perf/43_output_parity_pack_DATE.md`
-- `REPO_Improvement/10_tests_perf/45_artifact_report_shape_parity_DATE.md`
-- `REPO_Improvement/11_docs_ops/08_docs_archive_policy_DATE.md`
+- `REPO_Improvement/10_tests_perf/43_output_parity_pack_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/45_artifact_report_shape_parity_2026-04-09.md`
+- `REPO_Improvement/11_docs_ops/08_docs_archive_policy_2026-04-09.md`

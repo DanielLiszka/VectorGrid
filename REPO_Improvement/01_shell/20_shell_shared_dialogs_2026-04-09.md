@@ -83,6 +83,7 @@ So the shell already has a reusable confirmation surface, not a collection of un
 - diverging destructive-action copy or button posture across shell surfaces
 - adding new confirmation flows without using the shared component
 - changing `alertdialog` semantics accidentally
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -105,6 +106,13 @@ So the shell already has a reusable confirmation surface, not a collection of un
 2. Add a dedicated `ConfirmationDialog` component test so consumers are not the only regression layer.
 3. Keep destructive confirmation wording consumer-specific but structurally standardized through the shared component.
 4. Require new shell confirmations to use this shared surface unless there is a documented reason not to.
+5. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -113,20 +121,29 @@ So the shell already has a reusable confirmation surface, not a collection of un
 - [ ] Document current consumer surfaces and their use of the shared component.
 - [ ] Preserve focus trap, focus restore, and Escape behavior.
 - [ ] Keep new shell confirmations on the shared component path by default.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - add and run a dedicated `ConfirmationDialog` component test
-- run `npm --prefix web test -- src/components/DesktopTitlebar.test.ts`
-- run `npm --prefix web test -- src/components/ExecutionWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/HistoryWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/MetaWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/DesktopTitlebar.test.ts`
+- run `npm --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/HistoryWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/MetaWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the shared component the default path for confirmation UX
 - if a new modal type diverges later, document why it is not a shared confirmation
 - preserve current keyboard and focus guarantees even if styling changes
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

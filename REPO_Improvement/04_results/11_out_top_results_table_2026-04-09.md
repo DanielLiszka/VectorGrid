@@ -66,6 +66,7 @@ It is also the keyboard-friendliest results surface. Pareto, Drilldown, and Heat
 - weakening keyboard navigation or row-to-review handoff behavior
 - detaching the selected-candidate review card from the actual row state
 - treating the table as just another tab instead of the central ranked-navigation surface
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ It is also the keyboard-friendliest results surface. Pareto, Drilldown, and Heat
 - [ARIA: status role | MDN](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Roles/status_role) is relevant because selected-candidate summaries, stale cues, and guardrails are dynamic advisory information.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because shortlist output, selection state, and compare state must stay driven by shared state.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because much of the value here comes from deterministic state transitions, not static markup alone.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ It is also the keyboard-friendliest results surface. Pareto, Drilldown, and Heat
 3. Keep filter meta and shortlist guardrails visible enough to explain why the user is or is not seeing specific rows.
 4. Treat keyboard navigation and compare readiness as core output quality, not secondary polish.
 5. Add or tighten tests around selected-candidate summaries, stale cues, compare output, and handoff actions.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,12 +100,20 @@ It is also the keyboard-friendliest results surface. Pareto, Drilldown, and Heat
 - [ ] Document stale cues, guardrails, and filter-meta requirements.
 - [ ] Document compare-ready output and handoff actions into Overview and Drilldown.
 - [ ] Add or tighten tests for shortlist output clarity, selection, compare, and navigation behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/TopWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/components/TopWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
 - manually verify shortlist readability with filters, hidden columns, pinned rows, and keyboard navigation
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -103,6 +121,7 @@ It is also the keyboard-friendliest results surface. Pareto, Drilldown, and Heat
 - keep current table-state keys and selected-candidate output behavior stable until all consumers migrate together
 - prefer additive row/context evidence over flattening the table into a score-only grid
 - if dense-table behavior changes later, update virtualization and selection tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

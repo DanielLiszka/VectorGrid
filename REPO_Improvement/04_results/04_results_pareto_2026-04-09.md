@@ -66,6 +66,7 @@ The analysis service also supports fallback axis-option behavior and builds the 
 - rendering a frontier without truthful meta/range text
 - overstating Pareto readiness when the run does not actually contain frontier data
 - weakening empty-state distinctions between missing data, no run, and missing frontier points
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ The analysis service also supports fallback axis-option behavior and builds the 
 - [Basic usage of canvas | MDN](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Basic_usage) is relevant because the Pareto chart is canvas-driven and should retain alternative explanatory content around the bitmap surface.
 - [Canvas element accessibility guidance | MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/canvas) is relevant because a canvas alone does not expose enough semantic meaning for chart review.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because axis choice, frontier data, and status text should stay in shared state rather than fragment across the panel and chart helpers.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ The analysis service also supports fallback axis-option behavior and builds the 
 3. Treat range/meta/status text as essential evidence, not as optional chart chrome.
 4. Preserve alternative guidance around the canvas so keyboard-only and assistive-technology users can still understand the panel’s state and next action.
 5. Add or tighten tests around axis-option rebuilding, empty-state language, and Top-results handoff.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,12 +100,20 @@ The analysis service also supports fallback axis-option behavior and builds the 
 - [ ] Document frontier meta/range text and readiness behavior.
 - [ ] Document canvas accessibility support and explanatory fallback expectations.
 - [ ] Add or tighten tests for axis changes, empty states, and Top-results handoff.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/ParetoWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/components/ParetoWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
 - manually verify no-data, no-run, and ready Pareto states with different axis choices
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -103,10 +121,11 @@ The analysis service also supports fallback axis-option behavior and builds the 
 - keep existing axis ids and meta semantics stable until all consumers migrate together
 - prefer additive explanatory text over silent chart-only changes
 - if a richer chart library is adopted later, keep current readiness and handoff behavior intact first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/02_results_top_table_2026-04-08.md`
 - `REPO_Improvement/04_results/07_results_empty_states_2026-04-09.md`
-- `REPO_Improvement/04_results/12_out_pareto_heatmap_readability_DATE.md`
-- `REPO_Improvement/04_results/19_chart_rendering_composables_DATE.md`
+- `REPO_Improvement/04_results/12_out_pareto_heatmap_readability_2026-04-09.md`
+- `REPO_Improvement/04_results/19_chart_rendering_composables_2026-04-09.md`

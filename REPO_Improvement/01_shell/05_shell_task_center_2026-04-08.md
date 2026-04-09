@@ -1,6 +1,6 @@
 # Shell Task Center Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -90,6 +90,7 @@ The overlay also provides quick navigation actions into other surfaces, such as 
 - showing stale cancellation state or miswired cancel affordances
 - letting the overlay grow into an unbounded event dump
 - bypassing the task center with duplicate shell alert surfaces that disagree with it
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -118,6 +119,13 @@ The overlay also provides quick navigation actions into other surfaces, such as 
    - return focus on close
 4. Define the persisted-position contract, including clamping and first-run initialization.
 5. Treat recency truncation and category counts as deliberate design decisions rather than incidental slicing.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -129,6 +137,11 @@ The overlay also provides quick navigation actions into other surfaces, such as 
 - [ ] Add tests for persisted-position recovery and off-screen clamping.
 - [ ] Add tests for focus trap and return-focus behavior.
 - [ ] Add tests for quiet-mode display and cancellation-path UI behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -137,12 +150,16 @@ The overlay also provides quick navigation actions into other surfaces, such as 
 - run `npm test -- src/stores/taskStoreEventThrottle.test.ts`
 - run `npm test -- src/services/runControlService.test.ts`
 - manually verify launcher drag/reposition, overlay open/close, and cancellation UI in the shell
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current launcher/overlay entrypoint rather than introducing competing task-center shells
 - keep task-center improvements additive and contract-preserving first
 - if deeper filtering or richer history is added later, keep current recent-summary behavior available as the default quick view
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

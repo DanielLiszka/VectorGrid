@@ -59,6 +59,7 @@ The repo already keeps a script that compares the canonical Tauri config under `
 - assuming config sync implies runtime behavior is automatically correct
 - editing one config and updating docs without checking the other
 - loosening the checker shape until real drift is tolerated silently
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already keeps a script that compares the canonical Tauri config under `
 - [Tauri capabilities overview](https://v2.tauri.app/security/capabilities/) is relevant because security capabilities are part of the compared config shape.
 - [Node.js `path` API docs](https://nodejs.org/api/path.html) are relevant because the sync script reasons about canonical vs root-relative paths.
 - [Cargo build command docs](https://doc.rust-lang.org/cargo/commands/cargo-build.html) are relevant because build-command and frontend-dist config values directly affect the documented release paths.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already keeps a script that compares the canonical Tauri config under `
 2. Preserve structural sync checking over the shared fields that matter for build and runtime setup.
 3. Document clearly what the sync script proves and what still requires smoke or build verification.
 4. Review any config-structure change against the checker, the build docs, and the desktop harness together.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already keeps a script that compares the canonical Tauri config under `
 - [ ] Keep this config-sync plan non-options only.
 - [ ] Run the sync checker whenever config files or build commands change.
 - [ ] Avoid implying that sync alone proves runtime correctness.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already keeps a script that compares the canonical Tauri config under `
 - inspect both JSON files directly when the checker fails
 - run relevant build or desktop smoke paths when config changes are behaviorally significant
 - confirm docs still match the synced config state
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the canonical-plus-mirror pattern while it still serves build/documentation needs
 - prefer tightening the checker over relying on convention
 - if the mirror becomes unnecessary in the future, remove it deliberately rather than letting it rot
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

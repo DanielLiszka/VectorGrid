@@ -101,6 +101,7 @@ The Meta workspace batch surface lets users select dataset paths and launch a ca
 - changing batch defaults without updating builder tests, service behavior, and UX copy together
 - breaking saved summary fields that later resume/retry logic relies on
 - documenting a “registry mode” abstraction that does not actually match shipped state ownership
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -112,6 +113,8 @@ The Meta workspace batch surface lets users select dataset paths and launch a ca
   - relevant because `skip_done`, saved summaries, and later resume/retry behavior depend on replay-safe, duplicate-tolerant campaign semantics
 - [Background Tasks with Hosted Services in ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services)
   - relevant because long-running batch orchestration should keep cancellation, progress, and cleanup semantics explicit rather than implicit in UI state
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -126,6 +129,13 @@ The Meta workspace batch surface lets users select dataset paths and launch a ca
 5. Document exactly how `optimize_only` and `validate_only` constrain follow-up automation.
 6. Tie every persisted batch-summary field to the later flows that consume it so compatibility is treated as a product requirement.
 7. Keep the “registry” language grounded in current implementation reality until a stronger backend registry abstraction actually exists.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -139,16 +149,24 @@ The Meta workspace batch surface lets users select dataset paths and launch a ca
 - [ ] Document which fields batch summaries must preserve for later replay/resume understanding.
 - [ ] Add or preserve tests for invalid mode normalization, holdout clamping, and unsupported campaign inputs.
 - [ ] Keep batch-surface docs aligned with `metaBatchRequestBuilder`, `metaService`, and `commands_campaign` whenever mode semantics change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaBatchRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
-- run `npm --prefix web test -- src/services/metaServiceCampaignStrategy.test.ts`
-- run `npm --prefix web test -- src/stores/taskStoreCampaignProgress.test.ts`
+- run `npm --prefix web run test -- src/services/metaBatchRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignStrategy.test.ts`
+- run `npm --prefix web run test -- src/stores/taskStoreCampaignProgress.test.ts`
 - run targeted campaign tests in `src-tauri/src/commands_campaign.rs`
 - inspect one saved batch summary after a `full` run and one after a constrained execution-mode run
 - manually verify mixed-timeframe selection is still blocked in the batch UI
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -156,6 +174,7 @@ The Meta workspace batch surface lets users select dataset paths and launch a ca
 - prefer additive summary fields over reinterpretation of current ones
 - if a stronger backend registry abstraction is later introduced, document that transition explicitly rather than silently reusing current terminology
 - keep summary files replay-safe so later resume/retry logic can remain conservative and idempotent
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

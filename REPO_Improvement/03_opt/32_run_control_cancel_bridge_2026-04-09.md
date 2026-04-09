@@ -72,6 +72,7 @@ That means the user-visible cancel experience depends on a three-layer bridge: f
 - breaking task restoration when cancel commands fail
 - implying per-run targeted cancellation when the backend still uses a shared single-run cancel flag
 - weakening `try_begin_run()` single-run protection while changing cancel behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -80,6 +81,8 @@ That means the user-visible cancel experience depends on a three-layer bridge: f
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because cancelability and run exclusivity rely on shared backend state instead of isolated command-local flags.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because task lifecycle and cancel posture are centralized store concerns rather than component-local behavior.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because the core correctness questions are state-transition and fallback-path behaviors that should stay deterministic in tests.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -88,6 +91,13 @@ That means the user-visible cancel experience depends on a three-layer bridge: f
 3. Keep the single-foreground-run limitation explicit so UI or doc changes do not overpromise finer-grained cancellation.
 4. Treat task restoration after failed cancel requests as a first-class compatibility requirement.
 5. Add or tighten tests whenever cancel-command names, payloads, or task-center lifecycle rules change.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -96,14 +106,21 @@ That means the user-visible cancel experience depends on a three-layer bridge: f
 - [ ] Document the single-foreground-run limitation and shared cancel-token model.
 - [ ] Document task restoration behavior when cancellation commands fail.
 - [ ] Add or tighten tests for fallback behavior, lifecycle status transitions, and progress compatibility.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/runControlService.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/runControlService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
 - run targeted task lifecycle tests in `web/src/stores/taskStore.lifecycle.test.ts`
 - run targeted task throughput tests in `web/src/stores/taskStorePerformance.test.ts`
 - run `cargo test -p ta_desktop_demo_app command_runtime_wiring`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -111,6 +128,7 @@ That means the user-visible cancel experience depends on a three-layer bridge: f
 - keep progress payload shape stable until every consumer migrates together
 - prefer additive lifecycle metadata over repurposing existing task statuses
 - if the app later moves to per-run tokens, document the model change explicitly rather than quietly changing existing semantics
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Storage Schema Local State Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -84,6 +84,7 @@ The persistence model is already additive and user-visible: the shell tries to r
 - losing workflow or settings continuity on reload
 - writing invalid values that bootstrap cannot normalize safely
 - bypassing the shared storage helpers in ways that skip migration or cleanup
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -95,6 +96,8 @@ The persistence model is already additive and user-visible: the shell tries to r
   - relevant because several persisted values are serialized JSON blobs and should remain parseable/stable
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html)
   - relevant because persistence behavior is already tested through store-level actions and should stay that way
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -113,6 +116,13 @@ The persistence model is already additive and user-visible: the shell tries to r
 5. Keep migrations additive:
    - preserve old keys through aliases when required
    - clean up aliases only after primary-key writes succeed
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -123,13 +133,21 @@ The persistence model is already additive and user-visible: the shell tries to r
 - [ ] Document normalization behavior for invalid persisted values.
 - [ ] Identify any remaining direct `localStorage` access that should be aligned with shared helpers.
 - [ ] Tighten persistence tests when new keys or migrations are added.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/settingsBootstrap.test.ts`
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
-- run `npm --prefix web test -- src/stores/workflowStore.test.ts`
+- run `npm --prefix web run test -- src/services/settingsBootstrap.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowStore.test.ts`
 - manually verify that a reload preserves workflow/settings state and that bad persisted values fall back safely
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -137,6 +155,7 @@ The persistence model is already additive and user-visible: the shell tries to r
 - prefer alias-based migrations over hard key deletion
 - keep the schema version monotonic and tied to real migration logic
 - if task-center persistence is moved into shared storage helpers later, preserve the current key first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

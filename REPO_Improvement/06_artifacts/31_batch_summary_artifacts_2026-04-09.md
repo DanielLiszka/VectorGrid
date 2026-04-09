@@ -1,3 +1,7 @@
+# Batch Summary Artifacts Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for batch-summary artifact handling so legacy batch summaries and the current campaign-summary flow are clearly separated, reloadable, and operationally understandable.
@@ -73,6 +77,7 @@ Key current ownership:
 - removing the “last summary” recovery path before a stronger replacement exists
 - treating legacy batch summaries and current campaign summaries as identical if their semantics differ
 - confusing users about whether a summary is resumable, revealable, or merely inspectable
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -89,6 +94,13 @@ Key current ownership:
 3. Keep the current “last summary path” recovery, but make its limitations explicit.
 4. Add clearer type and kind checks so batch and campaign summaries can be handled deliberately.
 5. Decide whether a future summary library should replace “last summary only,” but do not force that change in this first wave.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -97,6 +109,11 @@ Key current ownership:
 - [ ] Add or tighten tests for last-summary persistence and reload behavior.
 - [ ] Add or tighten tests for kind discrimination across `vectorbt_batch_summary`, `vectorgrid_batch_summary`, and `vectorgrid_campaign_summary`.
 - [ ] Decide whether summary reveal/resume flows need clearer UI wording about what is actually being resumed.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -104,12 +121,15 @@ Key current ownership:
 - run `metaServiceCampaignResume.test.ts`
 - run `metaServiceCampaignStrategy.test.ts`
 - run any targeted backend tests around `save_batch_summary_blocking()` and summary-kind loading
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve legacy summary compatibility while clarifying the preferred current path
 - keep the last-summary path mechanism until a stronger library/index exists
 - if cleanup risks breaking older saved summaries, favor explicit compatibility branches over removal
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

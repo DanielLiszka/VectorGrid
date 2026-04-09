@@ -1,6 +1,6 @@
 # Validation Service Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -90,6 +90,7 @@ The service also normalizes user-facing status and validation-panel state during
 - hiding export/report failures behind fake success status
 - making cross-dataset refresh or selection less truthful than it is today
 - weakening dataset/timeframe compatibility enforcement before the command runs
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -101,6 +102,8 @@ The service also normalizes user-facing status and validation-panel state during
   - relevant because request/result/report shapes are already acting like explicit contracts
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices)
   - relevant because the most important service outcomes should remain visible and testable from the user-facing surface
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -114,6 +117,13 @@ The service also normalizes user-facing status and validation-panel state during
 3. Keep preview helpers and execution builders aligned by documenting shared prerequisites and expected divergences.
 4. Treat cross-dataset refresh and selection synchronization as first-class orchestration behavior, not side logic.
 5. Expand tests around preview parity, export failure, and artifact application.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -125,6 +135,11 @@ The service also normalizes user-facing status and validation-panel state during
 - [ ] Add tests for preview parity with actual request execution.
 - [ ] Add tests for export/report failure status handling.
 - [ ] Add tests for successful validation artifact application and cross-dataset refresh flows.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -133,12 +148,15 @@ The service also normalizes user-facing status and validation-panel state during
 - run `npm test -- src/components/ValidationWorkspacePanel.test.ts`
 - run backend validation command tests
 - manually verify a validation run plus at least one export/report path
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current service-facing method names and broad behavior where possible
 - keep preview and execution logic close unless a better shared contract layer is introduced
 - if the service is later split, preserve current user-visible behavior and store-patch semantics first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

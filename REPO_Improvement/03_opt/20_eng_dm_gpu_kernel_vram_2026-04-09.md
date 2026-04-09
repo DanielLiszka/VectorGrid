@@ -66,6 +66,7 @@ Kernel MA execution then consumes VRAM-oriented inputs through `VramMaInputs` an
 - weakening budget, device, or source gating for prefetched data
 - misreporting residency posture in backend result metadata
 - allowing required-candle-field mismatches into VRAM cache reuse
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -73,6 +74,8 @@ Kernel MA execution then consumes VRAM-oriented inputs through `VramMaInputs` an
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because prefetch and residency summaries ultimately surface through long-lived backend state and result contracts.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because residency and route diagnostics are serialized result fields consumed outside the kernel implementation.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because campaign prefetch and optimization runs cross separate command boundaries that must preserve truthful residency semantics.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ Kernel MA execution then consumes VRAM-oriented inputs through `VramMaInputs` an
 3. Document required candle fields and skip reasons for resident-path eligibility.
 4. Make transfer minimization a first-class regression concern in this implementation plan.
 5. Add or tighten tests around budget gating, promotion, and result-surface residency reporting where needed.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,6 +99,11 @@ Kernel MA execution then consumes VRAM-oriented inputs through `VramMaInputs` an
 - [ ] Document VRAM MA input ownership and kernel-execution buffer expectations.
 - [ ] Document required candle fields and dataset-signature matching.
 - [ ] Add or tighten tests for promotion, budgeting, and residency summaries.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -96,6 +111,7 @@ Kernel MA execution then consumes VRAM-oriented inputs through `VramMaInputs` an
 - run targeted Double-MA GPU-kernel parity tests in `crates/app_core/src/double_ma.rs`
 - run targeted report or artifact tests if residency fields change
 - run the GPU performance gate when VRAM-path behavior changes on a machine with GPU access
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -103,6 +119,7 @@ Kernel MA execution then consumes VRAM-oriented inputs through `VramMaInputs` an
 - prefer additive diagnostics before changing residency policy
 - keep backend result residency summaries stable until all consumers migrate together
 - if budgeting rules change, update campaign prefetch and runtime-path docs together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

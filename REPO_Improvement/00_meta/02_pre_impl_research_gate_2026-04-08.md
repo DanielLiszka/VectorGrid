@@ -1,6 +1,6 @@
 # Pre-Implementation Research Gate
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -58,6 +58,7 @@ There is no user-facing behavior. This is an internal planning control.
 - citing secondary summaries when primary documentation is available
 - skipping tests, scripts, or artifact formats that already define behavior
 - writing implementation steps before constraints and edge cases are enumerated
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ There is no user-facing behavior. This is an internal planning control.
 - [Pinia: State](https://pinia.vuejs.org/core-concepts/state.html) and [Pinia: Testing Stores](https://pinia.vuejs.org/cookbook/testing.html) support treating store state and test setup as first-class plan inputs.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) and [Vitest Mocking Guide](https://vitest.dev/guide/mocking.html) support user-visible verification, isolated tests, and careful mocking.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is a useful reference for request / response / artifact shape discipline.
+- [GitHub tasklists](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/about-tasklists)
+  - relevant because the planning layer needs executable checklists, explicit acceptance criteria, and visible progress semantics rather than vague prose
 
 ## Proposed Improvement Approach
 
@@ -79,6 +82,13 @@ Every detailed implementation-plan doc should follow this research gate:
 5. Browse official documentation and primary references relevant to the topic.
 6. Capture the useful external constraints, not just links.
 7. Only then draft the detailed plan document with repo facts, research summary, checklist, and verification plan.
+8. Treat planning-layer quality as part of the implementation scope: keep the program auditable, explicit, refreshable, and easy for future contributors to execute without guesswork.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,6 +100,11 @@ Every detailed implementation-plan doc should follow this research gate:
 - [ ] Record at least one repo-specific risk and one external constraint before drafting.
 - [ ] Draft the implementation plan only after repo and external research are complete.
 - [ ] Include a concrete checklist and verification plan in the finished doc.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -97,12 +112,16 @@ Every detailed implementation-plan doc should follow this research gate:
 - Require every new plan doc to list current code surface and current verification surface.
 - Require every new plan doc to include regressions to avoid and a step-by-step checklist.
 - Reject plan docs that rely on general advice without repo grounding.
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify the definition of done, refresh triggers, and any superseded/historical pointers are explicit enough that another contributor could continue the program without guesswork
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - Apply this gate immediately to Wave 1 docs.
 - If primary documentation is weak or missing, the doc must explicitly note that gap instead of faking certainty.
 - If a topic proves too broad after research, split it and update the tracker instead of compressing it.
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -67,6 +67,7 @@ Current user-facing behavior includes:
 - allowing validate to succeed on datasets not present in the manifest without an explicit contract change
 - failing to refresh row count and min/max timestamps after validation
 - breaking frontend re-selection and metadata refresh after validate completes
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -81,6 +82,13 @@ Current user-facing behavior includes:
 3. Document every integrity field refreshed by validation.
 4. Tie frontend selection refresh behavior to the returned dataset metadata explicitly.
 5. Keep validate separate from repair even if the UI shows both side by side.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,19 +97,28 @@ Current user-facing behavior includes:
 - [ ] Document row-count and min/max timestamp refresh behavior.
 - [ ] Document frontend validate action and post-validate selection behavior.
 - [ ] Add or tighten tests if validation semantics or response shape changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted Polygon backend validate tests
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - manually validate one cached dataset and inspect updated metadata after any validate-flow change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve validate as non-destructive unless a new explicit mode is introduced
 - prefer clearer UI copy before changing backend semantics
 - keep manifest-backed preconditions explicit
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

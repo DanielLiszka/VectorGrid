@@ -91,6 +91,7 @@ The ML Signal panel exposes a single-policy form for direct validation and a bou
 - accidentally giving sweep a more permissive or different validation context than direct validation
 - making history replay unable to restore current single-policy versus sweep semantics
 - changing exit-toggle behavior without explicit product intent and updated UI copy
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -117,6 +118,13 @@ The ML Signal panel exposes a single-policy form for direct validation and a bou
 5. Document the candidate-budget cap, robust-score sorting, and post-validation top-k truncation as first-class constraints.
 6. Highlight the current `top_k` drift so future cleanup can be intentional rather than accidental.
 7. Keep any future parameter-surface expansion additive and compatible with the current replayable artifacts.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -130,14 +138,22 @@ The ML Signal panel exposes a single-policy form for direct validation and a bou
 - [ ] Document PSR/DSR optional gates and where they are forwarded.
 - [ ] Document how policy details are persisted into artifacts and restored through replay.
 - [ ] Add or maintain tests for defaults, explicit overrides, and replay shape stability.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/mlSignalService.test.ts`
-- run `npm --prefix web test -- src/components/MlSignalWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/mlSignalService.test.ts`
+- run `npm --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
 - run targeted ML-signal tests in `crates/app_core/src/ml_signal.rs`
 - manually execute one direct ML validation and one bounded sweep, then replay both artifacts
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -145,6 +161,7 @@ The ML Signal panel exposes a single-policy form for direct validation and a bou
 - if defaults are unified later, do it explicitly and update both store fixtures and backend tests together
 - keep the current bounded sweep posture unless product goals change deliberately
 - preserve older artifacts that encode the current single-policy or sweep summary fields
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

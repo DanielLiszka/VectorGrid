@@ -59,6 +59,7 @@ The current browser shell smoke spec opens the mocked shell, walks through works
 - overfitting the test to transient copy or decorative markup
 - using arbitrary pauses where explicit readiness or built-in assertions are available
 - letting shell smoke absorb result-table or form-detail coverage that belongs in other tests
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current browser shell smoke spec opens the mocked shell, walks through works
 - [Playwright locators](https://playwright.dev/docs/locators) are relevant because shell smoke should keep using stable role- and attribute-oriented selectors.
 - [Playwright best practices](https://playwright.dev/docs/best-practices) are relevant because this spec should verify the user-observable navigation contract rather than internal implementation details.
 - [Playwright assertions](https://playwright.dev/docs/test-assertions) are relevant because automatic waiting is critical for keeping shell-navigation smoke stable without sleeps.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current browser shell smoke spec opens the mocked shell, walks through works
 2. Define which workspace and workflow surfaces are contract-level assertions versus optional contextual assertions.
 3. Prefer semantic selectors and built-in waiting over manual timing or deep DOM traversal.
 4. Treat any growth in spec scope as a deliberate decision that must still fit the shell-level boundary.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current browser shell smoke spec opens the mocked shell, walks through works
 - [ ] Audit selectors so they stay stable and accessibility-oriented.
 - [ ] Avoid adding dense optimize/validate/analyze detail checks to this shell smoke spec.
 - [ ] Keep the spec non-options only.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The current browser shell smoke spec opens the mocked shell, walks through works
 - review failure traces when selection/focus behavior changes unexpectedly
 - verify that any changed selectors remain shared-safe with the desktop harness
 - confirm the shell-ready helper still guarantees the app has mounted before navigation begins
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current keyboard contract while refining assertion quality
 - if shell IA changes, update the contract intentionally rather than weakening the test to “make it pass”
 - split genuinely separate shell behaviors into additional docs/specs instead of bloating this one
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

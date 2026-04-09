@@ -61,6 +61,7 @@ The same command module also owns cross-ticker alignment logic that trims or bor
 - breaking overlap alignment for cross-ticker datasets
 - allowing non-monotonic timestamps in emitted price bars
 - silently changing cap behavior or bar-construction rules without updating tests and docs
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -69,6 +70,8 @@ The same command module also owns cross-ticker alignment logic that trims or bor
 - [canvas element accessibility | MDN](https://developer.mozilla.org/es/docs/Web/HTML/Reference/Elements/canvas) is relevant because any chart surface built from price bars needs explicit accessibility and supporting text rather than assuming the bitmap alone is self-explanatory.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because supporting chart evidence should stay observable and testable from the user-facing surface.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because chart inputs should stay derived from shared command/service state rather than panel-local ad hoc logic.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -77,6 +80,13 @@ The same command module also owns cross-ticker alignment logic that trims or bor
 3. Document the relationship between cross-ticker base-horizon alignment and any price-bar review that accompanies validation.
 4. Keep command ownership explicit so later chart changes do not silently alter validation-supporting evidence.
 5. Expand tests around cap behavior, overlap alignment, and monotonic output.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -87,12 +97,19 @@ The same command module also owns cross-ticker alignment logic that trims or bor
 - [ ] Add or tighten tests for monotonic timestamps and index-range traceability.
 - [ ] Add or tighten tests for overlap alignment and cap behavior.
 - [ ] Keep chart-supporting evidence distinct from run-verdict semantics.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `commands_validation.rs` tests
 - run any service tests that exercise price-bar fetch or review flows
 - manually inspect one loaded dataset with `get_price_bars` and one cross-ticker-aligned validation path
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -100,6 +117,7 @@ The same command module also owns cross-ticker alignment logic that trims or bor
 - keep index-range fields stable for traceability
 - if cross alignment changes, update both validation docs and tests at the same time
 - prefer additive explanation over changing supporting-data behavior casually
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

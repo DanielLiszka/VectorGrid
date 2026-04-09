@@ -65,6 +65,7 @@ That means `dataset_meta` is already effectively part of the product contract, n
 - breaking `resample_applied`, `resample_rule`, or `resample_anchor` semantics
 - letting report builders consume a different `dataset_meta` shape than history or hydration
 - widening the shape casually without documenting compatibility
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -81,6 +82,13 @@ That means `dataset_meta` is already effectively part of the product contract, n
 3. Keep frontend `buildDatasetMetaForArtifact()` aligned with backend normalization rather than evolving independently.
 4. Tie campaign/meta-produced dataset metadata back to the same contract.
 5. Expand tests around precedence, resample semantics, and cross-consumer consistency.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,14 +99,21 @@ That means `dataset_meta` is already effectively part of the product contract, n
 - [ ] Add or tighten tests for normalization precedence and report/history parity.
 - [ ] Add or tighten tests for campaign/meta-produced dataset metadata compatibility.
 - [ ] Add or tighten tests for hydration using persisted dataset metadata without live reload.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `run_artifacts.rs` tests
 - run targeted `commands_reports.rs` tests
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/services/workflowArtifactsSync.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/workflowArtifactsSync.test.ts`
 - manually inspect one saved-run detail view and one reopened report path using persisted dataset metadata
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +121,7 @@ That means `dataset_meta` is already effectively part of the product contract, n
 - prefer one normalized contract over multiple inferred shapes
 - if a new metadata field is added, update backend normalizer, frontend builder, and report/detail consumers together
 - keep options-specific metadata out of this non-options contract
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

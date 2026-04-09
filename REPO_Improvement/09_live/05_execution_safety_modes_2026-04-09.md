@@ -90,6 +90,7 @@ The UI surfaces these through posture cards, safety copy, and confirmations. Cur
 - silently broadening bracket-order attachment rules
 - documenting frontend-only checks as if they were guaranteed backend invariants
 - making cancellation or runner-stop behavior less explicit than it is now
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -101,6 +102,8 @@ The UI surfaces these through posture cards, safety copy, and confirmations. Cur
   - relevant because single-runner posture and runtime safety state are authoritative on the Rust side
 - [Dialog | Tauri](https://v2.tauri.app/plugin/dialog/)
   - relevant because risky transitions rely on explicit confirmations in the desktop UX
+- [Alpaca Orders](https://docs.alpaca.markets/docs/orders-at-alpaca)
+  - relevant because live execution, monitoring, and order-state handling sit behind provider contracts that must remain explicit in a public-facing trading app
 
 ## Proposed Improvement Approach
 
@@ -114,6 +117,13 @@ The UI surfaces these through posture cards, safety copy, and confirmations. Cur
 4. Keep live-feed posture and runner posture documented as distinct dependencies rather than one “automation mode.”
 5. Preserve narrow bracket-order semantics and zero-delta hold behavior as explicit safety features.
 6. Tie any safety-copy or posture refactor to store/service/backend tests together.
+7. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -125,15 +135,24 @@ The UI surfaces these through posture cards, safety copy, and confirmations. Cur
 - [ ] Document zero-delta and unsupported-strategy safe-degradation behavior.
 - [ ] Preserve tests for dry-run, broker-armed confirmation, blocked reasons, and live-runner preflight checks.
 - [ ] Preserve targeted backend tests for normalization, gating, and cancellation markers.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/ExecutionWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/executionService.test.ts`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
-- run `npm --prefix web test -- src/utils/executionRisk.test.ts`
+- run `npm --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/executionService.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/utils/executionRisk.test.ts`
 - run targeted execution tests in `src-tauri/src/commands_execution.rs`
 - manually verify paper/live and dry-run/broker-armed combinations in the execution panel
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -143,6 +162,7 @@ The UI surfaces these through posture cards, safety copy, and confirmations. Cur
   - delayed live feed
 - if safety checks move across layers later, document that explicitly instead of silently changing which side enforces them
 - prefer additive safety messaging over hidden mode simplification
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -60,6 +60,7 @@ The browser UX harness already builds the frontend, serves it through a local pr
 - adding broad visual assertions or large snapshot inventories to what should stay a fast smoke layer
 - letting the mock runtime silently grow unsupported commands or desktop-only assumptions
 - duplicating Vitest coverage instead of targeting shell-level journeys that benefit from a real browser context
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The browser UX harness already builds the frontend, serves it through a local pr
 - [Playwright isolation](https://playwright.dev/docs/browser-contexts) is relevant because each browser smoke spec should stay independent and not leak mocked runtime state across tests.
 - [Playwright Trace Viewer](https://playwright.dev/docs/trace-viewer) is relevant because retained failure traces are a better debugging surface than ad hoc logging alone.
 - [Tauri: Calling Rust from the frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because the browser harness deliberately stands in for a very small subset of the Tauri bridge rather than the whole native runtime.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The browser UX harness already builds the frontend, serves it through a local pr
 2. Keep the support mocks intentionally minimal and explicitly document which desktop/runtime behaviors are out of scope.
 3. Require every browser smoke spec to justify why it belongs at shell level rather than component/service level.
 4. Treat retained Playwright artifacts as debugging aids and review evidence, not as broad golden outputs.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The browser UX harness already builds the frontend, serves it through a local pr
 - [ ] Keep the browser suite focused on deterministic shell journeys and overlay behavior.
 - [ ] Keep the suite single-worker and deterministic unless there is strong evidence parallelism is safe.
 - [ ] Review browser smoke additions for mock sprawl before accepting them as new coverage.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,12 +106,15 @@ The browser UX harness already builds the frontend, serves it through a local pr
 - review failures using retained traces and screenshots rather than adding permanent sleeps or debug noise
 - check that the harness still starts from a fresh built app and mocked runtime for each spec
 - verify the harness remains non-options only
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current small suite while clarifying its ownership contract
 - prefer tightening helper boundaries before expanding the number of specs
 - if a test needs real Tauri behavior, move it to desktop smoke instead of enriching the browser mock
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

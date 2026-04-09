@@ -1,6 +1,6 @@
 # Validation Store Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -94,6 +94,7 @@ The store already dispatches the service layer for:
 - desynchronizing validation panel controls from store state
 - dropping `source` / `updatedAtUnixMs` freshness semantics
 - bypassing service dispatch through direct component logic
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -105,6 +106,8 @@ The store already dispatches the service layer for:
   - relevant because this store’s contract is best protected with direct store/action tests
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html)
   - relevant because the validation workspace depends on centralized state rather than component-local mutation
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -122,6 +125,13 @@ The store already dispatches the service layer for:
    - stale selection cleanup
 4. Lock the current default validation posture in the doc so changes are intentional.
 5. Expand tests around defaults, cross-selection helpers, and snapshot restore behavior.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -133,6 +143,11 @@ The store already dispatches the service layer for:
 - [ ] Add tests for default posture and snapshot restore.
 - [ ] Add tests for cross-select-all/none/match and stale-selection cleanup.
 - [ ] Add tests proving service-dispatch actions remain thin wrappers over service methods.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -140,12 +155,15 @@ The store already dispatches the service layer for:
 - run `npm test -- src/components/ValidationWorkspacePanel.test.ts`
 - run `npm test -- src/services/validationService.test.ts`
 - manually verify validation-control state, cross-dataset actions, and export buttons in the panel
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current store field names and broad defaults unless a deliberate migration is written
 - keep service dispatch in the store rather than duplicating it in the component
 - if the store is later split, preserve current UI behavior and cross-dataset helper semantics first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

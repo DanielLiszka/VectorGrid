@@ -65,6 +65,42 @@ describe('optionsExpressionService', () => {
     })
   })
 
+  it('preserves derived-mid dataset semantics during import normalization', async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      version: 1,
+      options_dataset_id: 'spy_mid',
+      root_symbol: 'SPY',
+      provider_name: 'massive',
+      provider_source_surface: 'derived_mid_snapshot',
+      quote_resolution: '1m',
+      price_semantics: 'derived_mid_snapshot',
+      calendar_id: 'market_hours_utc',
+      timezone: 'UTC',
+      coverage_start: 100,
+      coverage_end: 200,
+      normalization_version: 1,
+      quote_semantics_version: 1,
+      corporate_action_mapping_version: 1,
+      contract_reference_source: 'massive_contract_reference',
+      contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+      provider_entitlement_profile: 'options_business',
+      underlier_reference_source: 'underlying_dataset',
+      dataset_path: 'C:/data/spy_mid.csv',
+      row_count: 24,
+      contract_count: 2,
+      aggregate_price_field: null,
+    })
+
+    const summary = await importOptionsDataset({ csv_path: 'C:/data/spy_mid.csv' })
+
+    expect(summary.optionsDatasetId).toBe('spy_mid')
+    expect(summary.providerSourceSurface).toBe('derived_mid_snapshot')
+    expect(summary.priceSemantics).toBe('derived_mid_snapshot')
+    expect(summary.providerEntitlementProfile).toBe('options_business')
+    expect(summary.contractReferenceAsOfUtc).toBe('2026-04-05T00:00:00Z')
+    expect(summary.aggregatePriceField).toBe('')
+  })
+
   it('normalizes Polygon/Massive download responses', async () => {
     invokeCommandMock.mockResolvedValueOnce({
       manifest: {
@@ -774,6 +810,101 @@ describe('optionsExpressionService', () => {
     expect(artifact.coverageAdequacy.verdict).toBe('mixed_fragile')
     expect(artifact.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2)
     expect(artifact.selectionMetrics[0]?.moneynessBucket).toBe('atm')
+  })
+
+  it('loads quote-aware artifacts without losing price semantics or fill-model provenance', async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      version: 1,
+      kind: 'vectorgrid_options_expression_v1',
+      ts: '2026-04-05T12:00:00Z',
+      artifact_path: 'C:/runs/vectorgrid_options_expression_quotes.json',
+      parent_artifact_id: 'vectorgrid_run_1',
+      root_symbol: 'SPY',
+      options_dataset_id: 'spy_quotes',
+      options_dataset_hash: 'hash-quotes',
+      backend_used: 'gpu_compiled_tensor',
+      price_semantics: 'top_of_book_quote',
+      request: {
+        parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
+        options_dataset_id: 'spy_quotes',
+        split_assignment_mode: 'event_chronological',
+        delay_minutes: [0],
+        dte_buckets: [1],
+        moneyness_buckets: ['atm'],
+        hold_minutes: [15],
+        target_return_buckets: [0.25],
+        stop_return_buckets: [0.25],
+        exit_template: 'fixed_hold_or_target_stop',
+        fill_model: 'quote_conservative',
+        filters: {
+          max_entry_lag_minutes: 5,
+        },
+        top_k: 25,
+        split_ratio_search: 0.6,
+        split_ratio_holdout: 0.2,
+      },
+      diagnostics: {
+        parent_artifact_path: 'C:/runs/vectorgrid_run_1.json',
+        options_dataset_id: 'spy_quotes',
+        root_symbol: 'SPY',
+        total_events: 10,
+        bullish_events: 6,
+        bearish_events: 4,
+        search_events: 6,
+        holdout_events: 2,
+        sealed_test_events: 2,
+        dataset_contracts: 3,
+        dataset_rows: 42,
+      },
+      overlap_window: {
+        contract_reference_as_of_utc: '2026-04-05T00:00:00Z',
+        total_events_in_dataset_window: 10,
+        search_events_in_dataset_window: 6,
+        holdout_events_in_dataset_window: 2,
+        sealed_test_events_in_dataset_window: 2,
+        total_events_before_dataset_window: 0,
+        total_events_after_dataset_window: 0,
+        search_events_before_dataset_window: 0,
+        search_events_after_dataset_window: 0,
+        holdout_events_before_dataset_window: 0,
+        holdout_events_after_dataset_window: 0,
+        sealed_test_events_before_dataset_window: 0,
+        sealed_test_events_after_dataset_window: 0,
+        total_events_before_contract_reference_as_of: 0,
+        search_events_before_contract_reference_as_of: 0,
+        holdout_events_before_contract_reference_as_of: 0,
+        sealed_test_events_before_contract_reference_as_of: 0,
+        total_overlap_rate: 1,
+        search_overlap_rate: 1,
+        holdout_overlap_rate: 1,
+        sealed_test_overlap_rate: 1,
+      },
+      coverage_adequacy: {
+        verdict: 'healthy',
+        non_promotable: false,
+        reasons: [],
+        search_candidate_coverage_rate: 1,
+        holdout_candidate_coverage_rate: 1,
+        sealed_test_candidate_coverage_rate: 1,
+        search_baseline_outcome_coverage_rate: 1,
+        holdout_baseline_outcome_coverage_rate: 1,
+        sealed_test_baseline_outcome_coverage_rate: 1,
+        dominant_invalid_reason: '',
+        dominant_invalid_reason_share: 0,
+      },
+      split_invalid_reasons: {
+        search_invalid_reasons: [],
+        holdout_invalid_reasons: [],
+        sealed_test_invalid_reasons: [],
+      },
+      selection_metrics: [],
+    })
+
+    const artifact = await loadOptionsExpressionArtifact('C:/runs/vectorgrid_options_expression_quotes.json')
+
+    expect(artifact.priceSemantics).toBe('top_of_book_quote')
+    expect(artifact.optionsDatasetId).toBe('spy_quotes')
+    expect(artifact.request.fillModel).toBe('quote_conservative')
   })
 
   it('normalizes tuple inspection responses', async () => {

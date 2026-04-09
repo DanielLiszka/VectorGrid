@@ -748,6 +748,44 @@ describe('optionsExpressionStore', () => {
     expect(store.selectedDatasetId).toBe('spy_quotes')
   })
 
+  it('can import derived-mid Polygon/Massive datasets through the picker flow', async () => {
+    pickOptionsCsvPathMock.mockResolvedValue('C:/imports/spy_mid.csv')
+    importOptionsDatasetMock.mockResolvedValue({
+      optionsDatasetId: 'spy_mid',
+      rootSymbol: 'SPY',
+      priceSemantics: 'derived_mid_snapshot',
+      contractCount: 2,
+      rowCount: 24,
+    })
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_mid',
+        rootSymbol: 'SPY',
+        priceSemantics: 'derived_mid_snapshot',
+        contractCount: 2,
+        rowCount: 24,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const store = useOptionsExpressionStore()
+    store.attachParent('C:/runs/vectorgrid_run_1.json', 'CompositeTrend', 'SPY.csv')
+    store.setRealismLane('derived_mid')
+
+    await store.importDatasetFromPicker()
+
+    expect(importOptionsDatasetMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        csv_path: 'C:/imports/spy_mid.csv',
+        provider_source_surface: 'derived_mid_snapshot',
+        price_semantics: 'derived_mid_snapshot',
+        aggregate_price_field: undefined,
+      }),
+    )
+    expect(store.selectedDatasetId).toBe('spy_mid')
+    expect(store.fillModel).toBe('aggregate_research')
+  })
+
   it('blocks direct provider download outside the aggregate lane', async () => {
     const store = useOptionsExpressionStore()
     store.attachParent('C:/runs/vectorgrid_run_1.json', 'DoubleMa', 'SPY.csv')
@@ -903,6 +941,63 @@ describe('optionsExpressionStore', () => {
     expect(store.activeArtifact?.parentArtifactId).toBe('vectorgrid_run_1')
     expect(store.activeBackendFallbackReason).toBe('GPU planner probe failed; using CPU.')
     expect(store.latestRun).toBeNull()
+  })
+
+  it('restores the matching realism lane from reopened artifact semantics', async () => {
+    loadOptionsExpressionArtifactMock.mockResolvedValue(makeArtifactRecord({
+      artifactPath: 'C:/runs/vectorgrid_options_expression_quotes.json',
+      optionsDatasetId: 'spy_quotes',
+      priceSemantics: 'top_of_book_quote',
+      request: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentCandidateIndex: null,
+        optionsDatasetId: 'spy_quotes',
+        splitAssignmentMode: 'event_chronological',
+        delayMinutes: [0],
+        dteBuckets: [1],
+        moneynessBuckets: ['atm'],
+        holdMinutes: [15],
+        targetReturnBuckets: [0.25],
+        stopReturnBuckets: [0.25],
+        exitTemplate: 'fixed_hold_or_target_stop',
+        fillModel: 'quote_conservative',
+        filters: {
+          maxEntryLagMinutes: 5,
+          maxPremium: null,
+          minPremium: null,
+          minVolume: null,
+          minOpenInterest: null,
+        },
+        topK: 25,
+        minValidTrades: null,
+        splitRatioSearch: 0.6,
+        splitRatioHoldout: 0.2,
+      },
+      diagnostics: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        optionsDatasetId: 'spy_quotes',
+        rootSymbol: 'SPY',
+        totalEvents: 10,
+        bullishEvents: 6,
+        bearishEvents: 4,
+        searchEvents: 6,
+        holdoutEvents: 2,
+        sealedTestEvents: 2,
+        datasetContracts: 3,
+        datasetRows: 42,
+        coverageStart: null,
+        coverageEnd: null,
+      },
+      selectionMetrics: [],
+    }))
+
+    const store = useOptionsExpressionStore()
+    await store.loadArtifact('C:/runs/vectorgrid_options_expression_quotes.json')
+
+    expect(store.activeArtifact?.priceSemantics).toBe('top_of_book_quote')
+    expect(store.realismLane).toBe('quote_aware')
+    expect(store.importPriceSemantics).toBe('top_of_book_quote')
+    expect(store.fillModel).toBe('aggregate_research')
   })
 
   it('loads tuple inspection rows for the active artifact', async () => {

@@ -1,6 +1,6 @@
 # Headless Report Builders Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -86,12 +86,15 @@ The active report path is validation-first. Desktop save flows, artifact-backed 
 - weakening compatibility-mode export of legacy validation artifacts
 - conflating repo-local headless output paths with app-local desktop report-save paths
 - treating structural parity tooling as a performance benchmark surface
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [rust_xlsxwriter getting started](https://rustxlsxwriter.github.io/worksheet/getting_stared.html)
 - [Tauri calling Rust from the frontend](https://v2.tauri.app/develop/calling-rust/)
 - [Microsoft Support: Create a chart from start to finish](https://support.microsoft.com/en-us/office/create-a-chart-from-start-to-finish-0baf399e-dd61-4e18-8a73-b3fd5d5680c2)
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -100,6 +103,13 @@ The active report path is validation-first. Desktop save flows, artifact-backed 
 3. Make builder parity and artifact-backed rebuild behavior explicit.
 4. Keep the doc grounded in the current validation-first path rather than reopening older analysis-builder design questions.
 5. Use the current regression suite as the implementation-plan baseline instead of inventing a new test harness first.
+6. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -111,6 +121,12 @@ The active report path is validation-first. Desktop save flows, artifact-backed 
 - [ ] Document compatibility-mode behavior for legacy validation artifacts.
 - [ ] Document which legacy builders remain reference-only and are not on the active product path.
 - [ ] Add or tighten parity/regression tests if any builder entrypoint changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -118,12 +134,15 @@ The active report path is validation-first. Desktop save flows, artifact-backed 
 - run targeted unit tests in `src-tauri/src/commands_reports_validation_xlsx.rs`
 - run targeted unit tests in `src-tauri/src/commands_reports.rs`
 - run a representative `ta_headless_validate` invocation and confirm the XLSX writes successfully
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current validation-first builder path first
 - keep the current base64 Tauri build wrapper and direct-byte headless helper in parity unless there is an explicit migration plan
 - if legacy/reference builders are ever removed, do it only after the active headless and artifact-backed paths are fully documented and verified
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

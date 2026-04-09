@@ -861,6 +861,41 @@ struct OptionsExpressionReplayInputs {
     options_dataset_hash: String,
 }
 
+fn validate_saved_artifact_replay_provenance(
+    artifact: &OptionsExpressionArtifactV1,
+    replay: &OptionsExpressionReplayInputs,
+) -> Result<(), String> {
+    if replay.parent_artifact_id != artifact.parent_artifact_id {
+        return Err(format!(
+            "saved artifact parent id '{}' no longer matches the replay parent id '{}'",
+            artifact.parent_artifact_id, replay.parent_artifact_id
+        ));
+    }
+    if replay.normalized_req.options_dataset_id != artifact.options_dataset_id {
+        return Err(format!(
+            "saved artifact dataset id '{}' no longer matches the replay dataset id '{}'",
+            artifact.options_dataset_id, replay.normalized_req.options_dataset_id
+        ));
+    }
+    if replay.options_dataset_hash != artifact.options_dataset_hash {
+        return Err(format!(
+            "saved artifact dataset hash '{}' no longer matches the currently imported dataset hash '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+            artifact.options_dataset_hash,
+            replay.options_dataset_hash,
+            artifact.options_dataset_id
+        ));
+    }
+    if replay.dataset.manifest.price_semantics != artifact.price_semantics {
+        return Err(format!(
+            "saved artifact price semantics '{:?}' no longer match the currently imported dataset price semantics '{:?}' for '{}'; re-import the original dataset or rerun the options expression optimization",
+            artifact.price_semantics,
+            replay.dataset.manifest.price_semantics,
+            artifact.options_dataset_id
+        ));
+    }
+    Ok(())
+}
+
 fn build_options_expression_replay_inputs(
     req: OptionsExpressionRunRequest,
     app_local_data_dir: &std::path::Path,
@@ -1367,6 +1402,7 @@ pub async fn inspect_options_expression_tuple(
             .clone();
         let replay =
             build_options_expression_replay_inputs(artifact.request.clone(), &app_local_data_dir)?;
+        validate_saved_artifact_replay_provenance(&artifact, &replay)?;
         let inspection = inspect_options_expression_tuple_blocking(
             replay.normalized_req,
             req.tuple_index,
@@ -1434,6 +1470,7 @@ pub async fn inspect_options_expression_event_path(
             .clone();
         let replay =
             build_options_expression_replay_inputs(artifact.request.clone(), &app_local_data_dir)?;
+        validate_saved_artifact_replay_provenance(&artifact, &replay)?;
         let inspection = inspect_options_expression_event_path_blocking(
             replay.normalized_req,
             req.tuple_index,
@@ -1470,8 +1507,9 @@ mod tests {
     use serde_json::json;
     use ta_app_core::{
         options_types::{
-            OptionsExpressionValidationVerdict, OptionsFillModelFamily, OptionsMoneynessBucket,
-            OptionsStructureFamily, OptionsTupleSpec,
+            ImportedOptionsDataset, OptionsDatasetManifestV1, OptionsExpressionValidationVerdict,
+            OptionsFillModelFamily, OptionsMoneynessBucket, OptionsStructureFamily,
+            OptionsTupleSpec,
         },
         OptionsEvaluationSplit, OptionsExpressionArtifactV1, OptionsExpressionDiagnostics,
         OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionTupleResult,
@@ -1535,6 +1573,126 @@ mod tests {
                 confidence_tag: None,
                 calendar_id: "market_hours_utc".to_string(),
             }],
+        }
+    }
+
+    fn write_parent_strategy_artifact(
+        temp_root: &std::path::Path,
+        strategy_kind: &str,
+    ) -> std::path::PathBuf {
+        let parent_artifact_path = temp_root.join("vectorgrid_run_1.json");
+        std::fs::write(
+            &parent_artifact_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "run": {
+                    "req": {
+                        "strategy_kind": strategy_kind
+                    }
+                }
+            }))
+            .expect("serialize parent artifact"),
+        )
+        .expect("write parent artifact");
+        parent_artifact_path
+    }
+
+    fn sample_summary_request(
+        parent_artifact_path: &std::path::Path,
+        options_dataset_id: &str,
+        fill_model: OptionsFillModelFamily,
+    ) -> OptionsExpressionRunRequest {
+        serde_json::from_value(json!({
+            "parent_artifact_path": parent_artifact_path.to_string_lossy(),
+            "options_dataset_id": options_dataset_id,
+            "fill_model": match fill_model {
+                OptionsFillModelFamily::AggregateResearch => "aggregate_research",
+                OptionsFillModelFamily::QuoteConservative => "quote_conservative",
+                OptionsFillModelFamily::QuoteMid => "quote_mid",
+            }
+        }))
+        .expect("request")
+    }
+
+    fn sample_summary_artifact(
+        parent_artifact_path: &std::path::Path,
+        options_dataset_id: &str,
+        price_semantics: OptionsPriceSemantics,
+        fill_model: OptionsFillModelFamily,
+    ) -> OptionsExpressionArtifactV1 {
+        OptionsExpressionArtifactV1 {
+            version: OPTIONS_EXPRESSION_ARTIFACT_VERSION,
+            kind: "vectorgrid_options_expression_v1".to_string(),
+            ts: "2026-04-07T00:00:00Z".to_string(),
+            artifact_path: "C:/runs/vectorgrid_options_expression_1.json".to_string(),
+            parent_artifact_id: "vectorgrid_run_1".to_string(),
+            root_symbol: "SPY".to_string(),
+            options_dataset_id: options_dataset_id.to_string(),
+            options_dataset_hash: "hash-1".to_string(),
+            backend_used: "cpu_reference".to_string(),
+            backend_fallback_reason: None,
+            price_semantics,
+            request: sample_summary_request(parent_artifact_path, options_dataset_id, fill_model),
+            diagnostics: OptionsExpressionDiagnostics {
+                parent_artifact_path: parent_artifact_path.to_string_lossy().to_string(),
+                options_dataset_id: options_dataset_id.to_string(),
+                root_symbol: "SPY".to_string(),
+                total_events: 10,
+                bullish_events: 6,
+                bearish_events: 4,
+                search_events: 6,
+                holdout_events: 2,
+                sealed_test_events: 2,
+                dataset_contracts: 3,
+                dataset_rows: 42,
+                coverage_start: None,
+                coverage_end: None,
+            },
+            staging: None,
+            overlap_window: ta_app_core::options_types::OptionsExpressionOverlapWindowSummary {
+                contract_reference_as_of_utc: Some("2026-04-06T00:00:00Z".to_string()),
+                total_events_in_dataset_window: 10,
+                search_events_in_dataset_window: 6,
+                holdout_events_in_dataset_window: 2,
+                sealed_test_events_in_dataset_window: 2,
+                total_events_before_dataset_window: 0,
+                total_events_after_dataset_window: 0,
+                search_events_before_dataset_window: 0,
+                search_events_after_dataset_window: 0,
+                holdout_events_before_dataset_window: 0,
+                holdout_events_after_dataset_window: 0,
+                sealed_test_events_before_dataset_window: 0,
+                sealed_test_events_after_dataset_window: 0,
+                total_events_before_contract_reference_as_of: 0,
+                search_events_before_contract_reference_as_of: 0,
+                holdout_events_before_contract_reference_as_of: 0,
+                sealed_test_events_before_contract_reference_as_of: 0,
+                total_overlap_rate: 1.0,
+                search_overlap_rate: 1.0,
+                holdout_overlap_rate: 1.0,
+                sealed_test_overlap_rate: 1.0,
+            },
+            coverage_adequacy:
+                ta_app_core::options_types::OptionsExpressionCoverageAdequacySummary {
+                    verdict: OptionsExpressionCoverageAdequacyVerdict::Healthy,
+                    non_promotable: false,
+                    reasons: vec!["Overlap and split coverage are currently adequate.".to_string()],
+                    search_candidate_coverage_rate: 1.0,
+                    holdout_candidate_coverage_rate: 1.0,
+                    sealed_test_candidate_coverage_rate: 1.0,
+                    search_baseline_outcome_coverage_rate: 1.0,
+                    holdout_baseline_outcome_coverage_rate: 1.0,
+                    sealed_test_baseline_outcome_coverage_rate: 1.0,
+                    dominant_invalid_reason: None,
+                    dominant_invalid_reason_share: 0.0,
+                },
+            split_invalid_reasons:
+                ta_app_core::options_types::OptionsExpressionSplitInvalidReasonSummary {
+                    search_invalid_reasons: vec![],
+                    holdout_invalid_reasons: vec![],
+                    sealed_test_invalid_reasons: vec![],
+                },
+            selection_metrics: vec![],
         }
     }
 
@@ -1833,6 +1991,201 @@ mod tests {
         assert_eq!(summary.search_baseline_outcome_coverage_rate, 1.0);
         assert_eq!(summary.validated_tuple_count, 1);
         assert_eq!(summary.stress_fragile_tuple_count, 1);
+
+        let _ = std::fs::remove_file(&parent_artifact_path);
+        let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    #[test]
+    fn summarize_options_expression_artifact_preserves_price_semantics_provenance() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "vectorgrid_options_summary_semantics_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+
+        for (options_dataset_id, price_semantics, fill_model, expected_fill_model) in [
+            (
+                "spy_mid",
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch,
+                "aggregate_research",
+            ),
+            (
+                "spy_quotes",
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative,
+                "quote_conservative",
+            ),
+        ] {
+            let artifact = sample_summary_artifact(
+                &parent_artifact_path,
+                options_dataset_id,
+                price_semantics,
+                fill_model,
+            );
+            let summary = summarize_options_expression_artifact(
+                std::path::Path::new("C:/runs/vectorgrid_options_expression_1.json"),
+                1024,
+                &artifact,
+            );
+            assert_eq!(summary.price_semantics, price_semantics);
+            assert_eq!(summary.options_dataset_id, options_dataset_id);
+            assert_eq!(summary.request_fill_model, expected_fill_model);
+        }
+
+        let _ = std::fs::remove_file(&parent_artifact_path);
+        let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    fn sample_replay_dataset(
+        options_dataset_id: &str,
+        price_semantics: OptionsPriceSemantics,
+    ) -> ImportedOptionsDataset {
+        ImportedOptionsDataset {
+            manifest: OptionsDatasetManifestV1 {
+                version: 1,
+                options_dataset_id: options_dataset_id.to_string(),
+                root_symbol: "SPY".to_string(),
+                provider_name: "massive".to_string(),
+                provider_source_surface: match price_semantics {
+                    OptionsPriceSemantics::MinuteAggregate => "minute_aggregate".to_string(),
+                    OptionsPriceSemantics::DerivedMidSnapshot => "derived_mid_snapshot".to_string(),
+                    OptionsPriceSemantics::TopOfBookQuote => "top_of_book_quote".to_string(),
+                },
+                provider_entitlement_profile: Some("options_business".to_string()),
+                quote_resolution: "1m".to_string(),
+                price_semantics,
+                calendar_id: "market_hours_utc".to_string(),
+                timezone: "UTC".to_string(),
+                coverage_start: 1,
+                coverage_end: 2,
+                normalization_version: 1,
+                quote_semantics_version: 1,
+                corporate_action_mapping_version: 1,
+                contract_reference_source: "massive_contract_reference".to_string(),
+                contract_reference_as_of_utc: Some("2026-04-06T00:00:00Z".to_string()),
+                underlier_reference_source: "underlier_dataset".to_string(),
+                dataset_path: "C:/options/spy.csv".to_string(),
+                row_count: 2,
+                contract_count: 0,
+                aggregate_price_field: if matches!(
+                    price_semantics,
+                    OptionsPriceSemantics::MinuteAggregate
+                ) {
+                    Some("close".to_string())
+                } else {
+                    None
+                },
+            },
+            contracts: Vec::new(),
+        }
+    }
+
+    fn sample_replay_inputs_for_artifact(
+        artifact: &OptionsExpressionArtifactV1,
+        options_dataset_hash: &str,
+        price_semantics: OptionsPriceSemantics,
+    ) -> OptionsExpressionReplayInputs {
+        let mut normalized_req = artifact.request.clone();
+        normalized_req.options_dataset_id = artifact.options_dataset_id.clone();
+        OptionsExpressionReplayInputs {
+            parent_artifact_id: artifact.parent_artifact_id.clone(),
+            normalized_req,
+            signal_manifest: Arc::new(sample_signal_manifest()),
+            dataset: Arc::new(sample_replay_dataset(
+                &artifact.options_dataset_id,
+                price_semantics,
+            )),
+            options_dataset_hash: options_dataset_hash.to_string(),
+        }
+    }
+
+    #[test]
+    fn saved_artifact_replay_provenance_accepts_matching_dataset_hash_and_semantics() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "vectorgrid_options_replay_provenance_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_quotes",
+            OptionsPriceSemantics::TopOfBookQuote,
+            OptionsFillModelFamily::QuoteConservative,
+        );
+        let replay = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::TopOfBookQuote,
+        );
+
+        validate_saved_artifact_replay_provenance(&artifact, &replay)
+            .expect("matching provenance should pass");
+
+        let _ = std::fs::remove_file(&parent_artifact_path);
+        let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    #[test]
+    fn saved_artifact_replay_provenance_rejects_dataset_hash_or_semantics_drift() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "vectorgrid_options_replay_provenance_drift_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("create temp dir");
+        let parent_artifact_path = write_parent_strategy_artifact(&temp_root, "DoubleMa");
+        let artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_mid",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+
+        let hash_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-2",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        let hash_error = validate_saved_artifact_replay_provenance(&artifact, &hash_drift)
+            .expect_err("hash drift should fail");
+        assert!(hash_error.contains("dataset hash"));
+        assert!(hash_error.contains("spy_mid"));
+
+        let semantics_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::TopOfBookQuote,
+        );
+        let semantics_error =
+            validate_saved_artifact_replay_provenance(&artifact, &semantics_drift)
+                .expect_err("semantics drift should fail");
+        assert!(semantics_error.contains("price semantics"));
+        assert!(semantics_error.contains("spy_mid"));
+
+        let mut parent_drift = sample_replay_inputs_for_artifact(
+            &artifact,
+            "hash-1",
+            OptionsPriceSemantics::DerivedMidSnapshot,
+        );
+        parent_drift.parent_artifact_id = "vectorgrid_run_2".to_string();
+        let parent_error = validate_saved_artifact_replay_provenance(&artifact, &parent_drift)
+            .expect_err("parent drift should fail");
+        assert!(parent_error.contains("parent id"));
 
         let _ = std::fs::remove_file(&parent_artifact_path);
         let _ = std::fs::remove_dir(&temp_root);

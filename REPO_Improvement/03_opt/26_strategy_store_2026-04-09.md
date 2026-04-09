@@ -67,6 +67,7 @@ Because the store already contains behavior, not just inventory, it deserves a d
 - weakening snapshot or history rehydration
 - moving canonical strategy truth back into component-local state
 - adding new store behavior without tests that freeze it
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ Because the store already contains behavior, not just inventory, it deserves a d
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because derived state and snapshot replay behavior need store-aware tests.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because the strategy store should stay authoritative over panel-local drafts.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because history and snapshot payloads behave like serialized state contracts.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ Because the store already contains behavior, not just inventory, it deserves a d
 3. Document snapshot and history rehydration expectations.
 4. Keep the strategy panel as a consumer of this store rather than a parallel owner.
 5. Add or tighten tests around behavior-bearing fields before store cleanup work.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,20 @@ Because the store already contains behavior, not just inventory, it deserves a d
 - [ ] Document special semantic rules such as `tradeOnNext`.
 - [ ] Document snapshot and history rehydration expectations.
 - [ ] Add or tighten tests for behavior-bearing fields.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/strategyStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/StrategyWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/stores/strategyStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/StrategyWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,6 +121,7 @@ Because the store already contains behavior, not just inventory, it deserves a d
 - prefer clearer ownership docs before splitting or shrinking the store
 - keep snapshot compatibility explicit during refactors
 - if semantic rules change, update store tests and consumer docs together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

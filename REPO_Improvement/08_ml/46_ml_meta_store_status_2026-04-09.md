@@ -75,6 +75,7 @@ The Meta workspace is store-backed through `analysisStore`. Current behavior mea
 - treating service-delegating actions as pure no-risk refactors
 - collapsing status strings and operational flags into fewer fields without verifying UI behavior
 - breaking persisted/default snapshots while cleaning up naming
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -86,6 +87,8 @@ The Meta workspace is store-backed through `analysisStore`. Current behavior mea
   - relevant because persisted/default state shapes and compatibility fields should be treated as structured contracts
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because many store-backed actions ultimately drive command-boundary workflows through the service layer
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -99,6 +102,13 @@ The Meta workspace is store-backed through `analysisStore`. Current behavior mea
    - action flags
 5. Tie any rename or cleanup work to store tests, panel tests, service tests, and persisted snapshot expectations.
 6. Keep legacy snapshot compatibility visible until the repo intentionally migrates those fields.
+7. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -109,20 +119,29 @@ The Meta workspace is store-backed through `analysisStore`. Current behavior mea
 - [ ] Preserve tests for store actions, defaults, and domain-store wiring.
 - [ ] Preserve panel tests that depend on store field naming and availability flags.
 - [ ] Treat store field renames as compatibility-sensitive across UI, service, and persisted snapshots.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/analysisStore.actions.test.ts`
-- run `npm --prefix web test -- src/stores/domainStores.test.ts`
-- run `npm --prefix web test -- src/components/MetaWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/stores/analysisStore.actions.test.ts`
+- run `npm --prefix web run test -- src/stores/domainStores.test.ts`
+- run `npm --prefix web run test -- src/components/MetaWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
 - manually inspect saved Stage 5 and policy-eval flows after any store-shape change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current field names while Stage 4 compatibility still exists across service and artifact surfaces
 - if status fields are later separated from more durable workflow state, do so additively first
 - prefer explicit migration notes over silent state-key renames
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

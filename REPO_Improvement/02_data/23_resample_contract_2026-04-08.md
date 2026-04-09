@@ -1,6 +1,6 @@
 # Resample Contract Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -73,6 +73,7 @@ Users can load base data and then request a different timeframe, which creates a
 - failing to invalidate derived datasets after base changes
 - dropping `base_timeframe`, `derived_timeframe`, or `resample_applied` from persisted metadata
 - changing resample rule/anchor semantics without updating artifacts and reports
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -84,6 +85,8 @@ Users can load base data and then request a different timeframe, which creates a
   - relevant because derived timeframe changes still operate on ordered time-series data and should preserve chronology semantics
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because resampling is a command-mediated boundary crossing from the UI to Rust state
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -94,6 +97,13 @@ Users can load base data and then request a different timeframe, which creates a
    - persisted resample metadata
 3. Document current reuse and invalidation behavior so replay and history assumptions stay correct.
 4. Treat resample metadata as part of reproducibility, not just UI decoration.
+5. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -104,19 +114,28 @@ Users can load base data and then request a different timeframe, which creates a
 - [ ] Document `base_timeframe`, `derived_timeframe`, `resample_applied`, `resample_rule`, and `resample_anchor`.
 - [ ] Document frontend load-source behavior for fresh derived resamples.
 - [ ] Add or tighten tests if reuse, invalidation, or metadata behavior changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted tests in `src-tauri/src/state.rs`
 - run targeted tests in `crates/app_core/src/timeframe.rs`
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current derived-dataset reuse and invalidation semantics unless a broader data-cache redesign is intentional
 - preserve persisted resample metadata across artifacts and reports
 - if resample policy changes, update both runtime behavior and metadata contracts in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

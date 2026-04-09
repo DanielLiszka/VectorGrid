@@ -59,6 +59,7 @@ The repo already exposes a PowerShell wrapper around the CUPTI SASS probe binary
 - treating a specialized SASS metric capture as a release gate
 - changing capture parameters without recording them in provenance or notes
 - using a failing or empty probe run as proof of application breakage without checking environment support first
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already exposes a PowerShell wrapper around the CUPTI SASS probe binary
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because low-level GPU metrics need careful interpretation within a broader performance-analysis method.
 - [Nsight Compute docs](https://docs.nvidia.com/nsight-compute/) are relevant because Nsight and CUPTI diagnostics overlap in user expectations but not in exact role.
 - [Cargo run command docs](https://doc.rust-lang.org/cargo/commands/cargo-run.html) are relevant because the wrapper invokes a feature-gated probe binary through Cargo.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already exposes a PowerShell wrapper around the CUPTI SASS probe binary
 2. Preserve process-exclusivity checks and explicit capture parameters as part of the contract.
 3. Document environment prerequisites and common benign failure modes such as no-record captures.
 4. Use CUPTI only when a kernel- or metric-level question justifies it.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already exposes a PowerShell wrapper around the CUPTI SASS probe binary
 - [ ] Keep the CUPTI probe non-options only.
 - [ ] Record environment prerequisites and expected artifact locations.
 - [ ] Avoid promoting probe outputs into release authority.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already exposes a PowerShell wrapper around the CUPTI SASS probe binary
 - run capture mode only with a concrete kernel/metric question in mind
 - inspect output artifacts and the logged last command before drawing conclusions
 - verify no competing benchmark/profiler processes were active during the run
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current wrapper discipline and add documentation instead of making it easier-but-looser
 - keep CUPTI invocation rare and explicit
 - if repeated capture questions emerge, prefer playbook refinement over broadening the tool’s authority
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

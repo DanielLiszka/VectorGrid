@@ -1,6 +1,6 @@
 # CSV Load Contract Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -57,6 +57,7 @@ Users can browse to a CSV, load it, and receive normalized dataset metadata plus
 - changing `loadSource` strings without updating frontend expectations
 - losing dataset metadata fields relied on by artifacts and UI state
 - changing derived/resample identity rules accidentally during load work
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -71,6 +72,13 @@ Users can browse to a CSV, load it, and receive normalized dataset metadata plus
 3. Define `loadSource` semantics as an explicit enum contract, not an implementation detail.
 4. Define how missing open/high/low/volume fields affect downstream capability.
 5. Define the error taxonomy for malformed files and invalid timestamps.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +90,11 @@ Users can browse to a CSV, load it, and receive normalized dataset metadata plus
 - [ ] Document cache-hit vs in-memory-reuse semantics.
 - [ ] Add or tighten tests for representative CSV variants and malformed cases.
 - [ ] Verify artifact/dataset metadata consumers still receive the same core fields.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -89,15 +102,19 @@ Users can browse to a CSV, load it, and receive normalized dataset metadata plus
 - run targeted data-store tests
 - run relevant Rust tests for CSV compatibility and loaded dataset state
 - manually verify at least one named-header CSV and one positional CSV
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep existing CSV compatibility behavior unless a break is explicitly approved
 - preserve current response fields while tightening semantics
 - if stricter validation is added later, expose it as clearer errors, not silent rejection
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
-- `REPO_Improvement/02_data/04_csv_header_compat_DATE.md`
-- `REPO_Improvement/02_data/07_data_cache_sources_DATE.md`
-- `REPO_Improvement/02_data/27_dataset_meta_schema_DATE.md`
+- `REPO_Improvement/02_data/04_csv_header_compat_2026-04-08.md`
+- `REPO_Improvement/02_data/07_data_cache_sources_2026-04-08.md`
+- `REPO_Improvement/02_data/27_dataset_meta_schema_2026-04-08.md`

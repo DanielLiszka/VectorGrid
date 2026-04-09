@@ -1,6 +1,6 @@
 # Tauri Mock Runtime Smoke Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -62,6 +62,7 @@ Users do not see these tests directly, but they protect a narrow class of runtim
 - coupling them to fragile window/plugin behavior that belongs in other layers
 - letting managed-state additions drift out of sync with the mock builder when the smoke layer is supposed to cover them
 - weakening current cancel-token wiring assertions
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -71,6 +72,8 @@ Users do not see these tests directly, but they protect a narrow class of runtim
   - relevant because the smoke layer is really about managed-state wiring, not UI behavior
 - [Rust testing book section](https://doc.rust-lang.org/book/ch11-00-testing.html)
   - relevant because this layer is a targeted test boundary and should stay intentionally scoped
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ Users do not see these tests directly, but they protect a narrow class of runtim
 2. Keep the mock builder in sync with managed-state additions that matter to command/runtime smoke behavior.
 3. Add only a small number of safe `AppHandle`-oriented smokes if needed, without turning this into a desktop integration suite.
 4. Keep broader parity, plugin, and frontend bridge testing in their existing layers.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,17 +99,26 @@ Users do not see these tests directly, but they protect a narrow class of runtim
 - [ ] Document current cancel-token/runtime assertions.
 - [ ] Keep the mock builder aligned with managed-state additions that affect command/runtime smoke.
 - [ ] Add or tighten tests only within this narrow scope unless another test layer is explicitly being extended.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
 - run `cargo test --test mock_runtime_smoke`
 - run `cargo test --test command_runtime_wiring`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep this layer intentionally small and fast
 - if broader Tauri behavior must be tested, add or extend a different test layer instead of overloading this one
 - update the mock builder in the same change as relevant managed-state additions
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

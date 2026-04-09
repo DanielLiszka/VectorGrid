@@ -750,13 +750,15 @@ function describeRealismLane(
       return {
         label: 'Quote-aware lane',
         shortLabel: 'Quote-aware',
-        detail: `${activeFillModel} over top_of_book_quote rows. This is the highest-realism lane currently surfaced in the options workflow.`,
+        detail:
+          `${activeFillModel} over top_of_book_quote rows. This is the only quote-side execution lane currently surfaced in the options workflow, and new dataset acquisition remains CSV import-first today.`,
       }
     case 'derived_mid_snapshot':
       return {
         label: 'Derived-mid lane',
         shortLabel: 'Derived-mid',
-        detail: `${activeFillModel} over derived_mid_snapshot rows. This lane is more realism-aware than minute aggregates but still regular enough for compiled optimization.`,
+        detail:
+          `${activeFillModel} over derived_mid_snapshot rows. This is a first-class realism lane, but runtime execution remains aggregate-style and non-quote-side; new dataset acquisition remains CSV import-first today.`,
       }
     case 'minute_aggregate':
     default:
@@ -905,9 +907,9 @@ const realismLaneSummary = computed(() => {
 const realismLaneRouteNote = computed(() => {
   switch (normalizeText(realismLane.value)) {
     case 'quote_aware':
-      return 'Quote-aware realism is currently a CSV-import lane. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
+      return 'Quote-aware realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
     case 'derived_mid':
-      return 'Derived-mid realism is currently a CSV-import lane. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
+      return 'Derived-mid realism is a first-class lane with CSV import for new dataset acquisition today. Direct Polygon/Massive provider download in this panel remains the bounded 1m aggregate path.'
     case 'aggregate':
     default:
       return 'Aggregate realism supports both normalized CSV import and direct bounded Polygon/Massive 1m provider download.'
@@ -1031,15 +1033,26 @@ const latestDownloadAuditRows = computed(() => {
 
 const activeDatasetManifest = computed(() => {
   const requestDatasetId = normalizeText(activeRequest.value?.optionsDatasetId)
+  if (requestDatasetId) {
+    return (
+      datasets.value.find((entry) => normalizeText(entry.optionsDatasetId) === requestDatasetId) ||
+      null
+    )
+  }
   const selectedId = normalizeText(selectedDataset.value?.optionsDatasetId)
-  const targetId = requestDatasetId || selectedId
-  if (!targetId) return selectedDataset.value
-  return datasets.value.find((entry) => normalizeText(entry.optionsDatasetId) === targetId) || selectedDataset.value
+  if (!selectedId) return selectedDataset.value
+  return (
+    datasets.value.find((entry) => normalizeText(entry.optionsDatasetId) === selectedId) ||
+    selectedDataset.value
+  )
 })
 
 const activeDatasetProvenanceSummary = computed(() => {
   const activeDataset = activeDatasetManifest.value
-  if (!activeDataset) return ''
+  const requestDatasetId = normalizeText(activeRequest.value?.optionsDatasetId)
+  if (!activeDataset) {
+    return requestDatasetId ? 'manifest unavailable locally' : ''
+  }
   return [
     normalizeText(activeDataset.providerName),
     normalizeText(activeDataset.providerSourceSurface),

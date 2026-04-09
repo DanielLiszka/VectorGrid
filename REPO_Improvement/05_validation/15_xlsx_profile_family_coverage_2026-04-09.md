@@ -63,6 +63,7 @@ The current tests already prove that several profile families render without cra
 - making `Profile counts` disagree with candidate sheet `Profile` values
 - allowing a new profile family to ship without workbook/export test coverage
 - turning unknown profiles into hard export failures
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -71,6 +72,8 @@ The current tests already prove that several profile families render without cra
 - [Calling Rust from the Frontend | Tauri](https://v2.tauri.app/es/develop/calling-rust/) is relevant because workbook export is a typed command boundary; schema drift should be handled at the Rust side, not hidden in the Vue caller.
 - [What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema) is relevant because profile-kind and params-summary fields are part of a structured export contract that should be validated explicitly.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because profile coverage should ultimately remain observable through user-facing export flows, not only internal helper assertions.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ The current tests already prove that several profile families render without cra
    - fallback/unknown profile labeling
 4. Expand tests so every non-options active profile key and every supported auxiliary profile path is exercised by the workbook builder.
 5. Add explicit mixed-profile and unknown-profile coverage so export behavior remains additive instead of brittle.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,6 +102,11 @@ The current tests already prove that several profile families render without cra
 - [ ] Add or tighten tests so the active-profile registry and workbook profile-family coverage cannot drift apart.
 - [ ] Add or tighten tests proving dashboard `Profile counts` categories match exported candidate `Profile` values.
 - [ ] Add or tighten tests for compatibility-mode artifacts and missing `run.req` strategy fallback.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -99,6 +114,8 @@ The current tests already prove that several profile families render without cra
 - run targeted `commands_reports_validation_common` tests
 - add or update one headless workbook test that iterates every active profile key from the canonical registry
 - manually inspect one generated workbook with multiple profile families present in the same shortlist
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +123,7 @@ The current tests already prove that several profile families render without cra
 - prefer additive registry extensions over ad hoc string matching in the workbook writer
 - if a profile family is not recognized, export should degrade to a stable fallback label rather than fail
 - keep compatibility-mode behavior explicit so legacy artifacts still export even when newer profile metadata is missing
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

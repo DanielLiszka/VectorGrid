@@ -85,6 +85,7 @@ So this surface is already a real shell-preference system, not just form state.
 - breaking root dataset attributes that existing shell styling depends on
 - weakening default-removal semantics in storage and creating noisy persisted state
 - changing help or density behavior without updating the current copy and tests
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -96,6 +97,8 @@ So this surface is already a real shell-preference system, not just form state.
   - relevant because native window-effect changes cross the frontend-to-backend boundary
 - [Pinia core concepts](https://pinia.vuejs.org/core-concepts/)
   - relevant because current settings behavior is already modeled as normalized store state rather than component-local state
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -111,6 +114,13 @@ So this surface is already a real shell-preference system, not just form state.
 3. Preserve the current root-dataset contract and default-removal storage behavior.
 4. Keep native window-effect behavior service-backed and platform-aware.
 5. If layout settings expand later, keep them inside the current shell-preference model instead of creating a second settings path.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -120,20 +130,29 @@ So this surface is already a real shell-preference system, not just form state.
 - [ ] Document native window-effect behavior and its service boundary.
 - [ ] Add or tighten tests if appearance or layout copy/behavior changes.
 - [ ] Preserve the separation from Tauri app-settings persistence.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/SettingsWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/settingsBootstrap.test.ts`
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
-- run `npm --prefix web test -- src/services/settingsService.test.ts`
+- run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/settingsBootstrap.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/settingsService.test.ts`
 - manually verify theme/effect/help/density changes and reload persistence
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep default values removable from storage unless a future migration requires explicit persistence
 - preserve preflight behavior if appearance/layout state is reorganized later
 - if platform-specific effect handling changes, keep the Settings UX explicit about what still applies locally
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

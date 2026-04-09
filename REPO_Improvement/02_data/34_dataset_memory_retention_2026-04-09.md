@@ -66,6 +66,7 @@ This matters because downstream workflows depend on live in-memory dataset state
 - silently changing the default base/derived retention posture
 - preferring eviction of actively shared `Arc`-held datasets before colder entries
 - allowing stale derived datasets to survive a base-version change
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -73,6 +74,8 @@ This matters because downstream workflows depend on live in-memory dataset state
 - [Rust `Mutex`](https://doc.rust-lang.org/std/sync/struct.Mutex.html) is relevant because the dataset map and loaded-data context are guarded backend state and must preserve internal consistency during eviction and invalidation.
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because residency policy belongs to authoritative backend state rather than ad hoc frontend assumptions.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant indirectly because downstream state and artifact contracts often assume a valid loaded dataset id and should make those dependencies explicit.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ This matters because downstream workflows depend on live in-memory dataset state
 3. Document protect-set expansion, LRU ordering, and tree-removal behavior together so the policy is understandable.
 4. Make the coupling to validation and ML-signal workflows explicit.
 5. Add more direct tests for protect-set behavior and eviction ordering if those cases are still only implicitly covered.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,6 +99,11 @@ This matters because downstream workflows depend on live in-memory dataset state
 - [ ] Document how identical base reloads reuse live dataset ids.
 - [ ] Document how live updates invalidate derived descendants.
 - [ ] Add or strengthen unit tests for eviction ordering and protected-parent behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -96,6 +111,9 @@ This matters because downstream workflows depend on live in-memory dataset state
 - run `cargo test -p ta_desktop_demo_app commands_data`
 - run targeted validation and ML-signal command tests if residency behavior changes
 - manually verify that loading, resampling, invalidating, and reloading datasets still behave consistently after retention changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -103,6 +121,7 @@ This matters because downstream workflows depend on live in-memory dataset state
 - prefer additive diagnostics before changing actual eviction behavior
 - if retention defaults change, update validation and ML-signal expectations in the same change
 - keep in-memory reuse truthfulness aligned with source-identity checks
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

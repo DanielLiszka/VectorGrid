@@ -1,6 +1,6 @@
 # Shell Titlebar Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -80,6 +80,7 @@ So the titlebar already defines part of the desktop product behavior, not just d
 - weakening close guarding for live runner or protected tasks
 - changing close semantics toward hidden minimize/tray behavior accidentally
 - breaking native drag, maximize, or window-control disable behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -105,6 +106,13 @@ So the titlebar already defines part of the desktop product behavior, not just d
    - guarded work requires explicit confirmation
 3. Keep runtime availability and guarded-close logic explicit and test-backed.
 4. If the titlebar is refactored later, keep the store-driven action routing intact.
+5. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -114,18 +122,27 @@ So the titlebar already defines part of the desktop product behavior, not just d
 - [ ] Document close-guard triggers and confirmation copy expectations.
 - [ ] Preserve drag and double-click maximize behavior.
 - [ ] Preserve responsive titlebar behavior at smaller widths.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/DesktopTitlebar.test.ts`
+- run `npm --prefix web run test -- src/components/DesktopTitlebar.test.ts`
 - manually verify titlebar actions, drag surfaces, native controls, and guarded close in desktop runtime
 - manually verify responsive behavior under narrower widths
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current “close exits” product posture unless a separate product decision changes it
 - keep native controls gracefully disabled outside desktop runtime
 - if close guarding rules change, update the tests and this doc in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -89,6 +89,7 @@ The Meta workspace exposes grouping controls alongside holdout controls. Users c
 - silently altering bucket quantization semantics
 - making saved grouped-count fields ambiguous or inconsistent across service, artifact, and report layers
 - documenting grouping as a frontend-only concern when the real behavior is backend-owned
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -100,6 +101,8 @@ The Meta workspace exposes grouping controls alongside holdout controls. Users c
   - relevant because grouping controls are frontend-owned inputs whose authoritative behavior is implemented in Rust
 - [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259)
   - relevant because grouped meta outputs and artifacts are persisted as JSON and must remain shape-stable across replay/report paths
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -117,6 +120,13 @@ The Meta workspace exposes grouping controls alongside holdout controls. Users c
    - artifact/report counts
 5. Keep frontend/store defaults and backend defaults synchronized in one documented contract.
 6. Make the artifact/report implications explicit so grouping changes are treated as behavior changes, not copy changes.
+7. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -130,15 +140,23 @@ The Meta workspace exposes grouping controls alongside holdout controls. Users c
 - [ ] Add or maintain tests for exact-vs-clustered collapse behavior.
 - [ ] Add or maintain tests for representative selection and persisted group counts.
 - [ ] Preserve compatibility for older saved artifacts that already depend on the current grouped-output shape.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
-- run `npm --prefix web test -- src/stores/domainStores.test.ts`
+- run `npm --prefix web run test -- src/services/metaRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/stores/domainStores.test.ts`
 - run targeted grouping tests in `crates/app_core/src/meta_select.rs`
 - run targeted Stage 3/report tests in `src-tauri/src/commands_meta.rs` and `src-tauri/src/commands_reports_meta_xlsx.rs`
 - manually compare one exact-mode and one clustered-mode run on the same artifact set
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -146,6 +164,7 @@ The Meta workspace exposes grouping controls alongside holdout controls. Users c
 - if grouping semantics change, update report wording and saved-count documentation in the same change
 - keep older grouped artifacts replayable even if future grouping metadata becomes richer
 - prefer additive metadata over replacing current grouped-count fields
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
@@ -153,4 +172,4 @@ The Meta workspace exposes grouping controls alongside holdout controls. Users c
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
 - `REPO_Improvement/08_ml/24_meta_scoring_weights_2026-04-09.md`
 - `REPO_Improvement/08_ml/25_meta_evidence_flags_2026-04-09.md`
-- `REPO_Improvement/06_artifacts/17_report_meta_workbook_DATE.md`
+- `REPO_Improvement/06_artifacts/17_report_meta_workbook_2026-04-09.md`

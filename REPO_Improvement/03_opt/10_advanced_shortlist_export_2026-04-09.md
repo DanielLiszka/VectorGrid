@@ -68,6 +68,7 @@ Backend behavior already computes exact shortlist diagnostics and GPU export CSV
 - losing clearability of stale advanced values when route support changes
 - weakening export-all restrictions around mode, include-all, or MA param sweeps
 - blending optimize-side export-all with validation-side report export in the docs or UI
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ Backend behavior already computes exact shortlist diagnostics and GPU export CSV
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because advanced control truth should remain canonical and serializable.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because this feature family is mostly legality and restore behavior, which benefits from store-aware tests.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because these advanced controls become structured payload fields with strong compatibility expectations.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Backend behavior already computes exact shortlist diagnostics and GPU export CSV
 3. Freeze stale-value clearing and restore behavior for advanced shortlist fields.
 4. Keep UI state notes synchronized with request-builder legality.
 5. Add or tighten tests around restore, hidden stale values, and conflicting control combinations.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ Backend behavior already computes exact shortlist diagnostics and GPU export CSV
 - [ ] Document stale-value clearing and restore rules.
 - [ ] Add or tighten tests for conflicting advanced-control combinations.
 - [ ] Add parity checks between UI guidance and request-builder behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/AdvancedWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/components/AdvancedWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
 - run targeted Rust optimization tests if shortlist or export result surfaces change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ Backend behavior already computes exact shortlist diagnostics and GPU export CSV
 - prefer clearer notes and explicit matrices before changing UI exposure
 - keep optimize-side export-all and validation-side export clearly separated in names and docs
 - if hidden stale fields are auto-cleared later, make the behavior explicit and test it
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

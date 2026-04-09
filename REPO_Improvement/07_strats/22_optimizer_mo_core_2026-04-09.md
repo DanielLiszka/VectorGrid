@@ -1,3 +1,7 @@
+# Optimizer MO Core Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the shared multi-objective optimizer core that currently lives in `crates/optimizer/src/mo.rs`, with emphasis on contract clarity, regression containment, and reusable verification rather than new algorithm scope.
@@ -79,6 +83,7 @@ Key current ownership inside `mo.rs`:
 - letting sampler paths produce duplicate-heavy or repair-heavy behavior that obscures search efficiency
 - changing search-space validation rules in a way that silently breaks existing composite requests
 - improving one algorithm family while degrading result-contract consistency across the others
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +92,8 @@ Key current ownership inside `mo.rs`:
 - [rayon iterator docs](https://docs.rs/rayon/latest/rayon/iter/index.html) are relevant because batch evaluation and deterministic aggregation often interact with parallel iteration choices in optimizer code.
 - [Criterion.rs getting started](https://bheisler.github.io/criterion.rs/book/getting_started.html) is relevant because sampler overhead, cache behavior, and bounded-grid iteration are all good candidates for benchmark-backed regression checks.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because optimizer outputs eventually become structured artifacts and report payloads, which should stay stable even if the search internals change.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -111,6 +118,13 @@ Key current ownership inside `mo.rs`:
    - stronger tests
    - narrower helper extraction only where it clarifies invariants
 6. Defer structural file splits until the semantic contract is frozen by tests, so cleanup does not accidentally redefine behavior.
+7. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -123,6 +137,12 @@ Key current ownership inside `mo.rs`:
 - [ ] Add or tighten tests ensuring exact-grid and bounded exact-grid agree where their domains overlap.
 - [ ] Add benchmark-backed checks for cache-heavy and duplicate-heavy workloads.
 - [ ] Decide whether helper extraction inside `mo.rs` improves auditability without creating API churn.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -131,6 +151,9 @@ Key current ownership inside `mo.rs`:
 - run consumer tests in `crates/app_core/src/composite_mo.rs`
 - run `crates/app_core/benches/composite_mo_opt.rs` if behavior-preserving refactors touch hot paths
 - compare representative `composite_mo` outputs before and after changes when stats or ranking logic is touched
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -138,6 +161,7 @@ Key current ownership inside `mo.rs`:
 - keep default algorithm configs compatible with current consumers until dedicated follow-up docs say otherwise
 - prefer additive docs/tests first, helper extraction second, and behavioral tuning last
 - if any refactor makes the result contract harder to explain, stop and simplify rather than continuing the split
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

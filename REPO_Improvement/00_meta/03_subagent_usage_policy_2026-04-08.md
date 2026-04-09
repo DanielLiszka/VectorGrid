@@ -1,6 +1,6 @@
 # Sub-Agent Usage Policy
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -63,6 +63,7 @@ There is no direct product behavior here. The current behavior is procedural: th
 - spawning agents without bounded scopes
 - allowing sub-agent outputs to update counts or tracker state without parent verification
 - using sub-agents decoratively when the surface is small and local inspection is simpler
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ There is no direct product behavior here. The current behavior is procedural: th
   - relevant because verification work benefits from targeted scenario coverage rather than broad unstructured exploration
 - [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119)
   - relevant because the sub-agent policy should use clear must/should language instead of vague suggestions
+- [GitHub tasklists](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/about-tasklists)
+  - relevant because the planning layer needs executable checklists, explicit acceptance criteria, and visible progress semantics rather than vague prose
 
 ## Proposed Improvement Approach
 
@@ -93,6 +96,13 @@ There is no direct product behavior here. The current behavior is procedural: th
    - validate the agent summary
    - create the final doc
    - update the tracker/index
+5. Treat planning-layer quality as part of the implementation scope: keep the program auditable, explicit, refreshable, and easy for future contributors to execute without guesswork.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -101,18 +111,27 @@ There is no direct product behavior here. The current behavior is procedural: th
 - [ ] Require parent verification of all sub-agent findings before doc creation.
 - [ ] Require parent ownership of tracker/index updates.
 - [ ] Record sub-agent use in wave summaries when it materially affected coverage.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - verify future wave docs still include parent-repo grounding, not only delegated summaries
 - verify tracker/index changes are made only after parent count audits
 - spot-check that delegated scopes stay bounded and non-overlapping
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify the definition of done, refresh triggers, and any superseded/historical pointers are explicit enough that another contributor could continue the program without guesswork
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - apply this policy to all future waves immediately
 - if a sub-agent result conflicts with direct repo inspection, the repo wins and the conflict should be noted
 - if a topic is too small for delegation, skip sub-agents and document locally
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

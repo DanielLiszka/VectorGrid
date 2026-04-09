@@ -1,3 +1,7 @@
+# ML Signal Export Manifests Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for ML Signal export-manifest artifacts so dataset exports, split manifests, and related sidecars remain explicit, discoverable, and contract-stable.
@@ -64,6 +68,7 @@ That is a strong provenance story, but only if the manifest family is treated as
 - letting split-manifest semantics blur with export-manifest semantics
 - losing manifest paths during saved-run reopen or artifact persistence
 - reducing manifest visibility while adding more ML sidecar complexity
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -72,6 +77,8 @@ That is a strong provenance story, but only if the manifest family is treated as
 - [Tauri: calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because manifest paths and metadata cross the frontend/backend boundary in export responses.
 - [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180) is relevant because the manifests describe a CSV-backed ML dataset export.
 - [Vue state management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because manifest-path state is presented across the workspace and saved-run reopen flows.
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -83,6 +90,13 @@ That is a strong provenance story, but only if the manifest family is treated as
    - saved-run reopen
 4. Add tests for manifest-path attachment and display.
 5. Prefer clearer manifest provenance over more condensed summary text.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,6 +105,12 @@ That is a strong provenance story, but only if the manifest family is treated as
 - [ ] Audit frontend summary text so users know which manifest they are looking at.
 - [ ] Confirm saved-run reopen preserves relevant manifest paths.
 - [ ] Keep manifest naming/version semantics stable unless a deliberate migration exists.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -98,12 +118,15 @@ That is a strong provenance story, but only if the manifest family is treated as
 - run `MlSignalWorkspacePanel.test.ts`
 - run `mlSignalService.test.ts`
 - run relevant saved-artifact tests if manifest attachment behavior changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current manifest file roles and naming unless there is a strong compatibility plan
 - keep manifest visibility explicit in the workspace and saved-run detail
 - if a cleanup obscures manifest provenance, restore the clearer path-by-path presentation
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -70,6 +70,7 @@ That makes the analysis contract one of the most important shared truth surfaces
 - dropping summary or status fields that downstream panels already rely on
 - treating panel-local fallback text as a substitute for fixing broken shared state
 - weakening analysis-service tests when changing summary, compare, drill, or heatmap behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -78,6 +79,8 @@ That makes the analysis contract one of the most important shared truth surfaces
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because the analysis contract is primarily a deterministic state-mapping and action-contract surface.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because many shared analysis fields originate from backend result payloads or replay artifacts crossing the command boundary.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because this contract effectively behaves like a structured frontend schema over hydrated run data.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -86,6 +89,13 @@ That makes the analysis contract one of the most important shared truth surfaces
 3. Align live-run hydration and saved-run hydration through the same contract expectations wherever possible.
 4. Treat analysis-service tests as contract tests, not just implementation tests.
 5. Add or tighten parity checks whenever a result panel or workflow-hydration path changes.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,13 +104,21 @@ That makes the analysis contract one of the most important shared truth surfaces
 - [ ] Document live-run versus saved-run hydration expectations.
 - [ ] Document comparison, drill, pareto, and heatmap state as part of one shared contract.
 - [ ] Add or tighten tests whenever analysis-store or analysis-service field semantics change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
-- run `npm --prefix web test -- src/components/OverviewWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/TopWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/AnalysisContextDock.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/components/OverviewWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/TopWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/AnalysisContextDock.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -108,6 +126,7 @@ That makes the analysis contract one of the most important shared truth surfaces
 - prefer additive fields over repurposing existing shared state
 - if a panel needs a new summary, add it through the shared analysis contract before introducing panel-local derivations
 - update saved-run hydration and live-run hydration together when shared state semantics change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

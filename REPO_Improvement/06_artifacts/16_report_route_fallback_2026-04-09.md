@@ -65,6 +65,7 @@ That means route/fallback explanation is intended to be preserved even when the 
 - weakening workbook execution notes during report reconstruction
 - breaking report export for runs that have validation data but no other optional artifact sections
 - forcing users to rerun validation just to recover route/fallback explanation
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -81,6 +82,13 @@ That means route/fallback explanation is intended to be preserved even when the 
 3. Add or tighten tests that compare route/fallback behavior across both export paths.
 4. Keep workbook execution-note rendering driven from reconstructed structured fields, not custom artifact-specific shortcuts.
 5. Preserve additive route evidence even for degraded or zero-survivor runs.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,6 +99,11 @@ That means route/fallback explanation is intended to be preserved even when the 
 - [ ] Confirm route-note and expected-execution sections read from reconstructed report fields only.
 - [ ] Confirm frontend artifact-backed export preference remains intact.
 - [ ] Document fallback behavior when validation data is absent and Stage 3 meta export is used instead.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -98,6 +111,8 @@ That means route/fallback explanation is intended to be preserved even when the 
 - run targeted `commands_reports.rs` tests
 - run `C:\Program Files\PowerShell\7\pwsh.exe -Command "npm run test -- src/services/validationService.test.ts"` from `web/`
 - manually compare one direct export and one artifact-backed export from the same validation result
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +120,7 @@ That means route/fallback explanation is intended to be preserved even when the 
 - avoid adding route-note enrichment only to one export path
 - if report reconstruction fields are changed, update both the workbook writer and the parity tests together
 - keep Stage 3 fallback explicit rather than silently substituting a validation workbook when validation data is missing
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

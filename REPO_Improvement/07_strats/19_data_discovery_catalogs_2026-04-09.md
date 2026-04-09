@@ -79,6 +79,7 @@ These are exposed through separate commands and services, but they all feed the 
 - letting meta/research consumers diverge from the main strategy workflow's discovery surfaces
 - silently changing cache behavior in one discovery service while others stay different
 - broadening discovery scope without explicit performance and truncation rules
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +88,8 @@ These are exposed through separate commands and services, but they all feed the 
 - [Vue state management guide](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because discovery catalogs should remain shared service-level truth rather than being re-normalized per component.
 - [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180) is relevant because the dataset-discovery side of this layer ultimately exists to surface CSV-backed strategy data sources.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because these catalogs all behave like structured compatibility contracts with optional enrichment.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -95,6 +98,13 @@ These are exposed through separate commands and services, but they all feed the 
 3. Keep normalization and cache semantics consistent enough that the services feel like one family.
 4. Preserve reuse across optimize, meta, and campaign flows rather than letting each lane rediscover data differently.
 5. Keep the discovery layer additive and low-risk: better contracts and better docs before broader behavior changes.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -104,14 +114,23 @@ These are exposed through separate commands and services, but they all feed the 
 - [ ] Add or tighten tests when a discovery payload shape changes.
 - [ ] Review cross-consumer reuse so optimize, meta, and campaign flows continue to share the same discovery truth.
 - [ ] Keep repo CSV discovery and user-picked dialog flows distinct in docs and tests.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/services/movingAverageCatalogService.test.ts`
-- run `npm --prefix web test -- src/services/dynamicIndicatorCatalogService.test.ts`
-- run `npm --prefix web test -- src/services/gpuSpeedupsService.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/services/movingAverageCatalogService.test.ts`
+- run `npm --prefix web run test -- src/services/dynamicIndicatorCatalogService.test.ts`
+- run `npm --prefix web run test -- src/services/gpuSpeedupsService.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -119,6 +138,7 @@ These are exposed through separate commands and services, but they all feed the 
 - prefer additive payload fields over repurposing existing ones
 - keep telemetry advisory and keep inventories bounded
 - if a discovery surface is promoted for wider reuse later, update all known consumers in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

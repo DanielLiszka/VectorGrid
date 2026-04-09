@@ -66,6 +66,7 @@ That makes Drilldown a contract between selection identity, analysis-service exe
 - hiding trade-table or stability-table failure states behind generic empty charts
 - breaking drill cache invalidation or render-state capture assumptions
 - reducing the detail available in drill meta, drill status, or trade/stability summaries
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ That makes Drilldown a contract between selection identity, analysis-service exe
 - [Basic usage of canvas | MDN](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Basic_usage) is relevant because several drill charts are canvas-based and need surrounding explanatory content.
 - [Canvas element accessibility guidance | MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/canvas) is relevant because bitmap charts alone do not expose enough semantic detail.
 - [Grid Pattern | WAI-ARIA APG](https://www.w3.org/WAI/ARIA/apg/patterns/grid/) is relevant because the stability and trade tables are interactive evidence surfaces that need consistent keyboard and focus behavior.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ That makes Drilldown a contract between selection identity, analysis-service exe
 3. Treat drill meta, drill status, and stability status as mandatory truth channels, not optional captions.
 4. Preserve alternative guidance and tabular evidence around canvas-heavy charts.
 5. Add or tighten tests around selection changes, rerender behavior, cache-hit semantics, and Top-results handoff.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,21 @@ That makes Drilldown a contract between selection identity, analysis-service exe
 - [ ] Document drill/stability status semantics and failure-state expectations.
 - [ ] Document cache and rerender assumptions that keep selected-candidate state truthful.
 - [ ] Add or tighten tests for rerender behavior, selection changes, and Top-results handoff.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/DrillWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/components/DrillWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
 - run targeted drilldown and local-stability tests in the backend where request contracts change
 - manually verify selection-change, cached rerender, and failure-state behavior in the UI
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,10 +122,11 @@ That makes Drilldown a contract between selection identity, analysis-service exe
 - keep drill/stability/trade status channels stable even if chart rendering changes
 - prefer additive detail over collapsing Drilldown into a single simplified chart
 - if rendering pipelines are refactored later, update cache invalidation and selected-candidate tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/02_results_top_table_2026-04-08.md`
-- `REPO_Improvement/04_results/13_out_drilldown_stability_DATE.md`
-- `REPO_Improvement/04_results/19_chart_rendering_composables_DATE.md`
+- `REPO_Improvement/04_results/13_out_drilldown_stability_2026-04-09.md`
+- `REPO_Improvement/04_results/19_chart_rendering_composables_2026-04-09.md`
 - `REPO_Improvement/07_strats/14_analysis_drilldown_stability_2026-04-08.md`

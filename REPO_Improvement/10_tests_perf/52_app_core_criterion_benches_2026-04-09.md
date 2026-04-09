@@ -60,6 +60,7 @@ The app-core crate already has a substantial Criterion bench inventory. Most of 
 - using Criterion bench results as a substitute for route, workflow, or desktop measurements
 - adding more benches without first checking whether a relevant bench already exists
 - forgetting to document bench inventory changes in the surrounding docs and gates
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The app-core crate already has a substantial Criterion bench inventory. Most of 
 - [Cargo benchmark command docs](https://doc.rust-lang.org/cargo/commands/cargo-bench.html) are relevant because the inventory is ultimately surfaced and invoked through Cargo.
 - [Cargo features reference](https://doc.rust-lang.org/cargo/reference/features.html) are relevant because some benches require or assume feature-gated code paths.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because some non-options benches are GPU-adjacent and need careful interpretation.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The app-core crate already has a substantial Criterion bench inventory. Most of 
 2. Map existing benches to the higher-level gates or investigative docs that actually consume them.
 3. Use the inventory to stop duplicate or poorly targeted bench additions.
 4. Review representativeness periodically instead of assuming every old bench still tells the right story.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The app-core crate already has a substantial Criterion bench inventory. Most of 
 - [ ] Keep the Criterion inventory plan non-options only.
 - [ ] Review whether each bench still serves a distinct investigative purpose.
 - [ ] Avoid adding new benches without first checking the current inventory.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,12 +106,15 @@ The app-core crate already has a substantial Criterion bench inventory. Most of 
 - confirm Cargo inventory changes are reflected in the docs and gates that depend on them
 - inspect `target/criterion/` layout after bench renames or additions
 - review whether removed benches leave any gate or doc orphaned
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current useful bench inventory and improve cataloging around it
 - prefer reusing and clarifying existing benches before adding new ones
 - if a bench is obsolete, remove it deliberately and update dependent docs or scripts
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

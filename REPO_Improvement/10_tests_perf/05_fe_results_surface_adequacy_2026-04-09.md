@@ -59,6 +59,7 @@ Users rely on the built app to interpret optimization and analysis results throu
 - treating a rendering smoke as proof that a results surface is still decision-usable
 - allowing warnings, empty states, or provenance cues to regress silently
 - losing coverage on one results tab because another higher-level smoke still passes
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -68,6 +69,8 @@ Users rely on the built app to interpret optimization and analysis results throu
   - relevant because browser proof should target user-visible workflows rather than duplicate unit assertions
 - [Playwright aria snapshots](https://playwright.dev/docs/aria-snapshots)
   - relevant because accessibility-structure checks can help guard higher-level adequacy surfaces
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -76,6 +79,13 @@ Users rely on the built app to interpret optimization and analysis results throu
    - browser proof for shell-level navigation and cross-panel integrity
 2. Keep provenance, warnings, empty states, and readability in scope, not just raw data presence.
 3. Expand coverage when a results surface becomes denser or more decision-critical.
+4. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,21 +93,30 @@ Users rely on the built app to interpret optimization and analysis results throu
 - [ ] Keep empty-state, stale/provenance, and warning cues explicitly covered.
 - [ ] Use browser proof only for cross-panel interaction and navigation.
 - [ ] Add tests when new result tabs or docked decision surfaces appear.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
 - run `npm --prefix web test`
 - run targeted results-panel tests
 - run `npm --prefix web run test:browser:ux` after major results-surface changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep component-level adequacy assertions even if browser coverage expands
 - avoid snapshot-heavy testing that hides the actual decision-surface contract
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/08_results_display_adequacy_2026-04-08.md`
 - `REPO_Improvement/10_tests_perf/02_fe_component_surface_tests_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/10_browser_shell_ux_DATE.md`
-- `REPO_Improvement/10_tests_perf/19_desktop_artifact_capture_DATE.md`
+- `REPO_Improvement/10_tests_perf/10_browser_shell_ux_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/19_desktop_artifact_capture_2026-04-09.md`

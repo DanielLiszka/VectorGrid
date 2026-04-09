@@ -68,12 +68,15 @@ Current behavior also includes:
 - hiding restore failure behind a blank ready state
 - re-downloading or re-discovering data when the stored base CSV path should be reused
 - breaking persisted restore behavior when market-data roots or Polygon cache roots move
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because startup restore correctness depends on one authoritative store-owned restore path.
 - [MDN localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) is relevant because startup snapshot persistence relies on browser storage semantics and compatibility behavior.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the startup snapshot behaves like a versioned persisted contract that should not drift casually.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ Current behavior also includes:
 3. Document the current status-line transitions during restore success, pending, and failure.
 4. Clarify how restore interacts with moved Polygon cache roots and source-kind rewriting.
 5. Keep restore additive and safe rather than silently dropping persisted datasets.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,18 +100,27 @@ Current behavior also includes:
 - [ ] Document the difference between `startupHydratedOnce` and `startupDeferredHydratedOnce`.
 - [ ] Document status-line behavior for restore pending, success, and failure.
 - [ ] Add or tighten tests for restore success, derived-timeframe restore, and restore failure.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
-- run `npm --prefix web test -- src/main.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/main.test.ts`
 - manually verify one cold start with auto-restore on and one with a broken restore path after any restore refactor
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current safe degradation to empty-dataset state on restore failure
 - avoid changing persisted storage keys or snapshot fields without a compatibility plan
 - prefer making restore phases more explicit before making them more aggressive
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

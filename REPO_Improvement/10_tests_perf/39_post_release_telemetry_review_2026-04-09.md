@@ -59,6 +59,7 @@ The current post-release review script reads a workflow baseline and summary, UI
 - tightening thresholds until the script becomes a brittle pseudo-gate without the same rigor as the authority scripts
 - using the script output without inspecting which upstream artifact actually triggered a failure
 - dropping the explicit supplemental framing from the generated Markdown or docs
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current post-release review script reads a workflow baseline and summary, UI
 - [JSON Schema getting started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because this script effectively composes several versioned artifact contracts.
 - [Cargo profiles reference](https://doc.rust-lang.org/cargo/reference/profiles.html) is relevant because the upstream workflow and telemetry inputs may come from different build profiles.
 - [Criterion.rs book](https://bheisler.github.io/criterion.rs/book/) is relevant as a contrast because this script aggregates evidence and thresholds but does not provide the same statistical benchmark authority as Criterion-based gates.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current post-release review script reads a workflow baseline and summary, UI
 2. Use it to catch missing evidence and obvious drift, not to replace the main gates.
 3. Document each upstream source artifact and what a failing check actually means.
 4. Treat unexpected failures as prompts to inspect source artifacts before adjusting thresholds.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current post-release review script reads a workflow baseline and summary, UI
 - [ ] Keep post-release review non-options only.
 - [ ] Review failures at the source-artifact level before changing thresholds.
 - [ ] Cross-link this review to the main authority gates and telemetry inputs.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The current post-release review script reads a workflow baseline and summary, UI
 - inspect the generated Markdown and JSON together
 - trace any failure back to the specific upstream artifact before making a decision
 - confirm the script still writes outputs even when some checks fail
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current supplemental posture and improve explanation around it
 - prefer better provenance and source-artifact review over more thresholds
 - if the script becomes noisy, narrow the checks deliberately rather than pretending they are authoritative
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

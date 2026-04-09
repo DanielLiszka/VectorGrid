@@ -69,6 +69,7 @@ This layered design already exists, but it needs a dedicated implementation plan
 - assuming the adapter borrows kernel-resident VRAM buffers when it does not
 - weakening param normalization or case-insensitive output resolution
 - letting builder-eligible filtering diverge from documented runtime constraints
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ This layered design already exists, but it needs a dedicated implementation plan
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because descriptor catalogs and preview outputs cross the desktop command boundary.
 - [NVIDIA CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because CUDA support claims should remain grounded in explicit data-movement and adapter constraints.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because frontend consumers should remain derived from catalog truth rather than component-local assumptions.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ This layered design already exists, but it needs a dedicated implementation plan
 3. Document parameter normalization, output resolution, and multi-output rules explicitly.
 4. Keep CUDA support flags and kernel-resident assumptions clearly separated.
 5. Add or tighten parity tests between catalog export, builder filtering, and runtime plan compilation.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,14 +102,21 @@ This layered design already exists, but it needs a dedicated implementation plan
 - [ ] Document builder-eligible subset rules and why they are stricter than raw runtime support.
 - [ ] Document multi-output and required-param restrictions.
 - [ ] Add or tighten parity tests across catalog, builder, and runtime paths.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted descriptor tests in `crates/app_core/src/indicator_catalog.rs`
 - run targeted adapter tests in `crates/app_core/src/dynamic_indicator_adapter.rs`
 - run targeted dynamic-strategy tests in `crates/app_core/src/strategy_dynamic.rs`
-- run `npm --prefix web test -- src/services/dynamicIndicatorCatalogService.test.ts`
-- run `npm --prefix web test -- src/strategies/dynamicDoubleMaBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/dynamicIndicatorCatalogService.test.ts`
+- run `npm --prefix web run test -- src/strategies/dynamicDoubleMaBuilder.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -107,6 +124,7 @@ This layered design already exists, but it needs a dedicated implementation plan
 - prefer additive fields over repurposing existing capability flags
 - update frontend builder filtering and backend descriptor contracts together
 - if CUDA behavior changes, revise adapter and catalog docs in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

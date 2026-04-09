@@ -1,6 +1,6 @@
 # RegimeHybrid Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -69,6 +69,7 @@ RegimeHybrid is presented as its own strategy kind, but it currently reuses the 
 - mixing future variant ideas into current capability messaging
 - changing route semantics without route-evidence and validation-surface updates
 - weakening current validation/report parity while pursuing route cleanup
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ RegimeHybrid is presented as its own strategy kind, but it currently reuses the 
 - [TypeScript narrowing](https://www.typescriptlang.org/docs/handbook/2/narrowing.html) is relevant because frontend preview logic should stay exhaustive over the current hybrid-only product rule.
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because preview and runtime route selection are separated by a command boundary.
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant for keeping route-sensitive capability and result expectations contractual.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -86,6 +89,13 @@ RegimeHybrid is presented as its own strategy kind, but it currently reuses the 
    - no normal `GpuKernel` promise today
 3. Keep future no-ADX or alternate effective variants labeled as future-only so they do not contaminate shipped capability messaging.
 4. Keep validation, artifact, and report behavior aligned with the actual route used.
+5. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -97,6 +107,12 @@ RegimeHybrid is presented as its own strategy kind, but it currently reuses the 
 - [ ] Preserve strategy-local discoverability across route helpers and presets.
 - [ ] Add or maintain tests when route semantics or kernel flavors change.
 - [ ] Avoid generic capability copy that over-promises support.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -105,16 +121,20 @@ RegimeHybrid is presented as its own strategy kind, but it currently reuses the 
 - run `npm test -- src/services/validationRequestBuilder.test.ts`
 - run targeted `cargo test -p ta_app_core composite_profile_route`
 - run route/profile evidence helpers when RegimeHybrid route behavior changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current hybrid-first plus CPU-fallback contract unless a deliberate route policy change lands
 - keep any future no-ADX/full-kernel exploration documented separately from the current strategy contract
 - if UI messaging gets sharper, do not silently change backend semantics at the same time
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/07_strats/11_eng_composite_route_policy_2026-04-08.md`
 - `REPO_Improvement/03_opt/13_strategy_caps_surface_2026-04-08.md`
 - `REPO_Improvement/07_strats/01_strat_double_ma_family_2026-04-08.md`
-- `REPO_Improvement/07_strats/12_eng_composite_validation_DATE.md`
+- `REPO_Improvement/07_strats/12_eng_composite_validation_2026-04-08.md`

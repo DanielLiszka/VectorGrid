@@ -1,6 +1,6 @@
 # CompositeTrend Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -65,12 +65,15 @@ CompositeTrend is presented as its own strategy kind, but it reuses the Double-M
 - hiding CPU fallback support from users who explicitly request it
 - changing route policy without updating both route helpers and route-matrix verification
 - losing validation/report parity when CompositeTrend borrows Double-MA surfaces
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because CompositeTrend's main product differentiation is route-sensitive GPU execution, not a separate CPU-only story.
 - [TypeScript Narrowing](https://www.typescriptlang.org/docs/handbook/2/narrowing.html) is relevant because frontend route preview must stay exhaustive over strategy kind and route conditions.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because route-sensitive capability and report expectations are effectively a contract surface.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ CompositeTrend is presented as its own strategy kind, but it reuses the Double-M
    - exact-route only
    - hybrid-disabled
 4. Keep validation/report behavior tied to the borrowed Double-MA family contract.
+5. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,6 +102,12 @@ CompositeTrend is presented as its own strategy kind, but it reuses the Double-M
 - [ ] Keep validation and artifact/report behavior aligned with the route actually used.
 - [ ] Avoid scattering more CompositeTrend policy into generic layers.
 - [ ] Preserve strategy-local discoverability for future improvements.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -100,12 +116,16 @@ CompositeTrend is presented as its own strategy kind, but it reuses the Double-M
 - run `npm test -- src/services/optimizeService.test.ts`
 - run `npm test -- src/components/AdvancedWorkspacePanel.test.ts`
 - run targeted `cargo test -p ta_app_core composite_profile_route`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current ADX-off `GpuKernel` and ADX-on `GpuHybridKernel` policy unless a deliberate product decision changes it
 - if route visibility is improved in the UI, do not change actual backend route semantics silently
 - keep CPU fallback intact even if GPU messaging gets clearer
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

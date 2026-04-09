@@ -60,6 +60,7 @@ The current browser overlay spec exercises the command palette from the shell op
 - testing command-action internals here instead of treating the overlay as the primary subject
 - replacing semantic dialog/listbox assertions with brittle styling selectors
 - using mock data or mock events that are broader than the current browser harness contract requires
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The current browser overlay spec exercises the command palette from the shell op
 - [WAI-ARIA listbox pattern](https://www.w3.org/WAI/ARIA/apg/patterns/listbox/) is relevant because the command palette uses an active-descendant driven result list.
 - [Playwright locators](https://playwright.dev/docs/locators) are relevant because overlay smoke should keep using stable role- and aria-oriented selectors.
 - [Playwright best practices](https://playwright.dev/docs/best-practices) are relevant because overlay smoke should stay focused on user-observable outcomes instead of component internals.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The current browser overlay spec exercises the command palette from the shell op
 2. Prefer section-presence assertions for the task center over brittle full-copy snapshots.
 3. Use component tests for dense overlay rendering rules and keep browser smoke at shell-journey level.
 4. Document the small set of stable commands and overlay sections that are worth treating as contract-level smoke.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The current browser overlay spec exercises the command palette from the shell op
 - [ ] Keep overlay selectors accessible and stable.
 - [ ] Avoid turning overlay smoke into a generic command-action integration suite.
 - [ ] Keep the browser overlay suite non-options only.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,12 +106,15 @@ The current browser overlay spec exercises the command palette from the shell op
 - follow failures into component/store tests when the browser smoke points to a narrower regression
 - review traces to confirm focus, dialog visibility, and command execution order remain sane
 - verify that overlay tests continue to start from the mocked shell bootstrap path
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current overlay journeys while tightening the contract around what is intentionally asserted
 - add new overlay journeys only when the user-visible behavior cannot be covered cleanly at component level
 - if the task center or command palette IA changes, update the assertion hierarchy instead of just loosening expectations
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

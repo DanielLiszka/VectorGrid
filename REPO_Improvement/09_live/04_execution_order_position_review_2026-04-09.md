@@ -77,6 +77,7 @@ The UI then shows runtime status, chart context, broker orders, and output previ
 - hiding the distinction between optimistic and broker-confirmed order rows
 - collapsing `Position: -` and confirmed `flat` into the same state
 - removing or weakening the raw preview without replacing its diagnostic value
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -88,6 +89,8 @@ The UI then shows runtime status, chart context, broker orders, and output previ
   - relevant because optimistic review rows and broker-refresh rows depend on explicit store ownership and reconciliation
 - [Tauri State Management](https://v2.tauri.app/es/develop/state-management/)
   - relevant because broker snapshot and runtime review surfaces cross a desktop/backend state boundary
+- [Alpaca Orders](https://docs.alpaca.markets/docs/orders-at-alpaca)
+  - relevant because live execution, monitoring, and order-state handling sit behind provider contracts that must remain explicit in a public-facing trading app
 
 ## Proposed Improvement Approach
 
@@ -97,6 +100,13 @@ The UI then shows runtime status, chart context, broker orders, and output previ
 4. Preserve the difference between “unknown/unfetched” and “confirmed flat.”
 5. Document the current table schema and the richer backend payload it intentionally reduces.
 6. Keep raw preview in scope as a diagnostic asset until a richer review surface exists.
+7. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -108,28 +118,38 @@ The UI then shows runtime status, chart context, broker orders, and output previ
 - [ ] Preserve component tests for empty and populated order tables.
 - [ ] Preserve service/store tests for broker refresh and optimistic row behavior.
 - [ ] Preserve targeted backend snapshot tests if payload fields change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/ExecutionWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/executionService.test.ts`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/executionService.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
 - run targeted snapshot/review tests in `src-tauri/src/commands_execution.rs`
 - manually verify:
   - empty review state
   - optimistic one-shot row insertion
   - broker refresh after execution
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the symbol-scoped review contract until a broader broker-review surface is intentionally added
 - keep optimistic row behavior explicit if UI copy is refined
 - prefer additive table/detail expansion over changing the meaning of existing review states
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/09_live/01_execution_command_surface_2026-04-08.md`
 - `REPO_Improvement/09_live/02_execution_workspace_ux_2026-04-09.md`
-- `REPO_Improvement/09_live/05_execution_safety_modes_DATE.md`
+- `REPO_Improvement/09_live/05_execution_safety_modes_2026-04-09.md`
 - `REPO_Improvement/09_live/13_execution_service_store_2026-04-08.md`
 - `REPO_Improvement/04_results/13_out_drilldown_stability_2026-04-08.md`

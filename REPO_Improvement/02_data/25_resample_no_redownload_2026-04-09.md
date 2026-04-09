@@ -67,12 +67,15 @@ Current user-facing behavior includes:
 - changing UI copy so users think timeframe changes fetch more provider data than they actually do
 - breaking load-source labeling for reuse versus fresh derived computation
 - letting provider-side timeframe requests leak into the cached-base contract without review
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Polygon Aggregates / Custom Bars](https://polygon.io/docs/rest/stocks/aggregates/custom-bars) is relevant because the current architecture deliberately fetches one base cadence and derives larger intervals locally.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because no-redownload behavior depends on one store-owned base dataset source of truth.
 - [TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) is relevant because resample correctness still depends on stable chronological base data, not repeated fetches.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ Current user-facing behavior includes:
 3. Tie Polygon’s 1m-first cache posture directly to the user-facing timeframe hint.
 4. Keep service/store copy aligned with backend behavior whenever load-source semantics change.
 5. Add targeted checks if any change threatens to re-fetch data unnecessarily.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -89,19 +99,28 @@ Current user-facing behavior includes:
 - [ ] Document the 1m-first Polygon architecture and requested-timeframe resample behavior.
 - [ ] Document the current timeframe hint copy in the Data panel.
 - [ ] Add or tighten tests if load-source semantics or hints change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - run targeted state/timeframe tests for derived reuse behavior
 - manually apply multiple timeframes to one loaded dataset after any resample-flow refactor
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current no-redownload posture unless a replacement architecture is intentionally adopted
 - treat load-source labels and timeframe hints as user-facing contract
 - prefer better docs and tests before changing resample-copy language
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

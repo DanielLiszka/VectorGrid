@@ -1,6 +1,6 @@
 # Dataset Provenance Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -74,6 +74,7 @@ The app already exposes dataset provenance in several practical ways. Loaded and
 - reducing provenance to only `csv_path` and `timeframe`
 - misdocumenting base versus derived dataset identity
 - changing history or replay behavior without preserving current dataset provenance cues
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -97,6 +98,13 @@ The app already exposes dataset provenance in several practical ways. Loaded and
 2. Make the current provenance fields explicit, especially source identity and resample identity.
 3. Document fallback and precedence rules so replay, hydration, and reports stay aligned.
 4. Treat provenance as an existing reproducibility contract, not optional nice-to-have metadata.
+5. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -107,19 +115,27 @@ The app already exposes dataset provenance in several practical ways. Loaded and
 - [ ] Document frontend dataset-meta normalization behavior.
 - [ ] Document how history/replay uses persisted provenance.
 - [ ] Add or tighten tests if provenance fields or precedence rules change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted tests in `src-tauri/src/run_artifacts.rs`
 - run targeted tests in `src-tauri/src/state.rs`
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep provenance additive and backward-compatible
 - preserve current fingerprint and timeframe identity behavior unless a stronger replacement is implemented
 - do not narrow provenance to only path-based identity
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

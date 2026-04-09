@@ -60,6 +60,7 @@ The repo already has both a higher-level campaign perf harness and a lower-level
 - confusing higher-level campaign timing with low-level staged-prefetch timings
 - running the staged helper without the correct CUDA feature or environment and misreading failures
 - changing preload modes or dataset assumptions without recording them in the output provenance
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The repo already has both a higher-level campaign perf harness and a lower-level
 - [Nsight Systems docs](https://docs.nvidia.com/nsight-systems/) are relevant because campaign preload questions may eventually need timeline-level follow-up.
 - [Cargo run command docs](https://doc.rust-lang.org/cargo/commands/cargo-run.html) are relevant because both bins are invoked directly as investigative tools.
 - [Cargo features reference](https://doc.rust-lang.org/cargo/reference/features.html) is relevant because the lower-level prefetch helper is feature-gated.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The repo already has both a higher-level campaign perf harness and a lower-level
 2. Separate higher-level campaign timing from lower-level staged-prefetch A/B results clearly.
 3. Preserve explicit mode, dataset, and feature provenance in run artifacts and docs.
 4. Use these tools when preload or VRAM behavior is the actual question, not as generic benchmark replacements.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The repo already has both a higher-level campaign perf harness and a lower-level
 - [ ] Review emitted artifacts for mode and staging-outcome clarity.
 - [ ] Avoid using campaign preload numbers for broad product claims.
 - [ ] Cross-link campaign preload work to deeper GPU profiling only when needed.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,12 +106,15 @@ The repo already has both a higher-level campaign perf harness and a lower-level
 - inspect the emitted JSON for staged/host-only outcome fields
 - confirm CUDA feature requirements are met before trusting lower-level results
 - compare results only across runs with matching mode, dataset, and feature context
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve both levels of tooling while documenting their distinct roles
 - prefer better provenance and clearer mode labels over more thresholds
 - if one tool becomes the clear authority for a repeated investigation type, document that promotion explicitly
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

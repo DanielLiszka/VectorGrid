@@ -1,6 +1,6 @@
 # Live Candle Stream Data Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -101,6 +101,7 @@ Users can start live minute candles for one stock symbol at a time, stop the str
 - broadening accepted websocket payload types without updating normalization docs and tests
 - forgetting that runner stop behavior is coupled to stream replacement and stop flows
 - misdocumenting Polygon API key source order or current `stocks`-only support
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -108,6 +109,8 @@ Users can start live minute candles for one stock symbol at a time, stop the str
 - [Tauri state management](https://v2.tauri.app/es/develop/state-management/)
 - [Tauri frontend event listening](https://v2.tauri.app/es/develop/_sections/frontend-listen/)
 - [Tauri calling Rust from the frontend](https://v2.tauri.app/es/develop/calling-rust/)
+- [Alpaca Orders](https://docs.alpaca.markets/docs/orders-at-alpaca)
+  - relevant because live execution, monitoring, and order-state handling sit behind provider contracts that must remain explicit in a public-facing trading app
 
 ## Proposed Improvement Approach
 
@@ -116,6 +119,13 @@ Users can start live minute candles for one stock symbol at a time, stop the str
 3. Make symbol normalization, delayed defaulting, and `stocks`-only support explicit.
 4. Tie live stream behavior to the runner only where the current code actually does so.
 5. Preserve current repo behavior in docs before considering any broader live-data abstraction.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -128,20 +138,30 @@ Users can start live minute candles for one stock symbol at a time, stop the str
 - [ ] Document that only `AM` minute aggregates currently feed the live-bar path.
 - [ ] Document when stream changes stop the runner.
 - [ ] Add or tighten tests if live status/event parsing changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
 - run targeted unit tests in `src-tauri/src/commands_data.rs`
 - run targeted state tests in `src-tauri/src/state.rs`
-- run `npm --prefix web test -- src/services/executionService.test.ts`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/ExecutionWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/executionService.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current `stocks`-only live-stream contract unless an expansion is explicitly implemented
 - preserve delayed-default behavior unless both frontend copy and backend defaults are updated together
 - if future work broadens the websocket payload types, update normalization docs and tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

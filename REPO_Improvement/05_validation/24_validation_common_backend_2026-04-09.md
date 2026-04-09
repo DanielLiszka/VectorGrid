@@ -68,6 +68,7 @@ That means this file is effectively a backend contract layer even though it is n
 - breaking cross-dataset dedupe or path normalization
 - making cross pareto tagging inconsistent between validation families
 - modifying shared robust-score updates without verifying downstream verdict ordering
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ That means this file is effectively a backend contract layer even though it is n
 - [RFC 8785 - JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785) is relevant because candidate-key stability and config-style canonicalization rely on deterministic object ordering.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because shared backend helpers must not obscure actual route limitations or silently overclaim GPU-consistent semantics.
 - [Pinia Testing Cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because frontend-facing summaries should remain aligned with backend contracts that are exercised through service tests.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ That means this file is effectively a backend contract layer even though it is n
 3. Freeze gate semantics and defaults so frontend previews can rely on them.
 4. Document robust-score updates and cross pareto tagging as shared backend meaning, not strategy-local quirks.
 5. Expand tests around path normalization, candidate canonicalization, gate behavior, and pareto marking.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,6 +104,11 @@ That means this file is effectively a backend contract layer even though it is n
 - [ ] Add or tighten tests for Windows-path normalization and duplicate dataset handling.
 - [ ] Add or tighten tests for candidate-key stability across equivalent JSON shapes.
 - [ ] Add or tighten tests for gate and cross-pareto behavior after aggregation.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -101,6 +116,8 @@ That means this file is effectively a backend contract layer even though it is n
 - run targeted `commands_validation.rs` cross-ticker tests
 - run representative frontend validation-service tests that assert cross summaries and row semantics
 - manually verify one Double-MA and one composite cross-validation run still surface consistent cross summaries
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -108,6 +125,7 @@ That means this file is effectively a backend contract layer even though it is n
 - prefer additive documentation and tests over behavior changes in this layer
 - if gate semantics change, update request-builder preview text and validation docs at the same time
 - treat candidate-key stability as compatibility-sensitive behavior
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

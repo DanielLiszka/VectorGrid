@@ -75,6 +75,7 @@ So the repo can be understandable to an insider while still feeling under-specif
 - promising community responsiveness or support levels that cannot be sustained
 - mixing contribution policy with deep technical routing detail
 - creating files that contradict existing README or release posture
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -94,6 +95,8 @@ So the repo can be understandable to an insider while still feeling under-specif
   - relevant because public users need a clear vulnerability-reporting path
 - [Adding support resources to your project](https://docs.github.com/enterprise-cloud%40latest/communities/setting-up-your-project-for-healthy-contributions/adding-support-resources-to-your-project)
   - relevant because support questions should not be conflated with bug or security reporting
+- [GitHub repository documentation](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  - relevant because public-repo docs and release operations should be maintained as first-class contributor and reviewer surfaces
 
 ## Proposed Improvement Approach
 
@@ -113,6 +116,13 @@ So the repo can be understandable to an insider while still feeling under-specif
    - what is out of scope
 5. Make support and security reporting clearly separate from general issues.
 6. Add ownership routing that reflects the actual maintainer/review model instead of pretending there is a large team if there is not.
+7. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Step-by-Step Checklist
 
@@ -125,6 +135,12 @@ So the repo can be understandable to an insider while still feeling under-specif
 - [ ] Decide whether `CODEOWNERS` is useful at the current maintainer size and add it only if it reflects reality.
 - [ ] Decide whether a code of conduct will be actively enforced before adding one.
 - [ ] Cross-link the new community-health files from `README.md` where appropriate.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -132,12 +148,16 @@ So the repo can be understandable to an insider while still feeling under-specif
 - verify GitHub surfaces the expected links once the files exist
 - test contributor discoverability by navigating only from `README.md` and the repo sidebar
 - verify support, bug, and security paths are not contradictory
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - start with the minimum honest community-health set instead of a maximal template dump
 - if support or code-of-conduct enforcement cannot be sustained, document a narrower but truthful posture
 - keep technical routing in `README.md` and `REPO_MAP.md`; community-health files should link out rather than duplicate them
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

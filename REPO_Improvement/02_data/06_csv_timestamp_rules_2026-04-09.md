@@ -68,6 +68,7 @@ That means timestamp quality already affects real user-facing behavior:
 - changing integrity-scan meanings for duplicates/out-of-order rows without updating consumers
 - making range labels or timeframe hints disagree with actual loaded timestamps
 - repairing timestamp problems implicitly during load without a visible contract change
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -82,6 +83,13 @@ That means timestamp quality already affects real user-facing behavior:
 3. Freeze range-text and timeframe derivation semantics in the data store.
 4. Tie repair workflows and startup restore safety back to the same chronology assumptions.
 5. Keep chronological correctness explicit rather than hiding it behind silent normalization.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,22 +98,31 @@ That means timestamp quality already affects real user-facing behavior:
 - [ ] Document how timeframe and range text are computed for the UI.
 - [ ] Document which chronology failures block resample versus remain repairable.
 - [ ] Add or tighten tests if timestamp semantics or integrity wording changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `timeframe.rs` tests
 - run targeted Polygon integrity/repair tests
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve explicit chronology failures instead of silently coercing bad data
 - prefer documenting timestamp semantics before broadening accepted formats
 - keep frontend range/timeframe summaries aligned with backend timestamp truths
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/02_data/05_csv_field_rules_2026-04-09.md`
-- `REPO_Improvement/02_data/24_resample_rules_DATE.md`
-- `REPO_Improvement/02_data/18_polygon_dataset_validate_DATE.md`
+- `REPO_Improvement/02_data/24_resample_rules_2026-04-09.md`
+- `REPO_Improvement/02_data/18_polygon_dataset_validate_2026-04-09.md`

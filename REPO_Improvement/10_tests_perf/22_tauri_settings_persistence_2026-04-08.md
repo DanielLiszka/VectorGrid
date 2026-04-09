@@ -1,6 +1,6 @@
 # Tauri Settings Persistence Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -86,6 +86,7 @@ So the current product already has a split-brain settings model by design:
 - breaking default-vs-configured root resolution
 - making cache moves unsafe or partially silent on failure
 - expanding Rust settings scope casually without documenting the boundary change
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -97,6 +98,8 @@ So the current product already has a split-brain settings model by design:
   - relevant because path validation and writable-root behavior depend on filesystem semantics
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html)
   - relevant because frontend-only settings persistence should keep its own verification boundary separate from Tauri settings
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -115,6 +118,13 @@ So the current product already has a split-brain settings model by design:
    - malformed JSON and write failures
 4. Preserve path-validation and cache-move safety as first-class contract items.
 5. Keep future settings additions explicit and bounded rather than silently expanding `app_settings.json`.
+6. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -124,14 +134,22 @@ So the current product already has a split-brain settings model by design:
 - [ ] Add or tighten command-level tests for get/set/clear flows.
 - [ ] Add malformed-JSON and write-failure coverage where still missing.
 - [ ] Preserve cache-move safety and failure visibility.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app --test settings_tests`
 - run relevant `cargo test -p ta_desktop_demo_app commands_data`
-- run `npm --prefix web test -- src/services/settingsBootstrap.test.ts`
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/settingsBootstrap.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
 - manually verify that frontend preference changes do not mutate Rust app settings and vice versa
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -139,6 +157,7 @@ So the current product already has a split-brain settings model by design:
 - prefer adding new Rust settings keys explicitly over overloading existing ones
 - keep malformed settings recoverable where possible instead of turning startup into a brittle failure
 - if more Tauri-side settings are added later, document them separately from browser UI preferences
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

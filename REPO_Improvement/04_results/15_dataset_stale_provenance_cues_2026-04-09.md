@@ -68,6 +68,7 @@ The repo already has some of the right primitives. What is missing is a dedicate
 - weakening provenance chips so users lose quick context on what they are reviewing
 - losing normalized dataset or artifact metadata that downstream cues depend on
 - treating stale-result warnings as cosmetic instead of decision-relevant
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ The repo already has some of the right primitives. What is missing is a dedicate
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because stale-cue correctness is mostly deterministic reconciliation behavior.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because dataset meta and artifact payloads feeding these cues behave like structured contracts.
 - [WAI-ARIA Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant because provenance cues need to survive as users move across result tabs rather than living in only one panel.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ The repo already has some of the right primitives. What is missing is a dedicate
 3. Keep dataset and artifact metadata normalized in workflow-artifact state so result surfaces do not infer provenance heuristically.
 4. Add or tighten tests for stale-candidate reconciliation and artifact-metadata normalization.
 5. Ensure context docks reinforce rather than contradict the main result panes.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,13 +102,20 @@ The repo already has some of the right primitives. What is missing is a dedicate
 - [ ] Document saved-run and artifact dataset provenance expectations.
 - [ ] Document dock and panel consistency expectations for stale/provenance cues.
 - [ ] Add or tighten tests for reconciliation and metadata normalization.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
-- run `npm --prefix web test -- src/components/TopWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/workflowArtifactsStore.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/components/TopWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowArtifactsStore.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +123,7 @@ The repo already has some of the right primitives. What is missing is a dedicate
 - prefer additive provenance detail over removing existing cues
 - keep artifact metadata normalization backward-safe while UI cues are clarified
 - if provenance cues later move into a dedicated summary surface, keep the existing Top and Overview cues during the transition
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

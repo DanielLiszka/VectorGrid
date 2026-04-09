@@ -59,6 +59,7 @@ The repo already keeps a checked-in pack that describes a deterministic headless
 - treating the pack as proof of report correctness beyond structural parity
 - removing the explicit supplemental timing-boundary note from the pack
 - using the pack for product-performance claims
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already keeps a checked-in pack that describes a deterministic headless
 - [Cargo profiles reference](https://doc.rust-lang.org/cargo/reference/profiles.html) are relevant because the pack explicitly names the build profile used by the headless producer.
 - [rust_xlsxwriter docs](https://rustxlsxwriter.github.io/index.html) are relevant because one of the parity outputs is an XLSX workbook whose structure matters.
 - [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180) is relevant because parity output stewardship includes CSV-shaped artifacts adjacent to the report surfaces.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already keeps a checked-in pack that describes a deterministic headless
 2. Keep the pack narrow, deterministic, and explicit about build profile and output paths.
 3. Tie pack changes to pair-registry review and parity-doc updates.
 4. Use the pack for structural regeneration only, with semantics validated elsewhere.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already keeps a checked-in pack that describes a deterministic headless
 - [ ] Preserve the supplemental timing-boundary note and output-path clarity.
 - [ ] Review pack diffs carefully before updating related baselines.
 - [ ] Avoid expanding the pack into a generic scenario catalog without governance.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already keeps a checked-in pack that describes a deterministic headless
 - inspect regenerated artifacts under `_write_test/headless_reports/`
 - confirm the pack still points at the intended non-options headless validation path
 - cross-check the pair registry after any output-path change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current single-pack discipline while improving documentation
 - add new packs only if a genuinely separate parity lane is needed
 - prefer explicit versioning over silent reinterpretation of pack fields
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -92,6 +92,7 @@ This surface is desktop-adjacent, but it is not one single feature. GPU diagnost
 - weakening the guarded-close behavior for runner-active or protected-task states
 - making desktop bridges run in browser mode or fail noisily outside Tauri
 - changing window-state persistence or WebView data-location behavior without an explicit compatibility review
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -103,6 +104,8 @@ This surface is desktop-adjacent, but it is not one single feature. GPU diagnost
   - relevant because the repo already persists window geometry/state through this plugin
 - [Microsoft WebView2 user data folder](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder)
   - relevant because browser-backed persistence and desktop runtime behavior depend on where the WebView profile data lives
+- [Alpaca Orders](https://docs.alpaca.markets/docs/orders-at-alpaca)
+  - relevant because live execution, monitoring, and order-state handling sit behind provider contracts that must remain explicit in a public-facing trading app
 
 ## Proposed Improvement Approach
 
@@ -115,6 +118,13 @@ This surface is desktop-adjacent, but it is not one single feature. GPU diagnost
 3. Keep `get_gpu_status` positioned as a diagnostics command, not as a promise about route choice.
 4. Document the desktop/browser split for log routing, notification permission, and window-state persistence.
 5. Preserve the current guarded-close behavior until any future live/runtime contract explicitly changes it.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -126,14 +136,23 @@ This surface is desktop-adjacent, but it is not one single feature. GPU diagnost
 - [ ] Document current window-state persistence behavior and where it is sourced from.
 - [ ] Document WebView/runtime persistence assumptions that affect settings and desktop state.
 - [ ] Add or tighten tests if effect options, titlebar actions, or desktop bridge activation rules change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/DesktopTitlebar.test.ts`
-- run `npm --prefix web test -- src/services/desktopProductization.test.ts`
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/DesktopTitlebar.test.ts`
+- run `npm --prefix web run test -- src/services/desktopProductization.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
 - run `cargo test -p ta_desktop_demo_app --test settings_tests`
 - run `npm --prefix web run test:desktop:smoke:spec -- .\\e2e\\desktop\\specs\\desktop-titlebar-native-controls.spec.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -141,6 +160,7 @@ This surface is desktop-adjacent, but it is not one single feature. GPU diagnost
 - if unsupported effect values are pruned later, keep migration copy for stored legacy values
 - keep browser-mode fallback behavior intact so non-Tauri verification still works
 - preserve current close-guard semantics until runner/task cancellation contracts are explicitly revised
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
@@ -148,4 +168,4 @@ This surface is desktop-adjacent, but it is not one single feature. GPU diagnost
 - `REPO_Improvement/01_shell/12_settings_runtime_diagnostics_2026-04-08.md`
 - `REPO_Improvement/01_shell/24_shell_desktop_productization_2026-04-08.md`
 - `REPO_Improvement/09_live/10_run_guards_cancel_tokens_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/15_desktop_native_titlebar_DATE.md`
+- `REPO_Improvement/10_tests_perf/15_desktop_native_titlebar_2026-04-09.md`

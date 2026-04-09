@@ -66,6 +66,7 @@ The frontend already surfaces pieces of this engine through shortlist meta text,
 - weakening track-record or CSCV/PBO handling while still emitting the old recommendation language
 - failing to recompute verdicts after cross-ticker finalist filtering
 - turning optional-method absence into silent success
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ The frontend already surfaces pieces of this engine through shortlist meta text,
 - [A Test for Superior Predictive Ability — SSRN](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=264569) is relevant because SPA significance is part of the repo’s robustness-method stack and should remain grounded in a real test concept rather than generic warning text.
 - [The Sharp Razor / Minimum Track Record Length](https://www.researchgate.net/publication/256035273_The_Sharp_Razor_Deflating_the_Sharpe_Ratio_by_Asking_for_a_Minimum_Track_Record_Length) is relevant because the repo already computes minimum track-record requirements and uses them in run-level recommendations.
 - [JSON Schema - What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema) is relevant because returned verdict/result objects are effectively a structured contract consumed across crates and the frontend.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -87,6 +90,13 @@ The frontend already surfaces pieces of this engine through shortlist meta text,
 3. Keep optional-method absence explicit so “requested but unavailable” and “skipped” remain observable outcomes.
 4. Align frontend summary text to the documented backend meaning instead of treating it as free-form copy.
 5. Expand tests around representative recommendation outcomes and post-filter recomputation.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -97,17 +107,24 @@ The frontend already surfaces pieces of this engine through shortlist meta text,
 - [ ] Document how post-cross-filter verdict recomputation must behave.
 - [ ] Add or tighten backend tests for representative recommendation outcomes.
 - [ ] Add or tighten frontend summary tests for recommendation and warning parity.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `validation_pipeline.rs` tests
 - run targeted `commands_validation.rs` tests
-- run `npm --prefix web test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
 - manually inspect one validation run each for:
   - no-survivor outcome
   - single-supported outcome
   - min-track-record-not-met outcome
   - cross-filtered verdict recomputation
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -115,6 +132,7 @@ The frontend already surfaces pieces of this engine through shortlist meta text,
 - prefer additive explanation over changing recommendation semantics casually
 - if recommendation tokens change, update frontend summary tests and artifact consumers immediately
 - keep optional robustness modules non-silent even when disabled or unavailable
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

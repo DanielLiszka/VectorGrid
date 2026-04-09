@@ -1,6 +1,6 @@
 # Composite Route Policy Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -63,12 +63,15 @@ Composite profile strategies present route-sensitive behavior based on strategy 
 - backend route policy changing without updating feature/capability surfaces
 - route evidence binaries drifting into optional background tooling that nobody checks
 - turning route policy into opaque generic logic that hides strategy ownership
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because these route decisions materially change host/device execution behavior and should stay evidence-backed.
 - [TypeScript Narrowing](https://www.typescriptlang.org/docs/handbook/2/narrowing.html) is relevant because frontend route-preview code should be exhaustive and explicit.
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because route preview and actual execution are separated by a command boundary and need a stable shared contract.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Composite profile strategies present route-sensitive behavior based on strategy 
    - tests
    - route matrix or equivalent evidence
 4. Keep the policy strategy-local and readable.
+5. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,6 +104,12 @@ Composite profile strategies present route-sensitive behavior based on strategy 
 - [ ] Make route-change review require code, tests, and evidence updates together.
 - [ ] Preserve strategy-local discoverability instead of broad generic routing layers.
 - [ ] Avoid route-policy prose that can become stale without code/test linkage.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -102,12 +118,16 @@ Composite profile strategies present route-sensitive behavior based on strategy 
 - run `npm test -- src/services/optimizeService.test.ts`
 - run targeted `cargo test -p ta_app_core composite_profile_route`
 - run the route-matrix binary when route semantics or performance claims change materially
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current product route targets unless there is a deliberate policy change
 - if route evidence becomes more formalized, keep the lightweight unit tests too
 - do not hide CPU fallback behavior while improving GPU route clarity
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

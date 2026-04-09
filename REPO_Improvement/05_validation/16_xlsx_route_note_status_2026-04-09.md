@@ -64,6 +64,7 @@ That means the workbook already acts as an execution-explanation surface, not ju
 - changing status vocabulary in one workbook area but not the others
 - silently removing top warning / skipped reason visibility for zero-survivor or degraded runs
 - making route-note behavior depend on a specific strategy family only
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -72,6 +73,8 @@ That means the workbook already acts as an execution-explanation surface, not ju
 - [RFC 8259 - JSON](https://www.rfc-editor.org/rfc/rfc8259) is relevant because absent-versus-present route, fallback, and skipped-module fields must stay unambiguous in structured data before they become workbook text.
 - [RFC 8785 - JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785) is relevant because stable ordering and deterministic serialization principles are useful when freezing human-readable execution summaries from structured fields.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because the validation workspace already previews expected execution summaries and must stay aligned with the workbook export path.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -90,6 +93,13 @@ That means the workbook already acts as an execution-explanation surface, not ju
    - zero-survivor runs with skipped modules
    - disabled-module and cross-omission combinations
 5. Keep the workbook additive: explain degraded routes without removing current execution detail.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -100,6 +110,11 @@ That means the workbook already acts as an execution-explanation surface, not ju
 - [ ] Add or tighten tests for actual/expected parity on representative route scenarios.
 - [ ] Add or tighten tests for zero-survivor and skipped-module dashboard text.
 - [ ] Add or tighten tests for composite route-note explanations.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -107,6 +122,8 @@ That means the workbook already acts as an execution-explanation surface, not ju
 - run targeted `commands_validation` tests for route/fallback behavior
 - add one focused headless workbook test for summary ordering and status vocabulary
 - manually inspect one workbook from an exact GPU route and one from a degraded/fallback route
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -114,6 +131,7 @@ That means the workbook already acts as an execution-explanation surface, not ju
 - keep richer execution explanation even when a route degrades or all candidates fail
 - if wording changes are necessary, update tests and dashboard preview surfaces in the same change
 - avoid introducing strategy-specific one-off wording where a category-level explanation would suffice
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

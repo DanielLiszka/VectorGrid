@@ -1,6 +1,6 @@
 # Optimize Store Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -69,6 +69,7 @@ The optimize workspace is driven primarily by `optimizeStore`. It owns strategy 
 - silently changing snapshot-application behavior for saved runs
 - breaking dynamic preview or GPU summary state while touching unrelated form fields
 - allowing `MlSignal` or other excluded paths to leak back into standard optimize strategy options
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -80,6 +81,8 @@ The optimize workspace is driven primarily by `optimizeStore`. It owns strategy 
   - relevant because user-facing derived state should stay distinct from mutable form state
 - [Vue: State Management](https://vuejs.org/guide/scaling-up/state-management.html)
   - relevant because optimize state is shared across services, workflow restoration, and UI surfaces
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -92,6 +95,13 @@ The optimize workspace is driven primarily by `optimizeStore`. It owns strategy 
 2. Document what the store owns directly versus what `optimizeService` owns.
 3. Make current action semantics explicit, especially run/cancel/GPU refresh.
 4. Treat snapshot application as a compatibility-sensitive contract, not a convenience helper.
+5. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -103,19 +113,27 @@ The optimize workspace is driven primarily by `optimizeStore`. It owns strategy 
 - [ ] Document snapshot-application behavior and replay-sensitive fields.
 - [ ] Document which actions delegate to services and which mutate store state directly.
 - [ ] Add or tighten tests if ownership or snapshot behavior changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/stores/workflowStore.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowStore.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve external store shape where practical because multiple services and tests depend on it
 - if store refactoring is needed later, keep snapshot compatibility explicit
 - do not collapse command-state and form-state semantics together just to reduce file size
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

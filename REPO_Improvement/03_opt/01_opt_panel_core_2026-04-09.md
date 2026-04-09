@@ -67,6 +67,7 @@ The store and panel also carry legacy summary fields such as `strategyHint`, `pa
 - reintroducing ML Signal panel hijack behavior into the conventional optimize shell
 - preserving stale readiness or summary fields as if they were live truth
 - breaking dynamic builder restore and preview behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ The store and panel also carry legacy summary fields such as `strategyHint`, `pa
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because panel state should remain store-driven rather than duplicated across components.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because the panel already depends on a store-plus-service orchestration model.
 - [WAI Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant because the optimize panel lives inside the shell’s tabbed workspace model and should remain predictable within that structure.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ The store and panel also carry legacy summary fields such as `strategyHint`, `pa
 3. Audit legacy summary fields and either compute them from live state or demote them from authoritative status.
 4. Document which controls belong in optimize, which belong in advanced, and which belong in strategy.
 5. Strengthen mount-scope and restore tests before large refactors.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,20 @@ The store and panel also carry legacy summary fields such as `strategyHint`, `pa
 - [ ] Document strategy-family-specific panel behavior such as `CompositeMo` and `DynamicDoubleMa`.
 - [ ] Identify candidate splits inside the large component without changing behavior first.
 - [ ] Add or tighten tests for mount, restore, and conventional-shell behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/OptimizeWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/components/RunFooterPanel.test.ts`
+- run `npm --prefix web run test -- src/components/OptimizeWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/components/RunFooterPanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,6 +121,7 @@ The store and panel also carry legacy summary fields such as `strategyHint`, `pa
 - prefer documentation and state-audit work before component extraction
 - if summary fields are demoted, keep current UI text until all consumers are updated together
 - maintain compatibility with persisted snapshot fields until migrations are explicit
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Archive Policy Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -54,6 +54,7 @@ The program already assumes that docs may eventually become archived, but the ac
 - deleting old docs with no historical pointer
 - archiving docs silently without updating the tracker
 - keeping contradictory active docs side by side with no supersede note
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -71,6 +72,13 @@ The program already assumes that docs may eventually become archived, but the ac
 2. Require a forward pointer when a doc is superseded.
 3. Require tracker/index updates whenever archive state changes.
 4. Preserve old docs for historical context unless they are exact duplicates.
+5. Treat planning-layer quality as part of the implementation scope: keep the program auditable, explicit, refreshable, and easy for future contributors to execute without guesswork.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -78,18 +86,27 @@ The program already assumes that docs may eventually become archived, but the ac
 - [ ] Require forward pointers for superseded docs.
 - [ ] Update tracker/index when archive state changes.
 - [ ] Preserve historical context rather than deleting useful planning history.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - spot-check future archive changes for tracker/index updates
 - verify superseded docs point to their replacements
 - ensure archived docs are not still treated as active queue items
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify the definition of done, refresh triggers, and any superseded/historical pointers are explicit enough that another contributor could continue the program without guesswork
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - apply this policy before the tree grows much larger
 - prefer supersede notes over deletion
 - if a doc is merged into another, preserve a reference trail in the tracker or related-doc sections
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

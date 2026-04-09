@@ -75,6 +75,7 @@ At the same time, plain CSV loading through `load_price_data` remains a direct c
 - making task-center progress more visually active but less truthful
 - changing command payload shapes without synchronized store/service test updates
 - slowing down hot paths significantly just to emit richer progress metadata
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -83,6 +84,8 @@ At the same time, plain CSV loading through `load_price_data` remains a direct c
 - [WAI-ARIA `progressbar` guidance](https://www.w3.org/TR/2010/WD-wai-aria-20100916/complete) is relevant because long-running progress surfaces should communicate determinate versus indeterminate state accurately.
 - [Vue state management guide](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because progress should remain centralized in shared stores rather than fragmented across components.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because progress payloads already act like shared contracts between backend and frontend layers.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -91,6 +94,13 @@ At the same time, plain CSV loading through `load_price_data` remains a direct c
 3. Document and freeze the progress payload semantics before broadening them.
 4. Make CUDA-prefetch outcomes visible as typed progress states or typed diagnostics rather than ad hoc notes only.
 5. Keep the existing task-center aggregation and event-throttling behavior as the central presentation layer.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -100,14 +110,23 @@ At the same time, plain CSV loading through `load_price_data` remains a direct c
 - [ ] Add or tighten tests for progress throttling, stage transitions, and campaign progress aggregation.
 - [ ] Review whether `load_price_data` needs additive progress hooks or only clearer status messaging.
 - [ ] Keep accessibility expectations explicit for any progress UI copy or widgets.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/taskStoreCampaignProgress.test.ts`
-- run `npm --prefix web test -- src/stores/taskStoreEventThrottle.test.ts`
-- run `npm --prefix web test -- src/services/metaServiceCampaignStrategy.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/stores/taskStoreCampaignProgress.test.ts`
+- run `npm --prefix web run test -- src/stores/taskStoreEventThrottle.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignStrategy.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
 - manually inspect one campaign with dataset preload enabled and one without preload
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -115,6 +134,7 @@ At the same time, plain CSV loading through `load_price_data` remains a direct c
 - prefer additive payload fields over changing existing ones
 - use clearer stage/status copy before adding high-frequency progress churn
 - if a phase is fundamentally indeterminate, keep it stage-based instead of fabricating precise percentages
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

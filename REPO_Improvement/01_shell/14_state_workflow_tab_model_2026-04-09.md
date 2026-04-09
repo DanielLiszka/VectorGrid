@@ -81,6 +81,7 @@ This is already a navigation contract, not just a store with a few strings.
 - changing workspace/workflow-step transitions in ways that contradict the current shell grammar
 - breaking subtitle derivation or root dataset sync
 - making invalid values mutate state instead of being ignored
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -109,6 +110,13 @@ This is already a navigation contract, not just a store with a few strings.
    - select controls/results/aggregate tab
 4. Preserve root dataset sync and subtitle derivation as first-class outputs of the model.
 5. If more modes or tabs are added later, extend the model centrally before changing shell components.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -118,19 +126,28 @@ This is already a navigation contract, not just a store with a few strings.
 - [ ] Document subtitle derivation and root dataset synchronization.
 - [ ] Add or tighten tests if new workspaces, steps, or tabs are introduced.
 - [ ] Keep invalid-value behavior non-mutating.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/workflowStore.test.ts`
-- run `npm --prefix web test -- src/utils/core/workflowModel.test.ts`
-- run `npm --prefix web test -- src/components/VueWorkspaceShell.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowStore.test.ts`
+- run `npm --prefix web run test -- src/utils/core/workflowModel.test.ts`
+- run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
 - manually verify workspace and workflow-step navigation in both conventional and ML Signal modes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the centralized model/store split
 - if workflow grammar changes, update model helpers, store tests, and shell tests together
 - prefer additive extension over hidden reinterpretation of existing tabs or steps
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

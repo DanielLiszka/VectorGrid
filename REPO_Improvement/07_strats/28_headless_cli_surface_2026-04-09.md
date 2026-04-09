@@ -1,3 +1,7 @@
+# Headless Cli Surface Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the non-options headless binary surface so the repo’s CLI, report-builder, regression, and benchmarking entry points behave like one coherent tooling family instead of a loose collection of useful bins.
@@ -74,6 +78,7 @@ The problem is not lack of utility. The problem is fragmentation:
 - changing JSON or XLSX artifact expectations without a documented compatibility review
 - merging scopes so aggressively that simple bounded tools become harder to use
 - making regression tooling less deterministic in the name of convenience
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -82,6 +87,8 @@ The problem is not lack of utility. The problem is fragmentation:
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because headless outputs should be treated as stable artifact contracts, not just ad hoc printouts.
 - [rust_xlsxwriter docs](https://rustxlsxwriter.github.io/index.html) are relevant because one of the main headless surfaces produces XLSX workbooks as a first-class output.
 - [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180) is relevant because CSV input/output compatibility remains part of the operational headless surface.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -102,6 +109,13 @@ The problem is not lack of utility. The problem is fragmentation:
    - timing summaries
 4. Tighten wrapper-script expectations so drift is caught quickly.
 5. Keep scope boundaries explicit rather than trying to collapse everything into one binary immediately.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -112,6 +126,12 @@ The problem is not lack of utility. The problem is fragmentation:
 - [ ] Add or tighten wrapper-script checks so output-shape drift is caught early.
 - [ ] Decide whether any shared CLI helper extraction would improve consistency without making the tools less clear.
 - [ ] Keep the app-core-only versus Tauri-linked boundary explicit in docs and naming.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -121,6 +141,9 @@ The problem is not lack of utility. The problem is fragmentation:
 - run `scripts/run_output_parity_check.mjs`
 - run `scripts/run_workflow_gate.ps1`
 - run `scripts/run_vectorbt_vs_vectorgrid_faceoff.ps1` when output compatibility or benchmark wiring changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -128,6 +151,7 @@ The problem is not lack of utility. The problem is fragmentation:
 - prefer shared documentation and wrapper hardening before argument renames
 - if unification creates ambiguity, keep the simpler separated tools
 - treat artifact output drift as a compatibility event, not a casual cleanup
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

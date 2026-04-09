@@ -1,3 +1,7 @@
+# Strategy Plan Presets Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the preset-to-IR-to-plan layer that establishes representative non-options strategy configurations and compiles them into backend-aware execution plans.
@@ -79,6 +83,7 @@ Key current ownership:
 - changing plan serialization or route encoding without deliberate compatibility review
 - breaking descriptor-driven indicator normalization while preserving only legacy cases
 - changing representative cases so tests keep passing but stop representing real product policy
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +92,8 @@ Key current ownership:
 - [Cargo targets](https://doc.rust-lang.org/cargo/reference/cargo-targets.html) are relevant because route/probe binaries are an important verification surface and should remain intentional targets, not accidental side artifacts.
 - [serde_json::Value docs](https://docs.rs/serde_json/latest/serde_json/value/) are relevant because compiled-plan payloads and route diagnostics often flow through JSON-shaped output and need stable structure.
 - [Criterion.rs getting started](https://bheisler.github.io/criterion.rs/book/getting_started.html) is relevant because representative presets are useful benchmark fixtures and should remain stable enough to support performance comparisons across plan/runtime changes.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -104,6 +111,13 @@ Key current ownership:
    - signal bindings
 5. Keep route-override testing explicit so override behavior does not silently redefine default-route policy.
 6. Use the route/probe bins as contract verifiers, not just as ad hoc diagnostics.
+7. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -114,6 +128,12 @@ Key current ownership:
 - [ ] Add or tighten tests for route overrides so override behavior is explicit and bounded.
 - [ ] Decide whether a small set of serialized plan fixtures should be checked into tests as golden references.
 - [ ] Audit route/probe binaries to ensure they consume the shared preset layer rather than duplicating assumptions.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -122,6 +142,9 @@ Key current ownership:
 - run relevant dynamic-strategy tests in `crates/app_core/src/double_ma.rs`
 - run relevant validation-side plan consumers in `crates/app_core/src/double_ma_validate.rs`
 - run route probe binaries when behavior around route mapping or preset coverage changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -129,6 +152,7 @@ Key current ownership:
 - avoid changing representative preset semantics until parity tests make the intended behavior explicit
 - if a preset is no longer representative, replace it deliberately and update all probe/test consumers in the same change
 - keep serialized-plan changes schema-aware and version-conscious
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

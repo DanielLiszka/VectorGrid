@@ -59,6 +59,7 @@ The route-matrix bin already enumerates profile-family cases across requested ba
 - treating route-matrix wall-clock numbers as headline performance claims
 - changing route expectations without updating the audited cases and their rationale
 - ignoring fallback reasons and only looking at timing values
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The route-matrix bin already enumerates profile-family cases across requested ba
 - [Cargo run command docs](https://doc.rust-lang.org/cargo/commands/cargo-run.html) are relevant because the route matrix is a headless bin-level audit, not a benchmark harness hidden inside tests.
 - [Tauri state management guidance](https://v2.tauri.app/develop/state-management/) is relevant by contrast because this route audit intentionally bypasses the shell and focuses on backend/runtime behavior.
 - [Criterion.rs book](https://bheisler.github.io/criterion.rs/book/) is relevant as a contrast: the route matrix records runtime context but is not a Criterion-style benchmark authority.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The route-matrix bin already enumerates profile-family cases across requested ba
 2. Preserve strict mode as the preferred regression-detection setting for supported environments.
 3. Treat fallback reasons and route metadata as first-class outputs during review.
 4. Use route-matrix findings to guide deeper perf or correctness investigation rather than collapsing it into a single speed number.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The route-matrix bin already enumerates profile-family cases across requested ba
 - [ ] Keep the route matrix non-options only.
 - [ ] Cross-check route-audit outputs against current profile-route policy docs.
 - [ ] Avoid marketing or release claims based on route-matrix timings alone.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,16 +105,19 @@ The route-matrix bin already enumerates profile-family cases across requested ba
 - inspect the emitted JSON for route correctness and fallback reasons
 - compare route-matrix failures against route-policy code before changing expectations
 - use timing values as supporting context only after route correctness is understood
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current route-audit emphasis and improve its documentation
 - add new audited cases only when route policy expands or shifts materially
 - keep route-matrix outputs supplemental to the main perf gates
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/03_opt/19_eng_dm_backend_routing_2026-04-08.md`
-- `REPO_Improvement/07_strats/25_strategy_runtime_gpu_stack_DATE.md`
+- `REPO_Improvement/07_strats/25_strategy_runtime_gpu_stack_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/27_gpu_perf_gate_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/38_profile_runner_bins_2026-04-09.md`

@@ -81,6 +81,7 @@ That matrix already controls:
 - changing strategy availability in campaigns or meta flows without synchronized messaging and tests
 - drifting composite route previews away from actual backend route policy
 - letting one-off component logic bypass the shared matrix
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -89,6 +90,8 @@ That matrix already controls:
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because strategy-surface promises eventually become typed backend requests and rejections.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because the matrix effectively governs which request/result contract variants are valid for which strategies.
 - [Playwright best practices](https://playwright.dev/docs/best-practices) are relevant because matrix drift often shows up first as visible control and copy mismatches in real UI flows.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -97,6 +100,13 @@ That matrix already controls:
 3. Keep every strategy kind mapped explicitly rather than relying on scattered special cases.
 4. Add targeted tests for lower-traffic strategy kinds and cross-surface mismatches.
 5. Keep matrix changes additive, synchronized, and evidence-backed.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -106,14 +116,23 @@ That matrix already controls:
 - [ ] Add or tighten tests for strategy-specific advanced-control visibility and request legality.
 - [ ] Add or tighten tests for matrix reuse between Optimize, Advanced, and Meta surfaces.
 - [ ] Review whether any component still bypasses the shared matrix with local special cases.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/utils/strategyOptimizationCapabilities.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/components/OptimizeWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/AdvancedWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/metaServiceCampaignStrategy.test.ts`
+- run `npm --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/components/OptimizeWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/AdvancedWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignStrategy.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -121,6 +140,7 @@ That matrix already controls:
 - update matrix-driven copy and gating in the same change as any legality change
 - prefer central capability updates over component-local conditionals
 - if a strategy remains unsupported in a surface, keep the restriction explicit and user-visible
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

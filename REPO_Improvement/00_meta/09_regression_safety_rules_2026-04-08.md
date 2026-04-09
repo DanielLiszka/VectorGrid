@@ -1,6 +1,6 @@
 # Regression Safety Rules
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -69,6 +69,7 @@ Current user-visible behavior is protected by a mix of frontend tests, Tauri tes
 - silently changing artifact/report schema or path fields
 - weakening frontend coverage by over-mocking or by testing implementation details instead of visible behavior
 - increasing host/device churn on GPU paths without a clear justification
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -77,6 +78,8 @@ Current user-visible behavior is protected by a mix of frontend tests, Tauri tes
 - [Pinia Testing Stores](https://pinia.vuejs.org/cookbook/testing.html) supports explicit store test setup instead of ad-hoc globals.
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) reinforces that heavy work should remain async and command boundaries should stay explicit.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) emphasizes minimizing host/device transfers and batching work when GPU paths are performance-critical.
+- [GitHub tasklists](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/about-tasklists)
+  - relevant because the planning layer needs executable checklists, explicit acceptance criteria, and visible progress semantics rather than vague prose
 
 ## Proposed Improvement Approach
 
@@ -86,6 +89,13 @@ Every implementation plan should include a regression section that answers:
 - which tests or scripts prove those behaviors now
 - what new checks need to be added if the current coverage is insufficient
 - what fallback or compatibility behavior must survive the change
+1. Treat planning-layer quality as part of the implementation scope: keep the program auditable, explicit, refreshable, and easy for future contributors to execute without guesswork.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -97,6 +107,11 @@ Every implementation plan should include a regression section that answers:
 - [ ] Identify whether GPU/CPU fallback behavior must be preserved.
 - [ ] Identify stale-data, report-open, and history/replay behaviors if artifacts are touched.
 - [ ] Refuse plans that improve one layer by silently weakening another.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -104,12 +119,15 @@ Every implementation plan should include a regression section that answers:
 - Tauri/backend plans must identify Rust tests plus any command-wiring impacts
 - report/artifact plans must identify workbook / parity / path persistence checks
 - performance-sensitive plans must identify the relevant perf gates or benchmark harnesses
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify the definition of done, refresh triggers, and any superseded/historical pointers are explicit enough that another contributor could continue the program without guesswork
 
 ## Rollout / Fallback / Compatibility Notes
 
 - when behavior changes are unavoidable, the plan must state the compatibility break explicitly
 - when no test exists, the plan must include adding the test rather than hand-waving the risk
 - the default assumption is backward-compatible improvement, not behavior reset
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

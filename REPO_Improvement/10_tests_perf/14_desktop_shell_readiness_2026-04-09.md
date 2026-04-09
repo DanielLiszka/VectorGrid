@@ -59,6 +59,7 @@ The current desktop shell readiness spec launches the real Tauri shell, waits fo
 - weakening readiness to a single-element check that would miss partial shell failure
 - replacing explicit readiness waits with fixed pauses
 - treating readiness failure as an app-only bug before checking harness logs
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current desktop shell readiness spec launches the real Tauri shell, waits fo
 - [Tauri window API reference](https://v2.tauri.app/reference/javascript/api/namespacewindow/) is relevant because the harness is validating a real window lifecycle, not a plain web page.
 - [Playwright best practices](https://playwright.dev/docs/best-practices) are still relevant by analogy: shell readiness should test observable outcomes rather than implementation internals.
 - [WAI-ARIA tabs pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant because the workspace bar is a top-level navigation surface with selection semantics.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current desktop shell readiness spec launches the real Tauri shell, waits fo
 2. Preserve the shared wait helper as the place where blank-shell recovery and readiness logic live.
 3. Assert only the top-level shell chrome and stable workspace taxonomy in this spec.
 4. Push any deeper behavior into other desktop or browser specs rather than growing readiness smoke.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current desktop shell readiness spec launches the real Tauri shell, waits fo
 - [ ] Keep selectors stable and shared-safe.
 - [ ] Keep the spec non-options only.
 - [ ] Use readiness as a prerequisite for heavier desktop flows rather than duplicating its checks everywhere.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The current desktop shell readiness spec launches the real Tauri shell, waits fo
 - run the full desktop smoke suite after major desktop-shell changes
 - inspect harness logs when readiness fails before broadening the selector set
 - confirm the workspace bar still exposes the expected top-level sections in the native shell
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current readiness spec as a stable smoke entry point
 - prefer additive helper improvements over expanding readiness assertions
 - if shell taxonomy changes, update the readiness contract deliberately and consistently
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

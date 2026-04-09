@@ -1,6 +1,6 @@
 # BreakoutMomentum Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -69,6 +69,7 @@ BreakoutMomentum appears as its own strategy kind in the optimize and validation
 - weakening high/low/volume prerequisite handling
 - changing route policy without updating both preview helpers and route-evidence tooling
 - losing validation/report parity while improving optimization copy
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ BreakoutMomentum appears as its own strategy kind in the optimize and validation
 - [Polygon flat-file minute aggregates](https://massive.com/docs/flat-files/stocks/minute-aggregates) is relevant because the strategy depends on high/low/volume-style market data fields.
 - [TypeScript narrowing](https://www.typescriptlang.org/docs/handbook/2/narrowing.html) is relevant because frontend route preview should stay explicit and exhaustive over strategy/ADX/data-condition branches.
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because preview and actual execution are separated by a command boundary.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -87,6 +90,13 @@ BreakoutMomentum appears as its own strategy kind in the optimize and validation
    - route-sensitive
    - disabled by ADX or missing data prerequisites
 5. Keep validation and artifact/report behavior tied to the route actually used.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -98,6 +108,12 @@ BreakoutMomentum appears as its own strategy kind in the optimize and validation
 - [ ] Verify validation summaries and route notes match the runtime route actually used.
 - [ ] Preserve strategy-local ownership instead of hiding rules in generic helpers.
 - [ ] Avoid adding new implicit special cases without tests and route evidence.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -107,16 +123,20 @@ BreakoutMomentum appears as its own strategy kind in the optimize and validation
 - run `npm test -- src/services/optimizeService.test.ts`
 - run targeted `cargo test -p ta_app_core composite_profile_route`
 - run the route-matrix/profile helper when route semantics change materially
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current ADX-off `GpuKernel`, ADX-on `GpuHybridKernel`, and CPU fallback posture unless product policy changes deliberately
 - if route visibility improves in the UI, keep actual backend route semantics unchanged unless explicitly documented
 - preserve existing data-prerequisite checks rather than hiding them behind generic unsupported-state messaging
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/07_strats/11_eng_composite_route_policy_2026-04-08.md`
 - `REPO_Improvement/03_opt/13_strategy_caps_surface_2026-04-08.md`
 - `REPO_Improvement/07_strats/01_strat_double_ma_family_2026-04-08.md`
-- `REPO_Improvement/07_strats/12_eng_composite_validation_DATE.md`
+- `REPO_Improvement/07_strats/12_eng_composite_validation_2026-04-08.md`

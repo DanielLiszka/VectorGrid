@@ -1,6 +1,6 @@
 # Optimize Request Builder Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -69,6 +69,7 @@ The optimize UI feeds a large request-normalization layer that converts store-ba
 - accepting illegal exact-only shortlist modes on CPU or hybrid routes
 - silently changing `heatmap_bins`, `top_k`, or `include_all` semantics for composite or standalone GPU routes
 - weakening current early-rejection behavior for malformed export paths or unsupported `DynamicDoubleMa` shapes
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -77,6 +78,8 @@ The optimize UI feeds a large request-normalization layer that converts store-ba
 - [Pinia State](https://pinia.vuejs.org/core-concepts/state.html) is relevant because builder inputs are assembled from store-backed UI state.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because the builder consumes shared store state and should remain the single normalization boundary instead of duplicating request logic in components.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant for later UX verification when request legality must remain aligned with what the user can actually select in the optimize workspace.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -96,6 +99,13 @@ The optimize UI feeds a large request-normalization layer that converts store-ba
 3. Make the request-builder plan reference current route-preview authorities so `predictCompositeProfileGpuRoute`, capability summaries, and emitted payloads stay aligned.
 4. Lock the exact-route-only shortlist contract in the doc, including the current conditions around `top_k`, `include_all`, score mode, export disablement, and standalone unified-GPU previews.
 5. Extend fixture coverage around the most failure-prone combinations instead of relying on generic smoke tests.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -110,6 +120,11 @@ The optimize UI feeds a large request-normalization layer that converts store-ba
 - [ ] Document metric-surface selector behavior and current audited-route expectations.
 - [ ] Add or tighten edge-case fixtures for invalid or borderline UI inputs.
 - [ ] Keep benchmark coverage for hot request-builder paths.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -117,15 +132,18 @@ The optimize UI feeds a large request-normalization layer that converts store-ba
 - run `npm test -- src/services/optimizeService.test.ts`
 - run `npm run bench:request-builder`
 - manually inspect route preview for representative DoubleMa and composite cases
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current accepted request fields where possible
 - treat builder refactoring as contract-preserving unless explicitly approved otherwise
 - if the builder must split into smaller modules later, keep the external request shape unchanged first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/03_opt/19_eng_dm_backend_routing_2026-04-08.md`
-- `REPO_Improvement/03_opt/13_strategy_caps_surface_DATE.md`
-- `REPO_Improvement/03_opt/33_advanced_shortlist_diagnostics_DATE.md`
+- `REPO_Improvement/03_opt/13_strategy_caps_surface_2026-04-08.md`
+- `REPO_Improvement/03_opt/33_advanced_shortlist_diagnostics_2026-04-08.md`

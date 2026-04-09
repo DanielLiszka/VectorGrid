@@ -86,6 +86,7 @@ So shell-mount readiness is already a cross-shell infrastructure surface.
 - leaving stale pane dataset markers behind after unmount
 - changing mount-host selectors in the shell without updating dependent panels
 - making panel mount readiness depend on arbitrary timing instead of explicit host discovery
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -97,6 +98,8 @@ So shell-mount readiness is already a cross-shell infrastructure surface.
   - relevant because mount readiness should stay infrastructural rather than becoming another state authority
 - [Playwright best practices](https://playwright.dev/docs/best-practices)
   - relevant because shell-mount issues often show up best in real rendered flows
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -109,6 +112,13 @@ So shell-mount readiness is already a cross-shell infrastructure surface.
 3. Add a dedicated composable test for `useShellMount`.
 4. Keep selector-based host lookup explicit and synchronized with `VueWorkspaceShell`.
 5. If mount failures need operator visibility later, add explicit diagnostics rather than silent timing hacks.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -117,19 +127,28 @@ So shell-mount readiness is already a cross-shell infrastructure surface.
 - [ ] Add dedicated test coverage for mount-ready and cleanup behavior.
 - [ ] Preserve pane dataset marker add/remove behavior.
 - [ ] Keep host selectors synchronized with shell mount targets.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - add and run a dedicated `useShellMount` unit test
-- run `npm --prefix web test -- src/components/VueWorkspaceShell.test.ts`
+- run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
 - run representative panel tests that depend on teleport readiness
 - manually verify panel hosts still receive teleported content after shell changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep `useShellMount` simple and infrastructural
 - if host resolution becomes more complex later, preserve existing panel selectors until replacement coverage exists
 - prefer explicit diagnostics over silent fallback rendering into the wrong host
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

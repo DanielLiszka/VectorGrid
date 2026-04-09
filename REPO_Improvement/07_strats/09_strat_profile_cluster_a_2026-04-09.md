@@ -90,6 +90,7 @@ Current behavior already includes:
 - breaking standard result, shortlist, or artifact expectations while changing one profile family
 - flattening these strategy families back into opaque shared code where ownership becomes harder to trace
 - weakening benchmark or parity coverage for mature profiles while extending new ones
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -98,6 +99,8 @@ Current behavior already includes:
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because these strategy families are exposed through typed command boundaries and frontend request builders.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because request/result/report payloads for this cluster behave like structured contracts across multiple layers.
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because capability and request-shaping drift often appears first in store/service level tests rather than at the kernel layer.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -106,6 +109,13 @@ Current behavior already includes:
 3. Tighten the boundary between strategy-local files and shared orchestration in `composite_cpu.rs` / `composite_validate.rs`.
 4. Keep route diagnostics truthful and test-backed.
 5. Use the cluster as the reference standard for how standalone profile families should look before expanding the less mature cluster.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -116,14 +126,23 @@ Current behavior already includes:
 - [ ] Add or tighten capability-summary and request-builder tests for these profile kinds.
 - [ ] Review whether benchmark coverage should be normalized across all five cluster members.
 - [ ] Keep artifact/result expectations aligned with the rest of the standard optimize workflow.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
 - run targeted tests in `crates/app_core/src/composite_cpu.rs`
 - run targeted tests in `crates/app_core/src/composite_validate.rs`
 - run the dedicated benches already present for `Asr`, `Rocb`, `Vcc`, `Vcet`, and `Vemr`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/utils/strategyOptimizationCapabilities.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -131,6 +150,7 @@ Current behavior already includes:
 - prefer additive ownership clarification and test hardening before deeper refactors
 - if shared orchestration is reduced later, move behavior into strategy-local files without changing result or validation semantics
 - use this cluster's stronger benchmark/test posture as the minimum bar for future standalone-profile changes
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

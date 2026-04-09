@@ -55,6 +55,7 @@ The repo already depends heavily on store/service correctness for user-visible b
 - shifting core orchestration proof upward into component tests only
 - allowing request-builder or result-normalization changes without store/service updates
 - duplicating service assertions in components while leaving service tests weak
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -64,12 +65,21 @@ The repo already depends heavily on store/service correctness for user-visible b
   - relevant because service tests depend on controlled Tauri/runtime mocking
 - [Vue state management guide](https://vuejs.org/guide/scaling-up/state-management.html)
   - relevant because test ownership should match state ownership
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
 1. Treat store tests as the primary proof for derived state and action sequencing.
 2. Treat service tests as the primary proof for request building, invocation shaping, and result normalization.
 3. Keep component tests focused on UI behavior that consumes these layers.
+4. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -77,20 +87,29 @@ The repo already depends heavily on store/service correctness for user-visible b
 - [ ] Inventory the non-options service tests and their owning workflows.
 - [ ] Identify any critical derived state or request builder paths without direct tests.
 - [ ] Keep store/service coverage aligned with current architecture boundaries.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
 - run `npm --prefix web test`
 - run targeted store/service tests for changed workflows
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing useful tests while clarifying ownership
 - add new store/service tests before relying on smoke coverage for new orchestration paths
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/01_fe_test_matrix_2026-04-08.md`
 - `REPO_Improvement/10_tests_perf/02_fe_component_surface_tests_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/04_fe_tauri_bridge_tests_2026-04-08.md`
-- `REPO_Improvement/10_tests_perf/50_frontend_test_support_mocks_DATE.md`
+- `REPO_Improvement/10_tests_perf/50_frontend_test_support_mocks_2026-04-09.md`

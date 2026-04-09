@@ -1,6 +1,6 @@
 # Shell Run Footer Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -82,6 +82,7 @@ The footer already summarizes analysis and task state rather than only exposing 
 - contradicting optimize-panel status or task-center summary
 - losing persisted expand/collapse state
 - surfacing stale analysis or task summaries as if they were current
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -93,6 +94,8 @@ The footer already summarizes analysis and task state rather than only exposing 
   - relevant because the footer relies on stable store ownership rather than local duplicated state
 - [Window.localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage)
   - relevant because footer expansion state is persisted across sessions
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -108,6 +111,13 @@ The footer already summarizes analysis and task state rather than only exposing 
    - task store owns task posture and overall progress
 4. Treat the summary pill as a first-class contract item, not just leftover copy.
 5. Expand tests around mode switches, compact/expanded persistence, and run/cancel posture.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -119,18 +129,27 @@ The footer already summarizes analysis and task state rather than only exposing 
 - [ ] Add tests for expansion persistence and shell visibility.
 - [ ] Add tests for ML Signal primary-action labeling.
 - [ ] Add tests for run/cancel posture and summary consistency during active runs.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `npm test -- src/components/RunFooterPanel.test.ts`
 - run relevant optimize/task store tests that change footer-facing state
 - manually verify compact/expanded behavior, ML Signal mode, and active-run state in the desktop shell
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current footer mount location and shell role
 - keep compact mode available even if the footer becomes richer
 - if more actions are added later, keep the current primary-action truth contract intact first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,3 +1,7 @@
+# Core Timeframe Matrix Stats Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the small but correctness-critical core utilities that normalize timeframe handling, matrix indexing, and statistical primitives used across non-options optimization and validation paths.
@@ -81,6 +85,7 @@ If these utilities drift, the visible symptoms are often misleading:
 - changing matrix ordering or fast<slow indexing semantics
 - changing probability-gate sanitization or PSR/DSR behavior without corresponding report/test updates
 - duplicating quantile or worst-case logic outside the shared core
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -89,6 +94,8 @@ If these utilities drift, the visible symptoms are often misleading:
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because these small utilities influence structured output fields and should keep those contracts stable.
 - [Criterion.rs getting started](https://bheisler.github.io/criterion.rs/book/getting_started.html) is relevant because foundational utility changes can cause broad performance regressions even when they are behavior-preserving.
 - [serde_json::Value docs](https://docs.rs/serde_json/latest/serde_json/value/) are relevant because these core numeric/timeframe helpers often feed artifact/report JSON and should remain predictable for serialization consumers.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -107,6 +114,13 @@ If these utilities drift, the visible symptoms are often misleading:
    - matrix-order/index mapping
    - PSR/DSR gate thresholds
 5. If cleanup is needed, prefer small helper extraction or clearer naming over semantic redesign.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -117,6 +131,12 @@ If these utilities drift, the visible symptoms are often misleading:
 - [ ] Add or tighten PSR/DSR tests around threshold and probability-gate boundaries.
 - [ ] Audit consumers for duplicated timeframe, matrix-index, or summary-stat logic.
 - [ ] Decide whether a lightweight benchmark is warranted for hot utility paths used in repeated scans.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -127,6 +147,9 @@ If these utilities drift, the visible symptoms are often misleading:
 - run targeted tests in `validation_stats.rs`
 - run representative consumer tests in `double_ma.rs` and `validation_pipeline.rs`
 - run the fidelity-audit or route-matrix bins if changes affect time bucket or stat semantics
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -134,6 +157,7 @@ If these utilities drift, the visible symptoms are often misleading:
 - if any consumer relies on behavior that seems odd, capture it in tests before deciding whether it should change
 - keep these modules small and authoritative; do not let downstream convenience code become the real contract
 - treat any resample or stats change as cross-cutting and worthy of artifact/report rechecks
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

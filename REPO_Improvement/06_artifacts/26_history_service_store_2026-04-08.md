@@ -1,6 +1,6 @@
 # History Service Store Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -82,6 +82,7 @@ So the current history system is already an orchestration layer, not just a stat
 - losing ML-signal replay branching
 - conflating artifact JSON paths with report XLSX paths
 - weakening runtime gating that currently protects mutating actions
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -93,6 +94,8 @@ So the current history system is already an orchestration layer, not just a stat
   - relevant because store/service seams should remain directly testable with mocked service calls
 - [Tauri calling Rust from the frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because many history actions ultimately bridge into Tauri commands and file operations
+- [JSON Schema: What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema)
+  - relevant because artifacts, reports, manifests, and replay payloads behave like versioned serialized contracts that should stay explicit and reviewable
 
 ## Proposed Improvement Approach
 
@@ -112,6 +115,13 @@ So the current history system is already an orchestration layer, not just a stat
    - ML replay branching
    - report-path versus artifact-path behavior
 5. Keep the store as the visible-state owner and the service as the orchestration owner.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -121,13 +131,20 @@ So the current history system is already an orchestration layer, not just a stat
 - [ ] Document ML-signal-specific replay branches and report fallback behavior.
 - [ ] Add or tighten cache-hit, cache-prune, and runtime-gating regressions.
 - [ ] Preserve path-type distinctions between artifacts and reports.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/stores/historyStore.actions.test.ts`
-- run `npm --prefix web test -- src/stores/historyStore.search.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/stores/historyStore.actions.test.ts`
+- run `npm --prefix web run test -- src/stores/historyStore.search.test.ts`
 - manually verify refresh, detail load, load/apply/rerun, open report, reveal, delete, and tag-save flows
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -135,6 +152,7 @@ So the current history system is already an orchestration layer, not just a stat
 - preserve current runtime gating for mutating actions
 - prefer explicit responsibility extraction over merging service logic into the store
 - if types are tightened later, keep legacy artifact detail normalization until saved-run compatibility is proven
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

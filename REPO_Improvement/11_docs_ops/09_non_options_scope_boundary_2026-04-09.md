@@ -56,6 +56,7 @@ The current `REPO_Improvement` program is explicitly non-options-only. That scop
 - describing shared infrastructure in a way that silently reintroduces options scope
 - letting counts and tracker claims imply full-repo coverage when the scope is intentionally narrower
 - treating “non-options” as “everything except an obvious folder” without checking specific files
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -65,6 +66,8 @@ The current `REPO_Improvement` program is explicitly non-options-only. That scop
   - relevant because the improvement program uses checklist-driven scope execution
 - [GitHub Docs: Basic writing and formatting syntax](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/basic-writing-and-formatting-syntax)
   - relevant because scope markers and exclusions must stay readable across many docs
+- [GitHub repository documentation](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  - relevant because public-repo docs and release operations should be maintained as first-class contributor and reviewer surfaces
 
 ## Proposed Improvement Approach
 
@@ -72,6 +75,13 @@ The current `REPO_Improvement` program is explicitly non-options-only. That scop
 2. Exclude options-only surfaces by default.
 3. Only mention shared infrastructure when the non-options side is the subject of the doc.
 4. Update counts and wording so “repo coverage” always means “non-options coverage” inside this program.
+5. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -80,18 +90,28 @@ The current `REPO_Improvement` program is explicitly non-options-only. That scop
 - [ ] Mark shared-surface docs carefully when shared infrastructure is unavoidable.
 - [ ] Keep tracker and summary wording honest about partial-repo scope.
 - [ ] Review future doc proposals against the boundary before creation.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
 - review proposed doc targets against known options surfaces before creation
 - review tracker/meta wording for scope honesty
 - spot-check new docs for accidental options bleed-through
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve this boundary until the user explicitly broadens scope
 - if the boundary changes later, update the meta plan, tracker, and folder descriptions together
 - do not silently migrate options docs into this tree
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

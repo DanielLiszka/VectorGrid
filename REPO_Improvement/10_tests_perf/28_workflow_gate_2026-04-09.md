@@ -60,6 +60,7 @@ The workflow gate already runs a deterministic synthetic optimize -> validate ->
 - changing the workload pack silently without updating the baseline and the documentation
 - dropping the stage-boundary and exclusion notes from the emitted summary
 - using the synthetic workflow gate as the sole authority for CPU or GPU claims
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The workflow gate already runs a deterministic synthetic optimize -> validate ->
 - [Cargo profiles reference](https://doc.rust-lang.org/cargo/reference/profiles.html) is relevant because the workflow gate explicitly distinguishes `dev` and `release` build profiles.
 - [JSON Schema getting started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the workflow summary behaves like a versioned contract and should be treated with schema discipline even if no separate JSON Schema file exists yet.
 - [Cargo run command docs](https://doc.rust-lang.org/cargo/commands/cargo-run.html) are relevant because the wrapper’s authority depends on a reproducible build-and-run boundary for the bin.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The workflow gate already runs a deterministic synthetic optimize -> validate ->
 2. Preserve versioned workload-pack and summary-schema assumptions as part of the gate contract.
 3. Use the workflow gate as a shared foundation for other authority gates, not as a catch-all performance claim.
 4. Treat workload-pack changes as contract changes that require deliberate baseline and documentation updates.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The workflow gate already runs a deterministic synthetic optimize -> validate ->
 - [ ] Keep the summary schema and stage breakdown stable or deliberately versioned.
 - [ ] Keep the workflow gate non-options only.
 - [ ] Cross-link workflow-gate results into CPU and post-release review docs without conflating boundaries.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,12 +106,15 @@ The workflow gate already runs a deterministic synthetic optimize -> validate ->
 - inspect the emitted summary JSON to ensure exclusions and stage fields remain present
 - re-run in baseline mode only when intentional contract changes are accepted
 - compare workflow failures against downstream CPU or post-release scripts before changing budgets
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current synthetic gate while tightening documentation around what it does not measure
 - prefer additive schema discipline over ad hoc threshold tweaks
 - if new workflow stages are added, version the contract rather than quietly expanding the payload
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

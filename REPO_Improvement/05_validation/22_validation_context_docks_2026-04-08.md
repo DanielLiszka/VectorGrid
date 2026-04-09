@@ -1,6 +1,6 @@
 # Validation Context Docks Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -67,6 +67,7 @@ The app already exposes a dedicated validation context dock. It is only shown in
 - removing the workflow-step handoff and forcing manual navigation back to validation
 - moving authority for compatibility checks out of the frontend/Rust validation pipeline into the dock
 - making thin or legacy artifact metadata fail earlier than today without an explicit degraded-state message
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -78,6 +79,8 @@ The app already exposes a dedicated validation context dock. It is only shown in
   - relevant because the dock communicates changing summary state to the user
 - [WAI-ARIA APG: Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/)
   - relevant because the dock routes back into a specific workflow/result surface instead of replacing it
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -94,6 +97,13 @@ The app already exposes a dedicated validation context dock. It is only shown in
    - `validationOutputPreview`
 3. Add explicit compatibility/staleness wording sourced from the same builder/service truth instead of inventing separate dock logic.
 4. Add dedicated dock tests rather than relying only on builder/service/panel coverage.
+5. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -102,18 +112,26 @@ The app already exposes a dedicated validation context dock. It is only shown in
 - [ ] Document how dataset/timeframe/strategy compatibility truth reaches the dock indirectly today.
 - [ ] Document responsive/visibility expectations for the dock.
 - [ ] Add or tighten tests if dock visibility or displayed summary semantics change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/validationRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/validationService.test.ts`
-- run `npm --prefix web test -- src/components/ValidationWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/components/ValidationWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current summary-only posture of the dock
 - if the dock is redesigned, keep the existing “Open validation” handoff until a replacement navigation pattern exists
 - keep dock copy compact; avoid multi-line complexity that belongs in the workspace panel
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

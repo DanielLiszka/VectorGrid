@@ -1,3 +1,7 @@
+# Core Dataset Meta Paths Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the core dataset-meta and path contract that moves through run artifacts, workflow hydration, validation reuse, and campaign-prepared datasets.
@@ -70,6 +74,7 @@ Key current ownership:
 - silently dropping source identity or resample fields during artifact replay
 - letting campaign dataset-meta diverge from saved-run dataset-meta for the same underlying dataset
 - widening the path contract without test coverage for hydration and validation reuse
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -90,6 +95,13 @@ Key current ownership:
    - source-size, mtime, and fingerprint fields
 4. Tighten TypeScript consumption by centralizing normalization instead of treating dataset meta as raw everywhere.
 5. Use hydration and validation reuse tests as the compatibility gate for any dataset-meta change.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -99,6 +111,11 @@ Key current ownership:
 - [ ] Add or tighten workflow-hydration tests for dataset-meta path preservation.
 - [ ] Add or tighten validation tests that reuse artifact-backed dataset metadata.
 - [ ] Decide whether a shared Rust helper should own dataset-meta construction across artifacts and campaigns.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -106,12 +123,15 @@ Key current ownership:
 - run artifact detail/hydration tests in `src-tauri/src/run_artifacts.rs`
 - run `validationService.test.ts` cases that exercise artifact-backed dataset-meta reuse
 - run `metaService.test.ts` cases that exercise campaign dataset-meta flow into workflow artifacts
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current field names and meanings unless there is a strong compatibility reason to change them
 - prefer shared normalization/helpers over proliferating more raw `Value` handling
 - if a cleanup risks breaking saved-run reopening or validation reuse, keep the current shape and document it more clearly first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

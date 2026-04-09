@@ -1,6 +1,6 @@
 # Tauri Report Command API Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -68,12 +68,15 @@ When users export validation reports, the frontend prefers saving the workbook t
 - removing the in-memory build fallback before save-path flows are fully reliable
 - weakening app-local path containment checks
 - creating frontend assumptions that do not match Tauri async command behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is the primary contract reference for command invocation and payload shape.
 - [Tauri capabilities](https://v2.tauri.app/security/capabilities/) is relevant for documenting and tightening command/path authority.
 - [Tauri opener plugin](https://v2.tauri.app/plugin/opener/) is relevant because the repo currently uses custom path-open helpers and needs to justify or align that choice.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ When users export validation reports, the frontend prefers saving the workbook t
 3. Add tests for filename collisions, direct write failures, nonexistent-path errors, and async wrapper behavior.
 4. Review whether open/reveal behavior should remain custom, be tightened further, or align more closely with Tauri capability/opener patterns.
 5. Preserve the current frontend save-first flow while making fallback behavior more explicit and testable.
+6. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -93,6 +103,12 @@ When users export validation reports, the frontend prefers saving the workbook t
 - [ ] Add dedicated coverage for the async API wrapper layer.
 - [ ] Review and document the current open/reveal authority model.
 - [ ] Preserve current in-memory fallback behavior unless a better replacement is ready.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -102,17 +118,20 @@ When users export validation reports, the frontend prefers saving the workbook t
 - run `npm test -- src/services/historyService.test.ts`
 - run `npm test -- src/services/settingsService.test.ts`
 - run `npm test -- src/tauri/commands.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current save-first frontend behavior
 - keep the base64 build fallback until direct-save reliability and coverage are strong enough to justify change
 - if path authority is tightened, document the compatibility implications explicitly and keep report reopening viable for existing saved runs
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/05_validation/11_xlsx_workbook_contract_2026-04-08.md`
 - `REPO_Improvement/05_validation/13_xlsx_dashboard_quality_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/21_report_artifact_path_persistence_2026-04-08.md`
-- `REPO_Improvement/10_tests_perf/24_tauri_run_artifact_paths_DATE.md`
+- `REPO_Improvement/10_tests_perf/24_tauri_run_artifact_paths_2026-04-08.md`
 - `REPO_Improvement/10_tests_perf/40_xlsx_regression_tooling_2026-04-08.md`

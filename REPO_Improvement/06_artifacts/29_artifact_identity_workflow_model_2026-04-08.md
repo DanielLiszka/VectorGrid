@@ -1,6 +1,6 @@
 # Artifact Identity Workflow Model Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -63,12 +63,15 @@ Users can save, reload, replay, and validate artifacts across optimization, vali
 - changing fingerprint behavior without cross-layer parity tests
 - removing current dataset provenance fields before their replacements are proven
 - making replay identity stricter in ways that strand existing artifacts
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785) is relevant for reasoning about stable canonical JSON inputs to fingerprints.
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant for documenting distinct artifact identity layers and payload authority.
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because workflow hydration depends on a clear boundary between persisted backend data and frontend reactive state.
+- [JSON Schema: What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema)
+  - relevant because artifacts, reports, manifests, and replay payloads behave like versioned serialized contracts that should stay explicit and reviewable
 
 ## Proposed Improvement Approach
 
@@ -80,6 +83,13 @@ Users can save, reload, replay, and validate artifacts across optimization, vali
 3. Decide whether the current custom canonical JSON approach is sufficient or whether it should be aligned more explicitly with a formal canonicalization model.
 4. Tighten workflow-artifact sync rules so same-path/same-timestamp artifacts do not accidentally suppress meaningful content updates.
 5. Add cross-layer parity tests between TypeScript and Rust fingerprint/canonicalization outputs.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,6 +101,11 @@ Users can save, reload, replay, and validate artifacts across optimization, vali
 - [ ] Add parity tests for TypeScript vs Rust identity outputs.
 - [ ] Add tests for artifact updates that change tags or report paths without changing core timestamps.
 - [ ] Preserve backward compatibility for existing saved artifacts.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -99,17 +114,20 @@ Users can save, reload, replay, and validate artifacts across optimization, vali
 - run `npm test -- src/services/workflowArtifactsSync.test.ts`
 - run targeted history-service tests
 - run targeted Rust run-artifact tests
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep existing artifact fields until new identity rules are proven and migration-safe
 - if sync identity changes, provide an explicit compatibility path for older artifacts instead of hard invalidation
 - treat stricter identity separation as additive clarity, not as a reason to reject existing saved work casually
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/06_artifacts/01_run_artifact_schema_2026-04-08.md`
-- `REPO_Improvement/06_artifacts/04_artifact_hydration_contract_DATE.md`
-- `REPO_Improvement/06_artifacts/28_workflow_artifacts_sync_DATE.md`
+- `REPO_Improvement/06_artifacts/04_artifact_hydration_contract_2026-04-08.md`
+- `REPO_Improvement/06_artifacts/28_workflow_artifacts_sync_2026-04-08.md`
 - `REPO_Improvement/05_validation/25_validation_context_compat_2026-04-08.md`
-- `REPO_Improvement/02_data/22_dataset_provenance_DATE.md`
+- `REPO_Improvement/02_data/22_dataset_provenance_2026-04-08.md`

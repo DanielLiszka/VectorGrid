@@ -59,6 +59,7 @@ The current Nsight Systems wrapper already does significant work: it locates `ns
 - ignoring fallback behavior and assuming every capture was NVTX-bounded as requested
 - profiling in an unelevated or broken local environment without recording that limitation
 - comparing runner and bench timeline captures as if they were the same measurement surface
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current Nsight Systems wrapper already does significant work: it locates `ns
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because timeline captures are useful only in the context of disciplined GPU performance analysis.
 - [Cargo benchmark command docs](https://doc.rust-lang.org/cargo/commands/cargo-bench.html) are relevant because the wrapper can target bench executables as well as runner binaries.
 - [Cargo build command docs](https://doc.rust-lang.org/cargo/commands/cargo-build.html) are relevant because the runner path depends on explicit feature-gated build steps.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current Nsight Systems wrapper already does significant work: it locates `ns
 2. Require every capture to record whether bounded NVTX capture actually succeeded or fell back.
 3. Keep privilege and local-install caveats explicit in the playbook.
 4. Use Nsight Systems when a regression needs timeline-level attribution, not merely because a GPU path exists.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current Nsight Systems wrapper already does significant work: it locates `ns
 - [ ] Keep the playbook non-options only.
 - [ ] Tie each capture to a concrete investigation question.
 - [ ] Avoid turning Nsight Systems runs into casual routine steps for unrelated changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The current Nsight Systems wrapper already does significant work: it locates `ns
 - inspect provenance for capture mode, target mode, and environment flags
 - note explicitly whether bounded capture was honored or fallback was used
 - reconcile the capture with the motivating gate failure or regression question before drawing conclusions
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current wrapper and improve usage discipline around it
 - prefer explicit capture rationale and provenance over more capture permutations
 - if local environment issues dominate, document them instead of loosening interpretive standards
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

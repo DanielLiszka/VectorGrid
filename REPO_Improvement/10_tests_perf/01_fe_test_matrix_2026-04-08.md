@@ -1,6 +1,6 @@
 # Frontend Test Matrix Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -77,6 +77,7 @@ The app already ships with a broad frontend test surface, but there is no single
 - adding new UI behavior without deciding which layer owns its primary protection
 - allowing command-bridge and artifact-hydration paths to drift because “some higher layer probably covers it”
 - treating the matrix as a coverage vanity metric instead of an ownership map
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -84,6 +85,8 @@ The app already ships with a broad frontend test surface, but there is no single
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because store tests are a core part of the current frontend verification strategy.
 - [Playwright best practices](https://playwright.dev/docs/best-practices) is relevant because browser/desktop smoke flows should target user-visible contracts rather than recreate unit tests.
 - [Vue state-management guidance](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because test ownership should follow the same boundaries as actual state ownership.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -91,6 +94,13 @@ The app already ships with a broad frontend test surface, but there is no single
 2. Map each major user-facing surface to a primary test layer and any secondary smoke coverage.
 3. Call out where a layer is over-mocked, under-tested, or incorrectly carrying responsibilities better owned elsewhere.
 4. Use the matrix as the gate for future test additions so new coverage is intentional rather than reactive.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -102,6 +112,12 @@ The app already ships with a broad frontend test surface, but there is no single
 - [ ] Define primary ownership for history, validation, execution, ML Signal, and artifact-related frontend flows.
 - [ ] Keep the matrix updated when new tests or new non-options surfaces are added.
 - [ ] Use the matrix to justify future Wave docs instead of adding tests ad hoc.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -109,16 +125,19 @@ The app already ships with a broad frontend test surface, but there is no single
 - run `npm --prefix web run test:browser:ux`
 - run `npm --prefix web run test:desktop:smoke`
 - verify the written matrix still matches the actual test-file inventory
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the matrix descriptive before trying to reshape the test suite around it
 - preserve existing useful tests even if ownership is later reassigned
 - do not collapse distinct test tiers into one generic status bucket
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
-- `REPO_Improvement/10_tests_perf/20_tauri_runtime_wiring_DATE.md`
-- `REPO_Improvement/10_tests_perf/09_browser_harness_contract_DATE.md`
-- `REPO_Improvement/10_tests_perf/13_desktop_harness_contract_DATE.md`
+- `REPO_Improvement/10_tests_perf/20_tauri_runtime_wiring_2026-04-08.md`
+- `REPO_Improvement/10_tests_perf/09_browser_harness_contract_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/13_desktop_harness_contract_2026-04-09.md`
 - `REPO_Improvement/11_docs_ops/10_research_source_policy_2026-04-08.md`

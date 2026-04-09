@@ -72,6 +72,7 @@ This means the current operating model is local-first, with CI expected to mirro
 - adding local gates that cannot be explained or mirrored at all
 - treating environment-sensitive failures as flaky instead of documenting the authority boundary
 - mixing doc/program quality checks into a different standard than code/build checks
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -83,6 +84,8 @@ This means the current operating model is local-first, with CI expected to mirro
   - relevant because CI should mirror the local command set rather than invent an unrelated one
 - [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119)
   - relevant because the authority boundary should be explicit rather than implied
+- [GitHub repository documentation](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  - relevant because public-repo docs and release operations should be maintained as first-class contributor and reviewer surfaces
 
 ## Proposed Improvement Approach
 
@@ -90,6 +93,13 @@ This means the current operating model is local-first, with CI expected to mirro
 2. Let CI mirror that contract where environment support exists.
 3. Keep hardware- or OS-sensitive gates documented as local-authority checks even if CI only runs subsets.
 4. Make “not CI-suitable” distinct from “not important.”
+5. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -99,22 +109,32 @@ This means the current operating model is local-first, with CI expected to mirro
 - [ ] Keep CI/design discussions downstream of the local command contract.
 - [ ] Review release/readme wording so it does not overstate CI authority.
 - [ ] Add or tighten docs when new local gates are introduced.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
 - verify that documented local authority maps to real runnable commands
 - verify that CI-facing docs do not contradict local-first verification
 - spot-check new gates for whether they are local-only, CI-mirrorable, or both
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve local-first verification wording while CI remains partial
 - if CI becomes broader later, update it as a mirror of the local contract rather than replacing it
 - keep hardware-sensitive gates clearly marked as such
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/11_docs_ops/01_release_build_variants_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/26_cpu_perf_gate_DATE.md`
-- `REPO_Improvement/10_tests_perf/27_gpu_perf_gate_DATE.md`
-- `REPO_Improvement/10_tests_perf/31_vectorbt_faceoff_DATE.md`
+- `REPO_Improvement/10_tests_perf/26_cpu_perf_gate_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/27_gpu_perf_gate_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/31_vectorbt_faceoff_2026-04-09.md`

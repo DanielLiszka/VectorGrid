@@ -315,9 +315,12 @@ pub fn load_imported_options_dataset_from_csv(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let has_any_quote_columns =
+        header.bid.is_some() || header.ask.is_some() || header.mid.is_some();
 
     let mut grouped: BTreeMap<String, OptionsContractSeries> = BTreeMap::new();
     let mut row_count = 0usize;
+    let mut rows_with_quote_fields = 0usize;
     let mut coverage_start: Option<i64> = None;
     let mut coverage_end: Option<i64> = None;
     let mut inferred_root_symbol: Option<String> = explicit_root_symbol.map(normalize_root_symbol);
@@ -326,6 +329,9 @@ pub fn load_imported_options_dataset_from_csv(
         let record =
             result.map_err(|e| format!("failed to read normalized options CSV row: {e}"))?;
         let row = parse_row(&record, &header, explicit_root_symbol)?;
+        if row.row.bid.is_some() || row.row.ask.is_some() || row.row.mid.is_some() {
+            rows_with_quote_fields += 1;
+        }
         if let Some(current) = inferred_root_symbol.as_ref() {
             if current != &row.root_symbol {
                 return Err(format!(
@@ -370,6 +376,21 @@ pub fn load_imported_options_dataset_from_csv(
         coverage_start.ok_or_else(|| "failed to derive coverage_start from dataset".to_string())?;
     let coverage_end =
         coverage_end.ok_or_else(|| "failed to derive coverage_end from dataset".to_string())?;
+
+    if matches!(req.price_semantics, OptionsPriceSemantics::TopOfBookQuote) {
+        if !has_any_quote_columns {
+            return Err(
+                "top_of_book_quote datasets require at least one quote-side column: bid, ask, or mid"
+                    .to_string(),
+            );
+        }
+        if rows_with_quote_fields == 0 {
+            return Err(
+                "top_of_book_quote datasets require at least one populated quote-side row"
+                    .to_string(),
+            );
+        }
+    }
 
     let mut contracts: Vec<OptionsContractSeries> = grouped.into_values().collect();
     for contract in &mut contracts {
@@ -495,6 +516,23 @@ mod tests {
         std::fs::write(path, data).expect("write dataset csv");
     }
 
+    fn write_quote_dataset(path: &Path) {
+        let data = concat!(
+            "root_symbol,contract_id,option_type,expiration_date,expiration_timestamp_ms,strike,multiplier,timestamp_ms,open,high,low,close,underlying_price,bid,ask,mid,volume,open_interest,quote_age_ms,session_id\n",
+            "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160000000,2.0,2.3,1.9,2.1,498.0,2.0,2.2,2.1,1000,2000,750,2026-04-01\n",
+            "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160060000,2.1,2.4,2.0,2.2,498.5,2.1,2.3,2.2,1100,2000,500,2026-04-01\n"
+        );
+        std::fs::write(path, data).expect("write quote dataset csv");
+    }
+
+    fn write_quote_semantics_without_quote_columns(path: &Path) {
+        let data = concat!(
+            "root_symbol,contract_id,option_type,expiration_date,expiration_timestamp_ms,strike,multiplier,timestamp_ms,open,high,low,close,underlying_price,volume,open_interest\n",
+            "SPY,SPY_C_001,call,2026-04-10,1775779200000,500,100,1775160000000,2.0,2.3,1.9,2.1,498.0,1000,2000\n"
+        );
+        std::fs::write(path, data).expect("write mislabeled quote dataset csv");
+    }
+
     #[test]
     fn load_imported_dataset_groups_contract_rows() {
         let temp = make_temp_dir("options_dataset_load");
@@ -525,5 +563,119 @@ mod tests {
         assert_eq!(dataset.manifest.row_count, 3);
         assert_eq!(dataset.manifest.contract_count, 2);
         assert_eq!(dataset.contracts[0].rows.len(), 2);
+    }
+
+    #[test]
+    fn load_quote_dataset_preserves_quote_fields_and_semantics() {
+        let temp = make_temp_dir("options_dataset_quote");
+        let csv_path = temp.join("quotes.csv");
+        write_quote_dataset(&csv_path);
+        let req = ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: "spy_quotes".to_string(),
+            dataset_path: csv_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "massive".to_string(),
+            provider_source_surface: "top_of_book_quote".to_string(),
+            provider_entitlement_profile: Some("options_business".to_string()),
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::TopOfBookQuote,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: Some("2026-04-05T00:00:00Z".to_string()),
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: None,
+        };
+
+        let dataset = load_imported_options_dataset_from_csv(&req).expect("quote dataset");
+        let first_row = &dataset.contracts[0].rows[0];
+        assert_eq!(
+            dataset.manifest.price_semantics,
+            OptionsPriceSemantics::TopOfBookQuote
+        );
+        assert_eq!(
+            dataset.manifest.provider_source_surface,
+            "top_of_book_quote"
+        );
+        assert_eq!(dataset.manifest.aggregate_price_field, None);
+        assert_eq!(first_row.bid, Some(2.0));
+        assert_eq!(first_row.ask, Some(2.2));
+        assert_eq!(first_row.mid, Some(2.1));
+        assert_eq!(first_row.quote_age_ms, Some(750));
+        assert_eq!(first_row.session_id.as_deref(), Some("2026-04-01"));
+    }
+
+    #[test]
+    fn load_derived_mid_dataset_preserves_mid_fields_without_quote_fill_broadening() {
+        let temp = make_temp_dir("options_dataset_derived_mid");
+        let csv_path = temp.join("derived_mid.csv");
+        write_quote_dataset(&csv_path);
+        let req = ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: "spy_mid".to_string(),
+            dataset_path: csv_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "massive".to_string(),
+            provider_source_surface: "derived_mid_snapshot".to_string(),
+            provider_entitlement_profile: Some("options_business".to_string()),
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::DerivedMidSnapshot,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: Some("2026-04-05T00:00:00Z".to_string()),
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: None,
+        };
+
+        let dataset = load_imported_options_dataset_from_csv(&req).expect("derived-mid dataset");
+        let first_row = &dataset.contracts[0].rows[0];
+        assert_eq!(
+            dataset.manifest.price_semantics,
+            OptionsPriceSemantics::DerivedMidSnapshot
+        );
+        assert_eq!(
+            dataset.manifest.provider_source_surface,
+            "derived_mid_snapshot"
+        );
+        assert_eq!(dataset.manifest.aggregate_price_field, None);
+        assert_eq!(first_row.mid, Some(2.1));
+        assert_eq!(first_row.bid, Some(2.0));
+        assert_eq!(first_row.ask, Some(2.2));
+        assert_eq!(first_row.quote_age_ms, Some(750));
+    }
+
+    #[test]
+    fn load_quote_dataset_rejects_mislabeled_rows_without_quote_columns() {
+        let temp = make_temp_dir("options_dataset_quote_reject");
+        let csv_path = temp.join("quotes_without_quote_columns.csv");
+        write_quote_semantics_without_quote_columns(&csv_path);
+        let req = ImportedOptionsDatasetCsvBuildRequest {
+            options_dataset_id: "spy_quotes".to_string(),
+            dataset_path: csv_path.to_string_lossy().to_string(),
+            root_symbol: None,
+            provider_name: "massive".to_string(),
+            provider_source_surface: "top_of_book_quote".to_string(),
+            provider_entitlement_profile: Some("options_business".to_string()),
+            quote_resolution: "1m".to_string(),
+            price_semantics: OptionsPriceSemantics::TopOfBookQuote,
+            calendar_id: "market_hours_utc".to_string(),
+            timezone: "UTC".to_string(),
+            normalization_version: 1,
+            quote_semantics_version: 1,
+            corporate_action_mapping_version: 1,
+            contract_reference_source: "massive_contract_reference".to_string(),
+            contract_reference_as_of_utc: Some("2026-04-05T00:00:00Z".to_string()),
+            underlier_reference_source: "underlying_dataset".to_string(),
+            aggregate_price_field: None,
+        };
+
+        let error = load_imported_options_dataset_from_csv(&req).expect_err("should reject");
+        assert!(error.contains("top_of_book_quote datasets require at least one quote-side column"));
     }
 }

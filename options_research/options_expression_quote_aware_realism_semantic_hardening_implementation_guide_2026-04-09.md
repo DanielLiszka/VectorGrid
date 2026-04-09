@@ -1,7 +1,7 @@
 # Options Expression Quote-Aware Realism Semantic Hardening — Detailed Implementation Guide
 
 Date: 2026-04-09  
-Status: implementation guide derived from the validated portions of Prompt 4 (`quote_aware_realism_direction_FINAL.md`)
+Status: implemented and signed off from the validated portions of Prompt 4 (`quote_aware_realism_direction_FINAL.md`)
 
 ## Purpose
 
@@ -377,6 +377,8 @@ The point is to harden a valid shipped posture, not to force feature growth.
 
 - downloader/import semantics:
   - [commands_options_data.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_data.rs)
+- imported dataset contract validation:
+  - [options_data_store.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_data_store.rs)
 - price semantics and fill-model matrix:
   - [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs)
 - runtime pricing-path semantics:
@@ -394,6 +396,9 @@ The point is to harden a valid shipped posture, not to force feature growth.
 ### Primary test ownership
 
 - backend semantics tests:
+  - [commands_options_data.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_data.rs)
+  - [options_data_store.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_data_store.rs)
+  - [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs)
   - [options_types.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_types.rs)
 - frontend store/service/panel tests:
   - [optionsExpressionStore.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/optionsExpressionStore.test.ts)
@@ -448,44 +453,44 @@ Do **not** keep expanding the pass just to make the diff larger.
 
 ### 10.2 Backend semantic audit
 
-- [ ] Confirm the downloader remains aggregate-only and that this is explicit in code/tests.
-- [ ] Confirm importer semantics normalization remains explicit for:
+- [x] Confirm the downloader remains aggregate-only and that this is explicit in code/tests.
+- [x] Confirm importer semantics normalization remains explicit for:
   - `minute_aggregate`
   - `derived_mid_snapshot`
   - `top_of_book_quote`
-- [ ] Confirm the fill-model compatibility matrix is explicitly tested and sufficient.
-- [ ] Confirm runtime pricing-path semantics are explicitly tested and sufficient.
-- [ ] Add or tighten backend tests only where a semantic ambiguity is still unguarded.
+- [x] Confirm the fill-model compatibility matrix is explicitly tested and sufficient.
+- [x] Confirm runtime pricing-path semantics are explicitly tested and sufficient.
+- [x] Add or tighten backend tests only where a semantic ambiguity is still unguarded.
 
 ### 10.3 Frontend/product-surface hardening
 
-- [ ] Audit lane chooser, lane product status, and related panel copy for semantic clarity.
-- [ ] Audit store gating so direct provider download remains aggregate-lane only.
-- [ ] Audit fill-model guidance/coercion so it stays aligned with backend semantics.
-- [ ] Tighten frontend labels/copy only if they currently overstate derived-mid realism or understate aggregate-only download limits.
-- [ ] Add or tighten frontend tests where current semantics are not locked clearly enough.
+- [x] Audit lane chooser, lane product status, and related panel copy for semantic clarity.
+- [x] Audit store gating so direct provider download remains aggregate-lane only.
+- [x] Audit fill-model guidance/coercion so it stays aligned with backend semantics.
+- [x] Tighten frontend labels/copy only if they currently overstate derived-mid realism or understate aggregate-only download limits.
+- [x] Add or tighten frontend tests where current semantics are not locked clearly enough.
 
 ### 10.4 Provenance and reporting hardening
 
-- [ ] Confirm dataset summaries, artifact summaries, and reopened artifact views all remain anchored to `price_semantics`.
-- [ ] Confirm no new conflicting canonical `realism_lane` persistence is introduced.
-- [ ] Tighten summary parsing or lane-derivation helpers only if ambiguity is found.
+- [x] Confirm dataset summaries, artifact summaries, and reopened artifact views all remain anchored to `price_semantics`.
+- [x] Confirm no new conflicting canonical `realism_lane` persistence is introduced.
+- [x] Tighten summary parsing or lane-derivation helpers only if ambiguity is found.
 
 ### 10.5 Sign-off
 
-- [ ] Run targeted backend semantics tests.
-- [ ] Run targeted frontend/store/service/panel tests.
-- [ ] Run typecheck/build for the touched surface.
-- [ ] Record the sign-off outcome in this document:
+- [x] Run targeted backend semantics tests.
+- [x] Run targeted frontend/store/service/panel tests.
+- [x] Run typecheck/build for the touched surface.
+- [x] Record the sign-off outcome in this document:
   - either “no code changes needed; current semantics already sufficiently locked”
   - or “narrow semantic-hardening changes shipped”
 
 ### 10.6 Documentation and routing sync
 
-- [ ] Update this guide after implementation so completed tasks are crossed from `[ ]` to `[x]`.
-- [ ] Update [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md) only if routing or the recommended entry-point list changed during implementation.
-- [ ] Update the Prompt 4 prompt-pack or attachment guidance only if the implementation materially changed the repo truth that Prompt 4 relies on.
-- [ ] Record any deliberately rejected scope-expansion ideas encountered during implementation in the sign-off notes.
+- [x] Update this guide after implementation so completed tasks are crossed from `[ ]` to `[x]`.
+- [x] Update [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md) only if routing or the recommended entry-point list changed during implementation.
+- [x] Update the Prompt 4 prompt-pack or attachment guidance only if the implementation materially changed the repo truth that Prompt 4 relies on.
+- [x] Record any deliberately rejected scope-expansion ideas encountered during implementation in the sign-off notes.
 
 ---
 
@@ -519,6 +524,16 @@ Verify these facts, not just raw green test counts:
 - runtime semantics remain aggregate-style for aggregate + derived-mid and quote-side for quote-aware
 - UI/product wording does not overclaim derived-mid behavior
 
+### Verification executed
+
+- [x] `cargo test -q -p ta_app_core options_ --lib`
+- [x] `cargo test -q -p ta_desktop_demo_app commands_options_ --lib`
+- [x] `cargo check -q -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel`
+- [x] `npm run typecheck`
+- [x] `npm run build`
+- [x] `npm.cmd run test -- src/components/OptionsExpressionPanel.test.ts src/stores/optionsExpressionStore.test.ts src/services/optionsExpressionService.test.ts`
+  - result: `3` files, `52` tests passed
+
 ---
 
 ## 12. Final Sign-Off Template
@@ -528,17 +543,40 @@ Use this section when implementation is complete.
 ### Outcome
 
 - [ ] No code changes were needed; the current repo already satisfied the valid Prompt 4 residue.
-- [ ] Narrow semantic-hardening changes shipped.
+- [x] Narrow semantic-hardening changes shipped.
 
 ### Final decision
 
-- [ ] Keep current realism-lane posture unchanged.
-- [ ] Keep direct quote-aware Polygon/Massive provider download deferred.
-- [ ] Keep quote-aware and derived-mid first-class in product posture.
-- [ ] Keep `DerivedMidSnapshot` explicitly non-quote-side in execution semantics.
+- [x] Keep current realism-lane posture unchanged.
+- [x] Keep direct quote-aware Polygon/Massive provider download deferred.
+- [x] Keep quote-aware and derived-mid first-class in product posture.
+- [x] Keep `DerivedMidSnapshot` explicitly non-quote-side in execution semantics.
 
 ### Notes
 
-- Record any specific tests added or tightened.
-- Record any copy clarifications made.
-- Record any rejected expansion attempts that surfaced during the pass.
+- Backend hardening shipped in:
+  - [commands_options_data.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_data.rs)
+  - [options_data_store.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_data_store.rs)
+  - [commands_options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_options_expression.rs)
+  - [options_expression.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/options_expression.rs)
+- Frontend/product-surface hardening shipped in:
+  - [OptionsExpressionPanel.vue](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.vue)
+  - [OptionsExpressionPanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptionsExpressionPanel.test.ts)
+  - [optionsExpressionStore.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/optionsExpressionStore.test.ts)
+  - [optionsExpressionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/optionsExpressionService.test.ts)
+- Specific semantic/provenance guardrails added or tightened:
+  - aggregate-only provider-download invariants are now locked by tests
+  - minute-aggregate imports explicitly reject `aggregate_price_field != 'close'`
+  - `top_of_book_quote` imports require quote-side columns and populated quote-side rows
+  - reopened artifact inspection replay now refuses dataset hash drift, price-semantics drift, and parent-artifact drift
+  - runtime tests now explicitly lock:
+    - `DerivedMidSnapshot` -> aggregate-style pricing/path semantics
+    - `TopOfBookQuote` -> quote-side pricing/path semantics
+- Copy clarifications shipped:
+  - quote-aware and derived-mid lanes now describe new dataset acquisition as import-first today
+  - quote-aware is called out as the only quote-side execution lane
+  - derived-mid is called out as first-class but explicitly aggregate-style and non-quote-side
+- Deliberately rejected scope expansion during this pass:
+  - no direct quote-aware Polygon/Massive provider download
+  - no new quote-native runtime path for derived-mid
+  - no new realism lane or workflow stage

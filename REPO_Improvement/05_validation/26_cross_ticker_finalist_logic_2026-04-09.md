@@ -67,6 +67,7 @@ The current command path also recomputes the run verdict after cross filtering. 
 - breaking base-horizon alignment for cross datasets
 - silently expanding cross reruns to modules that are currently intentionally omitted
 - making frontend summaries imply stronger cross guarantees than the backend actually provides
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ The current command path also recomputes the run verdict after cross filtering. 
 - [Grid Pattern | WAI-ARIA APG](https://www.w3.org/WAI/ARIA/apg/patterns/grid/) is relevant because cross-ticker effects show up directly in dense result tables that need to remain interpretable.
 - [Pinia Testing Cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because current cross-mode behavior is already validated through builder and service tests.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because cross-mode warnings and row-level consequences should remain visible in user-observable flows.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -85,6 +88,13 @@ The current command path also recomputes the run verdict after cross filtering. 
 3. Document base-horizon alignment and omitted-module behavior as first-class semantics.
 4. Keep frontend cross summaries aligned with the exact backend rules they are describing.
 5. Expand tests around cap behavior, alignment behavior, and recomputed run verdicts.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -95,13 +105,20 @@ The current command path also recomputes the run verdict after cross filtering. 
 - [ ] Document post-cross-filter verdict recomputation behavior.
 - [ ] Add or tighten tests for finalist-cap behavior and recomputed approvals.
 - [ ] Add or tighten tests for frontend cross summaries and omitted-module warnings.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `commands_validation.rs` cross-ticker tests
-- run `npm --prefix web test -- src/services/validationRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
 - manually verify one preserved-finalists run and one lightweight run in the validation tab
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -109,6 +126,7 @@ The current command path also recomputes the run verdict after cross filtering. 
 - prefer better explanation over broader cross execution promises
 - if omitted modules change, update preview text, summary text, and tests together
 - keep cross behavior additive and explicit rather than silently “upgrading” it
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

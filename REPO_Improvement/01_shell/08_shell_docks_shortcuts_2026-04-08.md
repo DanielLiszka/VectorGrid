@@ -1,6 +1,6 @@
 # Shell Docks And Shortcuts Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -91,6 +91,7 @@ The app already has a real shell-level quick-action layer. `Ctrl+K` opens a comm
 - breaking persisted task-center open state or current dock persistence
 - breaking the multiline-editor guard on `Ctrl+Enter`
 - weakening titlebar close confirmation when live execution or long tasks are active
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -122,6 +123,13 @@ The app already has a real shell-level quick-action layer. `Ctrl+K` opens a comm
    - which actions it may launch
    - which authoritative workspace still owns editing
 4. Use future improvements to converge dock state handling and placement instead of leaving one persisted dock and several one-off fixed cards.
+5. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -131,20 +139,29 @@ The app already has a real shell-level quick-action layer. `Ctrl+K` opens a comm
 - [ ] Document current optimize/analysis/history/validation dock visibility and action boundaries.
 - [ ] Document titlebar close-guard interaction with active work.
 - [ ] Add or tighten tests if shortcut routing, focus handling, or dock visibility changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/GlobalShortcutBridge.test.ts`
-- run `npm --prefix web test -- src/components/CommandPaletteOverlay.test.ts`
-- run `npm --prefix web test -- src/components/TaskCenterOverlay.test.ts`
-- run `npm --prefix web test -- src/components/DesktopTitlebar.test.ts`
-- run `npm --prefix web test -- src/components/AnalysisContextDock.test.ts`
+- run `npm --prefix web run test -- src/components/GlobalShortcutBridge.test.ts`
+- run `npm --prefix web run test -- src/components/CommandPaletteOverlay.test.ts`
+- run `npm --prefix web run test -- src/components/TaskCenterOverlay.test.ts`
+- run `npm --prefix web run test -- src/components/DesktopTitlebar.test.ts`
+- run `npm --prefix web run test -- src/components/AnalysisContextDock.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing shortcuts unless the command palette and tests are updated in the same change
 - keep dock improvements summary-first; do not move editing responsibilities into docks casually
 - preserve current persistence keys unless a coordinated storage migration is implemented
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

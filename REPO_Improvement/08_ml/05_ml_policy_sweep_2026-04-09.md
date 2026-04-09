@@ -1,3 +1,7 @@
+# ML Policy Sweep Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the ML Signal policy-sweep surface so parameter-sweep execution, result attachment, and saved-run interpretation remain understandable and regression-resistant.
@@ -69,6 +73,7 @@ Key current ownership:
 - changing sweep axis semantics or gate defaults without corresponding test updates
 - attaching sweep summaries inconsistently across fresh runs and reopened runs
 - letting UI controls drift from the actual command payload shape
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -92,6 +97,13 @@ Key current ownership:
    - meta-level policy evaluation
 4. Add tests that pin sweep attachment and reopen semantics.
 5. Keep sweep controls additive and explicit rather than hiding them behind overloaded validation controls.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -100,6 +112,12 @@ Key current ownership:
 - [ ] Add or tighten tests for saved-run sweep-summary attachment and reopen interpretation.
 - [ ] Audit UI copy so users can distinguish sweep output from normal ML validation.
 - [ ] Confirm frontend controls match `run_ml_signal_policy_sweep` payload semantics exactly.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -107,12 +125,15 @@ Key current ownership:
 - run relevant ML reopen tests in `historyService.test.ts`
 - run targeted command/request tests for `run_ml_signal_policy_sweep` if available
 - perform a bounded manual sweep run if payload or summary semantics change materially
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the dedicated sweep command instead of folding it into generic validation by default
 - keep saved-run sweep summaries backward-compatible while tightening interpretation
 - if a cleanup makes policy sweep harder to distinguish, prefer clearer labels and separate summaries over consolidation
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

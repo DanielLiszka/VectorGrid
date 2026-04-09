@@ -60,6 +60,7 @@ The repo already contains a rich set of non-options headless bins, from authorit
 - forgetting feature requirements or build profiles when using a bin
 - accidentally pulling options bins into this non-options documentation program
 - adding new bins without clarifying whether they are gates, helpers, or supplemental tools
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The repo already contains a rich set of non-options headless bins, from authorit
 - [Cargo features reference](https://doc.rust-lang.org/cargo/reference/features.html) is relevant because several app-core bins require explicit feature flags.
 - [Criterion.rs book](https://bheisler.github.io/criterion.rs/book/) is relevant as a contrast because some bins are helpers or gates, not statistical benchmarks.
 - [Tauri distribution docs](https://v2.tauri.app/distribute/) are relevant because these headless tools intentionally bypass the distributed desktop shell and therefore need separate role clarity.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The repo already contains a rich set of non-options headless bins, from authorit
 2. Document feature requirements, primary output artifacts, and intended consumers for each bin.
 3. Use the classification to route contributors toward the right tool for a question.
 4. Keep headless bin growth disciplined by requiring new bins to declare their role on arrival.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The repo already contains a rich set of non-options headless bins, from authorit
 - [ ] Keep this bin-catalog plan non-options only.
 - [ ] Cross-link bins to the docs or scripts that consume them.
 - [ ] Avoid adding new bins without role clarity and discoverability updates.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,12 +106,15 @@ The repo already contains a rich set of non-options headless bins, from authorit
 - check feature-gated build commands for bins that are part of active workflows
 - verify docs and scripts still point at the correct bin names and roles
 - confirm options bins remain excluded from this program’s inventory
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current bin richness while improving classification and discoverability
 - prefer better routing and role clarity over removing useful bins
 - if a bin becomes obsolete, retire it deliberately and update the catalog
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

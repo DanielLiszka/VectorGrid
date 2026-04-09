@@ -69,6 +69,7 @@ The persisted startup snapshot already carries more provenance than the restore 
 - hiding restore failures behind a false-ready shell state
 - breaking startup snapshot compatibility or alias migration behavior
 - weakening moved-root or rewritten-path restore handling
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ The persisted startup snapshot already carries more provenance than the restore 
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because desktop boot sequencing should keep frontend state authority explicit instead of scattering initialization logic.
 - [MDN localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) is relevant because startup dataset state is persisted in browser storage and must remain compatible and failure-tolerant.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the startup snapshot is effectively a persisted compatibility contract even if it is not yet formalized as schema.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ The persisted startup snapshot already carries more provenance than the restore 
 3. Document the exact relationship between `applyWorkflowBootstrapFromStorage({ includeDeferredData: false })`, `hydrateStartupState()`, and `ensureStartupAffordancesLoaded()`.
 4. Make the persisted snapshot fields explicit in the plan, including which are active restore gates today and which are only metadata.
 5. Add targeted tests around concurrent boot-plus-panel hydration so future refactors cannot accidentally duplicate restore work.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,13 +102,21 @@ The persisted startup snapshot already carries more provenance than the restore 
 - [ ] Document which startup snapshot fields are active restore inputs versus passive metadata.
 - [ ] Document the interaction between startup restore and moved Polygon roots.
 - [ ] Add or strengthen tests covering concurrent bootstrap and panel-mount hydration.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/main.test.ts`
-- run `npm --prefix web test -- src/services/workflowBootstrap.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/main.test.ts`
+- run `npm --prefix web run test -- src/services/workflowBootstrap.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - perform one manual startup cycle with auto-restore enabled and one with a moved Polygon root if the bootstrap path changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +124,7 @@ The persisted startup snapshot already carries more provenance than the restore 
 - preserve the current fast-path behavior where deferred affordances do not block shell readiness
 - prefer additive truthfulness and stronger tests over changing the visible boot model
 - if stronger provenance checks are introduced later, make them explicit rather than silently changing restore behavior
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

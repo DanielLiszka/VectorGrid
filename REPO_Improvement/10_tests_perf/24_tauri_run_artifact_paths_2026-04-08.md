@@ -1,6 +1,6 @@
 # Tauri Run Artifact Paths Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -87,6 +87,7 @@ Saved run artifacts live under the app-local `runs` directory. Users can list sa
 - changing canonicalization or containment semantics without targeted tests
 - silently dropping legacy run-artifact kind/filename compatibility
 - tightening generic `open_path` / `reveal_path` behavior in a way that breaks saved-run report reopen flows
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -94,6 +95,8 @@ Saved run artifacts live under the app-local `runs` directory. Users can list sa
 - [Tauri `PathResolver` docs](https://docs.rs/tauri/latest/tauri/path/struct.PathResolver.html#method.app_local_data_dir)
 - [Rust `std::fs::canonicalize`](https://doc.rust-lang.org/std/fs/fn.canonicalize.html)
 - [Tauri opener plugin reference](https://v2.tauri.app/plugin/opener/)
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -102,6 +105,13 @@ Saved run artifacts live under the app-local `runs` directory. Users can list sa
 3. Document which operations are runs-dir constrained and which use the broader generic open/reveal helpers.
 4. Tie history-service behavior back to the backend path rules it relies on.
 5. Preserve current compatibility first, especially around legacy artifact names and report reopen behavior.
+6. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -113,18 +123,27 @@ Saved run artifacts live under the app-local `runs` directory. Users can list sa
 - [ ] Document summary/detail/hydration path fields consumed by the frontend.
 - [ ] Document how history uses `report_xlsx_path` versus the artifact JSON path itself.
 - [ ] Add or tighten tests for out-of-dir, nonexistent, and same-timestamp path behavior if the contract changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
 - run targeted unit tests in `src-tauri/src/run_artifacts.rs`
 - manually save a run artifact, list it, reveal it, reopen its report path, and delete it
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing path fields and legacy filename/kind aliases first
 - if filename collision behavior changes, document the compatibility effect on existing automation and saved-path expectations
 - if generic `open_path` or `reveal_path` authority is narrowed later, keep a migration path for report reopen flows
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

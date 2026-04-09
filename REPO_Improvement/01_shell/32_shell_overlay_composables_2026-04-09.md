@@ -68,6 +68,7 @@ The current result is functional and user-facing:
 - mounting teleported shell panels before their host exists
 - leaving stale pane dataset flags behind after unmount
 - changing persisted overlay keys or semantics without compatibility handling
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -82,6 +83,13 @@ The current result is functional and user-facing:
 3. Freeze the current shell-host mount contract for teleported panels, including when dataset markers are applied and removed.
 4. Add direct verification for the few shared overlay/mount invariants that multiple panels depend on.
 5. Keep overlay composables additive and shell-safe rather than introducing one giant shared primitive that merges unrelated concerns.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,22 +99,31 @@ The current result is functional and user-facing:
 - [ ] Document pane dataset marker expectations and cleanup.
 - [ ] Add or tighten tests for focus restore, persisted open state, missing hosts, and unmount cleanup.
 - [ ] Record which panels currently depend on `useShellMount.ts`.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/TaskCenterOverlay.test.ts`
-- run `npm --prefix web test -- src/components/VueWorkspaceShell.test.ts`
+- run `npm --prefix web run test -- src/components/TaskCenterOverlay.test.ts`
+- run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
 - run targeted panel tests that depend on `useShellMount.ts` after any composable change
 - perform one keyboard-only manual pass for Task Center open, close, and focus return
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing storage keys and return-focus semantics unless a compatibility change is documented explicitly
 - prefer new tests and docs before merging overlay composables together
 - keep shell-host mount gating opt-in and panel-specific where the repo already expects it
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/01_shell/16_ux_shell_mount_readiness_2026-04-09.md`
-- `REPO_Improvement/01_shell/20_shell_shared_dialogs_2026-04-08.md`
-- `REPO_Improvement/01_shell/21_shell_context_menus_help_2026-04-08.md`
+- `REPO_Improvement/01_shell/20_shell_shared_dialogs_2026-04-09.md`
+- `REPO_Improvement/01_shell/21_shell_context_menus_help_2026-04-09.md`

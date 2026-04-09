@@ -68,6 +68,7 @@ Route families differ. PIT, VFCT, and composite-profile cases follow the Double-
 - adding visible family fields without validation or route support
 - letting panel wording imply broader support than the product actually has
 - breaking existing family defaults or stored snapshot behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ Route families differ. PIT, VFCT, and composite-profile cases follow the Double-
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because family defaults and state ownership should stay centralized in the strategy store.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because family-specific defaults, visibility, and request shaping need repeatable store-aware tests.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because family-local fields become backend command payloads and must remain route-consistent.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Route families differ. PIT, VFCT, and composite-profile cases follow the Double-
 3. Document which family fields are already productized and which are intentionally staged.
 4. Add explicit UI-to-request parity checks for each surfaced family section.
 5. Keep family route buckets visible in the implementation plan so contributors do not accidentally mix them.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ Route families differ. PIT, VFCT, and composite-profile cases follow the Double-
 - [ ] Document route-family membership for each strategy family.
 - [ ] Add or tighten UI-to-request parity tests for surfaced family fields.
 - [ ] Record a policy for adding future family fields without regressions.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/StrategyWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/StrategyWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ Route families differ. PIT, VFCT, and composite-profile cases follow the Double-
 - prefer explicit “staged” labeling over ambiguous partial exposure
 - keep route-family truth authoritative if UI coverage lags behind store support
 - document missing panel coverage rather than pretending it does not exist
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

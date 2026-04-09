@@ -1,6 +1,6 @@
 # Composite Validation Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -64,6 +64,7 @@ Composite strategy validation is not one single route. `CompositeTrend`, `Regime
 - changing validation route semantics without updating report wording
 - weakening current strategy-specific distinctions in the name of generic cleanup
 - breaking current fixed-candidate validation flows for composite profiles
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -71,6 +72,8 @@ Composite strategy validation is not one single route. `CompositeTrend`, `Regime
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because preview and actual validation execution are separated by a command boundary.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because GPU-validation route claims need evidence-backed host/device boundary discipline.
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant for documenting route- and family-sensitive validation payloads and summaries.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ Composite strategy validation is not one single route. `CompositeTrend`, `Regime
 2. Keep route-note ownership explicit across request preview, post-run summaries, and report export.
 3. Document what is product policy vs technical limitation vs measured CPU preference.
 4. Add parity checks so validation summaries and report wording stay synchronized with backend truth.
+5. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,6 +102,12 @@ Composite strategy validation is not one single route. `CompositeTrend`, `Regime
 - [ ] Add or maintain tests for route-note parity across preview, run summary, and report export.
 - [ ] Preserve current validation/report parity while improving readability.
 - [ ] Avoid collapsing family-specific rules into generic language that becomes false.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -100,12 +116,16 @@ Composite strategy validation is not one single route. `CompositeTrend`, `Regime
 - run validation workspace tests
 - run targeted Rust validation command tests
 - run `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current family-specific validation routes unless a deliberate backend change lands
 - if route-note copy changes, keep exported workbook wording aligned in the same change
 - prefer clearer family-specific truth over generic “GPU validation supported” messaging
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -201,11 +201,24 @@ Use this when the real question is:
 - what extra aggregate state is worth carrying?
 - should the ranking functional change?
 
-Recommended attachment set: 8 files
+Starting assumptions for this prompt family:
+
+- Prompt 4 is closed.
+- Aggregate remains the canonical provider-download lane.
+- Direct quote-aware Polygon/Massive download remains deferred.
+- `DerivedMidSnapshot` remains first-class in product posture but aggregate-style in execution.
+- `TopOfBookQuote` remains the only quote-side execution lane.
+- Do not recommend metric/reporting ideas that depend on:
+  - direct quote-aware provider download
+  - derived-mid becoming quote-side
+  - new realism lanes
+
+Recommended attachment set: 9 files
 
 - `AGENTS.md`
 - `REPO_MAP.md`
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
@@ -1191,6 +1204,14 @@ The analogous open question for options is:
 
 This is the most direct way to make the options optimizer more decision-useful without widening scope.
 
+Current Prompt 5 starting truth:
+
+- Prompt 4 is closed and should not be reopened here.
+- Aggregate remains the canonical provider-download lane.
+- Direct quote-aware Polygon/Massive download remains deferred.
+- `DerivedMidSnapshot` remains first-class in product posture but aggregate-style in execution.
+- `TopOfBookQuote` remains the only quote-side execution lane.
+
 If the question is specifically about mathematically justified single-pass metric expansion from the current GPU/aggregate state, prefer Prompt 9. Prompt 5 is for the broader product/reporting layer that still stays cheap.
 
 ### Attach These Files
@@ -1198,6 +1219,7 @@ If the question is specifically about mathematically justified single-pass metri
 Required:
 
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
@@ -1223,6 +1245,10 @@ Constraints:
 - Do not add a new workflow stage.
 - Do not add new strategy families.
 - Keep the GPU scorer shape intact.
+- Do not recommend additions that depend on:
+  - direct quote-aware provider download
+  - derived-mid becoming quote-side
+  - new realism lanes
 - Prefer “more useful work in one pass” over “more output for its own sake.”
 - Distinguish clearly between:
   - metrics worth adding now

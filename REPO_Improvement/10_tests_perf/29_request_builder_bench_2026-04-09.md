@@ -59,6 +59,7 @@ The repo already has a dedicated benchmark file that uses benchmark-style execut
 - letting fixtures go stale until the benchmark no longer resembles current request paths
 - using the compare script without recording the environment or benchmark mode
 - mixing correctness assertions into the benchmark and making it harder to reason about either purpose
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already has a dedicated benchmark file that uses benchmark-style execut
 - [Vitest main docs](https://main.vitest.dev/) are relevant because the benchmark sits inside the same Vite-native test environment as the rest of the frontend suite.
 - [Playwright best practices](https://playwright.dev/docs/best-practices) are relevant as a contrast: request-builder micro-bench results should not be confused with user-visible browser timing.
 - [Tauri: Calling Rust from the frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because request-building performance is only one part of the broader frontend-to-runtime path.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already has a dedicated benchmark file that uses benchmark-style execut
 2. Maintain a small representative fixture set tied to the current non-options request-builder surface.
 3. Use the compare script for local trend inspection, not for inflated product-level claims.
 4. Escalate meaningful regressions into request-builder implementation review and broader frontend verification only when the benchmark points to a real pattern.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already has a dedicated benchmark file that uses benchmark-style execut
 - [ ] Keep correctness assertions in ordinary tests rather than the benchmark file.
 - [ ] Review fixture coverage whenever request-builder routing or request shape changes.
 - [ ] Avoid implying browser or end-user timing from micro-benchmark results.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already has a dedicated benchmark file that uses benchmark-style execut
 - compare a candidate run against a stored baseline JSON when regression suspicion exists
 - re-run relevant correctness tests if the benchmark changes or fails unexpectedly
 - spot-check that benchmark fixtures still exercise the intended non-options request routes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the benchmark as a supplemental frontend performance tool before deciding whether it deserves hard thresholds
 - prefer improving fixture representativeness over multiplying benchmark cases
 - if a threshold policy is added later, keep it clearly separated from user-facing latency claims
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

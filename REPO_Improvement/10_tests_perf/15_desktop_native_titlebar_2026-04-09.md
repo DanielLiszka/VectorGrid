@@ -59,6 +59,7 @@ The current desktop titlebar smoke spec launches the real shell, checks that the
 - removing meaningful post-action shell assertions so the test only checks that buttons exist
 - using unstable styling selectors instead of accessible labels
 - treating a flaky maximize check as harmless without understanding whether the bug is in the harness, the shell, or the desktop API bridge
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current desktop titlebar smoke spec launches the real shell, checks that the
 - [Tauri window API reference](https://v2.tauri.app/reference/javascript/api/namespacewindow/) is relevant because `DesktopTitlebar.vue` is driven by real window operations such as maximize, minimize, focus, and close handling.
 - [Tauri window-state plugin docs](https://v2.tauri.app/plugin/window-state/) are relevant because maximize/restore and persisted window state are connected concerns in the desktop runtime.
 - [WAI-ARIA tabs pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant indirectly because titlebar actions coexist with shell navigation and must not break orientation after window actions.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current desktop titlebar smoke spec launches the real shell, checks that the
 2. Use the component implementation as a guide for which titlebar behaviors are contract-level versus incidental.
 3. Strengthen waits where possible before accepting more timing-based logic.
 4. Treat close-guard behavior as a related but separate verification concern unless a specific user-visible regression requires a dedicated desktop test.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current desktop titlebar smoke spec launches the real shell, checks that the
 - [ ] Review any titlebar implementation change against both browser shell assumptions and desktop smoke.
 - [ ] Keep the titlebar smoke spec non-options only.
 - [ ] Avoid turning titlebar smoke into a broader task-lifecycle integration suite.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The current desktop titlebar smoke spec launches the real shell, checks that the
 - review logs and screenshots when maximize/restore behavior changes unexpectedly
 - confirm the shell remains interactive after the window action sequence
 - cross-check titlebar smoke against `DesktopTitlebar.vue` if selectors or behavior drift
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the titlebar spec small and stable before adding any new native-window assertions
 - if maximize/restore remains noisy, improve waits and triage before widening the assertions
 - preserve close-guard functionality in the component even if the smoke contract stays narrower
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

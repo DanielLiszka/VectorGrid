@@ -1,6 +1,6 @@
 # ML Validation Surface Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -95,6 +95,7 @@ The service also blocks obvious prerequisite failures up front, such as missing 
 - making policy sweep look like direct validation or vice versa
 - losing artifact path/report-path visibility after successful ML runs
 - replacing stage-specific status copy with generic “running” or “done” text
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -129,6 +130,13 @@ The service also blocks obvious prerequisite failures up front, such as missing 
    - score scope
 4. Keep artifact-path reveal/open behavior tied to normalized result data rather than loose ad hoc fields.
 5. Add tests for missing prerequisites, partial result payloads, and stage-specific success/failure copy.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -141,6 +149,12 @@ The service also blocks obvious prerequisite failures up front, such as missing 
 - [ ] Add tests for missing score-cache paths and malformed/partial results.
 - [ ] Add tests preserving stage-specific busy/success/failure wording.
 - [ ] Add tests for artifact-path propagation and retained score-summary fields.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -153,12 +167,15 @@ The service also blocks obvious prerequisite failures up front, such as missing 
   - failed validation
 - manually verify Stage 5 attached-validation summary text after both single validation and sweep
 - inspect the saved artifact and reopened workspace state for one ML validation run
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current stage-specific wording where it is already accurate
 - prefer additive explanatory text over hiding existing summary fields
 - if the surface later supports more ML stages, document them explicitly rather than overloading current messages
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

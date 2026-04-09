@@ -59,6 +59,7 @@ The repo already embeds more timing-boundary honesty than many projects: several
 - merging warm same-thread, CLI cold, Python, and Criterion numbers into one chart or statement
 - reusing stale artifacts after major engine or environment changes
 - letting README claims outlive the script outputs they were based on
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already embeds more timing-boundary honesty than many projects: several
 - [Cargo benchmark command docs](https://doc.rust-lang.org/cargo/commands/cargo-bench.html) are relevant because several repo claims ultimately trace back to Cargo benchmark surfaces.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because GPU claims especially need precise measurement context and comparable conditions.
 - [VectorBT getting started docs](https://vectorbt.dev/) are relevant because claims against VectorBT are strongest only when the compared workload and boundary are named explicitly.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already embeds more timing-boundary honesty than many projects: several
 2. Prefer multiple smaller honest statements over one oversimplified headline number.
 3. Treat stale benchmark prose as a regression even when the code has not changed.
 4. Use machine-readable boundary labels from script outputs whenever possible instead of inventing prose substitutes.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already embeds more timing-boundary honesty than many projects: several
 - [ ] Keep benchmark-claims hygiene non-options only.
 - [ ] Mark supplemental telemetry as supplemental everywhere it appears.
 - [ ] Avoid comparing unlike benchmark surfaces without an explicit caveat.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,15 +105,18 @@ The repo already embeds more timing-boundary honesty than many projects: several
 - re-run the underlying script when evidence is stale or ambiguous
 - verify that new benchmark docs reuse the canonical boundary labels emitted by the scripts
 - treat missing provenance as a blocker for repeating a number
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - apply claim hygiene first in repo-controlled docs and summaries
 - prefer tightening wording over inventing new aggregate metrics
 - if older claims cannot be revalidated, remove or downgrade them rather than guessing
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/31_vectorbt_faceoff_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_DATE.md`
+- `REPO_Improvement/10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_2026-04-09.md`
 - `REPO_Improvement/11_docs_ops/06_repo_map_readme_hygiene_2026-04-09.md`

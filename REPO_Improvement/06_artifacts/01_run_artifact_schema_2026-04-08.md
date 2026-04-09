@@ -1,6 +1,6 @@
 # Run Artifact Schema Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -74,6 +74,7 @@ Users can save runs, validations, meta outputs, and ML-related flows as artifact
 - changing artifact kind names or top-level field names without updating both backend and frontend consumers
 - dropping `config_fingerprint`, `report_xlsx_path`, or `dataset_meta` semantics relied on by replay/hydration flows
 - making schema hardening so strict that partially older but still usable saved artifacts no longer load
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -81,6 +82,8 @@ Users can save runs, validations, meta outputs, and ML-related flows as artifact
 - [JSON Schema 2020-12 release notes](https://json-schema.org/draft/2020-12/release-notes) are relevant for thinking about additive schema evolution and compatibility rather than ad-hoc shape drift.
 - [RFC 8259](https://datatracker.ietf.org/doc/html/rfc8259) is relevant because the artifact is persisted JSON and null-versus-absent behavior matters for compatibility.
 - [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) is relevant because the repo already computes config fingerprints from canonicalized artifact content, so schema evolution must respect deterministic identity.
+- [JSON Schema: What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema)
+  - relevant because artifacts, reports, manifests, and replay payloads behave like versioned serialized contracts that should stay explicit and reviewable
 
 ## Proposed Improvement Approach
 
@@ -89,6 +92,13 @@ Users can save runs, validations, meta outputs, and ML-related flows as artifact
 3. Document how summary, detail, and hydration payloads derive from the raw artifact and which fields each view must preserve.
 4. Make `config_fingerprint`, `config_fingerprint_version`, `dataset_meta`, and `report_xlsx_path` first-class schema concepts rather than incidental fields.
 5. Tie schema guarantees directly to the existing test surfaces that already enforce parts of the contract.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -101,20 +111,28 @@ Users can save runs, validations, meta outputs, and ML-related flows as artifact
 - [ ] Document summary/detail/hydration derivation rules and minimum payload guarantees.
 - [ ] Add or tighten tests for missing fields, legacy fields, and compatibility fallback behavior if the schema changes.
 - [ ] Verify saved artifacts still load, hydrate, and replay after schema hardening.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted unit tests in `src-tauri/src/run_artifacts.rs`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
-- run `npm --prefix web test -- src/services/workflowArtifactsSync.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/workflowArtifactsSync.test.ts`
 - run targeted validation-service tests that assert persisted artifact contents
 - manually save, reload, hydrate, and replay one representative non-options artifact
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing non-options artifact kinds and top-level field names first
 - prefer additive schema expansion over breaking renames
 - if a breaking schema change is unavoidable, add a dual-read path or explicit migration before deleting compatibility code
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

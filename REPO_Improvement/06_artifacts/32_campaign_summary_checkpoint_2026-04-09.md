@@ -1,3 +1,7 @@
+# Campaign Summary Checkpoint Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for campaign-summary persistence and checkpoint-style rewriting so long-running research campaigns remain resumable, inspectable, and performance-aware without scattering summary-save logic across the command.
@@ -78,6 +82,7 @@ Key current ownership:
 - changing summary path semantics mid-run so progress payloads and final response disagree
 - weakening compatibility with existing `vectorgrid_campaign_summary` files
 - introducing more write amplification without measurement or explicit benefit
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -98,6 +103,13 @@ Key current ownership:
 3. Consolidate repeated save operations behind a smaller helper or manager once tests pin the current semantics.
 4. Make checkpoint-save timing diagnostic collection explicit and measurable.
 5. Keep frontend “last summary path” behavior stable until a fuller summary-library surface exists.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -107,6 +119,11 @@ Key current ownership:
 - [ ] Decide whether `checkpoint_save_ms` should become a required populated diagnostic field.
 - [ ] Add or tighten performance-oriented checks for summary-save overhead where practical.
 - [ ] Consider extracting a dedicated campaign-summary checkpoint helper once semantics are fixed.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -115,6 +132,8 @@ Key current ownership:
 - run `metaServiceCampaignResume.test.ts`
 - run `metaServiceCampaignStrategy.test.ts`
 - run `ta_campaign_perf.rs` or equivalent bounded perf checks when save frequency or checkpoint handling changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -122,6 +141,7 @@ Key current ownership:
 - keep incremental rewrite behavior until a measured replacement exists
 - if helper extraction obscures current semantics, prefer clearer inline save checkpoints plus tests
 - treat campaign summary persistence as operational state, not disposable debug output
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

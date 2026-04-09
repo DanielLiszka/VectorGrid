@@ -68,6 +68,7 @@ Retention is already partly tag-aware: pruning functions keep the newest untagge
 - introducing family-specific tag behavior without documenting it
 - breaking case-insensitive deduplication
 - forcing users onto a new structured tag format that invalidates old artifacts
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -89,6 +90,13 @@ Retention is already partly tag-aware: pruning functions keep the newest untagge
 3. Introduce documented reserved-tag guidance only if it remains backward-compatible with freeform user tags.
 4. Keep tag editing behavior uniform across run, meta, Stage 5, and policy-eval artifact families.
 5. Expand tests around pruning and tag normalization so compatibility stays intentional.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -99,6 +107,11 @@ Retention is already partly tag-aware: pruning functions keep the newest untagge
 - [ ] Add or tighten tests for case-insensitive dedupe and empty-tag removal.
 - [ ] Add or tighten tests proving tagged artifacts survive pruning.
 - [ ] Add or tighten tests proving cross-family tag editing keeps the same semantics.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -106,6 +119,8 @@ Retention is already partly tag-aware: pruning functions keep the newest untagge
 - run `C:\Program Files\PowerShell\7\pwsh.exe -Command "npm run test -- src/services/historyService.test.ts"` from `web/`
 - run `C:\Program Files\PowerShell\7\pwsh.exe -Command "npm run test -- src/services/metaService.test.ts"` from `web/`
 - manually verify one tagged saved run, one tagged meta artifact, and one pruning pass on untagged artifacts
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -113,6 +128,7 @@ Retention is already partly tag-aware: pruning functions keep the newest untagge
 - if reserved tags are introduced, they must coexist with existing user-authored tags
 - do not convert tags into a structured object unless an explicit migration and compatibility layer is added
 - treat retention semantics as documented policy before changing any pruning thresholds
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -69,12 +69,15 @@ That means the app already has a meaningful desktop shell contract:
 - breaking the web/runtime-available guard and making browser-side tests depend on desktop plugins
 - losing desktop logs or window-state diagnostics from the settings surface
 - reversing the current “Task Center first, OS notifications second” posture
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because the desktop shell bridges sit at the frontend/runtime boundary and should stay explicit and testable.
 - [Tauri Notification Plugin](https://v2.tauri.app/plugin/notification/) is relevant because current desktop behavior already depends on permission and delivery semantics from that plugin.
 - [Tauri Window State Plugin](https://v2.tauri.app/plugin/window-state/) is relevant because window-state persistence is already a shipped desktop responsibility rather than a future idea.
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ That means the app already has a meaningful desktop shell contract:
 3. Freeze the current diagnostic contract between desktop bridges, runtime store, and settings diagnostics.
 4. Keep browser-safe guards explicit and verify that desktop productization remains no-op safe when Tauri is unavailable.
 5. Add a policy note that OS notifications complement Task Center instead of replacing it.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,19 +102,28 @@ That means the app already has a meaningful desktop shell contract:
 - [ ] Record which behaviors are dev-only, desktop-only, or always-on.
 - [ ] Add or tighten tests anywhere plugin failure currently relies on implicit behavior.
 - [ ] Preserve browser-safe startup and desktop-unavailable handling.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/main.test.ts`
-- run `npm --prefix web test -- src/services/desktopProductization.test.ts`
-- run `npm --prefix web test -- src/components/SettingsWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/main.test.ts`
+- run `npm --prefix web run test -- src/services/desktopProductization.test.ts`
+- run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`
 - perform one manual desktop smoke pass covering logs, notification posture, and persisted window state after any refactor
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the current bridges intact unless an equivalent replacement is documented and verified
 - prefer extracting responsibilities only after the current contract is frozen in docs and tests
 - maintain the current warning-first posture for non-fatal desktop bridge failures
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -59,6 +59,7 @@ The current desktop smoke harness already creates a per-run artifact context, wr
 - adding large reporter stacks before proving the current capture layer is insufficient
 - treating failure screenshots as broad visual baselines
 - allowing artifact file naming or folder structure to drift without documenting the change
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current desktop smoke harness already creates a per-run artifact context, wr
 - [WebdriverIO visual testing docs](https://webdriver.io/docs/visual-testing/) are relevant as a cautionary reference: the repo should understand visual tooling without automatically promoting full visual diffing into the desktop smoke path.
 - [WebdriverIO screenshot command docs](https://webdriver.io/docs/api/browser/saveScreenshot/) are relevant because local screenshot capture remains a core artifact for desktop smoke failures.
 - [Playwright Trace Viewer](https://playwright.dev/docs/trace-viewer) is relevant because browser smoke already benefits from richer failure artifacts, and the desktop harness should be explicit about what equivalent evidence it does and does not provide.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current desktop smoke harness already creates a per-run artifact context, wr
 2. Preserve per-run directories, infrastructure logs, environment summaries, and failure screenshots as the baseline artifact set.
 3. Document when additional capture is warranted and when existing artifacts should be sufficient.
 4. Keep artifact capture repo-local and lightweight unless repeated evidence shows a need for something heavier.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current desktop smoke harness already creates a per-run artifact context, wr
 - [ ] Avoid promoting desktop screenshots into visual baseline authority.
 - [ ] Keep desktop artifact capture non-options only.
 - [ ] Review whether any repeated blind spots justify additive capture changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,15 +105,18 @@ The current desktop smoke harness already creates a per-run artifact context, wr
 - inspect a failing run end to end using only the captured artifact set
 - confirm artifact filenames remain safe and stable across repeated runs
 - verify any harness change preserves artifact generation even when startup fails early
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current artifact set while formalizing how it is reviewed
 - prefer improving naming and structure before adding more artifact types
 - if future reporters are considered, require evidence that the existing capture path is insufficient
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/13_desktop_harness_contract_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/08_fe_ui_baseline_capture_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/39_post_release_telemetry_review_DATE.md`
+- `REPO_Improvement/10_tests_perf/39_post_release_telemetry_review_2026-04-09.md`

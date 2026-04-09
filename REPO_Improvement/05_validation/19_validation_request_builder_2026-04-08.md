@@ -1,6 +1,6 @@
 # Validation Request Builder Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -69,6 +69,7 @@ The validation UI does not send raw top-table state directly to Rust. Instead, t
 - silently broadening cross-ticker dataset admission or mode behavior
 - sending candidates that no longer match current strategy-kind expectations
 - dropping `admission_provenance` or shrinking it into an undocumented field
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -80,6 +81,8 @@ The validation UI does not send raw top-table state directly to Rust. Instead, t
   - relevant because the builder emits the exact command payload sent across the Tauri boundary
 - [RFC 8259](https://datatracker.ietf.org/doc/html/rfc8259)
   - relevant because admission provenance and validation context are persisted in JSON artifacts and replay paths
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -93,6 +96,13 @@ The validation UI does not send raw top-table state directly to Rust. Instead, t
 2. Separate product-policy normalization from backend-required invariants.
 3. Make `admission_policy` and `admission_provenance` first-class parts of the contract.
 4. Tie candidate shaping, module shaping, and compatibility shaping to the tests that already protect them.
+5. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -104,19 +114,27 @@ The validation UI does not send raw top-table state directly to Rust. Instead, t
 - [ ] Document validation context fields and compatibility expectations.
 - [ ] Document cross-dataset caps and preserved-finalists behavior.
 - [ ] Add or tighten tests if request-shaping behavior changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/validationRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
 - run targeted tests in `src-tauri/src/commands_validation.rs`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current request field names and admission semantics unless a migration is documented
 - preserve validation context and provenance richness rather than simplifying them away
 - if builder refactoring happens, keep emitted payload shape stable first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

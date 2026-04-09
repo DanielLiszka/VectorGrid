@@ -59,6 +59,7 @@ The repo already keeps the geometry spec behind the opt-in `test:desktop:geometr
 - tightening tolerances unrealistically for desktop environments that do not honor exact pixels
 - dropping the restore step and leaving the local environment altered after a run
 - confusing geometry smoke with persisted window-state validation
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already keeps the geometry spec behind the opt-in `test:desktop:geometr
 - [Tauri window-state plugin docs](https://v2.tauri.app/plugin/window-state/) are relevant because geometry smoke sits adjacent to persisted window-state behavior but is not identical to it.
 - [WebdriverIO best practices](https://webdriver.io/docs/bestpractices/) are relevant because geometry assertions need explicit waits and tolerant conditions rather than fixed timing.
 - [Microsoft WebView2 user data folder guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder) is relevant because desktop shell environment state can influence repeated local runs.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already keeps the geometry spec behind the opt-in `test:desktop:geometr
 2. Treat the spec as a shell-usability-after-resize check, not as the authority on persisted window-state correctness.
 3. Preserve tolerance-based assertions and explicit restore logic.
 4. Escalate repeated geometry instability into harness or environment analysis before turning the spec off or making it mandatory.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already keeps the geometry spec behind the opt-in `test:desktop:geometr
 - [ ] Separate geometry smoke from window-state persistence concerns.
 - [ ] Keep the geometry suite non-options only.
 - [ ] Capture and review artifact logs whenever geometry behavior becomes flaky.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already keeps the geometry spec behind the opt-in `test:desktop:geometr
 - review logs and screenshots when resize/restore behavior fails
 - verify the shell remains usable after the resize step
 - avoid treating geometry green-ness as a blocker for unrelated desktop-shell work unless the changed code touches window behavior directly
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep geometry opt-in until stability data supports a wider role
 - preserve the current restore behavior even if the assertion set evolves
 - if geometry flakes, first improve waits and diagnostics before loosening the contract
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -4934,6 +4934,96 @@ mod tests {
         manifest
     }
 
+    fn semantics_test_row() -> OptionsPriceRow {
+        OptionsPriceRow {
+            timestamp_ms: 1_700_000_060_000,
+            open: 1.7,
+            high: 2.4,
+            low: 1.2,
+            close: 1.8,
+            underlying_price: 100.0,
+            bid: Some(1.0),
+            ask: Some(2.0),
+            mid: Some(1.5),
+            volume: Some(100.0),
+            open_interest: Some(1000.0),
+            quote_age_ms: Some(750),
+            session_id: Some("2026-04-01".to_string()),
+        }
+    }
+
+    #[test]
+    fn derived_mid_runtime_semantics_remain_aggregate_style() {
+        let row = semantics_test_row();
+
+        assert_eq!(
+            option_entry_price_for_row(
+                &row,
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch
+            ),
+            Some(1.8)
+        );
+        assert_eq!(
+            option_exit_price_for_row(
+                &row,
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch,
+                AggregateStressMode::Conservative
+            ),
+            Some(1.2)
+        );
+        assert_eq!(
+            option_path_range_for_row(
+                &row,
+                OptionsPriceSemantics::DerivedMidSnapshot,
+                OptionsFillModelFamily::AggregateResearch,
+                AggregateStressMode::Baseline
+            ),
+            Some((2.4, 1.2))
+        );
+    }
+
+    #[test]
+    fn quote_aware_runtime_semantics_use_quote_side_prices() {
+        let row = semantics_test_row();
+
+        assert_eq!(
+            option_entry_price_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative
+            ),
+            Some(2.0)
+        );
+        assert_eq!(
+            option_entry_price_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteMid
+            ),
+            Some(1.5)
+        );
+        assert_eq!(
+            option_exit_price_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative,
+                AggregateStressMode::Extreme
+            ),
+            Some(1.0)
+        );
+        assert_eq!(
+            option_path_range_for_row(
+                &row,
+                OptionsPriceSemantics::TopOfBookQuote,
+                OptionsFillModelFamily::QuoteConservative,
+                AggregateStressMode::Baseline
+            ),
+            Some((1.0, 1.0))
+        );
+    }
+
     #[test]
     fn options_expression_assign_splits_session_chronological_keeps_sessions_intact() {
         let manifest = test_manifest_multi_session();

@@ -67,6 +67,7 @@ This means the app already has real progress truth, but readiness truth may be w
 - making the footer contradict the optimize panel or task center
 - removing useful progress detail while trying to clean up readiness messaging
 - coupling footer copy too tightly to snapshot data
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ This means the app already has real progress truth, but readiness truth may be w
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because this is primarily a store-ownership and derived-state problem.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because readiness drift is easiest to catch with store-aware component tests.
 - [Vitest Mocking](https://vitest.dev/guide/mocking.html) is relevant because optimize-service-driven status transitions should remain easy to simulate in tests.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ This means the app already has real progress truth, but readiness truth may be w
 3. Keep `statusLine` and `progressMeta` as the live in-run truth unless a stronger model replaces them.
 4. Align footer posture with optimize-panel and task-center semantics.
 5. Add explicit tests for no-data, route-blocked, busy, and post-run states.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,20 @@ This means the app already has real progress truth, but readiness truth may be w
 - [ ] Decide whether legacy readiness fields should be computed, demoted, or removed from authority.
 - [ ] Add or tighten tests for common readiness states.
 - [ ] Align footer copy and panel copy to the same semantics.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/RunFooterPanel.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/stores/domainStores.test.ts`
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/RunFooterPanel.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/stores/domainStores.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,6 +121,7 @@ This means the app already has real progress truth, but readiness truth may be w
 - prefer demotion of stale fields over pretending they are live truth
 - keep snapshot compatibility until a deliberate migration removes or recalculates old readiness fields
 - if readiness becomes live-computed later, update all shell consumers together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

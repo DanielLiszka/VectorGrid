@@ -1,6 +1,6 @@
 # Validation Context Compatibility Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -62,6 +62,7 @@ Users can open validation with context hydrated from current workflow state or a
 - weakening Rust-side validation authority
 - making artifact replay less reliable for existing saved runs
 - removing helpful dock context in the name of simplification
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -69,6 +70,8 @@ Users can open validation with context hydrated from current workflow state or a
 - [Pinia State](https://pinia.vuejs.org/core-concepts/state.html) is relevant because validation context is assembled from shared workflow state and hydrated artifacts.
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant for documenting a canonical validation-context payload.
 - [TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) is relevant as an authoritative reminder that time-ordered validation requires explicit context and cannot rely on generic dataset assumptions.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ Users can open validation with context hydrated from current workflow state or a
 3. Surface compatibility status explicitly in the dock instead of relying on inferred metadata quality.
 4. Document how thin/legacy artifacts are handled, including when the user should be warned, blocked, or allowed to continue with degraded confidence.
 5. Expand tests around mismatched dataset paths, timeframes, strategy kinds, and incomplete artifact metadata.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -93,6 +103,11 @@ Users can open validation with context hydrated from current workflow state or a
 - [ ] Add tests for mismatched dataset path, timeframe, and strategy kind.
 - [ ] Add tests for incomplete artifact metadata and replay edge cases.
 - [ ] Preserve current valid workflows while tightening invalid-context detection.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -100,17 +115,20 @@ Users can open validation with context hydrated from current workflow state or a
 - run `npm test -- src/services/validationService.test.ts`
 - run validation workspace/dock component tests
 - run targeted Rust validation command tests
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep Rust-side command validation authoritative
 - treat richer frontend compatibility signaling as additive, not as a replacement for backend checks
 - if legacy artifacts are partially compatible, surface that state explicitly instead of silently guessing
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
-- `REPO_Improvement/05_validation/19_validation_request_builder_DATE.md`
-- `REPO_Improvement/05_validation/20_validation_service_DATE.md`
-- `REPO_Improvement/05_validation/22_validation_context_docks_DATE.md`
-- `REPO_Improvement/06_artifacts/04_artifact_hydration_contract_DATE.md`
+- `REPO_Improvement/05_validation/19_validation_request_builder_2026-04-08.md`
+- `REPO_Improvement/05_validation/20_validation_service_2026-04-08.md`
+- `REPO_Improvement/05_validation/22_validation_context_docks_2026-04-08.md`
+- `REPO_Improvement/06_artifacts/04_artifact_hydration_contract_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/29_artifact_identity_workflow_model_2026-04-08.md`

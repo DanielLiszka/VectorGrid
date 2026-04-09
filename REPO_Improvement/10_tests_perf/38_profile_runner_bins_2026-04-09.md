@@ -60,6 +60,7 @@ The repo already contains several helper binaries that exist specifically to mak
 - forgetting feature requirements and then interpreting build/run failures as product regressions
 - using a helper bin when a simpler gate or smoke run would answer the question
 - adding new helper bins without documenting their exact boundary and intended consumer
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The repo already contains several helper binaries that exist specifically to mak
 - [Cargo run command docs](https://doc.rust-lang.org/cargo/commands/cargo-run.html) are relevant because these tools are used directly as investigative binaries.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because several of these bins exist to isolate GPU/runtime behavior that broader app paths obscure.
 - [Criterion.rs book](https://bheisler.github.io/criterion.rs/book/) is relevant as a contrast because helper bins are not statistical benchmark authorities by default.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The repo already contains several helper binaries that exist specifically to mak
 2. Make it explicit which higher-level scripts or gates depend on each helper bin.
 3. Keep helper-bin results subordinate to the gates or playbooks that interpret them.
 4. Require new helper bins to declare their boundary and intended use before they are treated as part of the repo’s evidence surface.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The repo already contains several helper binaries that exist specifically to mak
 - [ ] Keep helper-bin guidance non-options only.
 - [ ] Avoid presenting helper-bin outputs as authority unless a separate gate wraps them.
 - [ ] Review whether any helper bin has become obsolete or redundant.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,16 +106,19 @@ The repo already contains several helper binaries that exist specifically to mak
 - verify feature-gated build commands still succeed for the intended bins
 - check that higher-level scripts still reference the expected helper bins and output shapes
 - confirm helper-bin output language does not overstate its authority
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current useful helper bins while tightening their documentation
 - prefer better cataloging over adding wrappers if the existing bins already answer the question
 - retire or de-emphasize helper bins only after confirming no gate or playbook still depends on them
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/33_ncu_profile_playbook_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/34_nsys_profile_playbook_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/36_gpu_route_matrix_profile_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/54_campaign_preload_vram_perf_DATE.md`
+- `REPO_Improvement/10_tests_perf/54_campaign_preload_vram_perf_2026-04-09.md`

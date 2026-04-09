@@ -90,6 +90,7 @@ The Meta workspace exposes policy evaluation as a separate offline analysis lane
 - weakening the historical prefix-training discipline
 - hiding skip counts or warning categories that explain why some scoped artifacts were not comparable
 - breaking policy-eval artifact replay while cleaning up naming drift
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -113,6 +114,13 @@ The Meta workspace exposes policy evaluation as a separate offline analysis lane
 5. Document the current artifact-kind/prefix naming mismatch so cleanup work does not accidentally break saved-replay behavior.
 6. Keep “best policy” framed as an offline comparison outcome, not a direct live-execution recommendation.
 7. Tie the policy-eval doc closely to replay/saved-entry management because persistence is part of the contract.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -126,14 +134,22 @@ The Meta workspace exposes policy evaluation as a separate offline analysis lane
 - [ ] Preserve tests for request normalization, historical evaluation, and replay summary extraction.
 - [ ] Keep docs explicit that policy eval has no workbook/report surface today.
 - [ ] Treat any future “best policy” productization as a new contract, not an implicit property of current offline evaluation.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaService.test.ts`
-- run `npm --prefix web test -- src/components/MetaWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/components/MetaWorkspacePanel.test.ts`
 - run targeted policy-eval tests in `src-tauri/src/commands_meta.rs`
 - run targeted policy-eval artifact tests in `src-tauri/src/run_artifacts.rs`
 - manually run one policy evaluation and replay the saved artifact from the UI
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -141,6 +157,7 @@ The Meta workspace exposes policy evaluation as a separate offline analysis lane
 - if policy evaluation later gains workbook/report output, add it explicitly without implying it already exists in current artifacts
 - keep skip counters and warning families stable so historical comparisons remain interpretable
 - prefer additive artifact metadata over changing the meaning of current policy-arm metrics
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

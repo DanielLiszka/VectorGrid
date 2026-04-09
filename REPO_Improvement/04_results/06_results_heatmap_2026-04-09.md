@@ -66,6 +66,7 @@ That makes Heatmap a compound evidence surface with rendering, status, selection
 - breaking Top-to-Heatmap drilldown expectations or selected-candidate markers
 - exposing Export PNG when there is no valid rendered heatmap
 - hiding empty-state causes behind a generic blank chart
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ That makes Heatmap a compound evidence surface with rendering, status, selection
 - [Basic usage of canvas | MDN](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Basic_usage) is relevant because the heatmap is rendered on canvas and needs alternative explanatory support around it.
 - [Canvas element accessibility guidance | MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/canvas) is relevant because a bitmap heatmap is not semantically self-describing.
 - [Grid Pattern | WAI-ARIA APG](https://www.w3.org/WAI/ARIA/apg/patterns/grid/) is relevant because the panel explicitly relies on the Top results table as the keyboard-friendly selection partner for the visual heatmap.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ That makes Heatmap a compound evidence surface with rendering, status, selection
 3. Document marker, crosshair, and selected-candidate semantics separately from color rendering.
 4. Keep Export PNG tied to truthful rendered-state availability.
 5. Add or tighten tests around prerequisite messaging, readiness, Top-results handoff, and export gating.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,12 +100,20 @@ That makes Heatmap a compound evidence surface with rendering, status, selection
 - [ ] Document marker/crosshair behavior and selected-candidate expectations.
 - [ ] Document Export PNG availability rules.
 - [ ] Add or tighten tests for readiness, handoff, and export gating.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/HeatmapWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/analysisService.test.ts`
+- run `npm --prefix web run test -- src/components/HeatmapWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts`
 - manually verify no-heatmap, ready-heatmap, and export-enabled states with a representative run
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -103,10 +121,11 @@ That makes Heatmap a compound evidence surface with rendering, status, selection
 - keep Top Results as the fallback navigation and selection surface even if direct cell interaction improves later
 - prefer additive explanatory cues around the heatmap instead of reducing text to chart-only output
 - if palette or range behavior changes, update legend/status tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/02_results_top_table_2026-04-08.md`
-- `REPO_Improvement/04_results/12_out_pareto_heatmap_readability_DATE.md`
-- `REPO_Improvement/04_results/19_chart_rendering_composables_DATE.md`
+- `REPO_Improvement/04_results/12_out_pareto_heatmap_readability_2026-04-09.md`
+- `REPO_Improvement/04_results/19_chart_rendering_composables_2026-04-09.md`
 - `REPO_Improvement/05_validation/23_metric_surface_contract_2026-04-08.md`

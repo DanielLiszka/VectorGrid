@@ -61,6 +61,7 @@ The sheet layout already applies zoom, frozen panes, and explicit column widths,
 - removing params JSON, warnings, or fail reasons without an explicit replacement
 - breaking freeze panes or basic width/readability defaults
 - reducing candidate-sheet detail in a way that weakens downstream audit or reproducibility
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -82,6 +83,13 @@ The sheet layout already applies zoom, frozen panes, and explicit column widths,
 3. Document which columns must remain identical between approved and shortlist sheets.
 4. Keep audit linkage explicit from candidate sheets into regime/audit data surfaces.
 5. Add tests that protect column presence, row parity, and core readability defaults.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,12 +100,19 @@ The sheet layout already applies zoom, frozen panes, and explicit column widths,
 - [ ] Add or tighten tests for required headers and row-count parity.
 - [ ] Add or tighten tests for preserved warnings/fail-reason/params-json export.
 - [ ] Manually inspect one workbook with long warning/fail text and one with many candidate rows.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app validation_xlsx_report_tests -- --nocapture`
 - add or run targeted headless workbook XML assertions for required headers
 - manually inspect candidate sheets in at least one large workbook and one compatibility-mode workbook
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +120,7 @@ The sheet layout already applies zoom, frozen panes, and explicit column widths,
 - if columns are reordered, update tests and any downstream documentation in the same change
 - prefer additive readability work such as grouping, widths, and notes over removing columns
 - keep compatibility-mode candidate sheets viable even when some module columns are `not run`
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

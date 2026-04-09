@@ -1,6 +1,6 @@
 # Tauri Runtime Wiring Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -95,6 +95,7 @@ The current wiring layer already does useful work:
 - missing runtime-error normalization on invoke failure
 - breaking browser/non-Tauri test behavior
 - desynchronizing tracked command/event registries between instrumentation and stores
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -108,6 +109,8 @@ The current wiring layer already does useful work:
   - relevant because some runtime-wiring guarantees should still be checked through visible shell behavior, not just unit mocks
 - [Tauri Mock APIs reference](https://v2.tauri.app/reference/javascript/api/namespacemocks/)
   - relevant because the test layer depends on realistic mocked command/event behavior
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -127,6 +130,13 @@ The current wiring layer already does useful work:
 4. Define error-normalization expectations so every invoke failure is shaped consistently.
 5. Expand tests around wrapper bypass risks, retry behavior, reset behavior, and channel multiplexing.
 6. Treat command-generation freshness as part of the runtime-wiring contract, not a separate optional maintenance task.
+7. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -140,6 +150,12 @@ The current wiring layer already does useful work:
 - [ ] Add tests for reset/hot-dispose/retry behavior.
 - [ ] Add tests for duplicate-listener prevention.
 - [ ] Add tests or lintable checks preventing raw Tauri API bypass in feature code.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -151,12 +167,15 @@ The current wiring layer already does useful work:
 - run `npm test -- src/stores/taskStorePerformance.test.ts`
 - run `npm test -- src/services/workflowArtifactsSync.test.ts`
 - run a desktop smoke flow to confirm progress/live events still reach visible UI surfaces
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current wrapper signatures where possible because many tests and services already depend on them
 - prefer additive guardrails over hard rewrites of the runtime layer
 - if tracked-command registries are unified later, keep compatibility with current event names first
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Fidelity Audit Harness Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -60,12 +60,15 @@ There is no default UI surface. The harness is an opt-in binary that loads real 
 - expanding the harness until it becomes a shadow application
 - weakening bounded candidate-pool logic and turning runs into uncontrolled sweeps
 - treating one good artifact as universal proof
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [scikit-learn: TimeSeriesSplit](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) is relevant because the harness exists to judge time-ordered fidelity, not random-split similarity.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because the harness compares cheaper GPU-oriented execution against exact references and should preserve correctness-first benchmarking discipline.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the harness artifact should stay interpretable and versioned.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -77,6 +80,13 @@ There is no default UI surface. The harness is an opt-in binary that loads real 
    - limited timeframes
    - limited candidate pool
 5. Preserve isolation from the main application runtime.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -88,18 +98,27 @@ There is no default UI surface. The harness is an opt-in binary that loads real 
 - [ ] Add a review guide for interpreting holdout-winner comparisons.
 - [ ] Keep the harness opt-in and separate from normal app startup/runtime.
 - [ ] Avoid turning the harness into an unbounded benchmark runner.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
 - run `cargo test -p ta_app_core --bin real_data_fidelity_audit`
 - run one bounded live harness execution on a known dataset/timeframe pair when changing harness semantics
 - inspect the emitted artifact for schema stability and metric completeness
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the harness as a separate binary with no default UI dependency
 - preserve current artifact fields unless a schema-version change is recorded
 - if thresholds are introduced, ship them as review guidance before making them enforcement gates
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

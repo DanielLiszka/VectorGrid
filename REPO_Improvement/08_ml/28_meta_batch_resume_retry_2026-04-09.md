@@ -83,6 +83,7 @@ The Meta workspace exposes `Retry failed`, `Resume incomplete`, and `Reveal summ
 - changing summary field names or semantics without updating recovery logic and compatibility expectations
 - conflating retry and resume into one flow that loses the distinction between failed-path-only and resumable-request restoration
 - treating batch summaries as disposable files when they currently anchor operational recovery
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -94,6 +95,8 @@ The Meta workspace exposes `Retry failed`, `Resume incomplete`, and `Reveal summ
   - relevant because the saved batch summary acts as a versioned replay contract, not just a log blob
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because replayed campaigns still cross the same command boundary and must preserve request-shape compatibility
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -107,6 +110,13 @@ The Meta workspace exposes `Retry failed`, `Resume incomplete`, and `Reveal summ
 5. Describe failure handling explicitly so the UI remains conservative when summaries are stale or incomplete.
 6. Tie recovery semantics to current service-layer ownership so refactors do not accidentally move or weaken behavior without updating tests.
 7. Keep “Reveal summary” in scope because recovery usability depends on inspectable summary files, not just hidden internal state.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -120,15 +130,23 @@ The Meta workspace exposes `Retry failed`, `Resume incomplete`, and `Reveal summ
 - [ ] Document the minimum summary fields required to keep recovery compatible.
 - [ ] Add or preserve tests for retry-only, resume-only, and missing-summary failure cases.
 - [ ] Keep summary-schema edits synchronized with recovery logic and tests.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaServiceCampaignResume.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
-- run `npm --prefix web test -- src/stores/taskStoreCampaignProgress.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignResume.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/stores/taskStoreCampaignProgress.test.ts`
 - run targeted campaign tests in `src-tauri/src/commands_campaign.rs`
 - save one batch summary, then manually exercise `Retry failed` and `Resume incomplete`
 - manually verify that a recovery run still forces skip-completed behavior
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -136,6 +154,7 @@ The Meta workspace exposes `Retry failed`, `Resume incomplete`, and `Reveal summ
 - if recovery semantics expand later, add summary fields rather than reinterpreting existing ones
 - preserve the distinction between operational summary recovery and general history/artifact replay
 - prefer failing clearly on incomplete summaries over issuing partially reconstructed campaigns
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

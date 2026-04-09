@@ -70,6 +70,7 @@ Current shipped behavior includes:
 - changing sorting or truncation semantics without updating consumers
 - making inventory enumeration unbounded or much heavier by default
 - breaking shared consumers in meta flows while refactoring data commands
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -84,6 +85,13 @@ Current shipped behavior includes:
 3. Record where repo CSV inventory is currently consumed and keep its scope non-options only.
 4. Clarify the difference between repo-data inventory and sample-CSV listing so the two surfaces do not blur together.
 5. Tie any future refactors back to the same identity-for-source helper rather than duplicating file-identity logic.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,18 +100,27 @@ Current shipped behavior includes:
 - [ ] Document sorting and truncation behavior.
 - [ ] List current frontend consumers of repo CSV inventory.
 - [ ] Add or tighten tests if inventory shape or shared consumer expectations change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted meta-service tests that cover repo CSV inventory consumption
 - manually call the command once with and without identity enrichment after any contract change
 - verify command registration stays aligned in `commands.rs` and `lib.rs`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve field names unless a compatibility migration is written
 - prefer additive enrichment over removing existing lightweight path listings
 - keep repo CSV inventory separated from options-specific dataset concepts
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

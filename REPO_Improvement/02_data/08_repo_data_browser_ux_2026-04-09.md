@@ -68,12 +68,15 @@ Current UX already includes meaningful details:
 - breaking keyboard selection and status announcements for cached Polygon datasets
 - making storage-root or dataset-context cues less visible
 - allowing data-panel copy and actual data-store behavior to drift apart
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because current data UX depends on one store-backed source of truth for several related controls.
 - [Tauri Dialog Plugin](https://v2.tauri.app/plugin/dialog/) is relevant because CSV and folder browsing already depend on explicit pick-file/pick-folder flows.
 - [WAI-ARIA Grid Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/grid/) is relevant because cached-dataset list navigation and selection behavior should remain keyboard-legible as the data browser evolves.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ Current UX already includes meaningful details:
 3. Clarify panel language so repo CSV, sample CSV, picked CSV, and Polygon cached dataset flows stay distinct.
 4. Keep keyboard and announcement behavior first-class for cached dataset selection.
 5. Add UX-level checks anywhere the panel relies on implicit copy or status semantics.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,21 +100,30 @@ Current UX already includes meaningful details:
 - [ ] Document current Polygon cached-dataset selection and announcement behavior.
 - [ ] Document the storage-settings handoff and folder affordances.
 - [ ] Add or tighten tests for any copy, keyboard, or selection contract changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/DataWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/DataWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - perform one manual keyboard and mouse pass across the Data workspace after UI changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep all current browse and Polygon controls unless an equivalent safer path is already in place
 - prefer clarifying current UX before compressing or restyling it
 - maintain keyboard selection behavior and visible status cues as non-negotiable baseline behavior
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/02_data/01_repo_csv_inventory_2026-04-09.md`
 - `REPO_Improvement/02_data/09_startup_dataset_restore_2026-04-09.md`
-- `REPO_Improvement/02_data/21_polygon_selection_ux_DATE.md`
+- `REPO_Improvement/02_data/21_polygon_selection_ux_2026-04-09.md`

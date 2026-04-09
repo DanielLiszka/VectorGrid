@@ -1,6 +1,6 @@
 # Status Presentation Format Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -71,6 +71,7 @@ The app already normalizes status wording across multiple shell surfaces. Task-c
 - changing user-facing status wording inconsistently across shell surfaces
 - weakening current `aria-live` / `role="status"` usage on existing status surfaces
 - turning concise status helpers into component-specific ad hoc text formatting
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -82,6 +83,8 @@ The app already normalizes status wording across multiple shell surfaces. Task-c
   - relevant because formatted status output should consume shared state instead of duplicating it
 - [Pinia: Getters](https://pinia.vuejs.org/core-concepts/getters.html)
   - relevant because status formatting often sits between raw store state and user-facing text
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -94,6 +97,13 @@ The app already normalizes status wording across multiple shell surfaces. Task-c
 2. Distinguish raw state from presentation state so components know when they should call the formatter instead of inventing strings.
 3. Record current accessibility expectations for status surfaces that already exist in the shell.
 4. Treat wording consistency as a UX contract, not just cosmetic polish.
+5. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -104,19 +114,28 @@ The app already normalizes status wording across multiple shell surfaces. Task-c
 - [ ] Document current status-region accessibility expectations for existing shell surfaces.
 - [ ] Identify components that already rely on these helpers.
 - [ ] Add or tighten tests if wording, tone, or accessibility usage changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/utils/statusPresentation.test.ts`
-- run `npm --prefix web test -- src/components/TaskCenterOverlay.test.ts`
-- run `npm --prefix web test -- src/components/SettingsWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/VueWorkspaceShell.test.ts`
+- run `npm --prefix web run test -- src/utils/statusPresentation.test.ts`
+- run `npm --prefix web run test -- src/components/TaskCenterOverlay.test.ts`
+- run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep wording changes coordinated across all current consumers
 - prefer central formatter updates over component-local string drift
 - preserve existing accessible status-region behavior unless a better documented pattern replaces it
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

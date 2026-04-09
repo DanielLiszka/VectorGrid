@@ -68,6 +68,7 @@ This means the command is already productized as a specialized route rather than
 - bypassing the shared run guard or cancel token
 - breaking progress-event emission for Composite CPU runs
 - letting UI capability text overpromise unsupported mode behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ This means the command is already productized as a specialized route rather than
 - [Tauri State Management](https://v2.tauri.app/develop/state-management/) is relevant because run coordination relies on shared backend state.
 - [Calling the Frontend from Rust](https://v2.tauri.app/develop/calling-frontend/) is relevant because progress events travel back through Tauri’s event system.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because the frontend family-routing decision should stay derived from canonical state and services.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ This means the command is already productized as a specialized route rather than
 3. Keep the shared run guard, cancel, and progress sequence aligned with the Double-MA command while documenting the route differences.
 4. Add parity tests between strategy-family routing and command selection if coverage is weak.
 5. Make UI capability notes reflect the command’s actual product contract rather than backend hypotheticals.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ This means the command is already productized as a specialized route rather than
 - [ ] Document the run guard, cancel token, and progress sink behavior.
 - [ ] Add or tighten routing-parity tests for Composite CPU families.
 - [ ] Document the relationship between frontend capability messaging and command truth.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app commands_optimize`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/tauri/instrumentation.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/tauri/instrumentation.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ This means the command is already productized as a specialized route rather than
 - keep Composite CPU family routing explicit instead of inferred
 - treat the command boundary as the authoritative product contract if UI copy drifts
 - update staged-family routing and this plan together when new families are surfaced
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

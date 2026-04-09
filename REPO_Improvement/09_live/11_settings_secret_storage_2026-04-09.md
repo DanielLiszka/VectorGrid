@@ -83,6 +83,7 @@ This means the current system already distinguishes secrets from general setting
 - broadening plaintext secret persistence when trying to simplify storage logic
 - mixing secret and non-secret settings into one undocumented storage bucket
 - weakening current key-state UX that tells the operator what persistence posture is active
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -105,6 +106,13 @@ This means the current system already distinguishes secrets from general setting
 3. Preserve current compatibility for remembered execution keys until a deliberate migration path exists.
 4. Keep secret-storage planning separate from general settings cleanup.
 5. Use future secret-storage changes to converge toward Tauri-owned secrets without breaking the current non-secret settings contract.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -116,14 +124,23 @@ This means the current system already distinguishes secrets from general setting
 - [ ] Define compatibility expectations for any future migration away from browser-stored execution keys.
 - [ ] Add or tighten tests if secret lookup order or persistence behavior changes.
 - [ ] Keep options-related credentials out of scope for this non-options doc set.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app --test settings_tests`
 - run targeted unit tests in `src-tauri/src/polygon.rs`
-- run `npm --prefix web test -- src/services/executionService.test.ts`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/executionService.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -131,6 +148,7 @@ This means the current system already distinguishes secrets from general setting
 - preserve existing Remember keys behavior until a safer replacement exists and is migrated deliberately
 - separate general settings cleanup from secret-storage hardening to avoid accidental regressions
 - if execution secrets move into Tauri-owned storage later, provide import/cleanup behavior for existing browser-stored keys
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
@@ -138,4 +156,4 @@ This means the current system already distinguishes secrets from general setting
 - `REPO_Improvement/02_data/12_polygon_api_key_2026-04-08.md`
 - `REPO_Improvement/01_shell/11_settings_storage_shortcuts_2026-04-08.md`
 - `REPO_Improvement/09_live/06_broker_connectivity_2026-04-09.md`
-- `REPO_Improvement/11_docs_ops/07_local_vs_ci_authority_DATE.md`
+- `REPO_Improvement/11_docs_ops/07_local_vs_ci_authority_2026-04-09.md`

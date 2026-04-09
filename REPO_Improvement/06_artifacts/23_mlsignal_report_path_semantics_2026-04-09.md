@@ -1,3 +1,7 @@
+# ML Signal Report Path Semantics Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for ML-signal run/report path semantics so artifact detail, report opening, and workflow rehydration behave consistently when a saved run includes ML-specific attachments and status fields.
@@ -72,6 +76,7 @@ Key current ownership:
 - introducing conflicting precedence rules for report-path resolution across history, workflow, and quick-action surfaces
 - hiding ML-specific artifact paths behind generic summaries that make troubleshooting harder
 - widening the ML artifact contract without corresponding detail/report tests
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -94,6 +99,13 @@ Key current ownership:
    - artifact path
    - ML cache/schema paths
 5. Add targeted tests for missing-path and mixed-path cases.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -103,6 +115,11 @@ Key current ownership:
 - [ ] Add or tighten tests for ML-signal saved-run detail payloads in `run_artifacts.rs`.
 - [ ] Add or tighten tests for history/workflow behavior when ML paths exist but report paths do not.
 - [ ] Tighten UI wording where ML runs currently read too much like conventional report-only runs.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -110,12 +127,15 @@ Key current ownership:
 - run relevant tests in `web/src/services/historyService.test.ts`
 - run relevant tests in `web/src/services/analysisService.test.ts`
 - run workflow-artifact store tests if report-path precedence changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep existing `report_xlsx_path` behavior stable
 - introduce clearer ML path semantics as additive detail, not as a replacement for the conventional report contract
 - if a path-semantic cleanup causes confusion in saved-run reopening or quick actions, revert to the simpler explicit wording and re-test
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

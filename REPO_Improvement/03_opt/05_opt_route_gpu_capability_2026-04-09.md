@@ -68,6 +68,7 @@ The current product therefore already has a real GPU-capability model, but it is
 - treating advisory capability prose as more authoritative than Rust route results
 - losing route metadata needed by validation or reporting surfaces
 - weakening composite-profile ADX route truthfulness
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ The current product therefore already has a real GPU-capability model, but it is
 - [NVIDIA CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because GPU route claims should stay grounded in verification, profiling, and correct host-device distinctions rather than marketing shorthand.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because capability prose should derive from canonical state and backend evidence, not component-local assumptions.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because route metadata fields behave like a structured compatibility contract.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ The current product therefore already has a real GPU-capability model, but it is
 3. Treat backend route metadata as the authoritative source for exported diagnostics and reporting.
 4. Add parity fixtures comparing frontend expectations with backend route outcomes.
 5. Make export, shortlist, and metric-surface promises explicitly route-dependent.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ The current product therefore already has a real GPU-capability model, but it is
 - [ ] Document export and metric-surface capability by route.
 - [ ] Add or tighten parity tests between frontend capability text and backend route results.
 - [ ] Document fallback reason handling as a first-class UX contract.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
 - run targeted Rust route and result-contract tests
 - run targeted validation report tests if route metadata shapes change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ The current product therefore already has a real GPU-capability model, but it is
 - prefer additive route metadata over silent reinterpretation of existing labels
 - keep frontend capability prose conservative if there is any uncertainty
 - if a route loses capability, surface the fallback reason explicitly instead of hiding it
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

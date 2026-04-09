@@ -1,6 +1,6 @@
 # XLSX Dashboard Quality Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -63,12 +63,15 @@ The validation workbook already includes a true dashboard sheet rather than a pl
 - removing sheet links or dashboard summaries that currently spare the reviewer from opening raw tables first
 - replacing explicit degraded evidence text with empty cells or overly polished phrasing
 - letting `Dashboard` duplicate `Distributions` poorly instead of using the two sheets intentionally
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Microsoft Support: Create a chart from start to finish](https://support.microsoft.com/en-us/office/create-a-chart-from-start-to-finish-0baf399e-dd61-4e18-8a73-b3fd5d5680c2) reinforces clear chart/data matching, titles, and readable presentation.
 - [Microsoft Support: Creating charts from start to finish](https://support.microsoft.com/en-us/office/creating-charts-from-start-to-finish-36f8a2b7-0f74-4d40-942d-bc2e42436d73) reinforces selecting data and chart types intentionally rather than by default.
 - [rust_xlsxwriter](https://rustxlsxwriter.github.io/index.html) is relevant because the implementation can support explicit dashboard layout and formatting decisions rather than accidental defaults.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -85,6 +88,13 @@ The validation workbook already includes a true dashboard sheet rather than a pl
    - selected distribution charts on the companion `Distributions` sheet such as `Approval state counts`, `Profile counts`, and drift/efficiency charts when data exists
 4. Explicitly define the behavior for zero-survivor, compatibility-mode, skipped-module, and thin-evidence cases so the dashboard remains honest under degraded runs.
 5. Keep the dashboard distinct from `Audit Data`: summary and decision cues belong on `Dashboard`, while raw supporting fields stay in the audit sheet.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -98,20 +108,28 @@ The validation workbook already includes a true dashboard sheet rather than a pl
 - [ ] Define formatting priorities for readability over density.
 - [ ] Add XML or content checks for key dashboard labels where feasible.
 - [ ] Manually review one representative workbook after any dashboard change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
 - inspect a representative workbook in Excel
 - verify recommendation/warning content survives sparse and degraded cases
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the workbook even if the dashboard needs to degrade gracefully
 - prefer clearer labels and fewer but better charts over adding more summary decoration
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/05_validation/11_xlsx_workbook_contract_2026-04-08.md`
 - `REPO_Improvement/10_tests_perf/40_xlsx_regression_tooling_2026-04-08.md`
-- `REPO_Improvement/06_artifacts/14_report_validation_dashboard_DATE.md`
+- `REPO_Improvement/06_artifacts/14_report_validation_dashboard_2026-04-09.md`

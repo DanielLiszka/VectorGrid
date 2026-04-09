@@ -83,6 +83,7 @@ That means artifact-backed quick actions already survive beyond the immediate ru
 - moving shared commands back into multiple UI surfaces
 - losing drill-navigation or export behavior during refactors
 - confusing legacy quick-action snapshots with the preferred artifact-backed path
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -94,6 +95,8 @@ That means artifact-backed quick actions already survive beyond the immediate ru
   - relevant because artifact-backed quick actions depend on centralized state instead of DOM-driven fallbacks
 - [Playwright best practices](https://playwright.dev/docs/best-practices)
   - relevant because shared shell commands often need higher-level interaction verification
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -105,6 +108,13 @@ That means artifact-backed quick actions already survive beyond the immediate ru
    - legacy runtime snapshots
 4. Keep command actions as a delegating layer rather than a business-logic layer.
 5. Add explicit regressions around report-path fallback and runtime-running guards if quick-action coverage expands.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -114,19 +124,27 @@ That means artifact-backed quick actions already survive beyond the immediate ru
 - [ ] Document runtime-running guard behavior for report-open flows.
 - [ ] Preserve delegated routing into existing stores/services.
 - [ ] Add or tighten tests if quick-action sources or precedence rules change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/commandActionStore.test.ts`
-- run `npm --prefix web test -- src/stores/workflowArtifactsStore.test.ts`
+- run `npm --prefix web run test -- src/stores/commandActionStore.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowArtifactsStore.test.ts`
 - run related history and validation service tests if latest-path or artifact behavior changes
 - manually verify report-open behavior after artifact-backed validation runs
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve artifact-backed fallback as the preferred current path source
 - keep legacy runtime snapshots only as long as they are needed for compatibility
 - if new shell commands are added, attach them to the current shared action surface rather than inventing a new one
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

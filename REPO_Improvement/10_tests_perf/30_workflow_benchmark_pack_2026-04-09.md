@@ -59,6 +59,7 @@ The repo already keeps a tiny checked-in JSON pack that names the workflow-regre
 - treating the pack as if it were just sample data rather than a benchmark contract
 - adding many knobs to the pack before there is a clear governance reason
 - letting the pack drift away from what downstream scripts think they are measuring
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already keeps a tiny checked-in JSON pack that names the workflow-regre
 - [Cargo run command docs](https://doc.rust-lang.org/cargo/commands/cargo-run.html) are relevant because the pack is consumed through a reproducible bin invocation path.
 - [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html) is relevant because the pack ultimately configures a deterministic time-series workflow evaluation surface.
 - [Criterion.rs book](https://bheisler.github.io/criterion.rs/book/) is relevant by contrast: this pack is not a micro-benchmark config and must not be treated like one.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already keeps a tiny checked-in JSON pack that names the workflow-regre
 2. Keep the pack intentionally small and interpretable unless a stronger workload taxonomy is justified.
 3. Tie every pack change to explicit workflow-baseline review and documentation.
 4. Consider future schema validation only if pack complexity grows enough to warrant it.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already keeps a tiny checked-in JSON pack that names the workflow-regre
 - [ ] Review pack representativeness periodically without changing it casually.
 - [ ] Avoid multiplying workload knobs without a concrete regression-detection benefit.
 - [ ] Cross-link pack stewardship with workflow-gate stewardship.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already keeps a tiny checked-in JSON pack that names the workflow-regre
 - rebuild the workflow baseline intentionally after accepted pack changes
 - re-run candidate mode to make sure the wrapper and bin still agree on pack semantics
 - confirm downstream docs and scripts still describe the same workload
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current simple pack until there is evidence that it misses important regressions
 - prefer explicit versioning over silent field reinterpretation
 - if multiple packs are ever introduced, keep one canonical authority pack for the workflow gate
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # History Search Filter UX Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -75,6 +75,7 @@ The UI copy already tells the user this is not global search and points global c
 - losing empty-query order preservation
 - clearing or thrashing selected detail on harmless filter changes
 - removing tags/dataset/artifact path from the search corpus silently
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -86,6 +87,8 @@ The UI copy already tells the user this is not global search and points global c
   - relevant because search/filter UX regressions are best caught through realistic UI flows and fixtures
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html)
   - relevant because the ranking logic already lives in store-driven behavior and should remain directly testable
+- [JSON Schema: What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema)
+  - relevant because artifacts, reports, manifests, and replay payloads behave like versioned serialized contracts that should stay explicit and reviewable
 
 ## Proposed Improvement Approach
 
@@ -101,6 +104,13 @@ The UI copy already tells the user this is not global search and points global c
    - library-only search messaging
 4. Keep the current “saved-run library only” scope visible in copy and behavior.
 5. If future matched-field hints are added, keep ranking rules unchanged unless deliberately revised.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -110,13 +120,20 @@ The UI copy already tells the user this is not global search and points global c
 - [ ] Document multi-token matching across dataset/artifact/tags.
 - [ ] Add coverage for selection/detail stability and no-match cases.
 - [ ] Preserve library-only scope in both copy and behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/historyStore.search.test.ts`
-- run `npm --prefix web test -- src/components/HistoryWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/historyStore.actions.test.ts`
+- run `npm --prefix web run test -- src/stores/historyStore.search.test.ts`
+- run `npm --prefix web run test -- src/components/HistoryWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/historyStore.actions.test.ts`
 - manually verify search, no-match, and selection-stability behavior in the history panel
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -124,6 +141,7 @@ The UI copy already tells the user this is not global search and points global c
 - preserve current ranking unless a new ranking contract is deliberately adopted
 - prefer additive hints or better copy over ranking churn
 - if scorer extraction happens later, keep output parity fixtures before replacing the current store path
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -64,6 +64,7 @@ There is also a naming/alias debt: the frontend still uses some `stage4Saved*` s
 - accidentally adding or implying report-open support where no real Stage 5 report artifact exists
 - clearing the selected Stage 5 artifact on refresh
 - making Stage 5 replay depend on raw artifact structure instead of typed replay output
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -80,6 +81,13 @@ There is also a naming/alias debt: the frontend still uses some `stage4Saved*` s
 3. Keep `no report-open action` as an explicit product rule until a real Stage 5 report artifact exists.
 4. Preserve typed replay ownership and selected-item retention through refresh.
 5. Expand tests around alias compatibility, replay loading, and action-surface constraints.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +98,20 @@ There is also a naming/alias debt: the frontend still uses some `stage4Saved*` s
 - [ ] Add or tighten tests for typed replay loading and alias compatibility.
 - [ ] Add or tighten tests proving report-open remains intentionally unavailable for this family.
 - [ ] Keep replay semantics separate from artifact-library indexing concerns.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaService.test.ts`
-- run `npm --prefix web test -- src/components/MetaWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/components/MetaWorkspacePanel.test.ts`
 - run targeted `run_artifacts.rs` Stage 5 replay/list tests
 - manually verify refresh, load, reveal, and delete flows inside Saved Stage 5
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,6 +119,7 @@ There is also a naming/alias debt: the frontend still uses some `stage4Saved*` s
 - do not invent report-open semantics for Stage 5 without a real backend artifact
 - prefer additive documentation and tests over renaming state casually
 - if alias cleanup happens later, migrate tests and UI labels in one coordinated change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

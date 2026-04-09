@@ -1,6 +1,6 @@
 # Dataset Fingerprint Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -75,6 +75,7 @@ That separation is already meaningful for artifact continuity, report reproducti
 - changing strip rules without synchronized frontend/backend verification
 - changing the fingerprint version prefix without a migration plan
 - weakening deterministic cross-ticker ordering rules
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -86,6 +87,8 @@ That separation is already meaningful for artifact continuity, report reproducti
   - relevant because fingerprint stability depends on stable cross-layer request schemas
 - [Rust `std::fs::metadata`](https://doc.rust-lang.org/std/fs/fn.metadata.html)
   - relevant because source-content identity and source file diagnostics are tied to file-origin context
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -102,6 +105,13 @@ That separation is already meaningful for artifact continuity, report reproducti
 5. Keep future changes additive:
    - new fingerprint versions should coexist with old ones during migration
    - dataset-content identity should remain separate from config identity
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -111,12 +121,19 @@ That separation is already meaningful for artifact continuity, report reproducti
 - [ ] Document cross-ticker dataset ordering normalization.
 - [ ] Add or tighten frontend/backend parity checks for representative request families.
 - [ ] Clarify that the current hash is for stable identity, not for cryptographic trust.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/utils/core/artifactIdentity.test.ts`
+- run `npm --prefix web run test -- src/utils/core/artifactIdentity.test.ts`
 - run `cargo test -p ta_desktop_demo_app run_artifacts`
 - compare one frontend-computed config fingerprint with the backend-normalized artifact fingerprint for the same request family
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -124,6 +141,7 @@ That separation is already meaningful for artifact continuity, report reproducti
 - prefer dual-read / dual-write transitions if a future fingerprint version is introduced
 - do not repurpose `source_content_fingerprint` as a substitute for request identity
 - if strip rules expand, update tests and this document in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

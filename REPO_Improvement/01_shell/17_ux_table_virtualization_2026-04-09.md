@@ -74,6 +74,7 @@ So virtualization is already a user-facing performance and usability contract, n
 - losing stable row references when source rows are unchanged
 - hiding newly added columns because persisted layouts are treated too rigidly
 - changing virtualization assumptions without panel-level review
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -85,6 +86,8 @@ So virtualization is already a user-facing performance and usability contract, n
   - relevant because column-state and shell-table behavior should remain testable at the composable/store boundary
 - [Playwright best practices](https://playwright.dev/docs/best-practices)
   - relevant because virtualization regressions often show up under real scroll and interaction flows
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -97,6 +100,13 @@ So virtualization is already a user-facing performance and usability contract, n
 3. Document persisted column-state rules alongside virtualization since users experience them together.
 4. Preserve automatic visibility for newly introduced columns.
 5. Add panel-level smoke checks if any table surface changes its virtualization strategy.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -105,18 +115,27 @@ So virtualization is already a user-facing performance and usability contract, n
 - [ ] Document persisted column-visibility normalization and restore-default semantics.
 - [ ] Preserve identity stability for unchanged source rows.
 - [ ] Add or tighten regression coverage when row-key or overscan assumptions change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/composables/useVirtualTableRows.test.ts`
+- run `npm --prefix web run test -- src/composables/useVirtualTableRows.test.ts`
 - run representative panel tests for top, validation, meta, and execution tables
 - manually verify scroll, row rendering, and column visibility persistence on large result sets
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep virtualization opt-out exceptional and deliberate
 - if row-key strategy changes later, preserve user-visible stability before optimizing implementation details
 - if column-state schema changes, keep new columns visible by default unless the contract changes explicitly
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -59,6 +59,7 @@ The repo already has a substantial faceoff harness that can compare VectorGrid a
 - mixing app-path same-thread numbers with CLI or Python wall-clock numbers
 - refreshing Python-side dependencies or vectorbt versions without recording the environment change
 - using stale faceoff artifacts to justify current performance claims
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already has a substantial faceoff harness that can compare VectorGrid a
 - [Python `venv` docs](https://docs.python.org/3/library/venv.html) are relevant because comparison reproducibility depends on a stable Python environment.
 - [`pip freeze` docs](https://pip.pypa.io/en/stable/cli/pip_freeze.html) are relevant because environment snapshots are necessary if faceoff results are meant to be revisitable.
 - [Criterion.rs book](https://bheisler.github.io/criterion.rs/book/) is relevant as a contrast: some VectorGrid numbers are Criterion-like while others are app-path or CLI wall clock, and the harness must preserve that distinction.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already has a substantial faceoff harness that can compare VectorGrid a
 2. Record scenario identity, environment identity, and comparison mode alongside every saved result.
 3. Separate reproducibility concerns for Python/vectorbt from those for the Rust-side harness.
 4. Require any external claim derived from faceoff artifacts to name the exact lane, scenario, and timing boundary used.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already has a substantial faceoff harness that can compare VectorGrid a
 - [ ] Keep the faceoff harness non-options only.
 - [ ] Review README claims against fresh summary artifacts before repeating them elsewhere.
 - [ ] Avoid merging incomparable lanes into one headline number.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,15 +105,18 @@ The repo already has a substantial faceoff harness that can compare VectorGrid a
 - inspect the emitted summary JSON and Markdown for timing-boundary labels
 - capture or review the Python environment state before trusting refreshed comparison numbers
 - cross-check app-path and CLI modes separately instead of averaging them mentally
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current multi-lane honesty of the harness rather than collapsing it into simplified claims
 - prefer a smaller set of well-understood scenarios over a large uncurated scenario catalog
 - if environment drift is suspected, regenerate the comparison under a controlled Python setup before changing docs
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/32_benchmark_claims_hygiene_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/49_python_faceoff_locking_DATE.md`
-- `REPO_Improvement/10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_DATE.md`
+- `REPO_Improvement/10_tests_perf/49_python_faceoff_locking_2026-04-09.md`
+- `REPO_Improvement/10_tests_perf/51_vectorgrid_internal_benchmark_boundaries_2026-04-09.md`

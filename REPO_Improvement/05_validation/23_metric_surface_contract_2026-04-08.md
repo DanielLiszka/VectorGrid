@@ -1,6 +1,6 @@
 # Metric Surface Contract Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -77,6 +77,7 @@ The current user-visible behavior is already more than a raw JSON dump. The fron
 - inventing mismatched labels across frontend surfaces
 - conflating legacy and current metric-surface families without compatibility handling
 - treating metric-surface data as optional noise when it is already a user-visible summary surface
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -88,6 +89,8 @@ The current user-visible behavior is already more than a raw JSON dump. The fron
   - relevant because canonical field order and deterministic structured output are important for stable artifact/report behavior
 - [Pinia core concepts](https://pinia.vuejs.org/core-concepts/)
   - relevant because workflow artifact state should remain centralized instead of each UI consumer re-parsing the surface independently
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -104,6 +107,13 @@ The current user-visible behavior is already more than a raw JSON dump. The fron
    - history detail
    - report build
 5. Preserve canonical field order as a contract item, not an incidental implementation detail.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -112,13 +122,20 @@ The current user-visible behavior is already more than a raw JSON dump. The fron
 - [ ] Document canonical field ordering and compatibility expectations.
 - [ ] Verify the field survives artifact save, hydrate, and report generation unchanged.
 - [ ] Add or tighten one end-to-end regression that covers the full metric-surface path.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/stores/workflowArtifactsStore.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/stores/workflowArtifactsStore.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
 - run relevant `cargo test -p ta_desktop_demo_app` report/artifact tests
 - save a representative artifact, reload it, inspect history detail, and build a report from the artifact
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -126,6 +143,7 @@ The current user-visible behavior is already more than a raw JSON dump. The fron
 - keep legacy-summary support until saved artifacts no longer need it
 - prefer one shared formatter contract over multiple drifting UI summaries
 - if the surface grows, add fields rather than redefining old ones silently
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

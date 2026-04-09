@@ -67,6 +67,7 @@ That makes the dynamic-indicator catalog a two-stage contract: a raw exported de
 - losing required/default/enum param semantics during normalization
 - using GPU preference hints as a substitute for backend legality
 - dropping lower-level descriptor fields that future runtime or UI surfaces may already depend on
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ That makes the dynamic-indicator catalog a two-stage contract: a raw exported de
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because the builder and optimize flow need predictable typed shared state around normalized descriptor data.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because the dynamic-indicator catalog is a backend-owned contract consumed across the Tauri boundary.
 - [NVIDIA CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because exported GPU/VRAM hints should remain truthful capability signals rather than optimistic guesses.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ That makes the dynamic-indicator catalog a two-stage contract: a raw exported de
 3. Treat output typing and required-param defaultability as first-class eligibility rules rather than incidental builder heuristics.
 4. Keep builder filtering explicit and local, while keeping raw descriptor normalization reusable.
 5. Add or tighten tests whenever new indicator kinds, output kinds, or param kinds are introduced.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ That makes the dynamic-indicator catalog a two-stage contract: a raw exported de
 - [ ] Document required/default/enum param behavior and defaultability rules.
 - [ ] Document capability and preference flags without overstating legality.
 - [ ] Add or tighten tests for catalog normalization and builder eligibility.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted catalog tests in `crates/app_core/src/indicator_catalog.rs`
-- run `npm --prefix web test -- src/services/dynamicIndicatorCatalogService.test.ts`
-- run `npm --prefix web test -- src/strategies/dynamicDoubleMaBuilder.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/dynamicIndicatorCatalogService.test.ts`
+- run `npm --prefix web run test -- src/strategies/dynamicDoubleMaBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ That makes the dynamic-indicator catalog a two-stage contract: a raw exported de
 - prefer adding new descriptor fields over changing existing semantics
 - if builder eligibility expands later, document the new admissibility rule explicitly rather than silently widening the set
 - keep unsupported-but-exported indicators out of the builder until runtime legality and defaults are verified together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

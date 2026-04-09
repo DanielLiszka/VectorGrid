@@ -140,6 +140,57 @@ function makeRunSummary(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function makeArtifactRecord(overrides: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    kind: 'vectorgrid_options_expression_v1',
+    ts: '2026-04-05T12:00:00Z',
+    artifactPath: 'C:/runs/vectorgrid_options_expression_1.json',
+    parentArtifactId: 'vectorgrid_run_1',
+    rootSymbol: 'SPY',
+    optionsDatasetId: 'spy_options',
+    optionsDatasetHash: 'hash-1',
+    backendUsed: 'cpu_reference',
+    backendFallbackReason: '',
+    priceSemantics: 'minute_aggregate',
+    request: {
+      parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+      parentCandidateIndex: null,
+      optionsDatasetId: 'spy_options',
+      splitAssignmentMode: 'event_chronological',
+      delayMinutes: [0],
+      dteBuckets: [1],
+      moneynessBuckets: ['atm'],
+      holdMinutes: [15],
+      targetReturnBuckets: [0.25],
+      stopReturnBuckets: [0.25],
+      exitTemplate: 'fixed_hold_or_target_stop',
+      fillModel: 'aggregate_research',
+      filters: {
+        maxEntryLagMinutes: 5,
+        maxPremium: null,
+        minPremium: null,
+        minVolume: null,
+        minOpenInterest: null,
+      },
+      topK: 25,
+      minValidTrades: null,
+      splitRatioSearch: 0.6,
+      splitRatioHoldout: 0.2,
+      sealedFinalistCount: 5,
+      backendPreference: 'auto',
+      structureFamily: 'long_single',
+    },
+    diagnostics: makeDiagnosticsSummary(),
+    staging: null,
+    overlapWindow: makeOverlapWindow(),
+    coverageAdequacy: makeCoverageAdequacy(),
+    splitInvalidReasons: makeSplitInvalidReasons(),
+    selectionMetrics: [],
+    ...overrides,
+  }
+}
+
 function makeFeasibilitySummary(overrides: Record<string, unknown> = {}) {
   return {
     replayBuildMs: 18,
@@ -562,12 +613,249 @@ describe('OptionsExpressionPanel', () => {
     const downloadButton = wrapper.findAll('button').find((entry) => entry.text() === 'Download Polygon/Massive 1m data')
     expect(downloadButton).toBeTruthy()
     expect(downloadButton!.attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('Quote-aware realism is currently a CSV-import lane.')
+    expect(wrapper.text()).toContain(
+      'Quote-aware realism is a first-class lane with CSV import for new dataset acquisition today.',
+    )
     expect(wrapper.text()).toContain('Direct provider download in this panel is currently available only for the Aggregate lane.')
     expect(wrapper.text()).toContain('Select Quote-aware Polygon/Massive dataset…')
     expect(wrapper.text()).toContain('Lane product status')
     expect(wrapper.text()).toContain('Saved datasets')
     expect(wrapper.text()).toContain('No saved artifacts currently match the selected Quote-aware lane for this parent run.')
+  })
+
+  it('switches the workflow into the derived-mid lane and keeps import-first acquisition guidance', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+      {
+        optionsDatasetId: 'spy_mid',
+        rootSymbol: 'SPY',
+        priceSemantics: 'derived_mid_snapshot',
+        contractCount: 2,
+        rowCount: 24,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+    })
+
+    await wrapper.find('#optionsRealismLane').setValue('derived_mid')
+
+    const downloadButton = wrapper.findAll('button').find((entry) => entry.text() === 'Download Polygon/Massive 1m data')
+    expect(downloadButton).toBeTruthy()
+    expect(downloadButton!.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain(
+      'Derived-mid realism is a first-class lane with CSV import for new dataset acquisition today.',
+    )
+    expect(wrapper.text()).toContain('Direct provider download in this panel is currently available only for the Aggregate lane.')
+    expect(wrapper.text()).toContain('Select Derived-mid Polygon/Massive dataset…')
+    expect(wrapper.text()).toContain('only support aggregate_research in the backend')
+    expect(wrapper.text()).toContain('Lane product status')
+  })
+
+  it('does not borrow selected dataset provenance when a reopened artifact dataset is missing locally', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        providerName: 'massive',
+        providerSourceSurface: 'minute_aggregate',
+        providerEntitlementProfile: 'options_business',
+        quoteResolution: '1m',
+        priceSemantics: 'minute_aggregate',
+        calendarId: 'market_hours_utc',
+        timezone: 'UTC',
+        coverageStart: 1_700_000_000_000,
+        coverageEnd: 1_700_000_120_000,
+        contractReferenceSource: 'massive_contract_reference',
+        contractReferenceAsOfUtc: '2026-04-05T00:00:00Z',
+        underlierReferenceSource: 'underlying_dataset',
+        datasetPath: 'C:/datasets/spy_options',
+        contractCount: 3,
+        rowCount: 42,
+        aggregatePriceField: 'close',
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.activeArtifact = {
+      ...makeArtifactRecord({
+        artifactPath: 'C:/runs/vectorgrid_options_expression_missing_quotes.json',
+        optionsDatasetId: 'spy_quotes_missing',
+        priceSemantics: 'top_of_book_quote',
+        request: {
+          parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+          parentCandidateIndex: null,
+          optionsDatasetId: 'spy_quotes_missing',
+          splitAssignmentMode: 'event_chronological',
+          delayMinutes: [0],
+          dteBuckets: [1],
+          moneynessBuckets: ['atm'],
+          holdMinutes: [15],
+          targetReturnBuckets: [0.25],
+          stopReturnBuckets: [0.25],
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'quote_conservative',
+          filters: {
+            maxEntryLagMinutes: 5,
+            maxPremium: null,
+            minPremium: null,
+            minVolume: null,
+            minOpenInterest: null,
+          },
+          topK: 25,
+          minValidTrades: null,
+          splitRatioSearch: 0.6,
+          splitRatioHoldout: 0.2,
+          sealedFinalistCount: 5,
+          backendPreference: 'auto',
+          structureFamily: 'long_single',
+        },
+        diagnostics: {
+          parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+          optionsDatasetId: 'spy_quotes_missing',
+          rootSymbol: 'SPY',
+          totalEvents: 10,
+          bullishEvents: 6,
+          bearishEvents: 4,
+          searchEvents: 6,
+          holdoutEvents: 2,
+          sealedTestEvents: 2,
+          datasetContracts: 3,
+          datasetRows: 42,
+          coverageStart: null,
+          coverageEnd: null,
+        },
+        selectionMetrics: [],
+      }),
+    }
+
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('manifest unavailable locally')
+  })
+
+  it('states explicit runtime semantics for reopened quote-aware and derived-mid artifacts', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.activeArtifact = makeArtifactRecord({
+      artifactPath: 'C:/runs/vectorgrid_options_expression_quotes.json',
+      optionsDatasetId: 'spy_quotes',
+      priceSemantics: 'top_of_book_quote',
+      request: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentCandidateIndex: null,
+        optionsDatasetId: 'spy_quotes',
+        splitAssignmentMode: 'event_chronological',
+        delayMinutes: [0],
+        dteBuckets: [1],
+        moneynessBuckets: ['atm'],
+        holdMinutes: [15],
+        targetReturnBuckets: [0.25],
+        stopReturnBuckets: [0.25],
+        exitTemplate: 'fixed_hold_or_target_stop',
+        fillModel: 'quote_conservative',
+        filters: {
+          maxEntryLagMinutes: 5,
+          maxPremium: null,
+          minPremium: null,
+          minVolume: null,
+          minOpenInterest: null,
+        },
+        topK: 25,
+        minValidTrades: null,
+        splitRatioSearch: 0.6,
+        splitRatioHoldout: 0.2,
+        sealedFinalistCount: 5,
+        backendPreference: 'auto',
+        structureFamily: 'long_single',
+      },
+      selectionMetrics: [],
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('only quote-side execution lane currently surfaced in the options workflow')
+    expect(wrapper.text()).toContain('new dataset acquisition remains CSV import-first today')
+
+    store.activeArtifact = makeArtifactRecord({
+      artifactPath: 'C:/runs/vectorgrid_options_expression_mid.json',
+      optionsDatasetId: 'spy_mid',
+      priceSemantics: 'derived_mid_snapshot',
+      request: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentCandidateIndex: null,
+        optionsDatasetId: 'spy_mid',
+        splitAssignmentMode: 'event_chronological',
+        delayMinutes: [0],
+        dteBuckets: [1],
+        moneynessBuckets: ['atm'],
+        holdMinutes: [15],
+        targetReturnBuckets: [0.25],
+        stopReturnBuckets: [0.25],
+        exitTemplate: 'fixed_hold_or_target_stop',
+        fillModel: 'aggregate_research',
+        filters: {
+          maxEntryLagMinutes: 5,
+          maxPremium: null,
+          minPremium: null,
+          minVolume: null,
+          minOpenInterest: null,
+        },
+        topK: 25,
+        minValidTrades: null,
+        splitRatioSearch: 0.6,
+        splitRatioHoldout: 0.2,
+        sealedFinalistCount: 5,
+        backendPreference: 'auto',
+        structureFamily: 'long_single',
+      },
+      selectionMetrics: [],
+    })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('runtime execution remains aggregate-style and non-quote-side')
   })
 
   it('downloads a bounded Polygon/Massive dataset from the options panel', async () => {

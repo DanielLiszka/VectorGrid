@@ -1,6 +1,6 @@
 # Analysis Store And Service Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -74,6 +74,7 @@ The analysis layer already does substantial work. It builds overview winner fram
 - causing unnecessary heatmap base rerenders on restore
 - allowing `MlSignal` artifacts to populate normal optimizer result surfaces
 - breaking current Stage 4 / Stage 5 routing behavior already pinned by tests
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +88,8 @@ The analysis layer already does substantial work. It builds overview winner fram
   - relevant because shortlist rendering already relies on virtual-row behavior
 - [WAI-ARIA APG: Grid Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/grid/)
   - relevant because shortlist interaction semantics depend on grid-like keyboard and selection behavior
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -103,6 +106,13 @@ The analysis layer already does substantial work. It builds overview winner fram
    - DOM/canvas rendering helpers
 3. Document module-scope caches and sequence guards explicitly before refactoring them.
 4. Treat current tests as contract, not incidental coverage.
+5. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -112,18 +122,27 @@ The analysis layer already does substantial work. It builds overview winner fram
 - [ ] Document cache, in-flight dedupe, and stale-response protection behavior.
 - [ ] Document `top_k=0` and `MlSignal` special-case guardrails.
 - [ ] Add or tighten tests if analysis projection or store routing changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/analysisService.test.ts src/stores/analysisStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/OverviewWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/TopWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/analysisService.test.ts src/stores/analysisStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/OverviewWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/TopWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current result semantics before splitting `analysisService.ts` or `analysisStore.ts`
 - keep pure refactors honest by rerunning the existing broad analysis test surface
 - if meta/finalizer state is separated later, maintain the current public store action surface until the migration is complete
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -1,3 +1,7 @@
+# Prescan Iterative Sim Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the two accuracy-sensitive adjuncts around non-options search and validation: predictive prescan narrowing and the optional iterative simulation engine used to compare richer execution assumptions against the vectorized baseline.
@@ -79,6 +83,7 @@ Users experience this through:
 - letting iterative metrics silently alter candidate ranking, gate decisions, or report wording without explicit policy
 - treating iterative mode as authoritative when the repo still treats vectorized mode as the baseline path
 - adding new simulation complexity without corresponding end-to-end fidelity checks
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +92,8 @@ Users experience this through:
 - [Criterion.rs getting started](https://bheisler.github.io/criterion.rs/book/getting_started.html) is relevant because prescan narrowing and iterative simulation can affect both fidelity and runtime cost.
 - [rayon iterator docs](https://docs.rs/rayon/latest/rayon/iter/index.html) are relevant because composite search and validation often combine heuristics with parallel evaluation, making deterministic aggregation important.
 - [serde_json::Value docs](https://docs.rs/serde_json/latest/serde_json/value/) are relevant because iterative deltas and prescan outcomes ultimately flow into JSON-shaped artifacts and summary payloads.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -104,6 +111,13 @@ Users experience this through:
    - when deltas affect ranking or gating
    - how vectorized and iterative metrics are displayed side by side
 5. Use the fidelity-audit harness as the final arbiter before any tightening or expansion of these paths.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -114,6 +128,12 @@ Users experience this through:
 - [ ] Add or tighten validation tests for iterative delta attachment and verdict stability.
 - [ ] Run the fidelity-audit harness or equivalent bounded checks before accepting behavioral changes to either path.
 - [ ] Decide whether iterative-vs-vectorized ranking differences require stronger UI/report wording in follow-on docs.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -123,6 +143,9 @@ Users experience this through:
 - run validation integration tests in `composite_validate.rs`
 - run composite search tests in `composite_cpu.rs` and `composite_mo.rs`
 - run `real_data_optimizer_eval.rs` or `real_data_fidelity_audit.rs` for decision-preservation checks when behavior changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -130,6 +153,7 @@ Users experience this through:
 - keep prescan heuristic behavior bounded and explainable
 - prefer stronger visibility and tests over increasing heuristic aggressiveness
 - if fidelity checks weaken after a change, revert to the simpler prior behavior rather than defending the heuristic
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

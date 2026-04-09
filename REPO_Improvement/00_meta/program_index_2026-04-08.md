@@ -27,6 +27,7 @@ It is the quickest starting point for understanding:
 - [doc_creation_tracker_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md)
 - [00_program_index_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/00_program_index_2026-04-09.md)
 - [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
+- [execution_ledger_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/execution_ledger_2026-04-09.md)
 
 ## External Routing Anchor
 
@@ -36,23 +37,23 @@ It is the quickest starting point for understanding:
 
 - planned docs in current `v7` catalog: `356`
 - planned-doc creation status: `complete`
+- second-pass implementation-doc hardening status: `complete`
 - unique planned-doc slots now represented on disk: `356`
-- current total markdown under `REPO_Improvement/`: `365`
+- current total markdown under `REPO_Improvement/`: `363`
 - unique non-meta implementation-plan slots now represented on disk: `343`
-- raw non-meta implementation-plan files on disk: `346`
-- note: `01_shell` still contains `3` duplicate date-variant planned-slot files, so raw file totals are higher than unique planned-slot totals
+- raw non-meta implementation-plan files on disk: `343`
 
 ## Wave Status
 
-- Waves `1` through `25`: completed
-- Current state: planned-doc creation complete; the program now shifts from creation to maintenance and implementation use
+- Waves `1` through `26`: completed
+- Current state: planned-doc creation and second-pass hardening are complete; the program now shifts from creation to implementation use and maintenance
 
 ## What Comes Next
 
 The next phase is:
 
-1. targeted quality/detail passes where any doc still needs tightening
-2. using the completed plan set to route actual repo improvements safely
+1. using the completed plan set to route actual repo improvements safely
+2. maintaining the corpus when real repo changes or quality gaps require updates
 3. updating the tracker/index only when the planned catalog itself changes or a maintenance pass materially changes program status
 
 ## Folder Index
@@ -75,3 +76,4 @@ The next phase is:
 - [README.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/README.md)
 - [doc_creation_tracker_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md)
 - [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
+- [execution_ledger_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/execution_ledger_2026-04-09.md)

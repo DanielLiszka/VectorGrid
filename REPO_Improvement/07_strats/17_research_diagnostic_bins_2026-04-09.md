@@ -78,6 +78,7 @@ They therefore act as the repo's internal measurement and diagnostic layer for s
 - duplicating measurement logic across multiple bins without a clear ownership map
 - treating one-off diagnostic output as a stable product contract unless it is explicitly frozen
 - weakening the fidelity-audit harness while expanding less important exploratory tools
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -86,6 +87,8 @@ They therefore act as the repo's internal measurement and diagnostic layer for s
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/archive/12.5.1/cuda-c-best-practices-guide/index.html) is relevant because several bins exist specifically to characterize GPU behavior and should keep correctness and measurement discipline explicit.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because several bins already emit structured artifacts that should evolve compatibly.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because these headless tools should stay complementary to, not contradictory with, the command-driven product surface.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -94,6 +97,13 @@ They therefore act as the repo's internal measurement and diagnostic layer for s
 3. Document argument conventions, output conventions, and artifact naming conventions.
 4. Keep diagnostic bins additive: they should illuminate product behavior, not replace product-facing verification.
 5. Keep the fidelity-audit harness as the highest-priority maintained bin in this group.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -103,6 +113,12 @@ They therefore act as the repo's internal measurement and diagnostic layer for s
 - [ ] Add or tighten tests for any bin whose output is consumed by scripts or docs.
 - [ ] Review whether shared JSON artifact helpers should be reused more consistently across bins.
 - [ ] Keep the fidelity-audit harness documented as the primary strategy-facing evidence tool.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -110,6 +126,8 @@ They therefore act as the repo's internal measurement and diagnostic layer for s
 - manually smoke-test the maintained bins after any CLI or artifact-contract change
 - verify scripts that launch the bins still work against the documented flags and outputs
 - keep at least one structured output artifact per maintained bin available for inspection
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -117,6 +135,7 @@ They therefore act as the repo's internal measurement and diagnostic layer for s
 - prefer additive flags and additive output fields over breaking CLI changes
 - if a bin is exploratory-only, label it clearly rather than implying product support
 - keep the desktop product contract separate from the headless diagnostic contract
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

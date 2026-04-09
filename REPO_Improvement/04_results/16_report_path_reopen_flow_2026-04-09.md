@@ -67,6 +67,7 @@ This doc exists to keep that flow truthful: report availability, path ownership,
 - breaking reveal/open flows when saved-run identity changes
 - letting result surfaces imply a report exists when only exports or raw artifacts exist
 - weakening the connection between current analysis and saved-run reopen behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ This doc exists to keep that flow truthful: report availability, path ownership,
 - [ARIA: status role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/status_role) is relevant because report availability and reopen success should be conveyed as visible status, not inferred silently.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because reopen flows depend on shared current-run and saved-run state rather than component-local file knowledge.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because report reopen behavior depends on stable artifact metadata and path contracts across layers.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ This doc exists to keep that flow truthful: report availability, path ownership,
 3. Treat reveal/open/report actions as trust-building workflow steps, not just convenience buttons.
 4. Ensure visible messaging explains which artifact or report is being opened or revealed.
 5. Add or tighten tests whenever report-availability cues or reopen actions change.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,20 @@ This doc exists to keep that flow truthful: report availability, path ownership,
 - [ ] Document path/reveal/open action semantics in result-review contexts.
 - [ ] Document fallback behavior when a report path is absent or stale.
 - [ ] Add or tighten tests for report open and reveal action visibility.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/HistoryWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/historyService.test.ts`
+- run `npm --prefix web run test -- src/components/HistoryWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/historyService.test.ts`
 - run targeted history-store action tests if reopen or reveal semantics change
 - manually verify current-run and saved-run reopen flows on a real saved artifact set
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,10 +121,11 @@ This doc exists to keep that flow truthful: report availability, path ownership,
 - prefer additive path/reopen cues over hiding actions that already work
 - if report generation becomes more conditional later, surface that distinction explicitly before changing reopen affordances
 - keep History and result-surface messaging aligned whenever artifact-path semantics change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/10_out_overview_decision_surface_2026-04-09.md`
-- `REPO_Improvement/06_artifacts/19_report_save_open_reveal_DATE.md`
+- `REPO_Improvement/06_artifacts/19_report_save_open_reveal_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/21_report_artifact_path_persistence_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/24_history_library_core_2026-04-08.md`

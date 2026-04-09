@@ -71,12 +71,15 @@ Current visible behavior therefore includes:
 - breaking run-footer or settings posture by changing summary wording casually
 - dropping active-task count or overall-progress semantics from shared shell surfaces
 - creating new component-local task summaries instead of reusing the shared one
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because task summary correctness depends on deriving shared shell posture from one store rather than duplicating logic per component.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because the repo already uses a store-plus-derived-consumer pattern for long-lived task state.
 - [MDN localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) is relevant indirectly because the task center already persists parts of its history and timeline, so summary semantics should remain compatible with persisted state.
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -85,6 +88,13 @@ Current visible behavior therefore includes:
 3. Add direct verification for the composable boundary or strengthen consumer tests so summary drift is easier to catch.
 4. Keep summary text concise and shared so Run Footer, Settings, and shell header posture stay aligned.
 5. Document how background task types and progress-bearing commands are expected to influence the summary.
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -93,19 +103,28 @@ Current visible behavior therefore includes:
 - [ ] Document how `statusPresentation.ts` participates in tone and wording normalization.
 - [ ] Add or tighten tests for active-task count, latest outcome, and overall-progress label behavior.
 - [ ] Record the rule that shell consumers should not fork their own summary logic.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted task-store lifecycle and progress tests
-- run `npm --prefix web test -- src/components/RunFooterPanel.test.ts`
-- run `npm --prefix web test -- src/components/VueWorkspaceShell.test.ts`
-- run `npm --prefix web test -- src/components/SettingsWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/RunFooterPanel.test.ts`
+- run `npm --prefix web run test -- src/components/VueWorkspaceShell.test.ts`
+- run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - prefer documentation and test hardening before refactoring summary wording or return shape
 - keep the Task Center as the detailed source of truth even if the shell summary becomes clearer
 - maintain backward compatibility for existing consumers until all summary paths are migrated together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

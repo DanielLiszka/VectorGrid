@@ -1,6 +1,6 @@
 # ML Signal Score Cache Build Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -63,6 +63,7 @@ Users choose a model-score CSV input path and a score-cache output path, optiona
 - hiding coverage or duplicate-timestamp warnings
 - losing artifact linkage between cache generation and later ML Signal stages
 - turning score-cache generation into a generic “model import” feature without documenting the current contract
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -70,6 +71,8 @@ Users choose a model-score CSV input path and a score-cache output path, optiona
 - [RFC 8259](https://datatracker.ietf.org/doc/html/rfc8259) is relevant because the produced cache and manifest are JSON contracts.
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant for the cache JSON and manifest payload contracts.
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because cache generation crosses a command boundary and exposes structured result fields to the UI.
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -80,6 +83,13 @@ Users choose a model-score CSV input path and a score-cache output path, optiona
 5. Document the runtime restriction that raw-margin-only caches can build successfully but are insufficient for probability-threshold validation/sweep.
 6. Keep artifact persistence and UI stage summaries aligned with the backend result contract.
 7. Expand tests around coverage, schema, malformed input, and runtime restriction behavior.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,6 +104,12 @@ Users choose a model-score CSV input path and a score-cache output path, optiona
 - [ ] Add or maintain tests for malformed or partially compatible input score CSVs.
 - [ ] Preserve backend kind/version/schema checks.
 - [ ] Keep UI status and metadata summaries aligned with backend fields.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -101,12 +117,15 @@ Users choose a model-score CSV input path and a score-cache output path, optiona
 - run ML workspace component tests for stage-2 behavior
 - run targeted Rust score-cache tests in `ta_app_core`
 - manually verify one score-cache build if manifest or summary fields change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current cache kind/version/schema expectations until a versioned migration exists
 - keep score-cache generation bounded to the current ML Signal workflow
 - if cache manifests expand, preserve current fields until downstream consumers are updated
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

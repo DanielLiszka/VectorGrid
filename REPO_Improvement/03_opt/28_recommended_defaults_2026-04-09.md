@@ -67,6 +67,7 @@ That makes this logic a repair layer, not an opinionated profile system, and tha
 - turning recommended defaults into a hidden preset profile system
 - drifting startup, panel, and pre-run application behavior
 - burying this logic inside larger services or components
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ That makes this logic a repair layer, not an opinionated profile system, and tha
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because the main contract is deterministic state repair, which benefits from focused tests.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because recommended defaults should remain a store-facing helper, not duplicated panel logic.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the repaired fields are part of structured optimization payloads with compatibility expectations.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ That makes this logic a repair layer, not an opinionated profile system, and tha
 3. Preserve explicit `0` values and non-grid mode behavior as tested product rules.
 4. Keep the helper small and isolated instead of merging it into unrelated services.
 5. Add or tighten tests if lifecycle application points change.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,20 @@ That makes this logic a repair layer, not an opinionated profile system, and tha
 - [ ] Document startup, mount, and pre-run application sites.
 - [ ] Document preservation of explicit `0` and non-grid mode behavior.
 - [ ] Add or tighten lifecycle tests if application timing changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/recommendedOptimizationDefaults.test.ts`
-- run `npm --prefix web test -- src/components/AdvancedWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/main.test.ts`
+- run `npm --prefix web run test -- src/services/recommendedOptimizationDefaults.test.ts`
+- run `npm --prefix web run test -- src/components/AdvancedWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/main.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,6 +121,7 @@ That makes this logic a repair layer, not an opinionated profile system, and tha
 - keep this helper separate from preset-profile application
 - document lifecycle changes before moving the helper to a new call site
 - if the default values change later, update helper tests and this plan together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -75,6 +75,7 @@ The flow is therefore already an important cross-surface workflow, not only a Me
 - breaking reopen/reveal of saved Stage 3 reports
 - making validation export fallback stop honoring the latest Stage 3 workbook
 - introducing cleanup/pruning behavior that deletes report files unexpectedly
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -83,6 +84,8 @@ The flow is therefore already an important cross-surface workflow, not only a Me
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because latest-report path state and saved-entry actions are coordinated across several stores and services.
 - [Pinia Testing Cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because the current flow is best protected through behavior-level tests in service and store layers.
 - [RFC 8259 - JSON](https://www.rfc-editor.org/rfc/rfc8259) is relevant because the Stage 3 artifact JSON stores the saved workbook path and result payload used for replay/fallback behavior.
+- [JSON Schema: What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema)
+  - relevant because artifacts, reports, manifests, and replay payloads behave like versioned serialized contracts that should stay explicit and reviewable
 
 ## Proposed Improvement Approach
 
@@ -97,6 +100,13 @@ The flow is therefore already an important cross-surface workflow, not only a Me
 3. Add or tighten tests that cover saved-path persistence and Stage 3 fallback reuse.
 4. Keep report files and artifact files distinct but linked.
 5. Preserve additive behavior only; do not remove any current Stage 3 reopen/reveal path.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -107,6 +117,11 @@ The flow is therefore already an important cross-surface workflow, not only a Me
 - [ ] Add or tighten tests for validation-side Stage 3 fallback.
 - [ ] Document partial-failure behavior if workbook save or artifact save fails independently.
 - [ ] Confirm report retention and artifact retention do not silently diverge.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -115,6 +130,8 @@ The flow is therefore already an important cross-surface workflow, not only a Me
 - run `C:\Program Files\PowerShell\7\pwsh.exe -Command "npm run test -- src/stores/analysisStore.actions.test.ts"` from `web/`
 - run targeted `commands_meta.rs` tests if present
 - manually run one meta selection, then validate reopen/reveal and validation-side fallback behavior
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -122,6 +139,7 @@ The flow is therefore already an important cross-surface workflow, not only a Me
 - keep workbook files and artifact JSON files as separate but linked outputs
 - if path-tracking logic is centralized, update both Meta and validation fallback surfaces together
 - preserve current Stage 3 naming/compatibility behavior until a repo-wide naming change is made
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

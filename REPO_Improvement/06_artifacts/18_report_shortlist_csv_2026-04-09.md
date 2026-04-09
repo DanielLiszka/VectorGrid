@@ -64,6 +64,7 @@ The CSV already contains a fixed header and a reproducibility field (`params_jso
 - dropping `params_json` or approval/fail-reason evidence
 - silently changing shortlist fallback semantics
 - making CSV disagree with workbook shortlist labels and row-source policy
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -80,6 +81,13 @@ The CSV already contains a fixed header and a reproducibility field (`params_jso
 3. Keep CSV escaping and header order centralized and test-protected.
 4. Align CSV field naming and meaning with workbook shortlist terminology.
 5. Expand tests for escaping, header order, and shortlist fallback behavior.
+6. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,6 +98,11 @@ The CSV already contains a fixed header and a reproducibility field (`params_jso
 - [ ] Add or tighten tests for `params_json`, warnings, and fail-reason field preservation.
 - [ ] Confirm CSV labels stay aligned with workbook shortlist semantics.
 - [ ] Manually inspect one exported CSV containing quoted text and one zero-shortlist fallback case.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -97,6 +110,8 @@ The CSV already contains a fixed header and a reproducibility field (`params_jso
 - run `C:\Program Files\PowerShell\7\pwsh.exe -Command "npm run test -- src/services/validationService.test.ts"` from `web/`
 - add or run a focused CSV escaping and header-order test
 - manually export a shortlist CSV and open it in a spreadsheet app plus a plain-text editor
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,6 +119,7 @@ The CSV already contains a fixed header and a reproducibility field (`params_jso
 - keep fallback-to-all-rows behavior explicit rather than silently changing it
 - avoid adding presentation-only workbook concepts to the CSV unless they are genuinely useful downstream
 - if the CSV grows, document the added columns rather than reordering existing ones
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

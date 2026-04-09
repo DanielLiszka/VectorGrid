@@ -1,3 +1,7 @@
+# Meta Panel Ia Plan
+
+Last updated: 2026-04-09
+
 ## Purpose
 
 Define the improvement plan for the Meta workspace information architecture so Meta Selection, Batch Generation, Saved Meta, and Compare remain understandable as one coherent workspace instead of a dense pile of loosely related controls.
@@ -66,6 +70,7 @@ This is powerful, but it also creates density. The current UI works best when th
 - hiding high-value actions behind ambiguous menus
 - changing grouping or labels in ways that break existing user muscle memory without a clear win
 - letting saved-artifact family behavior drift apart visually and conceptually
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +79,8 @@ This is powerful, but it also creates density. The current UI works best when th
 - [WAI-ARIA Authoring Practices](https://www.w3.org/WAI/ARIA/apg/) are relevant because tab groups, menus, and dense form layouts need strong navigation semantics.
 - [Tauri event namespace](https://v2.tauri.app/es/reference/javascript/api/namespaceevent/) is relevant because long-running meta and campaign flows surface progress and result changes through runtime events.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because much of the workspace exists to review or launch structured artifact workflows.
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -85,6 +92,13 @@ This is powerful, but it also creates density. The current UI works best when th
    - what artifact family it produces or consumes
 4. Preserve action visibility while reducing conceptual clutter through better grouping and copy.
 5. Add tests for IA-critical affordances such as tab switching, saved-family switching, and destructive-action confirmation.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -93,6 +107,12 @@ This is powerful, but it also creates density. The current UI works best when th
 - [ ] Add or tighten tests for tab/family switching and context-menu behavior.
 - [ ] Verify that Stage 4/5 and policy-eval controls remain distinguishable from Meta Selection and Batch Generation.
 - [ ] Decide whether some sections need stronger subheadings or summary chips instead of more controls.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -101,16 +121,19 @@ This is powerful, but it also creates density. The current UI works best when th
 - run `metaServiceCampaignResume.test.ts`
 - run `metaServiceCampaignStrategy.test.ts`
 - perform a bounded manual scan of the Meta workspace after IA-only copy/grouping changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing capabilities and action reachability
 - prefer clearer grouping/copy over structural upheaval in the first wave
 - if an IA change hides too much, restore the more explicit layout and improve explanation incrementally
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/08_ml/07_meta_selection_compare_2026-04-09.md`
 - `REPO_Improvement/08_ml/08_meta_batch_generation_2026-04-09.md`
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
-- `REPO_Improvement/01_shell/21_shell_context_menus_help_2026-04-08.md`
+- `REPO_Improvement/01_shell/21_shell_context_menus_help_2026-04-09.md`

@@ -63,12 +63,15 @@ At the same time, repair and top-off can mutate cached Polygon CSV contents in p
 - weakening loaded-base reuse checks so stale datasets can be reused by path alone
 - dropping startup snapshot source-identity hints
 - adding new replay or restore flows that ignore mutable Polygon dataset risk
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because startup snapshots and data-context objects are effectively persisted compatibility contracts.
 - [MDN localStorage](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage) is relevant because replay-sensitive startup state is currently persisted in browser storage.
 - [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) is relevant because many of these replay-sensitive contracts ultimately live in JSON state and artifact payloads.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -77,6 +80,13 @@ At the same time, repair and top-off can mutate cached Polygon CSV contents in p
 3. Explicitly call out which flows mutate cached Polygon files and what that means for replay or restore assumptions.
 4. Identify where content fingerprinting could later strengthen guarantees without making it a hidden requirement today.
 5. Connect this risk doc to results, validation, and artifact plans so mutable-dataset safety is not treated as data-only trivia.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -85,19 +95,28 @@ At the same time, repair and top-off can mutate cached Polygon CSV contents in p
 - [ ] Document where path-only assumptions remain risky.
 - [ ] Document the current availability of content fingerprinting for future strengthening.
 - [ ] Link mutable-dataset risk into downstream validation/artifact/result docs that depend on data identity.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted data-cache identity and fingerprint tests
 - run targeted state reuse tests for loaded base datasets
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts` after startup-snapshot or root-rewrite changes
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts` after startup-snapshot or root-rewrite changes
 - perform one manual repair/top-off then restore cycle if replay-sensitive behavior is changed
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current size/mtime identity safeguards as a baseline
 - prefer additive provenance strengthening over removing existing restore functionality
 - treat mutable-dataset replay risk as a cross-cutting compatibility concern, not a one-off warning
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

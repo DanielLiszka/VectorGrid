@@ -59,6 +59,7 @@ The repo already has a rich internal timing vocabulary scattered across scripts 
 - merging unlike timing surfaces into one internal chart or narrative
 - allowing doc claims to outlive the artifact boundary labels they were based on
 - treating telemetry-only or helper-bin outputs as gate authority
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already has a rich internal timing vocabulary scattered across scripts 
 - [Cargo benchmark command docs](https://doc.rust-lang.org/cargo/commands/cargo-bench.html) are relevant because multiple internal surfaces ultimately originate from Cargo benchmark semantics.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because GPU timing boundaries especially require precise measurement context.
 - [Python `venv` docs](https://docs.python.org/3/library/venv.html) are relevant because Python-process wall-clock boundaries depend on controlled comparison environments.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already has a rich internal timing vocabulary scattered across scripts 
 2. Tie each boundary label to one or more concrete scripts or bins.
 3. Use the taxonomy as a review tool whenever benchmark prose is written or updated.
 4. Prefer preserving multiple honest boundaries over creating one oversimplified aggregate number.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already has a rich internal timing vocabulary scattered across scripts 
 - [ ] Review benchmark prose and release notes against the canonical vocabulary.
 - [ ] Mark telemetry-only and helper-bin boundaries explicitly as non-authoritative.
 - [ ] Avoid introducing new ad hoc boundary names without need.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already has a rich internal timing vocabulary scattered across scripts 
 - cross-check docs and summaries against those outputs
 - re-run a lane when its emitted boundary metadata is unclear or stale
 - treat inconsistent boundary naming as a documentation regression
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing explicit boundary labels and standardize around them
 - prefer documentation and review discipline over new runtime complexity
 - if a truly new boundary is added, add it explicitly to the taxonomy and surrounding docs
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

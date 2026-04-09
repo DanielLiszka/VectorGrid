@@ -1,6 +1,6 @@
 # Execution Service and Store Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -65,6 +65,7 @@ The execution workspace can test connectivity, refresh broker state, subscribe t
 - breaking one-runner replacement behavior
 - losing optimistic-state feedback that users currently rely on
 - changing credential persistence behavior without a compatibility path
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -87,6 +88,13 @@ The execution workspace can test connectivity, refresh broker state, subscribe t
 3. Make manual/best/selected parameter-source behavior explicit instead of letting it emerge from store heuristics.
 4. Clarify credential persistence and clearing semantics now, even if secure storage remains a later improvement item.
 5. Expand tests for event lifetime, one-runner replacement, mismatched live symbol, and refresh-after-optimistic-order flows.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -98,6 +106,12 @@ The execution workspace can test connectivity, refresh broker state, subscribe t
 - [ ] Add tests for runner replacement and event-subscription cleanup.
 - [ ] Add tests for optimistic-order refresh reconciliation.
 - [ ] Preserve current backend safety checks and currently supported strategy limitations.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -106,17 +120,21 @@ The execution workspace can test connectivity, refresh broker state, subscribe t
 - run `npm test -- src/components/ExecutionWorkspacePanel.test.ts`
 - run targeted Rust execution command tests
 - run a desktop/live-runtime smoke flow if event wiring changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current command authority in Rust
 - treat clearer state ownership as additive hardening, not as permission to remove optimistic feedback
 - if credential storage changes later, provide a migration path from current browser storage semantics
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/09_live/01_execution_command_surface_2026-04-08.md`
-- `REPO_Improvement/09_live/03_execution_runner_lifecycle_DATE.md`
-- `REPO_Improvement/09_live/11_settings_secret_storage_DATE.md`
-- `REPO_Improvement/09_live/14_runtime_state_bridge_DATE.md`
-- `REPO_Improvement/10_tests_perf/20_tauri_runtime_wiring_DATE.md`
+- `REPO_Improvement/09_live/03_execution_runner_lifecycle_2026-04-08.md`
+- `REPO_Improvement/09_live/11_settings_secret_storage_2026-04-09.md`
+- `REPO_Improvement/09_live/14_runtime_state_bridge_2026-04-08.md`
+- `REPO_Improvement/10_tests_perf/20_tauri_runtime_wiring_2026-04-08.md`

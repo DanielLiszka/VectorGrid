@@ -68,6 +68,7 @@ Some settings also influence route legality. Kaufman-stop and certain execution 
 - loosening current GPU blocker rules without coordinated backend changes
 - letting request-builder payloads drift from visible settings
 - making shared settings diverge across optimize, validation, and live reuse paths
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ Some settings also influence route legality. Kaufman-stop and certain execution 
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because derived cost state and shared setting ownership belong in canonical store state.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because cost-preset derivation and constraint visibility are store-driven behaviors that need strong regression tests.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because these settings ultimately become backend request contracts and route blockers.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Some settings also influence route legality. Kaufman-stop and certain execution 
 3. Make route-blocker implications for shared settings explicit in the implementation plan.
 4. Document reuse expectations for validation and live paths that depend on the same settings.
 5. Expand tests for overlay-driven route blocking if current coverage is insufficient.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ Some settings also influence route legality. Kaufman-stop and certain execution 
 - [ ] Document Kaufman-stop and execution-overlay route blockers.
 - [ ] Document DM constraints and long-tail guardrail behavior.
 - [ ] Add or tighten tests for request-builder parity and route blocking.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/StrategyWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/components/StrategyWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
 - run targeted Rust route tests covering Kaufman-stop or overlay blockers
 - perform one manual route-preview check when shared setting or blocker messaging changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ Some settings also influence route legality. Kaufman-stop and certain execution 
 - prefer better messaging and explicit docs before changing actual route legality
 - if blocker behavior changes, update request-builder, route summaries, and tests together
 - keep shared settings reusable across optimize, validation, and live surfaces
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

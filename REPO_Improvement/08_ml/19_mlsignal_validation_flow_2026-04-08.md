@@ -1,6 +1,6 @@
 # ML Signal Validation Flow Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -86,6 +86,7 @@ Repo-grounded facts that should appear explicitly in the final implementation do
 - raising or removing the sweep budget cap without documenting the product/runtime consequences
 - losing ML artifact details such as schema version, score manifest path, or policy summaries
 - making busy/cancel/status behavior less clear than the current flow
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -114,6 +115,13 @@ Repo-grounded facts that should appear explicitly in the final implementation do
    - one-sided versus two-sided validation
 4. Document how the frontend surfaces artifacts and status for both direct validation and sweep.
 5. Tie each major failure mode to a current code path and a current test.
+6. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -127,13 +135,21 @@ Repo-grounded facts that should appear explicitly in the final implementation do
 - [ ] Document current status-line, preview, and busy-state behavior in the frontend service.
 - [ ] Add or tighten service/backend tests if any of those semantics change.
 - [ ] Manually verify one direct validation and one policy sweep end to end.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/mlSignalService.test.ts`
+- run `npm --prefix web run test -- src/services/mlSignalService.test.ts`
 - run targeted tests in `crates/app_core/src/ml_signal.rs`
 - manually execute one ML validation and one policy sweep using a valid loaded dataset and current score cache
 - inspect the saved artifact detail response to confirm ML-specific fields still round-trip
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -141,9 +157,10 @@ Repo-grounded facts that should appear explicitly in the final implementation do
 - prefer clearer errors over hidden fallback behavior
 - if the workflow starts accepting new score spaces or calibration modes, update the contract doc and tests together
 - keep artifact enrichment additive so older ML artifacts remain usable
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
-- `REPO_Improvement/08_ml/15_mlsignal_score_csv_ingest_DATE.md`
-- `REPO_Improvement/08_ml/20_mlsignal_model_bundle_inventory_DATE.md`
-- `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_DATE.md`
+- `REPO_Improvement/08_ml/15_mlsignal_score_csv_ingest_2026-04-09.md`
+- `REPO_Improvement/08_ml/20_mlsignal_model_bundle_inventory_2026-04-09.md`
+- `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`

@@ -1,6 +1,6 @@
 # Settings Desktop Notifications Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -86,6 +86,7 @@ The copy in Settings already establishes the product posture: VectorGrid stays f
 - broadening success notifications to noisy commands without an explicit policy change
 - removing or weakening permission visibility in Settings
 - breaking the runtime diagnostic logs that currently explain delivery or permission failures
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -97,6 +98,8 @@ The copy in Settings already establishes the product posture: VectorGrid stays f
   - relevant because notification preference and runtime state should remain separate but synchronized surfaces
 - [MDN ARIA status role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/status_role)
   - relevant because permission and readiness messages behave like status output in Settings and runtime diagnostics
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -120,6 +123,13 @@ The copy in Settings already establishes the product posture: VectorGrid stays f
    - stronger diagnostics
    - better tests
    - but no new notification classes unless they are separately justified
+6. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -129,13 +139,21 @@ The copy in Settings already establishes the product posture: VectorGrid stays f
 - [ ] Document permission request and permission-label semantics.
 - [ ] Document how runtime logs capture permission or delivery failures.
 - [ ] Add or tighten tests if the allowlist, permission flow, or visibility rules change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/desktopProductization.test.ts`
-- run `npm --prefix web test -- src/components/SettingsWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/settingsStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/desktopProductization.test.ts`
+- run `npm --prefix web run test -- src/components/SettingsWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/settingsStore.actions.test.ts`
 - manually verify Settings still shows the three modes, permission label, and request button
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -143,6 +161,7 @@ The copy in Settings already establishes the product posture: VectorGrid stays f
 - preserve non-throwing behavior if notification delivery fails
 - preserve current task-center-first posture even if richer desktop integration is considered later
 - if new commands are added to the important-success allowlist, update this doc and tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

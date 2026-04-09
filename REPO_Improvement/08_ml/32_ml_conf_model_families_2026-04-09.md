@@ -79,6 +79,7 @@ There is currently no dedicated frontend selector for ML-confidence model family
 - conflating `model_family` with `model_kind`
 - hiding GBDT-to-logistic fallback warnings
 - weakening saved-model metadata so the resolved model kind becomes harder to inspect later
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -90,6 +91,8 @@ There is currently no dedicated frontend selector for ML-confidence model family
   - relevant because both families ultimately feed calibrated probability-style confidence outputs
 - [Model Cards for Model Reporting](https://research.google/pubs/model-cards-for-model-reporting/)
   - relevant because shipped model reporting should state which family actually trained and under what conditions
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -103,6 +106,13 @@ There is currently no dedicated frontend selector for ML-confidence model family
    - runtime prediction against an already trained model
 6. Keep saved-model status/report surfaces aligned with the resolved family and any fallback warnings.
 7. Treat any future family selector UI as a new feature layered on top of, not a reinterpretation of, the current contract.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -116,14 +126,22 @@ There is currently no dedicated frontend selector for ML-confidence model family
 - [ ] Preserve tests for logistic training, GBDT training, and auto-family fallback behavior.
 - [ ] Keep frontend docs honest about the lack of a shipped model-family selector.
 - [ ] Treat future family-selection UI work as additive, not as a retroactive reinterpretation of the current contract.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
 - run targeted ML-confidence tests in `crates/app_core/src/ml_confidence.rs`
 - run targeted ML-confidence command tests in `src-tauri/src/commands_meta.rs`
 - inspect one saved model summary that resolved to logistic and one that resolved to GBDT if available
 - manually confirm status surfaces still report the resolved `model_kind`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -131,6 +149,7 @@ There is currently no dedicated frontend selector for ML-confidence model family
 - keep `model_kind` persisted even if future training surfaces expose `model_family` more directly
 - prefer additive reporting fields over changing the meaning of `Auto`, `Logistic`, or `GbdtStump`
 - if the UI later exposes family choice, preserve the current backend defaults for callers that still send `cfg: null`
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

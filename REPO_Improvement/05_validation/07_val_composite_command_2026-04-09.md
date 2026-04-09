@@ -63,6 +63,7 @@ The service already turns these backend and capability decisions into route summ
 - weakening validation-context mismatch protection
 - returning route strings that no longer match frontend preview semantics
 - hiding omitted-module consequences during composite cross reruns or route fallbacks
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -71,6 +72,8 @@ The service already turns these backend and capability decisions into route summ
 - [Pinia Testing Cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because the most important route and warning guarantees are already exercised through frontend service tests.
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/pdf/CUDA_C_Best_Practices_Guide.pdf) is relevant because route restrictions should remain grounded in actual supported execution constraints rather than optimistic UI claims.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because user-visible route warnings and summaries should remain observable through higher-level validation flows.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ The service already turns these backend and capability decisions into route summ
 3. Keep frontend preview and backend result semantics aligned around the same route/warning vocabulary.
 4. Treat omitted modules and reduced cross-rerun capabilities as part of the composite command contract, not just secondary copy.
 5. Add or tighten tests for representative composite-family strategy kinds and route restrictions.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,13 +102,20 @@ The service already turns these backend and capability decisions into route summ
 - [ ] Add or tighten tests for strategy-kind routing and mismatch rejection.
 - [ ] Add or tighten tests for `CompositeMo` CPU-route messaging and `CompositeCpu` GPU restriction messaging.
 - [ ] Add or tighten tests for representative family variants such as `Rocb`, `Mkcs`, and `Carm`.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `commands_validation.rs` tests
-- run `npm --prefix web test -- src/services/validationRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
 - manually verify route summaries for one plain `CompositeCpu` case, one `CompositeMo` case, and one alternate composite-family strategy
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +123,7 @@ The service already turns these backend and capability decisions into route summ
 - keep `validation_context.strategy_kind` explicit for shared-command families
 - prefer additive clarification over broad route-policy changes
 - if a composite route opens or closes, update builder previews, service summaries, and tests together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

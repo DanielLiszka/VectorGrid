@@ -65,12 +65,15 @@ Current product behavior therefore includes:
 - removing retry or `Retry-After` support accidentally
 - fetching non-1m archives directly when the current product rule is “cache 1m, derive later”
 - changing append-versus-refresh decisions without evaluating cache correctness implications
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Polygon Aggregates / Custom Bars](https://polygon.io/docs/rest/stocks/aggregates/custom-bars) is relevant because the downloader maps onto that API’s aggregate retrieval semantics and limit posture.
 - [MDN Retry-After](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Retry-After) is relevant because the current downloader already respects backoff hints for rate-limited or overloaded responses.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because top-off and download responses act like stable contracts even if backend chunking changes internally.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -79,6 +82,13 @@ Current product behavior therefore includes:
 3. Document retry/backoff expectations separately from cache-coverage decisions.
 4. Keep top-off lookback enforcement explicit and tied to the free-plan assumption currently encoded in the backend.
 5. Add branch-level tests before touching chunk or retry behavior.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -87,18 +97,27 @@ Current product behavior therefore includes:
 - [ ] Document full-hit, append, and full-refresh decision rules.
 - [ ] Document top-off lookback rejection semantics.
 - [ ] Add or tighten tests for chunk branching and retry behavior if the implementation changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted Polygon backend tests, especially around top-off request rejection
 - add targeted branch tests for append-versus-refresh and retry behavior before modifying logic
-- run `npm --prefix web test -- src/services/dataService.test.ts` after any response-shape changes
+- run `npm --prefix web run test -- src/services/dataService.test.ts` after any response-shape changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - prefer documenting current limits before trying to optimize them
 - do not change constants independently from tests and status/copy review
 - keep the frontend abstracted from internal chunk math unless a user-facing need emerges
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

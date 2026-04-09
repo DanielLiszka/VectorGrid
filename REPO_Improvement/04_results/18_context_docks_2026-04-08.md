@@ -1,6 +1,6 @@
 # Context Docks Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -84,6 +84,7 @@ So the current product model is “context surface, not mini-workspace.”
 - regressing the current compact quick-action role
 - losing persisted analysis-dock state or other existing visibility behavior
 - duplicating or contradicting the authoritative content in the main workspace panels
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -95,6 +96,8 @@ So the current product model is “context surface, not mini-workspace.”
   - relevant because docks should summarize store state rather than become separate authorities
 - [Pinia core concepts](https://pinia.vuejs.org/core-concepts/)
   - relevant because dock content is already driven by shared store truth
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -113,6 +116,13 @@ So the current product model is “context surface, not mini-workspace.”
    - workspace-specific gating
 4. Add direct tests for optimize, validation, and history docks similar to the existing analysis-dock coverage.
 5. If shared styling or chips are extracted later, keep the individual dock responsibilities distinct.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -122,12 +132,20 @@ So the current product model is “context surface, not mini-workspace.”
 - [ ] Document validation-dock compactness and quick-action posture.
 - [ ] Add direct component tests for optimize, validation, and history docks.
 - [ ] Preserve the “context surface, not duplicate workspace” boundary in future changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/AnalysisContextDock.test.ts`
+- run `npm --prefix web run test -- src/components/AnalysisContextDock.test.ts`
 - add or run dock-specific component tests for optimize, validation, and history
 - manually verify dock visibility in each relevant workspace/tab combination
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -135,6 +153,7 @@ So the current product model is “context surface, not mini-workspace.”
 - keep dock changes additive and summary-first
 - if shared dock primitives are introduced later, keep existing dock actions stable until parity is proven
 - do not merge docks into one generic component unless the role differences are still expressible clearly
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

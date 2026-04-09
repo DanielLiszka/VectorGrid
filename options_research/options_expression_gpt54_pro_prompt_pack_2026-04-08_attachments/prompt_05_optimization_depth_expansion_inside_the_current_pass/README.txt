@@ -1,11 +1,12 @@
 Prompt 5: Optimization-Depth Expansion Inside The Current Pass
 
-Attachment count: 14  Files:
+Attachment count: 15  Files:
 - AGENTS.md
 - REPO_MAP.md
 - README.md
 - options_research/options_expression_optimizer_viable_plan_2026-04-02.md
 - options_research/options_expression_future_scope_roadmap_2026-04-07.md
+- options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md
 - crates/app_core/src/options_types.rs
 - crates/app_core/src/options_expression.rs
 - crates/app_core/src/options_expression_gpu.rs

@@ -68,6 +68,7 @@ At the same time, the product already protects some exact-only outputs. Command-
 - losing reproducibility or deterministic-seed behavior
 - dropping overlap or regret quality-check fields silently
 - weakening rung or refill semantics without synchronized docs and tests
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ At the same time, the product already protects some exact-only outputs. Command-
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because VDPS configuration and telemetry cross a command boundary into product behavior.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because frontend mode and telemetry state should stay derived from canonical request and result contracts.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because VDPS telemetry behaves like a structured result contract consumed by multiple layers.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ At the same time, the product already protects some exact-only outputs. Command-
 3. Document the quality-check telemetry fields and how they should be interpreted.
 4. Keep exact-only output protections explicit at the command and builder layers.
 5. Add or tighten tests around determinism, quality-check emission, and mode normalization if needed.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,14 +101,21 @@ At the same time, the product already protects some exact-only outputs. Command-
 - [ ] Document overlap and regret quality-check telemetry.
 - [ ] Document exact-output restrictions that force `Grid` instead of VDPS.
 - [ ] Add or tighten tests for determinism and telemetry stability.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted VDPS tests in `crates/app_core/src/double_ma.rs`
 - run targeted helper tests in `crates/app_core/src/double_ma_vdps.rs`
 - run `cargo test -p ta_desktop_demo_app commands_optimize`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +123,7 @@ At the same time, the product already protects some exact-only outputs. Command-
 - prefer clearer wording before broadening or narrowing VDPS eligibility
 - keep telemetry fields stable until all downstream consumers migrate together
 - if quality-check behavior changes, update fidelity-oriented docs and artifacts in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

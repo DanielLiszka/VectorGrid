@@ -1,6 +1,6 @@
 # XLSX Workbook Contract Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -96,6 +96,7 @@ Repo-grounded invariants that should be captured explicitly:
 - breaking workbook openability in Excel
 - losing visible-cap disclosure or making the shortlist look complete when charts actually use a wider row set
 - dropping compatibility-mode notes or zero-survivor fallback behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -120,6 +121,13 @@ Repo-grounded invariants that should be captured explicitly:
    - omitted / absent
    - compatibility-derived values
 5. Treat visible-cap notes, compatibility notes, and zero-survivor fallback charts as first-class contract items, not implementation trivia.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -133,6 +141,11 @@ Repo-grounded invariants that should be captured explicitly:
 - [ ] Define zero-survivor fallback requirements.
 - [ ] Add or tighten tests anywhere a sheet/chart/placeholder invariant is still implicit.
 - [ ] Verify the workbook still opens in Excel after any contract-affecting change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -140,6 +153,8 @@ Repo-grounded invariants that should be captured explicitly:
 - build one representative workbook with a rich report payload
 - build one sparse or zero-survivor workbook
 - inspect workbook XML for sheet/chart inventory and open both files in Excel for sanity
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -147,9 +162,10 @@ Repo-grounded invariants that should be captured explicitly:
 - preserve current sheet names unless a compatibility migration is written explicitly
 - if chart inventory changes, update both the workbook contract doc and regression tests in the same change
 - prefer additive workbook metadata and notes over silent reinterpretation of existing cells
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/05_validation/13_xlsx_dashboard_quality_2026-04-08.md`
 - `REPO_Improvement/10_tests_perf/40_xlsx_regression_tooling_2026-04-08.md`
-- `REPO_Improvement/06_artifacts/14_report_validation_dashboard_DATE.md`
+- `REPO_Improvement/06_artifacts/14_report_validation_dashboard_2026-04-09.md`

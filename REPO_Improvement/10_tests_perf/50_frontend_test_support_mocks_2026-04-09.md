@@ -59,6 +59,7 @@ The repo already has a focused frontend test-support mock layer that wraps `@tau
 - adding permissive behavior to make tests easy instead of accurate
 - using frontend mocks as evidence for real desktop runtime behavior
 - splitting similar mock helpers across many files and losing a single contract surface
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The repo already has a focused frontend test-support mock layer that wraps `@tau
 - [Vitest mocking guide](https://vitest.dev/guide/mocking) is relevant because these helpers exist to make unit and service tests deterministic without overreaching.
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because several consumers of the mocks also depend on store-driven state instrumentation.
 - [Playwright best practices](https://playwright.dev/docs/best-practices) are relevant by contrast because real browser or desktop journeys should move out of the unit mock layer when appropriate.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The repo already has a focused frontend test-support mock layer that wraps `@tau
 2. Preserve strict unknown-command defaults unless a test has a clear reason to allow unknown commands.
 3. Use the mock layer to test frontend behavior around invocation and instrumentation, not to fake whole desktop workflows.
 4. Review mock growth against the real `invoke` surface and adjacent higher-level harnesses.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The repo already has a focused frontend test-support mock layer that wraps `@tau
 - [ ] Keep this mock plan non-options only.
 - [ ] Keep desktop-window mocking intentionally minimal.
 - [ ] Cross-check mock assumptions against the real Tauri bridge when it changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The repo already has a focused frontend test-support mock layer that wraps `@tau
 - run the broader frontend test suite when shared mock behavior changes
 - compare suspicious mock-only passes against browser or desktop harness behavior
 - inspect the real `invoke` implementation before broadening the support mocks
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the centralized support-mock layer and improve documentation around it
 - prefer tightening existing helpers over creating parallel mock systems
 - if a mock must grow significantly, reevaluate whether the test belongs at a higher layer
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

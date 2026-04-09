@@ -1,6 +1,6 @@
 # Workflow Artifacts Sync Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -73,6 +73,7 @@ This means artifact sync already behaves like a small decision engine rather tha
 - refreshing analysis when nothing meaningful changed
 - dropping source-tag updates during no-op syncs
 - widening sync logic beyond the intended latest-run workflow without a new contract
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -84,6 +85,8 @@ This means artifact sync already behaves like a small decision engine rather tha
   - relevant because the sync payload and store-normalized shapes already behave like schema-governed contracts
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices)
   - relevant because sync should ultimately be validated through visible workspace-state changes, not only internal flags
+- [JSON Schema: What is JSON Schema?](https://json-schema.org/overview/what-is-jsonschema)
+  - relevant because artifacts, reports, manifests, and replay payloads behave like versioned serialized contracts that should stay explicit and reviewable
 
 ## Proposed Improvement Approach
 
@@ -96,6 +99,13 @@ This means artifact sync already behaves like a small decision engine rather tha
 2. Make the skip rule explicit, including the “same path and ts but missing validation must still reload” exception.
 3. Treat source-tag updates and analysis refresh behavior as part of the contract, not side effects.
 4. Expand tests around no-op sync, validation-newly-appears sync, and invoke-failure handling.
+5. Treat artifact-surface code quality as part of the implementation scope: keep persisted shapes version-conscious, replayable, diagnosable, and obvious to future contributors.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -106,6 +116,11 @@ This means artifact sync already behaves like a small decision engine rather tha
 - [ ] Add tests for same-path/same-ts skip behavior with and without validation.
 - [ ] Add tests for invoke-failure and malformed-payload best-effort behavior.
 - [ ] Add tests proving meaningful-change detection stays aligned with store normalization.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -113,12 +128,15 @@ This means artifact sync already behaves like a small decision engine rather tha
 - run `npm test -- src/stores/workflowArtifactsStore.test.ts`
 - run relevant history-service tests that cover artifact hydration
 - manually verify latest-run sync from a saved artifact set in the workflow shell
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant quality and parity gates for touched artifact/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the applicable output-parity or artifact-shape checks
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve best-effort sync behavior rather than turning latest-artifact sync into a hard blocker
 - keep sync scoped to latest-run hydration unless a broader artifact-library contract is defined separately
 - if sync logic is generalized later, preserve current latest-run behavior as a stable baseline
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

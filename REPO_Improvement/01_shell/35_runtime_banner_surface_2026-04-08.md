@@ -1,6 +1,6 @@
 # Runtime Banner Surface Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -65,6 +65,7 @@ The app mounts immediately, shows the runtime banner only while the boot phase i
 - creating noisy live-region behavior that spams assistive technologies
 - allowing task-center or command-palette layering to obscure a critical runtime error
 - marking the app `ready` earlier than the actual shell contract allows
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -72,6 +73,8 @@ The app mounts immediately, shows the runtime banner only while the boot phase i
 - [MDN: `alert` role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/alert_role) supports assertive announcement only for urgent, attention-demanding failures.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) reinforces keeping the state-to-presentation contract centralized instead of duplicating boot logic across components.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) supports verifying user-visible status behavior and layering through realistic shell flows rather than implementation-only tests.
+- [WAI-ARIA Authoring Practices Guide](https://www.w3.org/WAI/ARIA/apg/)
+  - relevant because dialogs, menus, overlays, keyboard flows, and dense shell surfaces in a public-facing app need explicit accessibility and interaction contracts
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ The app mounts immediately, shows the runtime banner only while the boot phase i
 4. Document banner precedence against the dormant startup overlay, Task Center, and Command Palette so critical runtime status cannot be visually buried.
 5. Add an intentional diagnostics affordance, such as a link or action that routes the user to the most relevant runtime diagnostics surface without forcing a redesign of the shell.
 6. Tighten tests around successful boot, degraded startup, fatal startup, and overlay stacking.
+7. Treat shell-level code quality as part of the implementation scope: preserve keyboard flow clarity, accessible semantics, concise component boundaries, and explicit overlay/state contracts.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,6 +104,11 @@ The app mounts immediately, shows the runtime banner only while the boot phase i
 - [ ] Document stacking expectations against Task Center, Command Palette, and any future overlays.
 - [ ] Add tests for boot success, degraded startup, and fatal startup presentation.
 - [ ] Add smoke coverage that confirms the banner is visible when expected and absent when not expected.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -101,6 +116,9 @@ The app mounts immediately, shows the runtime banner only while the boot phase i
 - run targeted banner/shell component tests
 - run browser shell smoke that covers boot success and boot failure presentation
 - run desktop smoke if window boot sequencing or overlay layering changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched shell surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required `npm --prefix web run a11y:smoke` or shell-level smoke checks
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -108,11 +126,12 @@ The app mounts immediately, shows the runtime banner only while the boot phase i
 - keep the startup overlay component dormant unless a separate decision reopens it
 - treat degraded-startup messaging as additive evidence, not as a reason to remove current warning logs
 - preserve existing runtime-store fields unless replacement fields are introduced with compatibility shims
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/01_shell/07_shell_runtime_boot_2026-04-08.md`
 - `REPO_Improvement/01_shell/27_settings_service_bootstrap_2026-04-08.md`
-- `REPO_Improvement/01_shell/28_runtime_store_status_DATE.md`
-- `REPO_Improvement/01_shell/30_status_presentation_format_DATE.md`
+- `REPO_Improvement/01_shell/28_runtime_store_status_2026-04-08.md`
+- `REPO_Improvement/01_shell/30_status_presentation_format_2026-04-08.md`
 - `REPO_Improvement/00_meta/09_regression_safety_rules_2026-04-08.md`

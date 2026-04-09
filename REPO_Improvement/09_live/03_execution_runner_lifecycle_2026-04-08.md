@@ -1,6 +1,6 @@
 # Execution Runner Lifecycle Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -93,6 +93,7 @@ The execution workspace can start one auto-runner for the current symbol, stop i
 - documenting `skip_count` or cancellation semantics inaccurately enough that operators infer nonexistent guarantees
 - forgetting that `upsert_live_bar` mutates the loaded base dataset and invalidates derived datasets
 - silently broadening supported live strategy kinds without documenting or testing the new lifecycle expectations
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -110,6 +111,13 @@ The execution workspace can start one auto-runner for the current symbol, stop i
 3. Document frontend preconditions separately from backend validation so operator-facing behavior matches the actual code path.
 4. Tie runner lifecycle notes to the underlying dataset-mutation side effect in `upsert_live_bar`.
 5. Preserve the current one-runner model and document it before considering any future expansion.
+6. Treat live/runtime code quality as part of the implementation scope: keep provider contracts, cancellation, observability, redaction, and operator safety semantics explicit, conservative, and testable.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -122,19 +130,29 @@ The execution workspace can start one auto-runner for the current symbol, stop i
 - [ ] Document the `upsert_live_bar` dependency and derived-dataset invalidation side effect.
 - [ ] Document dry-run versus broker-armed credential and order-submission semantics.
 - [ ] Add or tighten tests if the event/status mapping changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/executionService.test.ts`
-- run `npm --prefix web test -- src/stores/executionStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/ExecutionWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/executionService.test.ts`
+- run `npm --prefix web run test -- src/stores/executionStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts`
 - run targeted Rust tests in `src-tauri/src/commands_execution.rs`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend, Rust, and desktop quality gates for touched live surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any required desktop smoke or paper-trading/operator validation path
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current single-runner semantics unless a replacement plan is explicit
 - treat clearer lifecycle docs as hardening, not permission to weaken backend cancel/generation safety
 - if a future change introduces a new runner event state, update both backend emitters and frontend parsers in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

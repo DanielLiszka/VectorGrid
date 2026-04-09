@@ -89,6 +89,7 @@ This means the ranking contract and the bucketing contract are related but not i
 - weakening current fallback warnings
 - treating decision buckets as the same thing as shortlist ranking
 - obscuring the current Stage 4/Stage 5 alias relationship in docs or status surfaces
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -100,6 +101,8 @@ This means the ranking contract and the bucketing contract are related but not i
   - relevant because selected outputs and fallback reasons should remain explainable in model-driven shortlist logic
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because all ranking and bucketing semantics ultimately cross a structured frontend/backend boundary
+- [scikit-learn `TimeSeriesSplit`](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.TimeSeriesSplit.html)
+  - relevant because chronological ML and meta-evaluation assumptions should stay explicit and must not drift toward shuffled-validation behavior
 
 ## Proposed Improvement Approach
 
@@ -116,6 +119,13 @@ This means the ranking contract and the bucketing contract are related but not i
 5. Preserve current fallback explanation behavior and ensure it remains visible in saved results and previews.
 6. Keep Stage 4/Stage 5 aliasing explicit whenever describing the owner of this logic.
 7. Tie every major stage of the flow to its current code owner and tests.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -129,14 +139,22 @@ This means the ranking contract and the bucketing contract are related but not i
 - [ ] Preserve tests for source exclusion, unhealthy-model gating, and auto-train fallback behavior.
 - [ ] Preserve preview/status rendering tests that reflect fallback reasons and bucket counts.
 - [ ] Keep Stage 4/Stage 5 naming drift explicit in the logic doc until the implementation is renamed.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaStage4RequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
-- run `npm --prefix web test -- src/components/MetaWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/metaStage4RequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/components/MetaWorkspacePanel.test.ts`
 - run targeted Stage 4/Stage 5 tests in `src-tauri/src/commands_meta.rs`
 - inspect one saved Stage 5 artifact with no fallback and one with fallback-to-meta triggered
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -144,6 +162,7 @@ This means the ranking contract and the bucketing contract are related but not i
 - if the Stage 4 names are later retired, retain compatibility notes in docs until saved artifacts and API wrappers are fully migrated
 - prefer additive result metadata over changing the meaning of existing ranking and bucket fields
 - keep anti-leakage source exclusion as a non-negotiable invariant during any refactor
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

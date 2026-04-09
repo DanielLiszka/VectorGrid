@@ -68,6 +68,7 @@ Because the output shape is already used across layers, it needs a dedicated pla
 - weakening route or fallback truthfulness in result metadata
 - breaking heatmap `mean_values` or `sample_counts`
 - changing output-shape semantics without synchronized artifact and frontend updates
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ Because the output shape is already used across layers, it needs a dedicated pla
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because this contract crosses the backend boundary into frontend and artifact code.
 - [Pinia Core Concepts](https://pinia.vuejs.org/core-concepts/) is relevant because frontend consumers should stay driven by canonical result payloads rather than inferred field semantics.
 - [Calling the Frontend from Rust](https://v2.tauri.app/develop/calling-frontend/) is relevant indirectly because result and route metadata feed user-visible runtime behavior and follow-up flows.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Because the output shape is already used across layers, it needs a dedicated pla
 3. Freeze `metric_surface_kind`, route, fallback, residency, and heatmap auxiliary semantics.
 4. Add parity checks between backend result output and artifact/frontend consumers.
 5. Treat contract-shape changes as compatibility work, not incidental backend cleanup.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ Because the output shape is already used across layers, it needs a dedicated pla
 - [ ] Document `metric_surface_kind` and score-observation context semantics.
 - [ ] Document heatmap auxiliary arrays and their consumers.
 - [ ] Add or tighten consumer-parity tests for result-shape compatibility.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted Double-MA result tests in `crates/app_core/src/double_ma.rs`
 - run targeted result-construction tests in `crates/app_core/src/double_ma_result.rs`
 - run `cargo test -p ta_desktop_demo_app validation_xlsx_report_tests`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ Because the output shape is already used across layers, it needs a dedicated pla
 - prefer additive metadata over silent field repurposing
 - if a field becomes deprecated, document the deprecation before removing it
 - update artifact and metric-surface consumers in the same change as any output-contract shift
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

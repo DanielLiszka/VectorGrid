@@ -68,6 +68,7 @@ That makes admission and cross-dataset logic part of the analyst-facing contract
 - breaking cross-selection counts, filter behavior, or visible-selection helpers
 - losing omitted-module explanations for cross reruns
 - letting admission/cross summary text diverge from the actual emitted request
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -76,6 +77,8 @@ That makes admission and cross-dataset logic part of the analyst-facing contract
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because admission and cross behavior depend on deterministic store/service state transitions.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because admission provenance and cross selection ultimately cross the backend boundary as structured validation request data.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because admission provenance and cross-dataset config already behave like a nested structured contract.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -84,6 +87,13 @@ That makes admission and cross-dataset logic part of the analyst-facing contract
 3. Keep preserved-finalists versus lightweight cross semantics explicit in both preview and post-run summaries.
 4. Keep selection helpers and counts honest relative to visible filtered rows.
 5. Add or tighten tests around policy preview, cross-mode summaries, and filtered cross selection.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,13 +102,20 @@ That makes admission and cross-dataset logic part of the analyst-facing contract
 - [ ] Document preserved-finalists versus lightweight cross summary language.
 - [ ] Document visible-row filtering and cross-selection helper behavior.
 - [ ] Add or tighten tests for admission preview, cross summaries, and selection counts.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/ValidationWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/services/validationService.test.ts`
-- run `npm --prefix web test -- src/services/validationRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/components/ValidationWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts`
 - run targeted validation command tests where cross-mode semantics or admission provenance changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +123,7 @@ That makes admission and cross-dataset logic part of the analyst-facing contract
 - if admission defaults change later, update comparison text and tests in the same change
 - prefer explicit omitted-module explanations over silent capability downgrades
 - keep preserved-finalists semantics conservative unless backend/runtime support expands intentionally
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

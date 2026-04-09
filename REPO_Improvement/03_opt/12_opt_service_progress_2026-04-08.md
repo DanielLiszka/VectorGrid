@@ -1,6 +1,6 @@
 # Optimize Service Progress Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -68,6 +68,7 @@ When the user runs optimization, the optimize panel immediately switches into a 
 - changing cancel/error behavior so the optimize panel lies about terminal state
 - desynchronizing panel-local status text from task-center lifecycle semantics
 - silently removing GPU-refresh follow-up from the current post-run sequence
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -79,6 +80,8 @@ When the user runs optimization, the optimize panel immediately switches into a 
   - relevant because progress state is shared UI state and should remain centralized
 - [MDN: ARIA `status` role](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Roles/status_role)
   - relevant because optimize progress text is surfaced in user-visible status regions
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -90,6 +93,13 @@ When the user runs optimization, the optimize panel immediately switches into a 
    - completion notes
    - cancellation text
 4. Tie timing summaries and follow-up notes to the actual phases already measured in code.
+5. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -101,19 +111,27 @@ When the user runs optimization, the optimize panel immediately switches into a 
 - [ ] Document cancel and failure behavior.
 - [ ] Document the relationship between optimize-panel progress and task-center progress.
 - [ ] Add or tighten tests if progress wording or sequencing changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
-- run `npm --prefix web test -- src/tauri/instrumentation.test.ts`
-- run `npm --prefix web test -- src/tauri/instrumentation.mockIPC.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/tauri/instrumentation.test.ts`
+- run `npm --prefix web run test -- src/tauri/instrumentation.mockIPC.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current progress semantics unless a full status-model rewrite is intentional
 - keep panel progress additive and truthful rather than overly terse
 - if task-center and optimize-panel semantics are changed, update both in the same work item
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

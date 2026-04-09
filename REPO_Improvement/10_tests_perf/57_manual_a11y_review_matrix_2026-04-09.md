@@ -88,6 +88,7 @@ This matters because many accessibility failures in a data-heavy desktop app are
 - ignoring dense table and chart-adjacent surfaces because they are harder to review
 - collapsing accessibility into copy polish only
 - shipping keyboard regressions because mouse testing still works
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -101,6 +102,8 @@ This matters because many accessibility failures in a data-heavy desktop app are
   - relevant because landmark regions, accessible names, and keyboard interfaces are central to a useful review matrix
 - [W3C Accessibility Guidelines Evaluation Methodology (WCAG-EM) 2.0 draft note announcement](https://www.w3.org/news/2026/group-note-draft-w3c-accessibility-guidelines-evaluation-methodology-wcag-em-2-0/)
   - relevant because it reinforces structured evaluation, representative sampling, and reporting rather than one-off spot checks
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -121,6 +124,13 @@ This matters because many accessibility failures in a data-heavy desktop app are
 5. Keep the matrix additive and practical:
    - smaller changes hit a narrower review slice
    - larger UI changes hit the full representative sample
+6. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Step-by-Step Checklist
 
@@ -132,6 +142,12 @@ This matters because many accessibility failures in a data-heavy desktop app are
 - [ ] Add a simple review log format so manual findings are captured consistently.
 - [ ] Tie high-risk UI changes to the manual review matrix before release.
 - [ ] Keep automated a11y smoke as the fast gate, not the full gate.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -140,6 +156,8 @@ This matters because many accessibility failures in a data-heavy desktop app are
 - manually review keyboard navigation and focus order for the chosen representative screens
 - manually review at least one result-dense flow and one validation/history reopening flow in desktop context
 - record findings in a repeatable checklist rather than informal notes only
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -147,6 +165,7 @@ This matters because many accessibility failures in a data-heavy desktop app are
 - keep the matrix stable long enough to be comparable across releases
 - do not delay safe bug fixes on a full manual sweep when a narrower matrix slice is sufficient
 - preserve existing automated accessibility checks; this plan augments them
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -66,12 +66,15 @@ Current user-facing behavior includes:
 - letting selected-path persistence drift from the displayed metadata summary
 - allowing action buttons to operate on stale or invalid selected paths
 - making selection-dependent status text less clear
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [WAI-ARIA Button Pattern](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-pressed) is relevant because the current selection rows use button semantics with a pressed state rather than a separate listbox model.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because selection persistence already depends on one store-owned source of truth.
 - [WAI-ARIA Grid Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/grid/) is relevant because keyboard traversal and status announcement rules still need to remain legible as the list evolves.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -80,6 +83,13 @@ Current user-facing behavior includes:
 3. Document current keyboard behavior and the relationship between listing refresh and selection fallback.
 4. Keep selection UX distinct from repo CSV browsing and other data-ingest surfaces.
 5. Add focused tests if list ordering or button semantics change.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -88,18 +98,27 @@ Current user-facing behavior includes:
 - [ ] Document action enablement based on selected cached dataset.
 - [ ] Document keyboard movement and focus expectations for the selection rows.
 - [ ] Add or tighten tests if selection semantics or ordering change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/DataWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/DataWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - perform one keyboard-only and one mouse selection pass in the Data panel after UX edits
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current selection semantics unless a new explicit accessibility model is adopted
 - keep selection store-owned even if the panel layout changes
 - avoid merging repo CSV browsing into this contract without a separate scope decision
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

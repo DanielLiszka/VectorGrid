@@ -67,6 +67,7 @@ Without a dedicated plan, it is easy for future work to overstate what the CSV p
 - dropping numeric telemetry fields that the UI uses to explain preference hints
 - letting missing CSV content silently invert or flatten preference behavior
 - presenting speedup guidance as a guarantee rather than a measured heuristic
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ Without a dedicated plan, it is easy for future work to overstate what the CSV p
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because UI consumers should share one normalized speedup table instead of re-parsing or reinterpreting raw values independently.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because speedup guidance is deterministic contract data that should be validated with focused normalization and consumer tests.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the exported speedup-table rows behave like a stable structured compatibility surface.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Without a dedicated plan, it is easy for future work to overstate what the CSV p
 3. Document the exact frontend rule: numeric speedup rows are explanatory telemetry and should not silently override backend truth.
 4. Keep CSV parsing logic simple and deterministic, with clear skip behavior for malformed rows.
 5. Add or tighten tests whenever the CSV schema or policy interpretation changes.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ Without a dedicated plan, it is easy for future work to overstate what the CSV p
 - [ ] Document the frontend normalization contract for numeric speedup rows.
 - [ ] Document UI guidance limits so speedup hints are not overstated.
 - [ ] Add or tighten tests when the CSV schema or interpretation changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted `ma_policy` tests in `crates/app_core/src/ma_policy.rs`
-- run `npm --prefix web test -- src/services/gpuSpeedupsService.test.ts`
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/services/movingAverageCatalogService.test.ts`
+- run `npm --prefix web run test -- src/services/gpuSpeedupsService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/movingAverageCatalogService.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ Without a dedicated plan, it is easy for future work to overstate what the CSV p
 - prefer additive CSV columns over changing the meaning of existing ones
 - keep backend routing conservative if speedup data is unavailable or incomplete
 - if new policy thresholds are introduced later, document them separately from the raw telemetry export
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

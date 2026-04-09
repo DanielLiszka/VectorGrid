@@ -1,6 +1,6 @@
 # Implementation Doc Quality Bar Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -68,6 +68,7 @@ This quality bar is user-facing in the sense that the document program is alread
 - weakening the additive-only and no-functionality-removal rule
 - accepting checklist-light or verification-light docs as complete
 - creating implementation docs without enough detail to guide later work safely
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -79,6 +80,8 @@ This quality bar is user-facing in the sense that the document program is alread
   - relevant because some implementation docs need browser/desktop verification planning
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/)
   - relevant because many implementation docs cover Tauri-facing boundaries and should cite current primary docs
+- [GitHub repository documentation](https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  - relevant because public-repo docs and release operations should be maintained as first-class contributor and reviewer surfaces
 
 ## Proposed Improvement Approach
 
@@ -101,6 +104,13 @@ This quality bar is user-facing in the sense that the document program is alread
    - rollout/compatibility notes
 3. Treat sub-agents as a quality multiplier when a surface spans multiple code areas or verification layers.
 4. Require external web research before drafting, and prefer official/primary sources whenever possible.
+5. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -111,6 +121,12 @@ This quality bar is user-facing in the sense that the document program is alread
 - [ ] Require additive-only, no-regression, no-functionality-removal framing in every doc.
 - [ ] Require a concrete checklist and verification plan in every doc.
 - [ ] Use sub-agents when they materially improve context gathering, code-surface coverage, or verification confidence.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -118,12 +134,16 @@ This quality bar is user-facing in the sense that the document program is alread
 - verify tracker/index counts match actual file counts after each creation wave
 - spot-check new docs against current repo code surfaces before marking them complete
 - ensure each newly created implementation doc cites current external research, not stale assumptions
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - if the quality bar is tightened later, update earlier docs that no longer meet the active standard
 - do not mark a doc complete just because the file exists; completeness depends on the quality bar
 - keep the quality bar additive and explicit so later waves do not regress in detail
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -77,6 +77,7 @@ This means CompositeMo is already more than “advanced mode”; it is a separat
 - breaking constraint handling or objective ordering
 - letting frontend request shaping produce impossible or ambiguous CompositeMo payloads
 - treating CompositeMo as interchangeable with CompositeCpu despite different optimization semantics
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -85,6 +86,8 @@ This means CompositeMo is already more than “advanced mode”; it is a separat
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/archive/12.5.1/cuda-c-best-practices-guide/index.html) is relevant because stage-0 prescan and heterogeneous execution only help if they preserve clear compute/memory boundaries.
 - [serde_json `Value` docs](https://docs.rs/serde_json/latest/serde_json/value/) are relevant because CompositeMo request payloads cross the frontend/backend boundary as structured JSON-like values.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because CompositeMo is effectively defined by a structured request schema with sampler and search-space invariants.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -98,6 +101,13 @@ This means CompositeMo is already more than “advanced mode”; it is a separat
 3. Expand tests where frontend shaping and backend sampler assumptions can drift.
 4. Keep sampler semantics explicit in docs/status surfaces rather than relying on internal type names.
 5. Preserve strategy-local ownership even when optimizer-core helpers are shared.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -109,14 +119,23 @@ This means CompositeMo is already more than “advanced mode”; it is a separat
 - [ ] Add or tighten capability-summary tests so product text stays aligned with CPU-evaluated plus optional-GPU-prescan semantics.
 - [ ] Document which behaviors are strategy-local vs optimizer-core shared.
 - [ ] Keep CompositeMo-specific terminology explicit in user-visible status/reporting surfaces where applicable.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
 - run targeted tests in `crates/app_core/src/composite_mo.rs`
 - run targeted tests in `crates/optimizer/src/mo.rs`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
 - run targeted optimize-command tests in `src-tauri`
 - manually inspect one normalized CompositeMo request and one representative result payload
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -124,6 +143,7 @@ This means CompositeMo is already more than “advanced mode”; it is a separat
 - keep CompositeMo distinct from CompositeCpu in both docs and request shaping
 - if sampler options change, update both frontend normalization and backend validation together
 - keep optional prescan explicit rather than silently mandatory
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

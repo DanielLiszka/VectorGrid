@@ -1,6 +1,6 @@
 # Dataset Invalidation Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -79,6 +79,7 @@ So the current product posture is already conservative about stale derived data.
 - breaking same-source base reuse for identical source identity
 - invalidating derived state too aggressively on harmless no-op reloads
 - letting validation or artifact restore proceed with stale dataset assumptions
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -90,6 +91,8 @@ So the current product posture is already conservative about stale derived data.
   - relevant because the frontend should reflect backend invalidation truth instead of inventing a second authority
 - [Pinia actions](https://pinia.vuejs.org/core-concepts/actions.html)
   - relevant because invalidation-related UI cleanup should stay inside store-driven actions instead of ad hoc component mutation
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -112,6 +115,13 @@ So the current product posture is already conservative about stale derived data.
    - validation context
    - startup restore
    - artifact replay
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -121,13 +131,21 @@ So the current product posture is already conservative about stale derived data.
 - [ ] Document same-source base reuse separately from true invalidation.
 - [ ] Add or tighten tests if invalidation messaging or command behavior changes.
 - [ ] Identify where stale-dataset cues should surface in the UI without creating a second invalidation authority.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run `cargo test -p ta_desktop_demo_app state`
 - run `cargo test -p ta_desktop_demo_app commands_data`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - manually verify base reload, resample reuse, and clear flows still produce the expected state transitions
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -135,6 +153,7 @@ So the current product posture is already conservative about stale derived data.
 - prefer additive invalidation reasons or status text over silent behavior changes
 - preserve current reuse semantics for identical source identity
 - if stale-dataset UI cues are added later, ensure they reflect backend decisions rather than speculative frontend heuristics
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

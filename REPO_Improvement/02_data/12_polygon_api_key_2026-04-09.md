@@ -69,12 +69,15 @@ Current shipped behavior includes:
 - misdocumenting the storage order so future changes remove real fallback behavior
 - breaking save/clear compatibility for users still relying on legacy local settings
 - gating download UI off the draft field instead of backend-confirmed `hasApiKey` state
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Polygon Aggregates / Custom Bars](https://polygon.io/docs/rest/stocks/aggregates/custom-bars) is relevant because the API-key contract exists only to unlock current Polygon download workflows.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because cache-info and API-key availability behave like stable command contracts.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because the frontend/backend split is the main security boundary for this key flow.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Current shipped behavior includes:
 3. Call out the UI-copy mismatch around key storage and correct wording before changing logic.
 4. Keep legacy settings-file and env fallback behavior explicit until a deliberate migration plan exists.
 5. Add narrow tests if save/clear semantics or fallback order change.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,19 +101,28 @@ Current shipped behavior includes:
 - [ ] Document current UI copy and any mismatches with backend storage behavior.
 - [ ] Keep raw-key non-exposure as an explicit security invariant.
 - [ ] Add or tighten tests if fallback order or save/clear behavior changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted Polygon backend tests covering env and legacy fallback behavior
-- run `npm --prefix web test -- src/services/dataService.test.ts`
-- run `npm --prefix web test -- src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts`
+- run `npm --prefix web run test -- src/stores/dataStore.actions.test.ts`
 - manually verify save/clear flows in the Data panel after any wording or backend change
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve backward-compatible fallback behavior unless a replacement migration is already implemented
 - prefer tightening UI wording before reworking backend key storage
 - do not widen frontend exposure beyond current `hasApiKey` state
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -90,6 +90,7 @@ The Meta workspace exposes holdout as a first-class Stage 3 control surface. Use
 - relaxing backend warning/fallback behavior for ambiguous holdout rank modes
 - persisting holdout rows by default without a deliberate artifact/report/storage review
 - changing heavy-holdout nested defaults without updating builder fixtures and Stage 3 expectations
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -115,6 +116,13 @@ The Meta workspace exposes holdout as a first-class Stage 3 control surface. Use
 5. Make representative count, explore-N, and top-N evaluation interactions explicit because they shape which groups are actually revisited.
 6. Document when saved holdout rows should remain off by default and what downstream/reporting value they unlock when enabled.
 7. Tie every sensitive rule to its current owner and test surface so future refactors know where behavior is actually enforced.
+8. Treat ML/meta code quality as part of the implementation scope: keep evaluation assumptions, defaults, warnings, fixture payloads, and persisted shapes explicit enough for external reviewers to audit.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -128,16 +136,24 @@ The Meta workspace exposes holdout as a first-class Stage 3 control surface. Use
 - [ ] Document `save_holdout_rows` behavior and downstream workbook/report implications.
 - [ ] Add or preserve tests for unsupported strategies, heavy-payload shaping, and rank-mode fallback/warning paths.
 - [ ] Keep holdout UI copy, builder fixtures, backend tests, and report behavior aligned when any holdout semantic changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/metaRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/services/metaService.test.ts`
+- run `npm --prefix web run test -- src/services/metaRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/services/metaService.test.ts`
 - run targeted Stage 3 tests in `src-tauri/src/commands_meta.rs`
 - run targeted Stage 3 type/default tests in `crates/app_core/src/meta_select.rs`
 - run targeted workbook/report tests in `src-tauri/src/commands_reports_meta_xlsx.rs`
 - manually inspect one `light` request payload and one `heavy` request payload
 - manually confirm one Stage 3 run with saved holdout rows and one without saved holdout rows
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched ML/meta surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and the exact replay or saved-artifact checks named by the plan
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -145,6 +161,7 @@ The Meta workspace exposes holdout as a first-class Stage 3 control surface. Use
 - prefer clearer warnings/status text over weakening backend fallback rules
 - keep holdout-row persistence additive so older Stage 3 artifacts remain readable even if they do not contain saved per-dataset rows
 - if a later UX simplification hides some holdout controls, keep the underlying request contract explicit in documentation and tests
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

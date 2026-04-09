@@ -59,6 +59,7 @@ The browser harness currently injects a narrow mocked Tauri runtime through `add
 - adding command-specific fake data just to make smoke tests pass
 - sharing mutable mocked state across specs
 - masking a real desktop regression by making the browser mock more permissive
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The browser harness currently injects a narrow mocked Tauri runtime through `add
 - [Playwright best practices](https://playwright.dev/docs/best-practices) are relevant because mocks should support focused user-level scenarios, not recreate the whole application backend.
 - [Tauri: Calling Rust from the frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because the mock layer should stay aligned with the public semantics of the real invoke bridge.
 - [Tauri capabilities overview](https://v2.tauri.app/security/capabilities/) is relevant because browser mocks should not encourage assumptions about unrestricted desktop access that the real app does not have.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The browser harness currently injects a narrow mocked Tauri runtime through `add
 2. Require any scenario that needs richer native behavior to move into desktop smoke rather than expanding the browser mock indiscriminately.
 3. Keep browser mocks isolated per context and make their state intentionally easy to reason about.
 4. Review browser mock changes against the real `invoke` and desktop runtime contracts before accepting them.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The browser harness currently injects a narrow mocked Tauri runtime through `add
 - [ ] Keep browser support mocks isolated per Playwright context.
 - [ ] Keep the browser support layer non-options only.
 - [ ] Cross-check mock assumptions against the real Tauri bridge when shell boot paths change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,16 +105,19 @@ The browser harness currently injects a narrow mocked Tauri runtime through `add
 - compare suspicious browser-only passes against desktop smoke behavior before broadening mocks
 - inspect the real `web/src/tauri/invoke.ts` surface when browser support code changes
 - verify the mocked startup-overlay flow still matches the current shell boot expectations
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - prefer subtraction and tightening over growth in the browser mock layer
 - if a mock becomes too rich, split it or move the scenario into desktop smoke
 - avoid hidden compatibility shims in browser support helpers
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/10_tests_perf/09_browser_harness_contract_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/11_browser_palette_overlays_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/50_frontend_test_support_mocks_DATE.md`
+- `REPO_Improvement/10_tests_perf/50_frontend_test_support_mocks_2026-04-09.md`
 - `REPO_Improvement/10_tests_perf/21_tauri_mock_runtime_smoke_2026-04-08.md`

@@ -64,12 +64,15 @@ Current behavior also includes:
 - breaking adjusted-stock back-compat behavior
 - assuming every dataset has fresh integrity immediately after download
 - moving the manifest path or structure without updating every consumer
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because the manifest is a persisted contract with version-like expectations even if it is not yet formally schema-driven.
 - [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) is relevant because manifest semantics depend on stable JSON field names and null-versus-omitted behavior.
 - [Polygon Aggregates / Custom Bars](https://polygon.io/docs/rest/stocks/aggregates/custom-bars) is relevant because dataset metadata in the manifest reflects the aggregate-request model currently in use.
+- [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180)
+  - relevant because CSV-facing import, export, and repair behavior should remain interoperable and explicit instead of relying on provider-specific happy paths
 
 ## Proposed Improvement Approach
 
@@ -78,6 +81,13 @@ Current behavior also includes:
 3. Document adjusted-stock key naming and legacy-entry upgrade behavior as first-class compatibility rules.
 4. Tie listing, validation, repair, and top-off behavior back to the same manifest contract.
 5. Add explicit schema or round-trip tests if key naming or field semantics are touched.
+6. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -86,18 +96,27 @@ Current behavior also includes:
 - [ ] Document every `PolygonDatasetMeta` field and its meaning.
 - [ ] Document when `integrity` is null, reused, refreshed, or overwritten.
 - [ ] Add or tighten backend tests if manifest key or field behavior changes.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - run targeted Polygon backend tests for download, validate, and repair paths
 - add a manifest round-trip or key-shape test before changing manifest behavior
 - run frontend data-service/store tests if manifest-backed response shape changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve key names and path location unless a compatibility migration is implemented
 - prefer richer docs and tests before attempting manifest simplification
 - keep manifest behavior backend-owned even when UI copy improves
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

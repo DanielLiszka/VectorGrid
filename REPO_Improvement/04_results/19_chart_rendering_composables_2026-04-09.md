@@ -67,6 +67,7 @@ This doc exists to keep the shared rendering layer explicit so improvements to c
 - bypassing shared helpers in ways that fragment chart lifecycle handling
 - leaving stale chart hosts bound after result-panel rerender or dispose
 - making panel rendering behavior depend on hidden global state rather than explicit runtime helpers
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -74,6 +75,8 @@ This doc exists to keep the shared rendering layer explicit so improvements to c
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because shared rendering regressions often show up only in user-visible navigation and rerender flows.
 - [Microsoft Support: Create a chart from start to finish](https://support.microsoft.com/en-us/office/create-a-chart-from-start-to-finish-0baf399e-dd61-4e18-8a73-b3fd5d5680c2) is relevant indirectly because a readable chart depends on stable rendering lifecycle, not just visual styling.
 - [WAI-ARIA Tabs Pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/) is relevant because chart runtimes need to survive panel switching without leaking or misbinding.
+- [WAI Tables Tutorial](https://www.w3.org/WAI/tutorials/tables/)
+  - relevant because dense results tables and supporting evidence surfaces need semantic structure and scannability in a public-facing product
 
 ## Proposed Improvement Approach
 
@@ -82,6 +85,13 @@ This doc exists to keep the shared rendering layer explicit so improvements to c
 3. Document which rendering behaviors remain panel-local versus shared-runtime obligations.
 4. Treat rerender, restore, and tab-switch behavior as first-class rendering correctness concerns.
 5. Add or tighten tests whenever shared chart helpers or panel rendering lifecycles change.
+6. Treat results-surface code quality as part of the implementation scope: preserve semantic tables/charts, readable evidence labeling, accessible density, and contributor-friendly rendering/state boundaries.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,13 +100,21 @@ This doc exists to keep the shared rendering layer explicit so improvements to c
 - [ ] Document panel-local versus shared rendering responsibilities.
 - [ ] Document rerender and restore expectations for chart-bearing result panels.
 - [ ] Add or tighten tests for chart lifecycle, rerender, and tab-switch stability.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/DrillWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/HeatmapWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/ParetoWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/DrillWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/HeatmapWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/ParetoWorkspacePanel.test.ts`
 - run targeted `analysisService` tests if chart lifecycle handling changes
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend quality gates for touched result surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and any required browser, desktop, or accessibility smoke verification
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -104,10 +122,11 @@ This doc exists to keep the shared rendering layer explicit so improvements to c
 - prefer additive shared helpers over duplicating lifecycle logic in each panel
 - if new chart surfaces are added later, route them through the shared lifecycle model unless there is a clear exception
 - keep chart-runtime changes synchronized with panel rerender and restore semantics
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/04_results_pareto_2026-04-09.md`
 - `REPO_Improvement/04_results/05_results_drilldown_2026-04-09.md`
 - `REPO_Improvement/04_results/06_results_heatmap_2026-04-09.md`
-- `REPO_Improvement/10_tests_perf/05_fe_results_surface_adequacy_DATE.md`
+- `REPO_Improvement/10_tests_perf/05_fe_results_surface_adequacy_2026-04-09.md`

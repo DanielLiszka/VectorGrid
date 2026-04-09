@@ -1,6 +1,6 @@
 # Analysis Drilldown and Stability Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -64,12 +64,15 @@ The results workflow lets users select a candidate and compute drilldown curves 
 - making partial implementation gaps less visible
 - changing analysis data semantics without updating the UI status/empty-state language
 - weakening existing tests for strategy-specific “not implemented” behavior
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
 - [Tauri: Calling Rust from the Frontend](https://v2.tauri.app/develop/calling-rust/) is relevant because analysis requests cross command boundaries and need a stable contract.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because drilldown/stability value is only meaningful if the user-visible follow-up flow is testable end to end.
 - [JSON Schema: Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant for keeping analysis request/result payloads explicit and versionable.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -81,6 +84,13 @@ The results workflow lets users select a candidate and compute drilldown curves 
    - intentionally return “not implemented yet”
 4. Keep analysis-surface empty-state and status copy aligned with actual backend availability.
 5. Preserve analysis semantics that are reused by live execution paths.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,6 +102,12 @@ The results workflow lets users select a candidate and compute drilldown curves 
 - [ ] Add or maintain tests for unsupported strategies and empty-state behavior.
 - [ ] Preserve current table-to-analysis navigation flows while improving clarity.
 - [ ] Avoid generic language that overstates analysis support.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -99,16 +115,20 @@ The results workflow lets users select a candidate and compute drilldown curves 
 - run `npm test -- src/components/DrillWorkspacePanel.test.ts`
 - run relevant Top workspace tests that trigger analysis handoff
 - run targeted Rust drilldown/local-stability tests in `ta_app_core`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve existing supported drilldown/local-stability flows
 - keep unsupported strategy cases explicit instead of silently suppressing actions
 - if more strategy coverage is added later, update the coverage matrix and UI messaging together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
 - `REPO_Improvement/04_results/08_results_display_adequacy_2026-04-08.md`
 - `REPO_Improvement/04_results/20_matrix_table_state_2026-04-08.md`
 - `REPO_Improvement/07_strats/12_eng_composite_validation_2026-04-08.md`
-- `REPO_Improvement/09_live/03_execution_runner_lifecycle_DATE.md`
+- `REPO_Improvement/09_live/03_execution_runner_lifecycle_2026-04-08.md`

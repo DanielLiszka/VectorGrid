@@ -1,6 +1,6 @@
 # Implementation Doc Template Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -60,6 +60,7 @@ The program already operates with a de facto 14-section template, and the tracke
 - letting implementation docs omit checklist or verification sections
 - silently changing section names in ways that break the audit
 - reducing the template to a generic outline that loses repo specificity
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -80,6 +81,13 @@ The program already operates with a de facto 14-section template, and the tracke
    - what it must contain
    - what it should avoid
 4. Keep the template compatible with the current audit so older docs remain valid if they already meet the bar.
+5. Treat planning-layer quality as part of the implementation scope: keep the program auditable, explicit, refreshable, and easy for future contributors to execute without guesswork.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -88,18 +96,27 @@ The program already operates with a de facto 14-section template, and the tracke
 - [ ] Define when extra sections are appropriate.
 - [ ] Preserve checklist and verification sections as mandatory.
 - [ ] Keep the tracker audit aligned with the template wording.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
 - rerun the section audit after any template change
 - spot-check new docs against the per-section content expectations
 - update the quality-bar doc if the template meaning changes materially
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify the definition of done, refresh triggers, and any superseded/historical pointers are explicit enough that another contributor could continue the program without guesswork
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep the existing heading names unless the tracker audit is updated in the same change
 - if a future wave needs a richer template, extend it additively rather than replacing the baseline silently
 - older docs should only be backfilled if the live standard materially changes
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

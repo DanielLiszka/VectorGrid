@@ -67,6 +67,7 @@ Current behavior already distinguishes readiness states through `useUiReadiness`
 - weakening the linkage between preview state and post-run state
 - reducing visibility of export/report actions that analysts already rely on
 - moving significant validation logic back into the component from the store/service layers
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -75,6 +76,8 @@ Current behavior already distinguishes readiness states through `useUiReadiness`
 - [ARIA: status role | MDN](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Roles/status_role) is relevant because route summaries, warning summaries, and execution previews are dynamic advisory output.
 - [Vue State Management](https://vuejs.org/guide/scaling-up/state-management.html) is relevant because the panel should remain a reader/writer of shared validation state rather than a second state owner.
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because the panel contract is mostly about deterministic state, action placement, and rendered readiness.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ Current behavior already distinguishes readiness states through `useUiReadiness`
 3. Keep route/execution/admission preview text as part of the core panel contract rather than optional supporting copy.
 4. Preserve the separation between panel layout, store state, service execution, and request building.
 5. Add or tighten tests around core action placement, visible control groups, summary chips, and readiness transitions.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -91,13 +101,20 @@ Current behavior already distinguishes readiness states through `useUiReadiness`
 - [ ] Document how readiness states affect panel output and action availability.
 - [ ] Document the core export/report action cluster and its intended placement.
 - [ ] Add or tighten tests for core action placement, summary visibility, and readiness behavior.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/components/ValidationWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/stores/validationStore.actions.test.ts`
-- run `npm --prefix web test -- src/services/validationService.test.ts`
+- run `npm --prefix web run test -- src/components/ValidationWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/stores/validationStore.actions.test.ts`
+- run `npm --prefix web run test -- src/services/validationService.test.ts`
 - manually verify pre-run preview, post-run summaries, and dense table visibility in the validation tab
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -105,6 +122,7 @@ Current behavior already distinguishes readiness states through `useUiReadiness`
 - keep panel logic thin relative to the store/service boundary
 - prefer additive clarity improvements over removing existing validation evidence
 - if panel grouping changes later, update readiness and export/action tests in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

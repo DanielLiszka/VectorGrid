@@ -59,6 +59,7 @@ The current desktop settings diagnostics smoke spec opens the settings workspace
 - asserting on every line of explanatory copy rather than the stable diagnostics concepts
 - treating settings diagnostics as a replacement for lower-layer runtime/store tests
 - allowing the diagnostics surface to drift away from actual desktop capabilities or plugin state
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current desktop settings diagnostics smoke spec opens the settings workspace
 - [Tauri window-state plugin docs](https://v2.tauri.app/plugin/window-state/) are relevant because settings diagnostics expose persisted window-state readiness and file/path messaging.
 - [WebdriverIO best practices](https://webdriver.io/docs/bestpractices/) are relevant because diagnostics smoke should assert on stable concepts with resilient selectors and waits.
 - [WAI-ARIA dialog (modal) pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/) is relevant indirectly because settings diagnostics also reference the task center and other overlay-driven desktop affordances.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current desktop settings diagnostics smoke spec opens the settings workspace
 2. Tie each assertion to a concrete desktop capability or runtime status that users depend on.
 3. Use lower-layer tests for store/service correctness and let desktop smoke prove that the real shell surfaces those signals coherently.
 4. Review wording churn separately from capability regressions so the smoke contract stays useful.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current desktop settings diagnostics smoke spec opens the settings workspace
 - [ ] Keep settings diagnostics smoke non-options only.
 - [ ] Use desktop smoke to prove real-shell visibility, not every runtime permutation.
 - [ ] Review capability wording whenever plugin behavior or runtime policies change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The current desktop settings diagnostics smoke spec opens the settings workspace
 - run the full desktop smoke suite after broader shell updates
 - review whether a failing assertion reflects wording churn or an actual capability regression
 - cross-check runtime and settings stores when the desktop shell no longer surfaces expected diagnostics
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current diagnostics smoke intent while gradually tightening assertion quality
 - prefer concept-level assertions over removing diagnostics coverage entirely
 - if settings diagnostics expand, add contract coverage selectively instead of snapshotting the whole panel
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

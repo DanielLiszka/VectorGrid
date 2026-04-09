@@ -60,6 +60,7 @@ The current parity checker compares JSON type/shape, CSV column/header shape, an
 - removing richer workbook tests because shape parity exists
 - adding many sample outputs without preserving their review purpose
 - allowing the checker to accept obviously malformed structure just to reduce noise
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -67,6 +68,8 @@ The current parity checker compares JSON type/shape, CSV column/header shape, an
 - [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180) is relevant because CSV parity checks rely on stable header and row-shape expectations.
 - [rust_xlsxwriter docs](https://rustxlsxwriter.github.io/index.html) are relevant because workbook output shape is partly driven by the XLSX builder contract.
 - [Microsoft Excel chart guidance](https://support.microsoft.com/en-us/office/create-a-chart-from-start-to-finish-0baf399e-dd61-4e18-8a73-b3fd5d5680c2) is relevant because workbook usefulness depends on more than container validity, which is why shape parity must stay layered with richer checks.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -74,6 +77,13 @@ The current parity checker compares JSON type/shape, CSV column/header shape, an
 2. Use representative sample outputs to catch broad structural regressions quickly.
 3. Layer structural parity with deeper report/workbook tests and occasional manual review.
 4. Refresh sample lineage and pair meaning deliberately when the report contract changes.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -83,6 +93,12 @@ The current parity checker compares JSON type/shape, CSV column/header shape, an
 - [ ] Cross-link shape parity to richer workbook/report tests.
 - [ ] Review sample representativeness periodically.
 - [ ] Avoid conflating container validity with analyst usefulness.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -90,12 +106,15 @@ The current parity checker compares JSON type/shape, CSV column/header shape, an
 - run the deeper workbook tests when parity changes or fails
 - inspect representative sample outputs if shape changes are expected but need confirmation
 - verify the sample manifest still points to real files and accurate lineage
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current layered parity model rather than collapsing everything into one checker
 - prefer better explanation over more exhaustive but low-signal shape checks
 - if semantic drift becomes common, add targeted deeper tests rather than overstretching the shape checker
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

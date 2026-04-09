@@ -64,6 +64,7 @@ These helpers are small, but they define core semantics that propagate into cand
 - making gating logic inconsistent between candidate verdicts and exported/report surfaces
 - collapsing missing-stat and below-threshold behavior into one undocumented branch
 - duplicating probability-gate logic outside the shared stats layer
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -72,6 +73,8 @@ These helpers are small, but they define core semantics that propagate into cand
 - [RFC 8259 - JSON](https://www.rfc-editor.org/rfc/rfc8259) is relevant because absent-versus-present numeric fields affect how downstream surfaces interpret missing stats.
 - [Pinia Testing Cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because frontend summaries/tests rely on deterministic statistical fields coming from shared backend logic.
 - [Playwright Best Practices](https://playwright.dev/docs/best-practices) is relevant because the user-visible consequence of these helpers should remain observable through the validation workflow.
+- [Microsoft Excel specifications and limits](https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3)
+  - relevant because workbook, sheet, row, and chart limits should be treated as part of the report contract rather than discovered after export regressions
 
 ## Proposed Improvement Approach
 
@@ -83,6 +86,13 @@ These helpers are small, but they define core semantics that propagate into cand
 3. Keep downstream verdict/export consumers aligned to these meanings.
 4. Add targeted tests around edge cases such as `NaN`, absent values, and mixed threshold configurations.
 5. Treat field meaning as compatibility-sensitive because it drives multiple user-facing surfaces.
+6. Treat validation/report code quality as part of the implementation scope: keep workbook/report contracts, metric semantics, export diagnostics, and regression coverage explicit enough for external contributors to trust.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -92,6 +102,11 @@ These helpers are small, but they define core semantics that propagate into cand
 - [ ] Add or tighten tests for clamping, `NaN`, and absent-value behavior.
 - [ ] Add or tighten tests for gate pass/fail combinations.
 - [ ] Verify downstream verdict/report consumers still interpret these fields consistently.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -99,6 +114,8 @@ These helpers are small, but they define core semantics that propagate into cand
 - run targeted `validation_pipeline.rs` tests
 - run representative strategy validation tests that exercise probability gates
 - run report tests that depend on PSR/DSR presence and recommendation behavior
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched validation/report surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, `cargo check --workspace`, and any applicable output or workbook parity checks
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -106,6 +123,7 @@ These helpers are small, but they define core semantics that propagate into cand
 - prefer additive edge-case tests over semantic rewrites
 - if PSR/DSR field meaning changes, update control labels, summaries, and report wording together
 - treat absent-value handling as contract behavior, not an implementation accident
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

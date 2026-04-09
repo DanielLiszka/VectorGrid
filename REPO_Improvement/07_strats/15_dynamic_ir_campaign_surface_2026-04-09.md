@@ -75,6 +75,7 @@ This is already a significant orchestration surface, not just a thin loop around
 - weakening per-item diagnostics or progress payload clarity
 - breaking summary artifact persistence or artifact-library visibility
 - making auto-meta/stage5 chaining more implicit or less inspectable
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -83,6 +84,8 @@ This is already a significant orchestration surface, not just a thin loop around
 - [Pinia testing cookbook](https://pinia.vuejs.org/cookbook/testing.html) is relevant because campaign strategy routing and resume behavior are best protected at the service/store layer.
 - [JSON Schema overview](https://json-schema.org/overview/what-is-jsonschema) is relevant because the campaign request, progress payload, and summary artifact are structured contracts.
 - [serde_json `Value` docs](https://docs.rs/serde_json/latest/serde_json/value/) are relevant because campaign summaries and downstream chaining rely on structured JSON-like request/result payloads.
+- [cargo test](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
+  - relevant because strategy-local behavior is easy to regress silently unless tests stay close to the owning strategy/runtime surface
 
 ## Proposed Improvement Approach
 
@@ -91,6 +94,13 @@ This is already a significant orchestration surface, not just a thin loop around
 3. Keep resume/retry behavior and latest-run behavior explicitly aligned.
 4. Expand tests around chaining, progress, and summary diagnostics.
 5. Keep strategy passthrough and preload policy behavior visible and deterministic.
+6. Treat strategy-surface code quality as part of the implementation scope: keep strategy-local ownership, test proximity, truth anchors, diagnostics, and route semantics explicit instead of hiding them in generic layers.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -101,14 +111,23 @@ This is already a significant orchestration surface, not just a thin loop around
 - [ ] Add or tighten frontend tests for strategy passthrough, preload policy, and resume behavior.
 - [ ] Add or tighten progress-store tests for campaign stage/count updates.
 - [ ] Keep auto-meta/stage5 chaining explicit in docs and verification.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
 - run targeted tests in `src-tauri/src/commands_campaign.rs`
-- run `npm --prefix web test -- src/services/metaServiceCampaignStrategy.test.ts`
-- run `npm --prefix web test -- src/services/metaServiceCampaignResume.test.ts`
-- run `npm --prefix web test -- src/stores/taskStoreCampaignProgress.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignStrategy.test.ts`
+- run `npm --prefix web run test -- src/services/metaServiceCampaignResume.test.ts`
+- run `npm --prefix web run test -- src/stores/taskStoreCampaignProgress.test.ts`
 - manually verify one small campaign, then resume from its saved summary
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant Rust quality gates for touched strategy/runtime surfaces: `cargo check --workspace`, the closest crate or strategy tests, and the applicable workflow, CPU, or GPU perf gate when behavior or performance claims change
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -116,6 +135,7 @@ This is already a significant orchestration surface, not just a thin loop around
 - keep strategy passthrough and preload policy explicit rather than inferred
 - if campaign summaries change shape, update resume logic and tests in the same slice
 - keep campaign orchestration additive and observable, not opaque
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

@@ -59,6 +59,7 @@ The current pair registry is intentionally small: it currently maps one report J
 - repointing a pair to a different artifact without documenting why the pair still matters
 - treating pair presence as proof of semantic correctness
 - forgetting to update related docs when pair identities change
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -66,6 +67,8 @@ The current pair registry is intentionally small: it currently maps one report J
 - [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180) is relevant because some candidate/baseline artifacts involved in the broader sample set are CSV-shaped and require clear format assumptions.
 - [rust_xlsxwriter docs](https://rustxlsxwriter.github.io/index.html) are relevant because one registry entry points to a workbook whose structure is part of parity review.
 - [Node.js `path` API docs](https://nodejs.org/api/path.html) are relevant because the registry relies on relative-path interpretation through a base directory.
+- [Clippy](https://github.com/rust-lang/rust-clippy)
+  - relevant because public-repo quality work should include explicit static-analysis expectations alongside behavioral tests and perf gates
 
 ## Proposed Improvement Approach
 
@@ -73,6 +76,13 @@ The current pair registry is intentionally small: it currently maps one report J
 2. Treat every pair addition or change as a contract review event, not a casual fixture update.
 3. Document what each pair is meant to prove structurally.
 4. Use the registry in conjunction with the pack and checker, not as a standalone proof surface.
+5. Treat test/perf code quality as part of the implementation scope: prefer stable, reviewable gates, exact commands, environment provenance, and raw evidence capture over brittle harness sprawl.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -82,6 +92,12 @@ The current pair registry is intentionally small: it currently maps one report J
 - [ ] Require rationale for every added or removed pair.
 - [ ] Cross-link pair changes to the pack and parity-checker docs.
 - [ ] Avoid implying exhaustive artifact coverage from the registry.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -89,12 +105,15 @@ The current pair registry is intentionally small: it currently maps one report J
 - run the full parity check with the pack when candidate-generation paths are involved
 - inspect registry diffs carefully for path or artifact-identity changes
 - confirm baseline files still exist and match the intended sample set
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the exact commands, environment, raw outputs, and refresh reason needed to prove this verification or perf surface still deserves trust in a public repo
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve the current narrow registry until a new pair is clearly justified
 - prefer stronger rationale for a few pairs over a sprawling registry
 - if a pair becomes obsolete, remove it deliberately and explain the replacement coverage
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

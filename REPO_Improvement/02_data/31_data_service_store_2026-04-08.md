@@ -1,6 +1,6 @@
 # Data Service And Store Plan
 
-Last updated: 2026-04-08
+Last updated: 2026-04-09
 
 ## Purpose
 
@@ -71,6 +71,7 @@ The data layer already behaves like a two-part contract. `dataService` normalize
 - breaking exact-range top-off behavior or derived-timeframe preservation
 - rewriting non-Polygon paths when market-data root changes
 - leaving workflow artifacts intact after data reset
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -97,6 +98,13 @@ The data layer already behaves like a two-part contract. `dataService` normalize
    - market-data-root management
 3. Consolidate repeated result-application logic only when current behavior is preserved exactly.
 4. Treat workflow-artifact clearing and dataset identity as non-negotiable parts of the data contract.
+5. Treat data-surface code quality as part of the implementation scope: preserve explicit schemas, path safety, provenance clarity, diagnostics, and testable normalization rules rather than relying on permissive parsing.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -107,17 +115,26 @@ The data layer already behaves like a two-part contract. `dataService` normalize
 - [ ] Document market-data-root rewrite behavior for cached Polygon datasets.
 - [ ] Document clear-data side effects on workflow artifacts.
 - [ ] Add or tighten tests if store/service boundaries or result-application logic change.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/DataWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/dataService.test.ts src/stores/dataStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/DataWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- run the relevant frontend and Rust quality gates for touched data surfaces: `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo check --workspace` or a justified narrower target
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - preserve current state semantics before attempting any structural split of `dataStore.ts`
 - keep service normalization backward-compatible with current Tauri payload shapes
 - if no-op service helpers are removed or formalized, update every store caller in the same change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

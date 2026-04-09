@@ -71,6 +71,7 @@ The final command selection is then derived from the normalized strategy kind. D
 - letting dynamic preview and final request payloads diverge
 - weakening legality checks for advanced settings, export, or metric contracts
 - misrouting normalized requests to the wrong optimization command
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -78,6 +79,8 @@ The final command selection is then derived from the normalized strategy kind. D
 - [Pinia Testing](https://pinia.vuejs.org/cookbook/testing.html) is relevant because the main regression risk is cross-store state drift and normalization bugs.
 - [Tauri Calling Rust](https://v2.tauri.app/develop/calling-rust/) is relevant because request resolution terminates at a typed command boundary.
 - [JSON Schema Getting Started](https://json-schema.org/learn/getting-started-step-by-step) is relevant because normalized request payloads and dynamic strategy IRs behave like structured compatibility contracts.
+- [NVIDIA CUDA C Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+  - relevant because GPU and route-policy improvements should preserve correctness, observability, and profiling discipline instead of chasing speed blindly
 
 ## Proposed Improvement Approach
 
@@ -86,6 +89,13 @@ The final command selection is then derived from the normalized strategy kind. D
 3. Document recommended defaults as part of request resolution rather than a side utility.
 4. Separate dynamic preview normalization from final request construction in the plan.
 5. Add parity checks between strategy-family resolution, builder output, and command selection.
+6. Treat optimizer-surface code quality as part of the implementation scope: keep request shaping, route policy, GPU ownership, diagnostics, and strategy-local boundaries readable and testable in a public repo.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -94,14 +104,21 @@ The final command selection is then derived from the normalized strategy kind. D
 - [ ] Document request-builder authority for normalization and legality.
 - [ ] Document dynamic preview normalization and final payload handoff.
 - [ ] Add or tighten tests for store drift, defaults, and command-selection parity.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
-- run `npm --prefix web test -- src/services/optimizeService.test.ts`
-- run `npm --prefix web test -- src/services/optimizeRequestBuilder.test.ts`
-- run `npm --prefix web test -- src/stores/optimizeStore.actions.test.ts`
-- run `npm --prefix web test -- src/components/AdvancedWorkspacePanel.test.ts`
-- run `npm --prefix web test -- src/components/StrategyWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeService.test.ts`
+- run `npm --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`
+- run `npm --prefix web run test -- src/stores/optimizeStore.actions.test.ts`
+- run `npm --prefix web run test -- src/components/AdvancedWorkspacePanel.test.ts`
+- run `npm --prefix web run test -- src/components/StrategyWorkspacePanel.test.ts`
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
@@ -109,6 +126,7 @@ The final command selection is then derived from the normalized strategy kind. D
 - preserve recommended default behavior unless the product explicitly changes the output-default policy
 - treat dynamic preview as an additive normalization stage, not a silent override of builder legality
 - if command selection changes, update this plan and optimize-service tests together
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 

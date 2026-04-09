@@ -65,6 +65,7 @@ The current improvement program already claims broad non-options coverage. That 
 - treating old counts as proof of current completeness
 - letting newly added or renamed surfaces go unrepresented in the plan
 - confusing “more docs” with “better coverage”
+- allowing this surface to stay behaviorally “working” while contributor readability, diagnostics, accessibility where relevant, static-analysis cleanliness, or regression coverage degrades in a public-facing repo
 
 ## External Research Summary
 
@@ -81,6 +82,13 @@ The current improvement program already claims broad non-options coverage. That 
 2. Compare planned-doc catalog, actual created docs, and current code surfaces together.
 3. Treat newly discovered uncovered surfaces as a meta-plan update, not as an informal note.
 4. Keep “covered” meaning “represented by a real planned doc or an intentional merged owner,” not just “mentioned somewhere.”
+5. Treat docs/ops quality as part of the implementation scope: keep public-facing instructions, release steps, support posture, and maintenance rules specific, reproducible, and easy for outside contributors to follow.
+
+Public-repo quality focus:
+- keep touched-file ownership, adjacent-doc sync, and acceptance evidence explicit
+- preserve contributor readability, diagnostics, and static-analysis health alongside user-visible behavior
+- prefer additive hardening over broad cleanup-only refactors that widen blast radius
+- update tests, fixtures, screenshots, workbooks, or artifacts in the same change when behavior shifts
 
 ## Checklist
 
@@ -90,6 +98,12 @@ The current improvement program already claims broad non-options coverage. That 
 - [ ] Update tracker, index, and meta-plan counts together when coverage changes.
 - [ ] Re-run the audit when the repo adds or renames meaningful non-options surfaces.
 - [ ] Keep scope wording honest: non-options coverage only.
+- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
+- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -97,12 +111,16 @@ The current improvement program already claims broad non-options coverage. That 
 - compare created planned-doc slots against the live catalog
 - review `REPO_MAP.md` for uncovered non-options surfaces
 - update the tracker and meta plan when uncovered surfaces are found
+- run the relevant repo quality gates for any touched surfaces, including `cargo check --workspace` or a justified narrower Rust target plus `npm --prefix web run lint` and `npm --prefix web run typecheck` where frontend or desktop code is touched
+- verify every changed doc/ops surface against the repo minimum bar and update all linked public docs, release notes, and contributor-facing routing files together
+- capture the concrete acceptance evidence for closure, such as updated test output, screenshots, saved artifacts, report workbooks, or benchmark/profile artifacts as appropriate
 
 ## Rollout / Fallback / Compatibility Notes
 
 - keep coverage audits iterative; do not wait for major rewrites
 - preserve historical tracker data when new surfaces expand the catalog
 - if surfaces are merged into broader docs, record that explicitly rather than hiding the count change
+- keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
 ## Related Docs
 
