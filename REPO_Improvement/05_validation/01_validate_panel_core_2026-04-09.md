@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the core validation workspace responsibilities and panel sections.
-- [ ] Document the visibility requirements for route, admission, warning, and cross summaries.
-- [ ] Document how readiness states affect panel output and action availability.
-- [ ] Document the core export/report action cluster and its intended placement.
-- [ ] Add or tighten tests for core action placement, summary visibility, and readiness behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the core validation workspace responsibilities and panel sections.
+- [x] Document the visibility requirements for route, admission, warning, and cross summaries.
+- [x] Document how readiness states affect panel output and action availability.
+- [x] Document the core export/report action cluster and its intended placement.
+- [x] Add or tighten tests for core action placement, summary visibility, and readiness behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,12 @@ Public-repo quality focus:
 - prefer additive clarity improvements over removing existing validation evidence
 - if panel grouping changes later, update readiness and export/action tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened [ValidationWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ValidationWorkspacePanel.test.ts) to cover the missing panel-level contract: no-data and no-run empty states, the ready-to-run preview state, disabled action clusters, and the ready-state summary/debug surface.
+- Revalidated the existing store/service surfaces in [validationStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/validationStore.actions.test.ts), [validationService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.test.ts), and [validationRequestBuilder.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationRequestBuilder.test.ts), which already covered the heavier execution and request branches this panel consumes.
+- No production component change was required in this tranche because the current panel structure already satisfies the intended workspace contract once the missing regression coverage was added.
 
 ## Related Docs
 

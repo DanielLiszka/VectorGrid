@@ -1904,4 +1904,93 @@ mod tests {
         );
         assert_eq!(verdict.approved_candidate_count, 0);
     }
+
+    #[test]
+    fn run_verdict_marks_search_not_statistically_superior_when_spa_fails() {
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                sharpe: 1.2,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(64),
+            robust_score: 1.1,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        apply_candidate_hard_gates(&mut out, &ValidationHardGateConfig::default(), None);
+        let spa = SpaValidationStats {
+            scope: "validation".to_string(),
+            candidate_count: 1,
+            slice_count: 8,
+            block_length: 2,
+            benchmark: crate::validation_shared::SpaBenchmarkKind::BuyAndHold,
+            bootstrap_samples: 256,
+            best_candidate_key: "alpha".to_string(),
+            best_candidate_mean_diff: 0.1,
+            best_candidate_t_stat: 0.2,
+            p_value: 0.2,
+            passed: false,
+            skipped_reason: None,
+        };
+
+        let verdict = build_run_verdict(
+            &out,
+            1,
+            &ValidationHardGateConfig::default(),
+            None,
+            Some(&spa),
+        );
+
+        assert!(!verdict.approved);
+        assert_eq!(
+            verdict.final_recommendation,
+            ValidationRecommendation::CandidatesSurvivedButSearchNotStatisticallySuperior
+        );
+        assert!(verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "spa_not_significant"));
+    }
+
+    #[test]
+    fn run_verdict_marks_approved_with_warnings_when_candidate_has_nonfatal_flags() {
+        let mut out = vec![DummyCandidate {
+            in_sample: Metrics {
+                pnl: 0.10,
+                sharpe: 1.0,
+                volatility: 0.10,
+                downside_deviation: 0.095,
+                ulcer_index: 0.15,
+                martin_ratio: 0.20,
+                max_dd: 0.2,
+                trades: 32,
+                ..Metrics::default()
+            },
+            psr: Some(0.95),
+            dsr: Some(0.90),
+            track_record_bars: 256,
+            min_track_record_length_bars: Some(64),
+            robust_score: 1.1,
+            robust_pareto: true,
+            cscv_pbo: None,
+            validation_verdict: ValidationCandidateVerdict::default(),
+        }];
+        apply_candidate_hard_gates(&mut out, &ValidationHardGateConfig::default(), None);
+        let verdict = build_run_verdict(&out, 1, &ValidationHardGateConfig::default(), None, None);
+
+        assert!(verdict.approved);
+        assert_eq!(
+            verdict.final_recommendation,
+            ValidationRecommendation::ApprovedWithWarnings
+        );
+        assert!(!verdict.warning_flags.is_empty());
+        assert!(verdict
+            .warning_flags
+            .iter()
+            .any(|flag| flag == "ulcer_index_high:0.150"));
+    }
 }

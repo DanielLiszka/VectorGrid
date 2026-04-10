@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { invokeCommand } from '../tauri/invoke'
 import { resetMoSearchSpace as resetMoSearchSpaceAction } from '../services/advancedService'
+import { resolveRuntimePinia } from './runtimePinia'
 
 export interface AdvancedOption {
   value: string
@@ -324,6 +325,30 @@ function applyVueCheckboxFieldUpdate(state: AdvancedState, field: string, checke
   return true
 }
 
+function syncAdvancedParityFieldsToOptimizeStore(field: string, value: string): void {
+  const pinia = resolveRuntimePinia()
+  const optimizeState = pinia?.state.value?.optimize as Record<string, unknown> | undefined
+  if (!optimizeState) return
+
+  const now = Date.now()
+  if (field === 'objective') {
+    const next = String(value || '').trim() || 'Sharpe'
+    if (String(optimizeState.objective ?? '').trim() === next) return
+    optimizeState.objective = next
+    optimizeState.source = 'vue'
+    optimizeState.updatedAtUnixMs = now
+    return
+  }
+
+  if (field === 'mode') {
+    const next = normalizeOptimizationMode(value)
+    if (String(optimizeState.mode ?? '').trim() === next) return
+    optimizeState.mode = next
+    optimizeState.source = 'vue'
+    optimizeState.updatedAtUnixMs = now
+  }
+}
+
 export const useAdvancedStore = defineStore('advanced', {
   state: (): AdvancedState => ({
     activeControlsTab: 'data',
@@ -573,6 +598,8 @@ export const useAdvancedStore = defineStore('advanced', {
       this.statusLine = String(snapshot.statusLine ?? this.statusLine ?? 'Ready.').trim() || 'Ready.'
       this.source = 'vue'
       this.updatedAtUnixMs = Date.now()
+      syncAdvancedParityFieldsToOptimizeStore('objective', this.objective)
+      syncAdvancedParityFieldsToOptimizeStore('mode', this.mode)
     },
 
     setInputField(field: string, value: string): void {
@@ -588,6 +615,9 @@ export const useAdvancedStore = defineStore('advanced', {
       const next = String(value || '')
       if (applyVueStringFieldUpdate(this, key, next)) {
         this.markVueUpdate()
+        if (key === 'objective' || key === 'mode') {
+          syncAdvancedParityFieldsToOptimizeStore(key, next)
+        }
       }
     },
 

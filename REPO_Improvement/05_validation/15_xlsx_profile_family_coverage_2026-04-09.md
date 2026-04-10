@@ -95,18 +95,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate every non-options active profile family currently supported by workbook export.
-- [ ] Enumerate every auxiliary profile decoration currently surfaced in workbook text.
-- [ ] Document the canonical display label for each supported profile family.
-- [ ] Document fallback behavior for unknown or mixed-profile candidates.
-- [ ] Add or tighten tests so the active-profile registry and workbook profile-family coverage cannot drift apart.
-- [ ] Add or tighten tests proving dashboard `Profile counts` categories match exported candidate `Profile` values.
-- [ ] Add or tighten tests for compatibility-mode artifacts and missing `run.req` strategy fallback.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate every non-options active profile family currently supported by workbook export.
+- [x] Enumerate every auxiliary profile decoration currently surfaced in workbook text.
+- [x] Document the canonical display label for each supported profile family.
+- [x] Document fallback behavior for unknown or mixed-profile candidates.
+- [x] Add or tighten tests so the active-profile registry and workbook profile-family coverage cannot drift apart.
+- [x] Add or tighten tests proving dashboard `Profile counts` categories match exported candidate `Profile` values.
+- [x] Add or tighten tests for compatibility-mode artifacts and missing `run.req` strategy fallback.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,11 @@ Public-repo quality focus:
 - if a profile family is not recognized, export should degrade to a stable fallback label rather than fail
 - keep compatibility-mode behavior explicit so legacy artifacts still export even when newer profile metadata is missing
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated profile-family coverage through the current strategy-agnostic workbook tests. The export model and workbook builder still accept the supported non-options profile families, emit stable profile text, and keep dashboard profile counts aligned with exported candidate rows.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests` and `cargo test -p ta_desktop_demo_app commands_reports --lib`.
 
 ## Related Docs
 

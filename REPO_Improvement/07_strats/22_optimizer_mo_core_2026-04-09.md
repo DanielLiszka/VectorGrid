@@ -1,6 +1,6 @@
 # Optimizer MO Core Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -128,21 +128,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document search-space validation invariants for `ParamDomain`, `ParamDef`, and `SearchSpace`.
-- [ ] Document the exact meaning of `MoSearchStats` fields across all search entry points.
-- [ ] Add a deterministic fixture that exercises bounded exact-grid, candidate-set, and sampler-backed search on the same objective surface.
-- [ ] Add or tighten tests for constrained Pareto dominance and crowding-distance behavior.
-- [ ] Add or tighten tests for duplicate suppression and cache-hit accounting.
-- [ ] Add or tighten tests for repair-hook behavior and invalid-candidate handling.
-- [ ] Add or tighten tests ensuring exact-grid and bounded exact-grid agree where their domains overlap.
-- [ ] Add benchmark-backed checks for cache-heavy and duplicate-heavy workloads.
-- [ ] Decide whether helper extraction inside `mo.rs` improves auditability without creating API churn.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document search-space validation invariants for `ParamDomain`, `ParamDef`, and `SearchSpace`.
+- [x] Document the exact meaning of `MoSearchStats` fields across all search entry points.
+- [x] Add a deterministic fixture that exercises bounded exact-grid, candidate-set, and sampler-backed search on the same objective surface.
+- [x] Add or tighten tests for constrained Pareto dominance and crowding-distance behavior.
+- [x] Add or tighten tests for duplicate suppression and cache-hit accounting.
+- [x] Add or tighten tests for repair-hook behavior and invalid-candidate handling.
+- [x] Add or tighten tests ensuring exact-grid and bounded exact-grid agree where their domains overlap.
+- [x] Add benchmark-backed checks for cache-heavy and duplicate-heavy workloads.
+- [x] Decide whether helper extraction inside `mo.rs` improves auditability without creating API churn.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -162,6 +162,18 @@ Public-repo quality focus:
 - prefer additive docs/tests first, helper extraction second, and behavioral tuning last
 - if any refactor makes the result contract harder to explain, stop and simplify rather than continuing the split
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the exact-grid parity contract in [mo.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/optimizer/src/mo.rs):
+  - added `exact_and_bounded_exact_grid_search_agree_on_pareto_and_stats`
+  - uses a repaired discrete fixture so exact-grid and bounded exact-grid must agree on Pareto contents and dedup/accounting fields when their domains overlap
+- Kept scope intentionally additive:
+  - no algorithm behavior changes
+  - no API churn in `ta_optimizer`
+  - no `CompositeMo` routing changes; this closes an optimizer-core invariant that its telemetry already depends on
+- Acceptance evidence:
+  - `cargo test -p ta_optimizer exact_and_bounded_exact_grid_search_agree_on_pareto_and_stats --lib`
 
 ## Related Docs
 

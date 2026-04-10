@@ -96,17 +96,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the shared PSR/DSR helper contract and inputs.
-- [ ] Document threshold sanitation and gate-evaluation rules.
-- [ ] Document how missing stats should be interpreted downstream.
-- [ ] Add or tighten tests for clamping, `NaN`, and absent-value behavior.
-- [ ] Add or tighten tests for gate pass/fail combinations.
-- [ ] Verify downstream verdict/report consumers still interpret these fields consistently.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the shared PSR/DSR helper contract and inputs.
+- [x] Document threshold sanitation and gate-evaluation rules.
+- [x] Document how missing stats should be interpreted downstream.
+- [x] Add or tighten tests for clamping, `NaN`, and absent-value behavior.
+- [x] Add or tighten tests for gate pass/fail combinations.
+- [x] Verify downstream verdict/report consumers still interpret these fields consistently.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,11 @@ Public-repo quality focus:
 - if PSR/DSR field meaning changes, update control labels, summaries, and report wording together
 - treat absent-value handling as contract behavior, not an implementation accident
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Strengthened the shared stats-layer contract in `validation_stats.rs` with explicit tests for bounded PSR/DSR outputs, threshold sanitation, and missing-stat behavior when probability gates are configured. This keeps the low-level statistical contract aligned with the downstream verdict layer.
+- Acceptance evidence for closure: `cargo test -p ta_app_core validation_stats --lib`, `cargo test -p ta_app_core validation_pipeline --lib`, and the downstream report/export suites that consume the resulting verdict fields.
 
 ## Related Docs
 

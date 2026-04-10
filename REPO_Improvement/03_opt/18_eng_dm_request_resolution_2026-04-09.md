@@ -99,16 +99,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document all store inputs used by request resolution.
-- [ ] Document the role of recommended defaults in missing-value cleanup.
-- [ ] Document request-builder authority for normalization and legality.
-- [ ] Document dynamic preview normalization and final payload handoff.
-- [ ] Add or tighten tests for store drift, defaults, and command-selection parity.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document all store inputs used by request resolution.
+- [x] Document the role of recommended defaults in missing-value cleanup.
+- [x] Document request-builder authority for normalization and legality.
+- [x] Document dynamic preview normalization and final payload handoff.
+- [x] Add or tighten tests for store drift, defaults, and command-selection parity.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,6 +127,13 @@ Public-repo quality focus:
 - treat dynamic preview as an additive normalization stage, not a silent override of builder legality
 - if command selection changes, update this plan and optimize-service tests together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the end-to-end Double-MA request-resolution path and confirmed the current layering still holds: `optimizeService.ts` remains the orchestration layer, `recommendedOptimizationDefaults.ts` still owns missing-value cleanup, dynamic preview still normalizes `dynamic_strategy_ir` before final request construction, and `optimizeRequestBuilder.ts` remains the authoritative legality and normalization boundary.
+- The recent store-parity hardening remains in force for the fields that were most drift-prone. `optimizeStore.actions.test.ts` and `advancedStore.actions.test.ts` now explicitly prove `objective` and `mode` stay mirrored across optimize and advanced stores, which closes the highest-risk multi-store request-resolution gap without widening request-building ownership.
+- Existing frontend request tests already cover the resolution surfaces that matter for this item: command selection into `run_double_ma_optimization`, recommended output defaults, dynamic-preview handoff, exact-output mode pinning, advanced shortlist fields, and saved-run restoration of advanced builder-owned fields. No additional code change was required in this tranche because those behaviors are already implemented and now have stronger parity coverage than before.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/stores/advancedStore.actions.test.ts src/stores/optimizeStore.actions.test.ts src/components/AdvancedWorkspacePanel.test.ts src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

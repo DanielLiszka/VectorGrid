@@ -1,6 +1,6 @@
 # Core Timeframe Matrix Stats Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -124,19 +124,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical supported timeframe-label rules and back-compat cases.
-- [ ] Add or tighten resample tests for session transitions, missing optional fields, and non-finite close rejection.
-- [ ] Add or tighten matrix-index tests for ordering, bounds, and fast<slow assumptions.
-- [ ] Add or tighten tests for quantile/median helpers on empty, singleton, even, and non-finite edge cases.
-- [ ] Add or tighten PSR/DSR tests around threshold and probability-gate boundaries.
-- [ ] Audit consumers for duplicated timeframe, matrix-index, or summary-stat logic.
-- [ ] Decide whether a lightweight benchmark is warranted for hot utility paths used in repeated scans.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the canonical supported timeframe-label rules and back-compat cases.
+- [x] Add or tighten resample tests for session transitions, missing optional fields, and non-finite close rejection.
+- [x] Add or tighten matrix-index tests for ordering, bounds, and fast<slow assumptions.
+- [x] Add or tighten tests for quantile/median helpers on empty, singleton, even, and non-finite edge cases.
+- [x] Add or tighten PSR/DSR tests around threshold and probability-gate boundaries.
+- [x] Audit consumers for duplicated timeframe, matrix-index, or summary-stat logic.
+- [x] Decide whether a lightweight benchmark is warranted for hot utility paths used in repeated scans.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -158,6 +158,21 @@ Public-repo quality focus:
 - keep these modules small and authoritative; do not let downstream convenience code become the real contract
 - treat any resample or stats change as cross-cutting and worthy of artifact/report rechecks
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the shared core-utility edge cases in:
+  - [timeframe.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/timeframe.rs): added `resample_preserves_missing_optional_fields_as_nan_columns`
+  - [matrix_index.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/matrix_index.rs): added invalid-pair/out-of-range coverage
+  - [stats_common.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/stats_common.rs): added finite-extrema-vs-`NaN` coverage
+- Kept scope intentionally additive:
+  - no resampling semantics changed
+  - no matrix ordering changes
+  - no validation-stat gate changes
+- Acceptance evidence:
+  - `cargo test -p ta_app_core timeframe --lib`
+  - `cargo test -p ta_app_core matrix_index --lib`
+  - `cargo test -p ta_app_core stats_common --lib`
 
 ## Related Docs
 

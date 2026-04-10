@@ -162,6 +162,27 @@ fn make_synth_candles(len: usize) -> Candles {
     Candles::new(ts, open, high, low, close, vol)
 }
 
+fn validate_cli_configuration(cli: &Cli, backend: &Backend) -> Result<(), String> {
+    if cli.export_all_csv_path.is_some() && cli.include_all {
+        return Err(
+            "export_all_csv_path requires include_all=false (stream export avoids huge RAM usage)"
+                .to_string(),
+        );
+    }
+    if cli.export_all_csv_path.is_some()
+        && !matches!(
+            backend,
+            Backend::GpuKernel { .. } | Backend::GpuHybridKernel { .. } | Backend::Auto { .. }
+        )
+    {
+        return Err(
+            "export_all_csv_path requires backend=gpu-kernel/gpu-hybrid-kernel (or auto that resolves to kernel)"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let cli = Cli::parse();
 
@@ -192,24 +213,7 @@ fn main() -> Result<(), String> {
         ObjectiveArg::Sharpe => ObjectiveKind::Sharpe,
         ObjectiveArg::MaxDrawdown => ObjectiveKind::MaxDrawdown,
     };
-
-    if cli.export_all_csv_path.is_some() && cli.include_all {
-        return Err(
-            "export_all_csv_path requires include_all=false (stream export avoids huge RAM usage)"
-                .to_string(),
-        );
-    }
-    if cli.export_all_csv_path.is_some()
-        && !matches!(
-            backend,
-            Backend::GpuKernel { .. } | Backend::GpuHybridKernel { .. } | Backend::Auto { .. }
-        )
-    {
-        return Err(
-            "export_all_csv_path requires backend=gpu-kernel/gpu-hybrid-kernel (or auto that resolves to kernel)"
-                .to_string(),
-        );
-    }
+    validate_cli_configuration(&cli, &backend)?;
 
     let fast_ma_params = if cli.fast_ma.trim().eq_ignore_ascii_case("alma") {
         let mut p: HashMap<String, f64> = HashMap::new();
@@ -309,4 +313,54 @@ fn main() -> Result<(), String> {
         serde_json::to_string_pretty(&res).map_err(|e| e.to_string())?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn u32_range_parses_single_end_and_step_forms() {
+        let single = U32Range::from_str("7").expect("single value");
+        assert_eq!(single.start, 7);
+        assert_eq!(single.end, 7);
+        assert_eq!(single.step, 0);
+
+        let stepped = U32Range::from_str("5:25:5").expect("stepped range");
+        assert_eq!(stepped.start, 5);
+        assert_eq!(stepped.end, 25);
+        assert_eq!(stepped.step, 5);
+    }
+
+    #[test]
+    fn validate_cli_configuration_rejects_export_all_conflicts() {
+        let include_all_cli = Cli::try_parse_from([
+            "ta_cli",
+            "--csv",
+            "C:/data/AAPL.csv",
+            "--include-all",
+            "--export-all-csv-path",
+            "C:/tmp/out.csv",
+        ])
+        .expect("cli should parse");
+        let err =
+            validate_cli_configuration(&include_all_cli, &Backend::GpuKernel { device_id: 0 })
+                .expect_err("include_all conflict should fail");
+        assert!(err.contains("include_all=false"));
+
+        let cpu_cli = Cli::try_parse_from([
+            "ta_cli",
+            "--csv",
+            "C:/data/AAPL.csv",
+            "--export-all-csv-path",
+            "C:/tmp/out.csv",
+            "--backend",
+            "cpu",
+        ])
+        .expect("cli should parse");
+        let err = validate_cli_configuration(&cpu_cli, &Backend::CpuOnly)
+            .expect_err("cpu backend should fail");
+        assert!(err.contains("backend=gpu-kernel"));
+    }
 }

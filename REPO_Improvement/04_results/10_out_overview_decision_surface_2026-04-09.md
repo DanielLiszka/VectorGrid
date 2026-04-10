@@ -94,16 +94,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the minimum evidence Overview must show before the winner feels decision-grade.
-- [ ] Document execution-risk notice expectations and coupling to run configuration.
-- [ ] Document baseline review and comparison-summary behavior.
-- [ ] Document copy/export and Top-results handoff behavior.
-- [ ] Add or tighten tests for decision-surface readiness and compare/action flows.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the minimum evidence Overview must show before the winner feels decision-grade.
+- [x] Document execution-risk notice expectations and coupling to run configuration.
+- [x] Document baseline review and comparison-summary behavior.
+- [x] Document copy/export and Top-results handoff behavior.
+- [x] Add or tighten tests for decision-surface readiness and compare/action flows.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -121,6 +121,12 @@ Public-repo quality focus:
 - prefer additive decision context over replacing existing winner framing wholesale
 - if execution-risk criteria evolve later, update Overview copy and tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Expanded [OverviewWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OverviewWorkspacePanel.test.ts) to pin execution-risk visibility and the settings handoff when the current run enables short same-bar execution.
+- Revalidated the panel’s empty, pending, ready, baseline-review, copy/export, and Top-handoff behavior through the overview and analysis-service test surfaces.
+- No production code change was required in this tranche because the current Overview panel already satisfies the documented decision-surface contract once the missing execution-risk regression coverage was added.
 
 ## Related Docs
 

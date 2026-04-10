@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the Drilldown dependency on selected Top-result identity.
-- [ ] Document chart, stability, and trade-table responsibilities separately.
-- [ ] Document drill/stability status semantics and failure-state expectations.
-- [ ] Document cache and rerender assumptions that keep selected-candidate state truthful.
-- [ ] Add or tighten tests for rerender behavior, selection changes, and Top-results handoff.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the Drilldown dependency on selected Top-result identity.
+- [x] Document chart, stability, and trade-table responsibilities separately.
+- [x] Document drill/stability status semantics and failure-state expectations.
+- [x] Document cache and rerender assumptions that keep selected-candidate state truthful.
+- [x] Add or tighten tests for rerender behavior, selection changes, and Top-results handoff.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,12 @@ Public-repo quality focus:
 - prefer additive detail over collapsing Drilldown into a single simplified chart
 - if rendering pipelines are refactored later, update cache invalidation and selected-candidate tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened [DrillWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/DrillWorkspacePanel.test.ts) so Drilldown now proves it rerenders on visible mount and keeps the chart, stability, and trade evidence scaffolding visible.
+- Revalidated [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts), which still covers drill computation, in-flight dedupe, stale-response suppression, and cached rerender semantics.
+- No production code change was required in this tranche because the current Drilldown panel already satisfies the documented contract once the missing regression coverage was added.
 
 ## Related Docs
 

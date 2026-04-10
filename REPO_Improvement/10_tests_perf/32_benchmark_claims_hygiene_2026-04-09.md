@@ -1,6 +1,6 @@
 # Benchmark Claims Hygiene Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the accepted timing-boundary vocabulary used in repo outputs.
-- [ ] Review README and release-adjacent benchmark prose against current artifacts.
-- [ ] Require scenario identity and date context for faceoff-derived claims.
-- [ ] Keep benchmark-claims hygiene non-options only.
-- [ ] Mark supplemental telemetry as supplemental everywhere it appears.
-- [ ] Avoid comparing unlike benchmark surfaces without an explicit caveat.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the accepted timing-boundary vocabulary used in repo outputs.
+- [x] Review README and release-adjacent benchmark prose against current artifacts.
+- [x] Require scenario identity and date context for faceoff-derived claims.
+- [x] Keep benchmark-claims hygiene non-options only.
+- [x] Mark supplemental telemetry as supplemental everywhere it appears.
+- [x] Avoid comparing unlike benchmark surfaces without an explicit caveat.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,31 @@ Public-repo quality focus:
 - prefer tightening wording over inventing new aggregate metrics
 - if older claims cannot be revalidated, remove or downgrade them rather than guessing
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item required a real repo-doc change in `README.md`, not a benchmark rerun.
+- Accepted timing-boundary vocabulary was verified against the current repo surfaces and kept explicit:
+  - `Criterion` for micro-benchmarks and perf-gate case estimates
+  - `warm app-path` for saved faceoff snapshots driven through `ta_app_path_faceoff`
+  - `CliColdWallClock` for colder VectorGrid process timing
+  - `PythonProcessWallClock` for the VectorBT Python workflow lane
+  - `workflow-regression` for the synthetic multi-stage workflow gate
+  - `RunnerSteadyStateWallClock` for the GPU dynamic-strategy runner ratio
+  - supplemental telemetry remains supplemental and not a perf-authority surface
+- README benchmark prose was tightened so saved faceoff numbers no longer read like current gate outputs:
+  - benchmark section renamed to `Historical Benchmark Snapshots`
+  - the `58,300`-pair and `250,000`-pair faceoff bullets now name their saved artifact dates
+  - timing boundary is stated explicitly as `warm app-path`
+  - saved speedup bullets are framed as ratios from those artifacts, not as timeless headline claims
+  - README now tells readers to rerun the matching faceoff scenario before repeating the numbers as current
+- Verification for this item was a manual artifact/prose review rather than a fresh faceoff run:
+  - `README.md`
+  - `target/vectorbt_vs_vectorgrid_faceoff/summary.md`
+  - `target/vectorbt_vs_vectorgrid_faceoff/summary.json`
+  - the saved artifact directories already referenced in the README
+- `31_vectorbt_faceoff_2026-04-09.md` intentionally remains open. A fresh faceoff rerun was deferred rather than faked because you explicitly asked to skip the long benchmark for now.
+- No `REPO_MAP.md` update was required because the benchmark-route map and verification-surface routing were already explicit; the needed fix here was wording hygiene in the public-facing README.
 
 ## Related Docs
 

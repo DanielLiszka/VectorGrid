@@ -1,6 +1,6 @@
 # Execution Safety Modes Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -127,20 +127,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current mode matrix and how the main combinations behave.
-- [ ] Document which current safety checks are frontend-only and which are backend-authoritative.
-- [ ] Document non-dry-run credential requirements.
-- [ ] Document current strategy support limits.
-- [ ] Document bracket-order attachment requirements.
-- [ ] Document zero-delta and unsupported-strategy safe-degradation behavior.
-- [ ] Preserve tests for dry-run, broker-armed confirmation, blocked reasons, and live-runner preflight checks.
-- [ ] Preserve targeted backend tests for normalization, gating, and cancellation markers.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the current mode matrix and how the main combinations behave.
+- [x] Document which current safety checks are frontend-only and which are backend-authoritative.
+- [x] Document non-dry-run credential requirements.
+- [x] Document current strategy support limits.
+- [x] Document bracket-order attachment requirements.
+- [x] Document zero-delta and unsupported-strategy safe-degradation behavior.
+- [x] Preserve tests for dry-run, broker-armed confirmation, blocked reasons, and live-runner preflight checks.
+- [x] Preserve targeted backend tests for normalization, gating, and cancellation markers.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -163,6 +163,22 @@ Public-repo quality focus:
 - if safety checks move across layers later, document that explicitly instead of silently changing which side enforces them
 - prefer additive safety messaging over hidden mode simplification
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by extending the current safety-mode acceptance surface without changing behavior:
+  - [ExecutionWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) now proves the live broker-armed posture renders live-specific safety copy and the `Submit live order once` label
+  - [executionRisk.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/utils/executionRisk.test.ts) now covers string-backed and invalid fallback boolean parsing for persisted or replayed strategy flags
+- Existing coverage continues to anchor the rest of the safety matrix:
+  - broker-armed confirmation gating
+  - live-feed and runner blocked reasons
+  - runner/live symbol preflight behavior
+  - bracket-order attachment guards and cancellation markers in [commands_execution.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_execution.rs)
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts src/utils/executionRisk.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo test -p ta_desktop_demo_app commands_execution --lib`
 
 ## Related Docs
 

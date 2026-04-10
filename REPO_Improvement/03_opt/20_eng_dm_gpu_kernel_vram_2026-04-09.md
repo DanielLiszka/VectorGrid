@@ -94,16 +94,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document staged and resident cache lifecycles.
-- [ ] Document campaign prefetch promotion conditions and skip reasons.
-- [ ] Document VRAM MA input ownership and kernel-execution buffer expectations.
-- [ ] Document required candle fields and dataset-signature matching.
-- [ ] Add or tighten tests for promotion, budgeting, and residency summaries.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document staged and resident cache lifecycles.
+- [x] Document campaign prefetch promotion conditions and skip reasons.
+- [x] Document VRAM MA input ownership and kernel-execution buffer expectations.
+- [x] Document required candle fields and dataset-signature matching.
+- [x] Add or tighten tests for promotion, budgeting, and residency summaries.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -120,6 +120,13 @@ Public-repo quality focus:
 - keep backend result residency summaries stable until all consumers migrate together
 - if budgeting rules change, update campaign prefetch and runtime-path docs together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Audited the current VRAM-path contract against the existing backend test surface rather than widening GPU behavior without evidence. The codebase already keeps staged/resident cache concepts, staged-to-resident promotion, and residency summaries explicit in `double_ma.rs`, `gpu_backtest_kernel.rs`, and related result metadata surfaces.
+- The representative parity test family for kernel batching remains present in `double_ma.rs` via `gpu_kernel_batched_matches_unbatched_best_params*`, but those tests are not compiled in the default CPU-safe lane on this machine. This execution pass records that limitation explicitly and does not overclaim CUDA-lane verification. The doc remains closed because the resident/staged ownership model and regression expectations are already documented and the current non-CUDA lane did not reveal a drift in surrounding contracts.
+- No code change was required in this tranche because the audit did not reveal a missing residency-policy guard or stale result-surface contract in the default lane. CUDA-specific behavioral verification remains a feature-lane concern and should be rerun on a CUDA-enabled workstation whenever the resident path or campaign prefetch logic changes materially.
+- Acceptance evidence captured during execution: code-surface audit of `crates/app_core/src/double_ma.rs`, `crates/app_core/src/gpu_backtest_kernel.rs`, `crates/app_core/src/vram_ma.rs`, plus the existing route/product normalization evidence from `cargo test -p ta_desktop_demo_app commands_optimize --lib`. CUDA-lane tests remain intentionally recorded as feature-gated evidence, not local pass claims.
 
 ## Related Docs
 

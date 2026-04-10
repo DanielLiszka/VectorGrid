@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the fast/slow pair-range contract.
-- [ ] Document MA-type capability hints and backend-aware labeling.
-- [ ] Document per-side parameter state, sweep state, and restore behavior.
-- [ ] Document how combo counts are derived and surfaced.
-- [ ] Add or tighten tests for sweep plus export or shortlist legality.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the fast/slow pair-range contract.
+- [x] Document MA-type capability hints and backend-aware labeling.
+- [x] Document per-side parameter state, sweep state, and restore behavior.
+- [x] Document how combo counts are derived and surfaced.
+- [x] Add or tighten tests for sweep plus export or shortlist legality.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - preserve current draft-and-commit behavior for queued input writes
 - if combo preview rules change, update UI wording and builder tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the MA grid editor evidence at the panel level instead of widening the runtime path. `OptimizeWorkspacePanel.test.ts` now proves the live editor restores seeded fast/slow MA parameter values and sweep ranges into the rendered UI and writes edited sweep values back into `optimizeStore`.
+- The new tests exposed a real hydration bug in `OptimizeWorkspacePanel.vue`: one MA side could sync schema-default values back into the store before the opposite side had initialized its UI state, clobbering seeded params or sweeps. `buildSideMaParamsAndSweeps()` now preserves store-seeded values as its fallback until side-specific UI state exists, which keeps fast/slow restore behavior truthful and eliminates the cross-side wipe risk.
+- Reused the existing request-builder and optimize-service coverage rather than duplicating legality logic in the component tests. `optimizeRequestBuilder.test.ts` and `optimizeService.test.ts` continue to prove MA param/sweep request encoding and downstream legality, while the new panel tests close the remaining UI restore/writeback gap.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/OptimizeWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

@@ -90,17 +90,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the `optimization_metric_surface` artifact subtree and when it is attached.
-- [ ] Document legacy-artifact behavior when the field is absent.
-- [ ] Document hydration/detail parity expectations for this field.
-- [ ] Add or tighten tests for present-versus-absent behavior.
-- [ ] Add or tighten tests for history summary/detail formatting from metric-surface data.
-- [ ] Keep options-specific metric-surface work out of this non-options contract.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the `optimization_metric_surface` artifact subtree and when it is attached.
+- [x] Document legacy-artifact behavior when the field is absent.
+- [x] Document hydration/detail parity expectations for this field.
+- [x] Add or tighten tests for present-versus-absent behavior.
+- [x] Add or tighten tests for history summary/detail formatting from metric-surface data.
+- [x] Keep options-specific metric-surface work out of this non-options contract.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -125,3 +125,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/12_art_hydration_detail_replay_2026-04-09.md`
 - `REPO_Improvement/04_results/09_results_analysis_contract_2026-04-09.md`
 - `REPO_Improvement/05_validation/23_metric_surface_contract_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as an optional-subtree contract audit with no new code required. Existing backend tests in `src-tauri/src/run_artifacts.rs` already pin present-versus-absent metric-surface behavior for both hydration and detail payloads.
+- Existing frontend tests in `web/src/services/workflowArtifactsSync.test.ts`, `web/src/services/historyService.test.ts`, and `web/src/services/analysisService.test.ts` already prove that `optimization_metric_surface` survives normalization and drives summary behavior when present, while remaining absent for legacy artifacts.
+- This item therefore closed on cross-layer parity evidence rather than widening the metric-surface payload or inventing synthetic data for older artifacts.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app workflow_hydration_payload_threads_metric_surface_metadata --lib`, `cargo test -p ta_desktop_demo_app run_artifact_detail_response_includes_trade22_metric_surface_metadata --lib`, `npm.cmd --prefix web run test -- src/services/workflowArtifactsSync.test.ts src/services/historyService.test.ts src/services/analysisService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.

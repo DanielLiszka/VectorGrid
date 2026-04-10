@@ -103,17 +103,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the feature-schema artifact contract and version meaning.
-- [ ] Add or tighten tests for schema creation and version mismatch rejection.
-- [ ] Add or tighten saved-artifact tests for feature schema path/version attachment.
-- [ ] Audit workspace and saved-run wording for schema significance and fallback behavior.
-- [ ] Confirm score-cache validation continues to enforce schema compatibility explicitly.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the feature-schema artifact contract and version meaning.
+- [x] Add or tighten tests for schema creation and version mismatch rejection.
+- [x] Add or tighten saved-artifact tests for feature schema path/version attachment.
+- [x] Audit workspace and saved-run wording for schema significance and fallback behavior.
+- [x] Confirm score-cache validation continues to enforce schema compatibility explicitly.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -137,3 +137,20 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/11_mlsignal_dataset_export_2026-04-08.md`
 - `REPO_Improvement/08_ml/16_mlsignal_score_cache_build_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/23_mlsignal_report_path_semantics_2026-04-09.md`
+
+## Execution Notes
+
+- Closed by making feature-schema significance explicit in the ML artifact panel instead of treating schema path/version as passive metadata.
+- `MlSignalWorkspacePanel.vue` now tells the user that the attached feature schema version is required for score-cache compatibility and saved-run reopen consistency.
+- `MlSignalWorkspacePanel.test.ts` now verifies that feature-schema path/version are surfaced together with that contract text in the current ML artifact view.
+- `mlSignalService.test.ts` now tightens attachment assertions so feature schema path/version must survive validation and policy-sweep artifact persistence.
+- Backend schema-version enforcement already exists in `crates/app_core/src/ml_signal.rs`; this slice keeps the frontend and artifact wording aligned with that stricter contract.
+- `REPO_MAP.md` was synced so contributors can find the feature-schema contract behavior quickly.
+- Stable fixture / replay payload:
+  - `feature_schema_path = C:\\data\\ml_dataset.feature_schema.json`
+  - `feature_schema_version = 1`
+  - attached through current ML artifact hydration during validation and policy sweep
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

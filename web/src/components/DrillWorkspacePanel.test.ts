@@ -26,6 +26,33 @@ describe('DrillWorkspacePanel', () => {
     localStorage.clear()
   })
 
+  it('rerenders on visible mount and keeps the drill evidence surface visible to contributors', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('drill', { persist: false })
+    analysisStore.statusLine = 'Drilldown ready.'
+    const rerenderSpy = vi.spyOn(analysisStore, 'rerenderDrill').mockImplementation(() => undefined)
+
+    mount(DrillWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(rerenderSpy).toHaveBeenCalled()
+    expect(text).toContain('Price + trades')
+    expect(text).toContain('Stability')
+    expect(text).toContain('Trades')
+    expect(text).toContain('If the charts stay empty')
+    expect(text).toContain('Drilldown ready.')
+    expect(document.querySelector('#tradeTableBodyVue')).not.toBeNull()
+    expect(document.querySelector('#stabilityTableBodyVue')).not.toBeNull()
+  })
+
   it('keeps an explicit Review Top results handoff', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

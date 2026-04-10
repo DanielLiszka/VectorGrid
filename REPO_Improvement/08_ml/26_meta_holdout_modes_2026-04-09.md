@@ -126,22 +126,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every current holdout field in the Stage 3 request payload and whether it is ignored, nullable, defaulted, or always emitted.
-- [ ] Document the current holdout-supported strategy set and unsupported-strategy fallback behavior.
-- [ ] Document `light` versus `heavy` mode semantics and the exact nested heavy-holdout validation payload.
-- [ ] Document current defaults for heavy-holdout walk-forward, perturbation, bootstrap, and iterative validation settings.
-- [ ] Document `holdout_eval_top_n`, `holdout_eval_explore_n`, and `holdout_eval_rank_by` semantics separately.
-- [ ] Document representative-count behavior, including current `1..=3` clamping.
-- [ ] Document how holdout affects `meta_score`, `final_score`, ranking, warnings, and evidence flags.
-- [ ] Document `save_holdout_rows` behavior and downstream workbook/report implications.
-- [ ] Add or preserve tests for unsupported strategies, heavy-payload shaping, and rank-mode fallback/warning paths.
-- [ ] Keep holdout UI copy, builder fixtures, backend tests, and report behavior aligned when any holdout semantic changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document every current holdout field in the Stage 3 request payload and whether it is ignored, nullable, defaulted, or always emitted.
+- [x] Document the current holdout-supported strategy set and unsupported-strategy fallback behavior.
+- [x] Document `light` versus `heavy` mode semantics and the exact nested heavy-holdout validation payload.
+- [x] Document current defaults for heavy-holdout walk-forward, perturbation, bootstrap, and iterative validation settings.
+- [x] Document `holdout_eval_top_n`, `holdout_eval_explore_n`, and `holdout_eval_rank_by` semantics separately.
+- [x] Document representative-count behavior, including current `1..=3` clamping.
+- [x] Document how holdout affects `meta_score`, `final_score`, ranking, warnings, and evidence flags.
+- [x] Document `save_holdout_rows` behavior and downstream workbook/report implications.
+- [x] Add or preserve tests for unsupported strategies, heavy-payload shaping, and rank-mode fallback/warning paths.
+- [x] Keep holdout UI copy, builder fixtures, backend tests, and report behavior aligned when any holdout semantic changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -162,6 +162,31 @@ Public-repo quality focus:
 - keep holdout-row persistence additive so older Stage 3 artifacts remain readable even if they do not contain saved per-dataset rows
 - if a later UX simplification hides some holdout controls, keep the underlying request contract explicit in documentation and tests
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by extending the Stage 3 contract summary so holdout behavior is explicit in the live UI instead of inferred from builder code.
+- `MetaWorkspacePanel.vue` now states:
+  - when holdout is disabled versus active
+  - that `heavy` mode emits nested validation config
+  - that `light` mode omits the nested validation payload
+  - that backend rank fallback and warning text still own the final holdout interpretation
+- Existing request-contract summaries for scope, grouping, shortlist, scoring, and evidence remain aligned with the holdout summary so Stage 3 semantics can be reviewed in one place.
+- `MetaWorkspacePanel.test.ts` now asserts the heavy-holdout contract copy directly, keeping the UI wording under regression coverage.
+- Stable fixture / replay payload:
+  - `strategy_kind = CompositeMo`
+  - `timeframe = 1m`
+  - `required_tag = holdout`
+  - `eval_holdout = true`
+  - `holdout_mode = heavy`
+  - `holdout_eval_top_n = 10`
+  - `holdout_eval_explore_n = 3`
+  - `holdout_eval_rank_by = auto`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaRequestBuilder.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_campaign --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

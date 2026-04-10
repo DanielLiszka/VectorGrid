@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which strategies resolve to `run_double_ma_optimization`.
-- [ ] Document grid-output mode normalization and its trigger conditions.
-- [ ] Document the run guard and cancel token sequence.
-- [ ] Document progress-event emission and the `double_ma_progress` channel.
-- [ ] Add or tighten command-selection and normalization tests if coverage is thin.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document which strategies resolve to `run_double_ma_optimization`.
+- [x] Document grid-output mode normalization and its trigger conditions.
+- [x] Document the run guard and cancel token sequence.
+- [x] Document progress-event emission and the `double_ma_progress` channel.
+- [x] Add or tighten command-selection and normalization tests if coverage is thin.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - keep the event name `double_ma_progress` stable until all consumers migrate together
 - if strategy-family membership changes later, update service routing and this plan together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Double-MA command boundary without changing behavior. `commands_optimize.rs` already freezes the grid-output normalization rule for `include_all`, `heatmap_bins`, and non-empty export paths, and its internal tests cover the non-grid preserve vs grid-pin behavior directly.
+- Reconfirmed the shared command sequence remains explicit: run guard, cancel token, candle fetch, blocking backend call, and `double_ma_progress` emission all remain in the Tauri command boundary rather than leaking into the frontend.
+- Frontend routing and command selection already align with this contract. `optimizeService.test.ts` and `optimizeRequestBuilder.test.ts` continue to cover the strategy-family resolution and the request shapes that end up on the Double-MA path.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app commands_optimize --lib`, `npm.cmd --prefix web run test -- src/services/optimizeService.test.ts src/services/optimizeRequestBuilder.test.ts src/components/OptimizeWorkspacePanel.test.ts src/services/runControlService.test.ts src/tauri/instrumentation.test.ts src/stores/taskStore.lifecycle.test.ts src/utils/statusPresentation.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

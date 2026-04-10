@@ -97,18 +97,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical validation table column families and their intended meaning.
-- [ ] Document which columns should remain visible by default for first-run comprehension.
-- [ ] Document how persisted column state should behave across remounts and restore-defaults flows.
-- [ ] Document virtualization expectations and table-row identity invariants.
-- [ ] Document how shortlist, gate, pareto, and cross signals must remain legible at row level.
-- [ ] Add or tighten tests for persisted columns, restore defaults, and representative row rendering.
-- [ ] Add or tighten tests for mixed-result cases where cross-ticker columns are present for some runs and absent for others.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical validation table column families and their intended meaning.
+- [x] Document which columns should remain visible by default for first-run comprehension.
+- [x] Document how persisted column state should behave across remounts and restore-defaults flows.
+- [x] Document virtualization expectations and table-row identity invariants.
+- [x] Document how shortlist, gate, pareto, and cross signals must remain legible at row level.
+- [x] Add or tighten tests for persisted columns, restore defaults, and representative row rendering.
+- [x] Add or tighten tests for mixed-result cases where cross-ticker columns are present for some runs and absent for others.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -126,6 +126,12 @@ Public-repo quality focus:
 - keep persisted column keys stable unless a coordinated migration is added
 - if default columns change, update tests and user-facing hints in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the existing dense-table coverage in [ValidationWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ValidationWorkspacePanel.test.ts), which now covers the ready-state summary shell plus persisted visible-column state and restore-default behavior.
+- Revalidated [validationService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.test.ts) and [validationStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/validationStore.actions.test.ts), which already exercise the service-derived row/column contract, mixed cross semantics, and the store-driven column/table metadata the panel consumes.
+- No production table change was required in this tranche because the current result-table contract was already intact; the work here was to close the last panel-level regression gap and then verify the existing service/store path still upheld the documented behavior.
 
 ## Related Docs
 

@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document Pareto panel responsibility versus Top Results responsibility.
-- [ ] Document axis selector validity, fallback options, and default-selection rules.
-- [ ] Document frontier meta/range text and readiness behavior.
-- [ ] Document canvas accessibility support and explanatory fallback expectations.
-- [ ] Add or tighten tests for axis changes, empty states, and Top-results handoff.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document Pareto panel responsibility versus Top Results responsibility.
+- [x] Document axis selector validity, fallback options, and default-selection rules.
+- [x] Document frontier meta/range text and readiness behavior.
+- [x] Document canvas accessibility support and explanatory fallback expectations.
+- [x] Add or tighten tests for axis changes, empty states, and Top-results handoff.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,11 @@ Public-repo quality focus:
 - prefer additive explanatory text over silent chart-only changes
 - if a richer chart library is adopted later, keep current readiness and handoff behavior intact first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Pareto panel as the current frontier-review surface with Top Results remaining the shortlist-navigation fallback. `ParetoWorkspacePanel.test.ts` and `analysisService.test.ts` remain green, which keeps axis fallback, readiness language, and Top-results handoff behavior aligned with the documented contract.
+- No code change was required in this tranche because the current Pareto panel responsibilities and state/readiness behavior already satisfy the plan at the current scope.
 
 ## Related Docs
 

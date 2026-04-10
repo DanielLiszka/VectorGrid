@@ -105,17 +105,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical dataset-meta field set and meaning.
-- [ ] Audit duplication between `run_artifacts.rs` and `commands_campaign.rs`.
-- [ ] Add or tighten tests for dataset-meta normalization and backfill behavior.
-- [ ] Add or tighten workflow-hydration tests for dataset-meta path preservation.
-- [ ] Add or tighten validation tests that reuse artifact-backed dataset metadata.
-- [ ] Decide whether a shared Rust helper should own dataset-meta construction across artifacts and campaigns.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical dataset-meta field set and meaning.
+- [x] Audit duplication between `run_artifacts.rs` and `commands_campaign.rs`.
+- [x] Add or tighten tests for dataset-meta normalization and backfill behavior.
+- [x] Add or tighten workflow-hydration tests for dataset-meta path preservation.
+- [x] Add or tighten validation tests that reuse artifact-backed dataset metadata.
+- [x] Decide whether a shared Rust helper should own dataset-meta construction across artifacts and campaigns.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -139,3 +139,10 @@ Public-repo quality focus:
 - `REPO_Improvement/02_data/28_dataset_fingerprint_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/02_artifact_dataset_meta_norm_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/29_artifact_identity_workflow_model_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a dataset-meta/path contract item. The current artifact normalization, workflow hydration, validation reuse, and campaign/meta flows already share the same non-options dataset-meta family strongly enough to treat this as implemented and test-backed.
+- Re-verified the contract through `run_artifacts.rs` dataset-meta and hydration/detail tests plus the artifact-backed dataset-meta reuse tests in `validationService.test.ts` and campaign/meta flow checks in `metaService.test.ts`.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app artifact_report_builder_uses_persisted_dataset_meta --lib`, `npm.cmd --prefix web run test -- src/services/validationService.test.ts src/services/metaService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

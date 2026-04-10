@@ -1,6 +1,6 @@
 # Strategy Data Discovery Catalogs Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -108,18 +108,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the shared role of dataset, MA, indicator, and speedup catalogs.
-- [ ] Document the difference between hard capability, advisory telemetry, and plain inventory.
-- [ ] Document cache behavior and forced-refresh expectations across the discovery services.
-- [ ] Add or tighten tests when a discovery payload shape changes.
-- [ ] Review cross-consumer reuse so optimize, meta, and campaign flows continue to share the same discovery truth.
-- [ ] Keep repo CSV discovery and user-picked dialog flows distinct in docs and tests.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the shared role of dataset, MA, indicator, and speedup catalogs.
+- [x] Document the difference between hard capability, advisory telemetry, and plain inventory.
+- [x] Document cache behavior and forced-refresh expectations across the discovery services.
+- [x] Add or tighten tests when a discovery payload shape changes.
+- [x] Review cross-consumer reuse so optimize, meta, and campaign flows continue to share the same discovery truth.
+- [x] Keep repo CSV discovery and user-picked dialog flows distinct in docs and tests.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -139,6 +139,28 @@ Public-repo quality focus:
 - keep telemetry advisory and keep inventories bounded
 - if a discovery surface is promoted for wider reuse later, update all known consumers in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by expanding the discovery-catalog routing section in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md):
+  - separated plain inventory, hard capability, and advisory telemetry responsibilities
+  - named the backend/frontend owners for repo-data inventory, moving-average export, dynamic-indicator export, and GPU speedup telemetry
+  - documented the cross-consumer test surfaces that now act as the discovery truth anchors
+- Tightened backend discovery coverage in [commands_data.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_data.rs):
+  - added a parser test for quoted/escaped CSV cells used by the GPU-speedup loader
+  - added a workspace-table smoke test for `load_gpu_speedups_csv()` so root lookup plus finite parsing stay pinned
+- Tightened Vue/meta discovery coverage in [metaService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/metaService.test.ts):
+  - `batchRefresh()` now proves both Polygon and repo-data inventories render together
+  - the test also pins the current visible distinction between `stocks (adj)` and `local` batch entries
+- Kept scope intentionally additive:
+  - no catalog payloads were widened
+  - no cache invalidation rules were changed
+  - repo-data discovery and user-picked file dialogs remain distinct
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app commands_data --lib`
+  - `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/services/dataService.test.ts src/services/movingAverageCatalogService.test.ts src/services/dynamicIndicatorCatalogService.test.ts src/services/gpuSpeedupsService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

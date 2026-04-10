@@ -111,19 +111,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document each current meta-related builder and the contract it targets.
-- [ ] Document the Stage 4 compatibility naming in the current Stage 5 builder.
-- [ ] Document builder defaults versus backend normalization responsibilities.
-- [ ] Document how `metaService` composes the current builders.
-- [ ] Preserve or strengthen dedicated tests for each builder.
-- [ ] Preserve integration tests in `metaService.test.ts` that exercise builder wiring.
-- [ ] Treat builder consolidation or renaming as compatibility-sensitive work, not a cosmetic refactor.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document each current meta-related builder and the contract it targets.
+- [x] Document the Stage 4 compatibility naming in the current Stage 5 builder.
+- [x] Document builder defaults versus backend normalization responsibilities.
+- [x] Document how `metaService` composes the current builders.
+- [x] Preserve or strengthen dedicated tests for each builder.
+- [x] Preserve integration tests in `metaService.test.ts` that exercise builder wiring.
+- [x] Treat builder consolidation or renaming as compatibility-sensitive work, not a cosmetic refactor.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -142,6 +142,21 @@ Public-repo quality focus:
 - preserve backend compatibility aliases while the current Stage 4 naming still exists in service/store code
 - prefer additive builder wrappers over collapsing distinct contracts into one file
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the current builder split explicit in both code comments and [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md): Stage 3 selection, Stage 5 compatibility, batch, and ML scope remain separate request-shaping owners, with `metaService.ts` as the composition/orchestration layer.
+- `metaService.ts` now carries an explicit comment at the auto-builder boundary so future cleanup does not collapse the builder split into one generic Meta request surface.
+- `metaRequestBuilder.test.ts`, `metaService.test.ts`, and `metaServiceCampaignStrategy.test.ts` remain the acceptance surface that proves Stage 3, Stage 5, and campaign request families stay distinct while still being composed through one frontend service.
+- Stable fixture / replay payload:
+  - `strategy_kind=CompositeMo`
+  - `timeframe=1m`
+  - `source_meta_path=C:/runs/vectorgrid_meta.json`
+  - `top_k=12`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/metaRequestBuilder.test.ts src/services/metaService.test.ts src/services/metaServiceCampaignStrategy.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Settings Secret Storage Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -116,20 +116,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current non-secret settings persistence on the Tauri side.
-- [ ] Document Polygon keyring/file/env fallback order.
-- [ ] Document current execution-key browser storage behavior and its risk posture.
-- [ ] Document current key-state UX exposed in the execution workspace.
-- [ ] Identify which stored values are secret, quasi-secret, or non-secret.
-- [ ] Define compatibility expectations for any future migration away from browser-stored execution keys.
-- [ ] Add or tighten tests if secret lookup order or persistence behavior changes.
-- [ ] Keep options-related credentials out of scope for this non-options doc set.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document current non-secret settings persistence on the Tauri side.
+- [x] Document Polygon keyring/file/env fallback order.
+- [x] Document current execution-key browser storage behavior and its risk posture.
+- [x] Document current key-state UX exposed in the execution workspace.
+- [x] Identify which stored values are secret, quasi-secret, or non-secret.
+- [x] Define compatibility expectations for any future migration away from browser-stored execution keys.
+- [x] Add or tighten tests if secret lookup order or persistence behavior changes.
+- [x] Keep options-related credentials out of scope for this non-options doc set.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -149,6 +149,25 @@ Public-repo quality focus:
 - separate general settings cleanup from secret-storage hardening to avoid accidental regressions
 - if execution secrets move into Tauri-owned storage later, provide import/cleanup behavior for existing browser-stored keys
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the current secret-storage truth anchors without changing storage authority:
+  - [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts) now proves malformed persisted execution-key payloads degrade safely to empty credentials instead of leaking parse failures into the live execution surface
+- Existing coverage continues to anchor the rest of the storage posture:
+  - Tauri-side settings and market-data path persistence in [settings_tests.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/settings_tests.rs)
+  - Polygon keyring/file/env behavior in [polygon.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/polygon.rs)
+  - execution key-state UX in [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts)
+  - storage alias compatibility in [storage.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/utils/storage.test.ts)
+- Kept scope intentionally additive:
+  - no credential storage location changed
+  - no Remember keys semantics changed
+  - no Polygon lookup order changed
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app --test settings_tests`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/stores/settingsStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

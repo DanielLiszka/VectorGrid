@@ -478,7 +478,11 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-fn parse_args() -> Result<CliConfig, String> {
+fn parse_args_from_iter<I, S>(args: I) -> Result<CliConfig, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
     let mut cfg = CliConfig {
         csv_path: PathBuf::from("data/benchmarks/AAPL.csv"),
         timeframes: vec!["15m".to_string(), "1h".to_string()],
@@ -492,7 +496,7 @@ fn parse_args() -> Result<CliConfig, String> {
         out_path: PathBuf::from("target/real_data_fidelity_audit_aapl.json"),
     };
 
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter().map(Into::into);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--csv" => {
@@ -594,6 +598,10 @@ fn parse_args() -> Result<CliConfig, String> {
         return Err("--holdout-frac should usually be in [0.05, 0.50)".to_string());
     }
     Ok(cfg)
+}
+
+fn parse_args() -> Result<CliConfig, String> {
+    parse_args_from_iter(std::env::args().skip(1))
 }
 
 fn print_help() {
@@ -1686,5 +1694,29 @@ mod tests {
         assert!(cheaper.cscv_pbo.slices % 2 == 0);
         assert!(cheaper.cscv_pbo.slices <= baseline.cscv_pbo.slices);
         assert!(cheaper.spa.bootstrap_samples < baseline.spa.bootstrap_samples);
+    }
+
+    #[test]
+    fn parse_args_from_iter_uses_the_documented_defaults() {
+        let cfg = parse_args_from_iter(Vec::<String>::new()).expect("default args");
+        assert_eq!(cfg.csv_path, PathBuf::from("data/benchmarks/AAPL.csv"));
+        assert_eq!(cfg.timeframes, vec!["15m".to_string(), "1h".to_string()]);
+        assert_eq!(cfg.fast_range, (5, 200, 1));
+        assert_eq!(cfg.slow_range, (10, 400, 1));
+        assert_eq!(cfg.top_k, 16);
+        assert_eq!(cfg.candidate_pool, 24);
+        assert_eq!(cfg.comparison_top_k, 5);
+        assert!((cfg.holdout_frac - 0.20).abs() < f64::EPSILON);
+        assert_eq!(cfg.device_id, 0);
+        assert_eq!(
+            cfg.out_path,
+            PathBuf::from("target/real_data_fidelity_audit_aapl.json")
+        );
+    }
+
+    #[test]
+    fn parse_args_from_iter_rejects_out_of_band_holdout_fraction() {
+        let err = parse_args_from_iter(vec!["--holdout-frac", "0.80"]).unwrap_err();
+        assert!(err.contains("--holdout-frac should usually be in [0.05, 0.50)"));
     }
 }

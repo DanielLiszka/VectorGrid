@@ -425,6 +425,198 @@ describe("analysis service", () => {
     expect(req).not.toHaveProperty("bins");
   });
 
+  it("routes CompositeCpu drilldown and local stability through the composite command family", async () => {
+    useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "CompositeCpu",
+        data_id: "dataset-composite",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        signal_mode: "hard_gate",
+        halftrend: { amplitude: 7, atr_period: 14, channel_deviation: 1.8 },
+        macz: { fast_length: 11, slow_length: 28, signal_length: 8 },
+        ott: { period: 5, percent: 1.4, ma_type: "EMA" },
+        asr: { squeeze_length: 20 },
+        strategy: { long_only: true, allow_flip: false },
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "ema",
+              fast_len: 7,
+              slow_ma_type: "ema",
+              slow_len: 30,
+            },
+            { pnl: 0.2, sharpe: 1.2, max_dd: 0.1, trades: 20, exposure: 0.5 },
+          ],
+        ],
+      },
+    });
+    refreshTopTableFromWorkflowRun();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_composite_cpu_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "compute_composite_cpu_local_stability") {
+        return {
+          base: {
+            fast_len: 7,
+            slow_len: 30,
+            fast_ma_type: "ema",
+            slow_ma_type: "ema",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") return [] as never;
+      return undefined as never;
+    });
+
+    await selectTopRow(0);
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_composite_cpu_drilldown",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          backend_hint: { backend: "GpuKernel", device_id: 0 },
+          signal_mode: "hard_gate",
+          halftrend: { amplitude: 7, atr_period: 14, channel_deviation: 1.8 },
+          macz: { fast_length: 11, slow_length: 28, signal_length: 8 },
+          ott: { period: 5, percent: 1.4, ma_type: "EMA" },
+          asr: { squeeze_length: 20 },
+        }),
+      }),
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_composite_cpu_local_stability",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          backend: { backend: "GpuKernel", device_id: 0 },
+          signal_mode: "hard_gate",
+          halftrend: { amplitude: 7, atr_period: 14, channel_deviation: 1.8 },
+          macz: { fast_length: 11, slow_length: 28, signal_length: 8 },
+          ott: { period: 5, percent: 1.4, ma_type: "EMA" },
+          asr: { squeeze_length: 20 },
+        }),
+      }),
+    );
+  });
+
+  it("routes CompositeMo follow-up analysis through row-scoped params instead of the base request", async () => {
+    useAnalysisStore(pinia);
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "CompositeMo",
+        data_id: "dataset-mo",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "CpuOnly" },
+        base_strategy: { long_only: true, allow_flip: true },
+        signal_mode: "hard_gate",
+      },
+      res: {
+        pareto: [
+          {
+            params: {
+              fast_ma_type: "ema",
+              fast_len: 5,
+              slow_ma_type: "sma",
+              slow_len: 20,
+              halftrend: { amplitude: 9, atr_period: 21, channel_deviation: 1.6 },
+              macz: { fast_length: 12, slow_length: 26, signal_length: 9 },
+              ott: { period: 6, percent: 1.3, ma_type: "EMA" },
+              signal_mode: "entry_core_exit_overlay",
+              strategy: { long_only: false, allow_flip: false },
+            },
+            metrics: {
+              pnl: 0.25,
+              sharpe: 1.05,
+              max_dd: 0.12,
+              trades: 14,
+              exposure: 0.38,
+            },
+            maximize_value: 1.05,
+            minimize_value: 0.12,
+            violation: 0,
+          },
+        ],
+      },
+    });
+    refreshTopTableFromWorkflowRun();
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_composite_cpu_drilldown") {
+        return {
+          equity: { start_t: 1, end_t: 2, bins: 1, minmax: [1, 1] },
+          drawdown: { start_t: 1, end_t: 2, bins: 1, minmax: [0, 0] },
+          trades: [],
+          trade_stats: null,
+          indicator_bars: [],
+        } as never;
+      }
+      if (command === "compute_composite_cpu_local_stability") {
+        return {
+          base: {
+            fast_len: 5,
+            slow_len: 20,
+            fast_ma_type: "ema",
+            slow_ma_type: "sma",
+          },
+          objective: "Sharpe",
+          radius: 1,
+          step: 1,
+          start_t: 1,
+          points: [],
+          summary: { base: 0, min: 0, median: 0, max: 0 },
+        } as never;
+      }
+      if (command === "get_price_bars") return [] as never;
+      return undefined as never;
+    });
+
+    await selectTopRow(0);
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_composite_cpu_drilldown",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          backend_hint: { backend: "CpuOnly" },
+          signal_mode: "entry_core_exit_overlay",
+          halftrend: { amplitude: 9, atr_period: 21, channel_deviation: 1.6 },
+          macz: { fast_length: 12, slow_length: 26, signal_length: 9 },
+          ott: { period: 6, percent: 1.3, ma_type: "EMA" },
+          strategy: { long_only: false, allow_flip: false },
+        }),
+      }),
+    );
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "compute_composite_cpu_local_stability",
+      expect.objectContaining({
+        req: expect.objectContaining({
+          backend: { backend: "CpuOnly" },
+          signal_mode: "entry_core_exit_overlay",
+          halftrend: { amplitude: 9, atr_period: 21, channel_deviation: 1.6 },
+          macz: { fast_length: 12, slow_length: 26, signal_length: 9 },
+          ott: { period: 6, percent: 1.3, ma_type: "EMA" },
+          strategy: { long_only: false, allow_flip: false },
+        }),
+      }),
+    );
+  });
+
   it("deduplicates identical in-flight drill, price-bar, and stability work", async () => {
     useAnalysisStore(pinia);
     seedWorkflowRun({
@@ -886,6 +1078,62 @@ describe("analysis service", () => {
     expect(Array.isArray(store.topTableRows)).toBe(true);
     expect(store.topTableRows.length).toBe(0);
     expect(String(store.topFilterMeta || "")).toContain("MlSignal");
+  });
+
+  it("surfaces composite-family drilldown gaps explicitly instead of implying support", async () => {
+    seedWorkflowRun({
+      req: {
+        strategy_kind: "Vcet",
+        data_id: "dataset-vcet",
+        ma_source: "close",
+        objective: "Sharpe",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        strategy: { fee_bps: 1.0 },
+        vcet: {
+          vidya_short_period: 8,
+          vidya_long_period: 34,
+          ce_period: 34,
+          ce_mult: 2.8,
+        },
+      },
+      res: {
+        top: [
+          [
+            {
+              fast_ma_type: "vidya",
+              fast_len: 8,
+              slow_ma_type: "vidya",
+              slow_len: 34,
+              vcet: {
+                vidya_short_period: 8,
+                vidya_long_period: 34,
+                ce_period: 34,
+                ce_mult: 2.8,
+              },
+            },
+            { pnl: 0.2, sharpe: 1.1, max_dd: 0.15, trades: 14, exposure: 0.45 },
+          ],
+        ],
+      },
+    });
+    const store = useAnalysisStore(pinia);
+    refreshTopTableFromWorkflowRun();
+
+    invokeCommandMock.mockImplementation(async (command: unknown) => {
+      if (command === "compute_composite_cpu_drilldown") {
+        throw new Error("VCET drilldown is not implemented yet.");
+      }
+      return undefined as never;
+    });
+
+    await selectTopRow(0);
+
+    expect(String(store.drillStatus || "")).toContain(
+      "VCET drilldown is not implemented yet.",
+    );
+    expect(String(store.statusLine || "")).toContain(
+      "VCET drilldown is not implemented yet.",
+    );
   });
 
   it("renders pareto scatter into the Vue canvas host when mounted", () => {

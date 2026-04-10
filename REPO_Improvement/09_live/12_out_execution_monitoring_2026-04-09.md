@@ -1,6 +1,6 @@
 # Out Execution Monitoring Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -119,20 +119,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every current execution monitoring field and what authority it represents.
-- [ ] Document optimistic versus broker-confirmed order state.
-- [ ] Document position summary provenance and refresh requirements.
-- [ ] Document live-feed and runner hints separately from broker/account state.
-- [ ] Document chart-meta limitations and current advisory posture.
-- [ ] Document output-preview usage as operator-visible diagnostic evidence.
-- [ ] Add or tighten tests if monitoring strings or provenance rules change.
-- [ ] Keep user-facing copy explicit when state is delayed, optimistic, or advisory.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document every current execution monitoring field and what authority it represents.
+- [x] Document optimistic versus broker-confirmed order state.
+- [x] Document position summary provenance and refresh requirements.
+- [x] Document live-feed and runner hints separately from broker/account state.
+- [x] Document chart-meta limitations and current advisory posture.
+- [x] Document output-preview usage as operator-visible diagnostic evidence.
+- [x] Add or tighten tests if monitoring strings or provenance rules change.
+- [x] Keep user-facing copy explicit when state is delayed, optimistic, or advisory.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -152,6 +152,21 @@ Public-repo quality focus:
 - prefer additive provenance cues over removing existing operator detail
 - maintain the current distinction between live/runtime state and broker-confirmed account state
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the strengthened monitoring evidence that already exists in the repo:
+  - [ExecutionWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts) covers unknown review metadata, broker-confirmed flat review state, advisory chart-meta text, output preview rendering, and live-mode safety copy
+  - [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) covers optimistic `submitted*` rows, broker-refresh reconciliation, and monitoring-hint updates from runtime events
+  - [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts) covers position summary provenance, chart-meta strings, runner/live status hints, and degraded-status fallbacks
+- Kept scope intentionally additive:
+  - no monitoring strings were simplified by hiding detail
+  - no optimistic/broker-confirmed boundary changed
+  - no output preview surface was removed
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/ExecutionWorkspacePanel.test.ts src/stores/executionStore.actions.test.ts src/services/executionService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

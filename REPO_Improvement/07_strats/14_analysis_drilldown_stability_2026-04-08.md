@@ -1,6 +1,6 @@
 # Analysis Drilldown and Stability Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -94,20 +94,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current drilldown and local-stability coverage matrix by strategy family.
-- [ ] Document current-candidate handoff requirements from results into analysis.
-- [ ] Keep service/UI copy aligned with backend “not implemented yet” behavior.
-- [ ] Verify Double-MA and composite CPU analysis entrypoints remain clearly separated.
-- [ ] Identify where live execution depends on drilldown semantics and keep that coupling explicit.
-- [ ] Add or maintain tests for unsupported strategies and empty-state behavior.
-- [ ] Preserve current table-to-analysis navigation flows while improving clarity.
-- [ ] Avoid generic language that overstates analysis support.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the current drilldown and local-stability coverage matrix by strategy family.
+- [x] Document current-candidate handoff requirements from results into analysis.
+- [x] Keep service/UI copy aligned with backend “not implemented yet” behavior.
+- [x] Verify Double-MA and composite CPU analysis entrypoints remain clearly separated.
+- [x] Identify where live execution depends on drilldown semantics and keep that coupling explicit.
+- [x] Add or maintain tests for unsupported strategies and empty-state behavior.
+- [x] Preserve current table-to-analysis navigation flows while improving clarity.
+- [x] Avoid generic language that overstates analysis support.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -125,6 +125,29 @@ Public-repo quality focus:
 - keep unsupported strategy cases explicit instead of silently suppressing actions
 - if more strategy coverage is added later, update the coverage matrix and UI messaging together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by publishing the current drilldown/local-stability coverage matrix in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md), including:
+  - the Double-MA-family path
+  - the `CompositeCpu`/standalone composite-family path
+  - the currently supported `Asr` / `Vemr` / `Vcc` / `Rocb` split
+  - explicit “not implemented yet” coverage for `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc`
+  - the explicit non-optimizer state for `MlSignal` artifacts
+- Tightened frontend evidence in [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts) with a regression test that proves unsupported `Vcet` drilldown remains explicit in `drillStatus` and `statusLine` instead of being silently implied as supported.
+- Existing flow coverage remains the main truth anchor:
+  - current-candidate handoff in `TopWorkspacePanel.test.ts`
+  - Drill workspace rendering in `DrillWorkspacePanel.test.ts`
+  - request routing and cache behavior in `analysisService.test.ts`
+- Stable truth anchors:
+  - `web/src/services/analysisService.ts`
+  - `src-tauri/src/commands_analysis.rs`
+  - `crates/app_core/src/double_ma.rs`
+  - `crates/app_core/src/composite_cpu.rs`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/analysisService.test.ts src/components/TopWorkspacePanel.test.ts src/components/DrillWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

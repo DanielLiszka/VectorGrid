@@ -65,6 +65,11 @@ interface ContextActionMenuItem {
   separatorBefore?: boolean
 }
 
+function hasMeaningfulPanelText(value: unknown): boolean {
+  const text = String(value ?? '').trim()
+  return text !== '' && text !== '-' && text !== '—'
+}
+
 const aggregateTabItems = [
   { key: 'meta', label: 'Meta Selection' },
   { key: 'batch', label: 'Batch Generation' },
@@ -296,6 +301,13 @@ const activeAggregateTabLabel = computed(
   () => aggregateTabItems.find((item) => item.key === activeAggregateTab.value)?.label || 'Meta Selection',
 )
 
+function pathBasename(value: string): string {
+  const normalized = String(value || '').trim().replace(/\\/g, '/')
+  if (!normalized) return ''
+  const lastSlash = normalized.lastIndexOf('/')
+  return lastSlash >= 0 ? normalized.slice(lastSlash + 1) : normalized
+}
+
 const metaStageLabel = computed(() => {
   if (metaStage.value === 'no_data') return 'Awaiting saved runs'
   if (metaStage.value === 'data_loaded_no_run') return 'Ready for meta run'
@@ -331,7 +343,29 @@ const strategyOptions = computed<OptionItem[]>(() => {
 const compareOptions = computed<OptionItem[]>(() => {
   const options = metaCompareOptions.value as OptionItem[]
   if (options.length > 0) return options
-  return [{ value: '', label: 'Select baseline meta', disabled: false }]
+  return [{ value: '', label: 'Select saved meta baseline', disabled: false }]
+})
+
+const selectedCompareOption = computed(() => {
+  const selectedValue = String(metaCompareSelected.value || '').trim()
+  if (!selectedValue) return null
+  return compareOptions.value.find((option) => option.value === selectedValue) ?? null
+})
+
+const selectedCompareLabel = computed(() => {
+  const label = String(selectedCompareOption.value?.label || '').trim()
+  return label || 'No baseline selected'
+})
+
+const selectedCompareFile = computed(() => {
+  return pathBasename(String(metaCompareSelected.value || '').trim()) || '—'
+})
+
+const compareSummaryLead = computed(() => {
+  if (!String(metaCompareSelected.value || '').trim()) {
+    return 'Compare always uses a Saved Meta artifact as the baseline. Stage 5 and policy-evaluation artifacts stay in the Saved Aggregate library.'
+  }
+  return 'Current Meta Selection output stays on the working side while the selected Saved Meta artifact anchors the baseline summary below.'
 })
 
 const metaSavedSelectOptions = computed<OptionItem[]>(() => {
@@ -414,6 +448,284 @@ const batchRunButtonLabel = computed(() => {
     default:
       return 'Run full campaign'
   }
+})
+
+function optionLabel(options: OptionItem[], value: string, fallback: string): string {
+  const selected = options.find((option) => option.value === value)
+  return String(selected?.label || fallback).trim() || fallback
+}
+
+const batchExecutionModeLabel = computed(() =>
+  optionLabel(batchExecutionModeOptions, String(batchExecutionModeDraft.value || 'full').trim(), 'Full campaign'),
+)
+
+const batchPreloadPolicyLabel = computed(() =>
+  optionLabel(
+    batchPreloadPolicyOptions,
+    String(batchPreloadPolicyDraft.value || 'host_only').trim(),
+    'Host preload (recommended)',
+  ),
+)
+
+const batchAutomationLabel = computed(() => {
+  if (!batchAutoMetaDraft.value) return 'Manual follow-up'
+  if (batchAutoStage5Draft.value) return 'Meta + Stage 5'
+  return 'Meta only'
+})
+
+const batchSelectionLabel = computed(
+  () => `${Math.max(0, Number(batchSelectedCount.value || 0))}/${Math.max(0, Number(batchTotalCount.value || 0))} selected`,
+)
+
+const batchHoldoutContractSummary = computed(() => {
+  return [
+    `${parseDraftInt(batchHoldoutPctDraft.value, 15, 0)}% holdout`,
+    `tag ${String(batchHoldoutTagDraft.value || 'holdout').trim() || 'holdout'}`,
+    batchSkipDoneDraft.value ? 'skip completed on' : 'skip completed off',
+  ].join(' • ')
+})
+
+const batchRegistryContractSummary = computed(() => {
+  const executionMode = String(batchExecutionModeDraft.value || 'full').trim() || 'full'
+  const modeDetail =
+    executionMode === 'optimize_only'
+      ? 'meta and Stage 5 disabled'
+      : executionMode === 'validate_only'
+        ? 'reuses saved optimization artifacts'
+        : 'full campaign with optional follow-up'
+  return [
+    `tags ${summarizeDraftTags(batchTagsDraft.value)}`,
+    'same-tf selection unless Data overrides',
+    modeDetail,
+  ].join(' • ')
+})
+
+const batchRecoveryContractSummary = computed(() => {
+  const summaryState = canBatchRevealSummary.value ? 'saved summary available' : 'saved summary required'
+  return [
+    summaryState,
+    'required for retry/resume',
+    'retry restores the saved dataset set',
+    'resume needs embedded request',
+    'recovery forces skip completed',
+  ].join(' • ')
+})
+
+const metaMlStatusLabel = computed(() => {
+  return hasMeaningfulPanelText(metaMlStatus.value)
+    ? String(metaMlStatus.value).trim()
+    : 'No ML model status loaded yet.'
+})
+
+const metaStage5StatusLabel = computed(() => {
+  return hasMeaningfulPanelText(metaStage4Status.value)
+    ? String(metaStage4Status.value).trim()
+    : 'No live Stage 5 output yet.'
+})
+
+const metaPolicyEvalStatusLabel = computed(() => {
+  return hasMeaningfulPanelText(metaPolicyEvalStatus.value)
+    ? String(metaPolicyEvalStatus.value).trim()
+    : 'No live policy evaluation output yet.'
+})
+
+const metaMlScopeContractSummary = computed(() => {
+  const strategy = String(strategyDraft.value || metaStrategyKind.value || 'CompositeMo').trim() || 'CompositeMo'
+  const timeframe = String(timeframeDraft.value || metaTimeframe.value || '').trim()
+  if (!timeframe) {
+    return `${strategy} / timeframe required • scope resolves from latest meta result first, then store fallback`
+  }
+  return `${strategy} / ${timeframe} • model ml_confidence_${strategy}_${timeframe}.json • latest meta result scope first`
+})
+
+const metaMlRowsContractSummary = computed(() => {
+  const status = String(metaMlStatus.value || '').trim()
+  const counts = extractAvailableCounts(status)
+  const trainedRows = extractStatusField(status, 'trained_rows') || '—'
+  const target = extractStatusField(status, 'target') || 'auto'
+  return `available meta ${counts.meta} • rows ${counts.rows} • trained ${trainedRows} • target ${target}`
+})
+
+const metaMlLabelContractSummary = computed(() => {
+  const status = String(metaMlStatus.value || '').trim()
+  const label = String(status.match(/label:\s*([^·]+)/)?.[1] || '').trim()
+  return label || 'pass>=0.60, p10>=0.000, datasets>=30, dd cap off unless override'
+})
+
+const metaMlFamilyContractSummary = computed(() => {
+  const resolvedKind = extractStatusField(String(metaMlStatus.value || '').trim(), 'model_kind')
+  return `family Auto (backend owned) • resolved kind ${resolvedKind || 'Logistic or GbdtStump'} • no shipped UI family picker`
+})
+
+const metaMlHealthContractSummary = computed(() => {
+  const status = String(metaMlStatus.value || '').trim()
+  const state = extractStatusField(status, 'state') || 'missing'
+  const freshness = status.includes('stale') ? 'stale' : status.includes('fresh') ? 'fresh' : 'freshness unknown'
+  const retrain = status.includes('retrain recommended') ? 'retrain recommended' : 'retrain off'
+  const legacy = status.includes('legacy') ? 'legacy' : 'modern or missing'
+  return `state ${state} • ${freshness} • ${retrain} • ${legacy}`
+})
+
+const metaMlApplyContractSummary = computed(() => {
+  return [
+    metaMlAutopilotDraft.value ? 'autopilot on' : 'autopilot off',
+    'Apply mutates current meta only',
+    'Stage 5 saves rerank artifact',
+    'Policy Eval saves offline comparison',
+  ].join(' • ')
+})
+
+const metaStage5RequestContractSummary = computed(() => {
+  const strategy = String(strategyDraft.value || metaStrategyKind.value || 'CompositeMo').trim() || 'CompositeMo'
+  const timeframe = String(timeframeDraft.value || metaTimeframe.value || '').trim()
+  const scope = timeframe ? `${strategy} / ${timeframe}` : `${strategy} / timeframe required`
+  return `${scope} • source latest Meta artifact first, then Saved Meta selection • Stage 5 auto-build reuses current controls`
+})
+
+const metaStage5SelectionContractSummary = computed(() => {
+  return 'rank uses meta/ml/unc weights • min_ml filters first • fallback only if shortlist empties and toggle stays on • decision buckets assign after ranking'
+})
+
+const metaStage5ExecutionContractSummary = computed(() => {
+  const stage5File = extractStatusField(String(metaStage4Status.value || '').trim(), 'file')
+  return [
+    'run_meta_stage5_ml_confidence via Run Stage 5',
+    'runStage4 remains compatibility alias',
+    `stage4_json_path and stage5_json_path currently resolve to the same JSON artifact${stage5File ? ` (${stage5File})` : ''}`,
+  ].join(' • ')
+})
+
+const metaPolicyEvalContractSummary = computed(() => {
+  return 'offline scoped history over saved Meta artifacts • request reuses current Stage 5 thresholds and weights • compares meta_only / ml_only / stage5_blended • JSON artifact replay only'
+})
+
+const metaSavedReplayContractSummary = computed(() => {
+  return 'Saved Stage 5 UI is backed by stage4Saved* compatibility state • load/reveal/delete operate on replayed JSON artifacts • current live Stage 5 preview is reused on load'
+})
+
+const metaMlStatusSurfaceSummary = computed(() => {
+  return 'metaMlStatus is formatted model status • statusLine is action feedback • buttons gate on cached backend status and scope completeness • autopilot reacts after meta runs'
+})
+
+function parseDraftInt(value: string, fallback: number, min = 0): number {
+  const parsed = Number(String(value || '').trim())
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.floor(parsed))
+}
+
+function parseDraftFloat(value: string, fallback: number, min = 0): number {
+  const parsed = Number(String(value || '').trim())
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, parsed)
+}
+
+function summarizeDraftTags(value: string): string {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const parts = String(value || '')
+    .split(/[,;\n]+/g)
+    .flatMap((part) => String(part || '').trim().split(/\s+/g))
+
+  for (const part of parts) {
+    const next = String(part || '').trim()
+    if (!next) continue
+    const key = next.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(next)
+  }
+
+  return out.length > 0 ? out.join(', ') : 'none'
+}
+
+function extractStatusField(text: string, key: string): string {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = String(text || '').match(new RegExp(`${escapedKey}=([^·]+)`))
+  return String(match?.[1] || '').trim()
+}
+
+function extractAvailableCounts(text: string): { meta: string; rows: string } {
+  const match = String(text || '').match(/available:\s*meta=(\d+),\s*rows=(\d+)/i)
+  return {
+    meta: String(match?.[1] || '—').trim() || '—',
+    rows: String(match?.[2] || '—').trim() || '—',
+  }
+}
+
+const stage3RequestScopeSummary = computed(() => {
+  const parts = [String(strategyDraft.value || 'CompositeMo').trim() || 'CompositeMo']
+  const timeframe = String(timeframeDraft.value || '').trim()
+  const requiredTag = String(requiredTagDraft.value || '').trim()
+  if (timeframe) parts.push(`tf ${timeframe}`)
+  if (requiredTag) parts.push(`tag ${requiredTag}`)
+  parts.push(`min ${parseDraftInt(minSamplesDraft.value, 30, 1)}`)
+  parts.push(`top ${parseDraftInt(topKDraft.value, 25, 1)}`)
+  return parts.join(' • ')
+})
+
+const stage3HoldoutContractSummary = computed(() => {
+  if (!holdoutEvalDraft.value) {
+    return `holdout off • mode ${String(holdoutModeDraft.value || 'light').trim() || 'light'}`
+  }
+  return [
+    `holdout ${String(holdoutModeDraft.value || 'light').trim() || 'light'}`,
+    `tag ${String(holdoutTagDraft.value || 'holdout').trim() || 'holdout'}`,
+    holdoutSaveRowsDraft.value ? 'save rows on' : 'save rows off',
+  ].join(' • ')
+})
+
+const stage3HoldoutModeDetailSummary = computed(() => {
+  const mode = String(holdoutModeDraft.value || 'light').trim() || 'light'
+  if (!holdoutEvalDraft.value) {
+    return 'Holdout is disabled for this request. Unsupported strategies are downgraded by the request builder and holdout rank controls are ignored until holdout evaluation is turned back on.'
+  }
+  if (mode === 'heavy') {
+    return 'Heavy mode emits nested validation config (walk-forward, perturbation, bootstrap, iterative engine). Backend still owns holdout rank fallback and warning text.'
+  }
+  return 'Light mode keeps holdout enabled but omits the nested validation payload. Backend still owns holdout rank fallback and warning text.'
+})
+
+const stage3GroupingContractSummary = computed(() => {
+  const reps = Math.min(3, Math.max(1, parseDraftInt(holdoutRepsDraft.value, 2, 1)))
+  return [
+    String(groupingModeDraft.value || 'clustered').trim() || 'clustered',
+    `int ${parseDraftInt(clusterIntBucketDraft.value, 5, 1)}`,
+    `float ${parseDraftFloat(clusterFloatBucketDraft.value, 0.25).toFixed(2)}`,
+    `reps ${reps} (clamped 1-3)`,
+  ].join(' • ')
+})
+
+const stage3ShortlistContractSummary = computed(() => {
+  return [
+    'strict shortlist on',
+    'fallback off',
+    `rank ${String(holdoutEvalRankByDraft.value || 'auto').trim() || 'auto'}`,
+    `topN ${parseDraftInt(holdoutEvalTopNDraft.value, 0, 0)}`,
+    `explore ${parseDraftInt(holdoutExploreNDraft.value, 0, 0)}`,
+  ].join(' • ')
+})
+
+const stage3ScoreContractSummary = computed(() => {
+  return 'Stage 3 meta_score uses backend MetaScoreWeights. Holdout can replace ordering with final_score when holdout data exists. Stage 5 blend weights stay separate.'
+})
+
+const stage3EvidenceContractSummary = computed(() => {
+  return 'Evidence flags remain warnings, not hard gates. After holdout runs, flags are refreshed on the holdout-enriched group state. Workbook output is score-first, so JSON and saved artifact detail remain the strongest evidence surface.'
+})
+
+const metaMlWarningText = computed(() => {
+  const text = String(metaMlStatus.value || '').trim()
+  const lower = text.toLowerCase()
+  if (!text) return ''
+  if (
+    lower.includes('unhealthy')
+    || lower.includes('failed to load')
+    || lower.includes('no ml model saved')
+    || lower.includes('meta_scan_error=')
+  ) {
+    return text
+  }
+  return ''
 })
 
 watch(
@@ -1232,6 +1544,28 @@ onBeforeUnmount(() => {
           Host preload is the default campaign path. The VRAM staging mode is experimental and only applies to the plain DoubleMa exact GpuKernel route; other paths fall back to host preload. `Optimize only` skips meta and Stage 5, while `Validate only` reuses existing optimization artifacts instead of rerunning search. Validation shortlist admission follows the current Validation workspace policy.
         </div>
 
+        <div class="summaryGrid" aria-label="Batch generation operating mode">
+          <article>
+            <div class="panelMetricKey">Execution mode</div>
+            <div class="panelMetricValue">{{ batchExecutionModeLabel }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Preload policy</div>
+            <div class="panelMetricValue">{{ batchPreloadPolicyLabel }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Automation</div>
+            <div class="panelMetricValue">{{ batchAutomationLabel }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Datasets</div>
+            <div class="panelMetricValue mono panelNumeric">{{ batchSelectionLabel }}</div>
+          </article>
+        </div>
+        <div class="panelMuted">{{ batchHoldoutContractSummary }}</div>
+        <div class="panelMuted">{{ batchRegistryContractSummary }}</div>
+        <div class="panelMuted">{{ batchRecoveryContractSummary }}</div>
+
         <div class="actions">
           <button type="button" class="primary" :disabled="!canRunBatch" @click="runAction(() => analysisStore.runBatch())">{{ batchRunButtonLabel }}</button>
           <button type="button" :disabled="!canBatchStop" @click="runAction(() => analysisStore.batchStop())">Stop after current</button>
@@ -1321,6 +1655,39 @@ onBeforeUnmount(() => {
             >
               {{ item.label }}
             </button>
+          </div>
+
+          <div class="panelMuted">
+            Saved Meta keeps aggregate selection baselines. Saved Stage 5 keeps ML confidence reranks. Saved Policy Eval keeps policy sweep outputs.
+          </div>
+
+          <div class="summaryGrid savedArtifactSummaryGrid" aria-label="Saved aggregate artifact provenance">
+            <article>
+              <div class="panelMetricKey">Family role</div>
+              <div class="panelMetricValue">
+                {{
+                  savedArtifactFamily === 'stage5'
+                    ? 'ML confidence reranks and Stage 5 decision buckets.'
+                    : savedArtifactFamily === 'policyEval'
+                      ? 'Policy sweep evaluations over saved Stage 5 or meta-derived candidates.'
+                      : 'Aggregate selection baselines from saved meta artifacts.'
+                }}
+              </div>
+            </article>
+            <article>
+              <div class="panelMetricKey">Active selection</div>
+              <div class="panelMetricValue mono">
+                {{
+                  String(
+                    savedArtifactFamilyConfig.options.find(
+                      (option) => option.value === savedArtifactFamilyConfig.selectedValue,
+                    )?.label
+                      || savedArtifactFamilyConfig.selectedValue
+                      || 'No artifact selected.',
+                  ).trim() || 'No artifact selected.'
+                }}
+              </div>
+            </article>
           </div>
 
           <div class="gridThree">
@@ -1474,7 +1841,95 @@ onBeforeUnmount(() => {
           <button type="button" :disabled="!canMetaMlApply" @click="runAction(() => analysisStore.mlApply())">Apply to current meta</button>
           <button type="button" :disabled="!canMetaMlDelete" @click="runAction(() => analysisStore.mlDelete())">Delete model</button>
         </div>
+        <div class="summaryGrid" aria-label="ML confidence report surfaces">
+          <article>
+            <div class="panelMetricKey">Model status</div>
+            <div class="panelMetricValue mono">{{ metaMlStatusLabel }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Stage 5 output</div>
+            <div class="panelMetricValue mono">{{ metaStage5StatusLabel }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Policy evaluation</div>
+            <div class="panelMetricValue mono">{{ metaPolicyEvalStatusLabel }}</div>
+          </article>
+        </div>
+        <div class="summaryGrid" aria-label="ML confidence contract">
+          <article>
+            <div class="panelMetricKey">Scope</div>
+            <div class="panelMetricValue mono">{{ metaMlScopeContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Rows</div>
+            <div class="panelMetricValue mono">{{ metaMlRowsContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Label defaults</div>
+            <div class="panelMetricValue mono">{{ metaMlLabelContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Family</div>
+            <div class="panelMetricValue">{{ metaMlFamilyContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Health</div>
+            <div class="panelMetricValue mono">{{ metaMlHealthContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Apply paths</div>
+            <div class="panelMetricValue">{{ metaMlApplyContractSummary }}</div>
+          </article>
+        </div>
+        <div class="summaryGrid" aria-label="Stage 5 and policy contracts">
+          <article>
+            <div class="panelMetricKey">Stage 5 request</div>
+            <div class="panelMetricValue">{{ metaStage5RequestContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Selection order</div>
+            <div class="panelMetricValue">{{ metaStage5SelectionContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Execution alias</div>
+            <div class="panelMetricValue mono">{{ metaStage5ExecutionContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Policy eval</div>
+            <div class="panelMetricValue">{{ metaPolicyEvalContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Saved replay</div>
+            <div class="panelMetricValue">{{ metaSavedReplayContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Status surface</div>
+            <div class="panelMetricValue">{{ metaMlStatusSurfaceSummary }}</div>
+          </article>
+        </div>
         <div class="metaLine mono">{{ metaMlStatus }}</div>
+        <div v-if="metaMlWarningText" class="riskNotice mlRiskNotice" role="alert">
+          <div class="riskTitle">ML model health needs review</div>
+          <div class="riskBody mono">{{ metaMlWarningText }}</div>
+        </div>
+        <div class="panelMuted">
+          Model status reflects the current confidence model scope and health. Stage 5 preview shows the current live rerank output, and policy evaluation preview shows the current live evaluation payload. Saved Stage 5 and Saved Policy Eval artifacts stay in the Saved Aggregate library.
+        </div>
+        <div class="panelMuted">
+          Auto target prefers per-dataset holdout rows when available and falls back to aggregate holdout gates. Explicit unhealthy means the backend AUC/Brier health gates failed; stale and retrain-recommended remain freshness signals.
+        </div>
+        <div class="panelMuted">
+          Scope resolves from the latest meta result first and then falls back to the current Meta strategy/timeframe inputs. Only Stage 5 and Policy Eval persist durable artifacts; Apply to current meta is intentionally in-memory only.
+        </div>
+        <div class="panelMuted">
+          Stage 5 excludes the active source meta artifact from auto-train history, reranks first, then assigns accept/review/reject buckets. If no group clears min ML confidence and fallback stays on, the backend falls back to pure meta-score ranking with a warning.
+        </div>
+        <div class="panelMuted">
+          Policy evaluation is offline analysis over saved Meta history, not in-memory Apply and not the current live Stage 5 rerank. It compares meta_only, ml_only, and stage5_blended arms and keeps a separate saved JSON artifact family.
+        </div>
+        <div class="panelMuted">
+          Saved Stage 5 currently uses stage4Saved* compatibility fields under the hood, and Stage 4 / Stage 5 path aliases point at the same JSON artifact today.
+        </div>
 
         <div class="gridThree" style="margin-top: 0.6rem;">
           <div>
@@ -1619,15 +2074,17 @@ onBeforeUnmount(() => {
 
         <div class="metaLine mono">{{ metaStage4Status }}</div>
         <details class="panelDetails">
-          <summary>Stage 5 output preview</summary>
+          <summary>Current live Stage 5 output</summary>
           <div class="panelDetailsBody">
+            <div class="panelMuted">This preview reflects the latest live Stage 5 rerank output. Saved Stage 5 artifacts can be reopened from Saved Aggregate.</div>
             <pre class="mono preview">{{ metaStage4OutputPreview }}</pre>
           </div>
         </details>
         <div class="metaLine mono">{{ metaPolicyEvalStatus }}</div>
         <details class="panelDetails">
-          <summary>Policy evaluation preview</summary>
+          <summary>Current live policy evaluation</summary>
           <div class="panelDetailsBody">
+            <div class="panelMuted">This preview reflects the latest live policy-evaluation output. Saved policy-evaluation artifacts remain available from Saved Aggregate.</div>
             <pre class="mono preview">{{ metaPolicyEvalOutputPreview }}</pre>
           </div>
         </details>
@@ -1725,6 +2182,27 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+        <div class="summaryGrid" aria-label="Stage 3 meta selection contract">
+          <article>
+            <div class="panelMetricKey">Scope</div>
+            <div class="panelMetricValue mono">{{ stage3RequestScopeSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Holdout</div>
+            <div class="panelMetricValue mono">{{ stage3HoldoutContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Grouping</div>
+            <div class="panelMetricValue mono">{{ stage3GroupingContractSummary }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Shortlist</div>
+            <div class="panelMetricValue mono">{{ stage3ShortlistContractSummary }}</div>
+          </article>
+        </div>
+        <div class="panelMuted">{{ stage3ScoreContractSummary }}</div>
+        <div class="panelMuted">{{ stage3EvidenceContractSummary }}</div>
+        <div class="panelMuted">{{ stage3HoldoutModeDetailSummary }}</div>
         <div class="gridThree">
           <div>
             <label for="vueMetaHoldoutTag">Holdout tag</label>
@@ -1987,11 +2465,38 @@ onBeforeUnmount(() => {
             <div class="panelEyebrow">Comparison</div>
             <h3 class="panelPaneTitle">Compare meta baseline</h3>
             <div class="panelSectionLead">
-              Choose a saved meta artifact and inspect the difference summary before accepting a new aggregate baseline.
+              Choose a saved meta artifact as the baseline and inspect the provenance summary before accepting a new aggregate baseline.
             </div>
           </div>
+          <ContextHelpTip
+            title="Meta baseline compare"
+            summary="Use Compare to hold the current Meta Selection output against one Saved Meta artifact at a time."
+            detail="The compare pane intentionally uses only Saved Meta artifacts as the baseline family. Saved Stage 5 and Saved Policy Evaluation outputs remain in the Saved Aggregate library because they represent later-stage decisions, not a direct meta-selection baseline."
+            aria-label="Meta compare help"
+          />
         </div>
-        <label for="vueMetaCompareSelect">Compare meta baseline</label>
+        <div class="summaryGrid" aria-label="Meta compare provenance">
+          <article>
+            <div class="panelMetricKey">Compare source</div>
+            <div class="panelMetricValue">Saved Meta artifact</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Current candidate</div>
+            <div class="panelMetricValue">Active Meta Selection output</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Selected baseline</div>
+            <div class="panelMetricValue mono panelNumeric">{{ selectedCompareLabel }}</div>
+          </article>
+          <article>
+            <div class="panelMetricKey">Baseline file</div>
+            <div class="panelMetricValue mono panelNumeric">{{ selectedCompareFile }}</div>
+          </article>
+        </div>
+        <div class="panelMuted">
+          {{ compareSummaryLead }}
+        </div>
+        <label for="vueMetaCompareSelect">Saved meta baseline</label>
         <select
           id="vueMetaCompareSelect"
           :value="compareDraft"
@@ -2305,6 +2810,29 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 0.45rem;
+}
+
+.riskNotice {
+  border: 1px solid color-mix(in oklab, var(--warning-ink) 34%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--surface-warning) 86%, var(--panel-footer));
+  padding: 0.8rem 0.9rem;
+}
+
+.mlRiskNotice {
+  margin-top: 0.55rem;
+}
+
+.riskTitle {
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--warning-ink);
+}
+
+.riskBody {
+  margin-top: 0.35rem;
+  color: var(--text);
+  font-size: 0.82rem;
 }
 
 .preview {

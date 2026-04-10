@@ -120,22 +120,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the prerequisite summary-path requirement for retry and resume.
-- [ ] Document how the last batch summary path is produced, stored, and reused.
-- [ ] Document retry path selection rules, including failed-path extraction and selected-path interaction.
-- [ ] Document resume prerequisites, including the need for an embedded resumable request.
-- [ ] Document forced `skip_existing=true` behavior for both flows.
-- [ ] Document current clean-abort behavior for missing summary, missing failed paths, or missing resumable request.
-- [ ] Document the current asymmetry between batch-summary recovery and normal artifact-library replay.
-- [ ] Document the minimum summary fields required to keep recovery compatible.
-- [ ] Add or preserve tests for retry-only, resume-only, and missing-summary failure cases.
-- [ ] Keep summary-schema edits synchronized with recovery logic and tests.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the prerequisite summary-path requirement for retry and resume.
+- [x] Document how the last batch summary path is produced, stored, and reused.
+- [x] Document retry path selection rules, including failed-path extraction and selected-path interaction.
+- [x] Document resume prerequisites, including the need for an embedded resumable request.
+- [x] Document forced `skip_existing=true` behavior for both flows.
+- [x] Document current clean-abort behavior for missing summary, missing failed paths, or missing resumable request.
+- [x] Document the current asymmetry between batch-summary recovery and normal artifact-library replay.
+- [x] Document the minimum summary fields required to keep recovery compatible.
+- [x] Add or preserve tests for retry-only, resume-only, and missing-summary failure cases.
+- [x] Keep summary-schema edits synchronized with recovery logic and tests.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -155,6 +155,31 @@ Public-repo quality focus:
 - preserve the distinction between operational summary recovery and general history/artifact replay
 - prefer failing clearly on incomplete summaries over issuing partially reconstructed campaigns
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the recovery contract explicit in both the batch UI and the dedicated recovery tests.
+- `MetaWorkspacePanel.vue` now states that:
+  - recovery depends on the saved batch summary
+  - retry restores the saved dataset set
+  - resume requires an embedded saved request
+  - both recovery flows force skip-completed behavior
+- `metaServiceCampaignResume.test.ts` now covers:
+  - clean abort when no saved summary path exists
+  - normal resume flow
+  - normal retry flow
+  - clean abort when a saved summary exists but lacks a resumable request
+- Existing retry behavior remains conservative and unchanged: the service still reloads the last summary, rebuilds UI state from it, and forces `skip_existing=true` before re-running the campaign.
+- Stable fixture / replay payload:
+  - a saved `vectorgrid_campaign_summary`
+  - `request.datasets = [C:/a.csv, C:/b.csv]`
+  - `state = cancelled` or `completed_with_failures`
+  - `skip_existing = false` in the saved request so the recovery path proves it is overridden to `true`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_campaign --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

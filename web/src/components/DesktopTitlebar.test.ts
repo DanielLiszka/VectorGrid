@@ -79,7 +79,37 @@ describe('DesktopTitlebar', () => {
     const wrapper = mount(DesktopTitlebar)
 
     expect(wrapper.text()).toContain('Workflow · Policy Validation')
-    expect(wrapper.get('.titlebarPrimary').attributes('aria-label')).toBe('Build score cache')
+    expect(wrapper.get('.titlebarPrimary').attributes('aria-label')).toBe('Run ML validation')
+    expect(wrapper.get('.titlebarPrimary').text()).toContain('Validate')
+  })
+
+  it('keeps MlSignal shared primary actions truthful across workflow steps', async () => {
+    const workflowStore = useWorkflowStore()
+    const optimizeStore = useOptimizeStore()
+    workflowStore.selectMode('ml-signal', { persist: false })
+    optimizeStore.$patch({
+      mlSignalDatasetExportPath: 'C:/data/ml_dataset.csv',
+      mlSignalScoreInputPath: 'C:/data/ml_scores.csv',
+      mlSignalScoreCachePath: 'C:/data/ml_score_cache.json',
+      runDisabled: false,
+      validateDisabled: false,
+    })
+
+    const wrapper = mount(DesktopTitlebar)
+    const primary = wrapper.get('.titlebarPrimary')
+
+    workflowStore.selectWorkflowStep('data', { persist: false })
+    await nextTick()
+    expect(primary.attributes('aria-label')).toBe('Export dataset')
+
+    workflowStore.selectWorkflowStep('analyze', { persist: false })
+    await nextTick()
+    expect(primary.attributes('aria-label')).toBe('Run ML policy sweep')
+
+    workflowStore.selectWorkflowStep('finalize', { persist: false })
+    await nextTick()
+    expect(primary.attributes('aria-label')).toBe('Artifacts ready')
+    expect((primary.element as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('routes shell actions through the existing stores', async () => {
@@ -237,7 +267,19 @@ describe('DesktopTitlebar', () => {
     expect(labels).toContain('Open settings workspace')
     expect(labels).toContain('Run optimization')
     expect(labels).toContain('Minimize window')
-    expect(labels).toContain('Maximize or restore window')
+    expect(labels).toContain('Maximize window')
     expect(labels).toContain('Close window')
+  })
+
+  it('switches the native window control label to restore when the window is maximized', async () => {
+    isMaximizedMock.mockResolvedValue(true)
+
+    const wrapper = mount(DesktopTitlebar)
+    await nextTick()
+    await nextTick()
+
+    const labels = wrapper.findAll('.windowControl').map((button) => button.attributes('aria-label')).filter(Boolean)
+    expect(labels).toContain('Restore window')
+    expect(labels).not.toContain('Maximize window')
   })
 })

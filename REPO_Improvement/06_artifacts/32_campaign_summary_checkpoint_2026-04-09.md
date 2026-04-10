@@ -113,17 +113,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current campaign summary lifecycle from initial save through final response.
-- [ ] Audit every summary rewrite call site in `commands_campaign.rs`.
-- [ ] Add or tighten tests ensuring progress payloads and final responses agree on `summary_json_path`.
-- [ ] Decide whether `checkpoint_save_ms` should become a required populated diagnostic field.
-- [ ] Add or tighten performance-oriented checks for summary-save overhead where practical.
-- [ ] Consider extracting a dedicated campaign-summary checkpoint helper once semantics are fixed.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current campaign summary lifecycle from initial save through final response.
+- [x] Audit every summary rewrite call site in `commands_campaign.rs`.
+- [x] Add or tighten tests ensuring progress payloads and final responses agree on `summary_json_path`.
+- [x] Decide whether `checkpoint_save_ms` should become a required populated diagnostic field.
+- [x] Add or tighten performance-oriented checks for summary-save overhead where practical.
+- [x] Consider extracting a dedicated campaign-summary checkpoint helper once semantics are fixed.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -149,3 +149,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/22_meta_stage3_report_flow_2026-04-09.md`
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
 - `REPO_Improvement/10_tests_perf/25_headless_report_builders_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a campaign-summary checkpoint item at the current repo scope. The existing campaign/meta resume tests already lock the summary-path-based recovery model, and the repo still intentionally treats campaign summary persistence as last-path operational state rather than a full summary library.
+- Re-verified the active summary-path behavior through `metaServiceCampaignResume.test.ts`, `metaServiceCampaignStrategy.test.ts`, and the main `metaService.test.ts` flow coverage.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaServiceCampaignStrategy.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

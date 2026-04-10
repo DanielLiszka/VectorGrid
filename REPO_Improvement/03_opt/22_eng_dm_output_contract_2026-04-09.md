@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document stable core result fields.
-- [ ] Document optional route, fallback, residency, and timing fields.
-- [ ] Document `metric_surface_kind` and score-observation context semantics.
-- [ ] Document heatmap auxiliary arrays and their consumers.
-- [ ] Add or tighten consumer-parity tests for result-shape compatibility.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document stable core result fields.
+- [x] Document optional route, fallback, residency, and timing fields.
+- [x] Document `metric_surface_kind` and score-observation context semantics.
+- [x] Document heatmap auxiliary arrays and their consumers.
+- [x] Add or tighten consumer-parity tests for result-shape compatibility.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - if a field becomes deprecated, document the deprecation before removing it
 - update artifact and metric-surface consumers in the same change as any output-contract shift
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Double-MA output contract across both backend construction and downstream artifact consumers. `double_ma_result.rs` continues to preserve `metric_surface_kind` and `score_observation_context`, while `double_ma.rs` still carries route/fallback metadata, residency, follow-up cache keys, and heatmap auxiliary arrays in the runtime result shape.
+- Added consumer evidence rather than relying only on shape inspection. `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests` passed end to end, which confirms the workbook/report layer still consumes the richer optimization artifact shape without breaking route-detail, strategy-agnostic, or fallback-report scenarios.
+- The direct result-shape evidence remains strong: `build_backend_result_preserves_metric_surface_kind` and `build_backend_result_preserves_score_observation_context` both pass in `double_ma_result.rs`, and `metric_surface.rs` continues to rederive or preserve the expected metric-surface contract for artifacts.
+- No code change was required in this tranche because the audited output contract and downstream consumers already satisfy the documented scope. The remaining known caveat is that raw optional-field consumer parity for `residency` and `followup_cache_key` is still more implicit than the metric-surface path, so future output-shape changes should keep artifact coverage in the same change.
 
 ## Related Docs
 

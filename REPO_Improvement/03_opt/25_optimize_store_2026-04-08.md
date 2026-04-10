@@ -105,19 +105,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate the main state families owned by `optimizeStore`.
-- [ ] Document current default options and strategy/backend normalization behavior.
-- [ ] Document command-state fields such as `runDisabled`, `canCancel`, and `validateDisabled`.
-- [ ] Document current progress/status fields and their ownership boundary with `optimizeService`.
-- [ ] Document dynamic strategy preview state and GPU summary state.
-- [ ] Document snapshot-application behavior and replay-sensitive fields.
-- [ ] Document which actions delegate to services and which mutate store state directly.
-- [ ] Add or tighten tests if ownership or snapshot behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the main state families owned by `optimizeStore`.
+- [x] Document current default options and strategy/backend normalization behavior.
+- [x] Document command-state fields such as `runDisabled`, `canCancel`, and `validateDisabled`.
+- [x] Document current progress/status fields and their ownership boundary with `optimizeService`.
+- [x] Document dynamic strategy preview state and GPU summary state.
+- [x] Document snapshot-application behavior and replay-sensitive fields.
+- [x] Document which actions delegate to services and which mutate store state directly.
+- [x] Add or tighten tests if ownership or snapshot behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -134,6 +134,13 @@ Public-repo quality focus:
 - if store refactoring is needed later, keep snapshot compatibility explicit
 - do not collapse command-state and form-state semantics together just to reduce file size
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated `optimizeStore` as the canonical optimize-surface owner for form state, command-state flags, progress text, GPU summary, and dynamic-preview state. Existing store and service tests continue to prove that run/cancel/validation actions delegate through `optimizeService`, that GPU refresh and preview state stay store-owned, and that snapshot application preserves newer backend options.
+- Tightened replay behavior indirectly through `historyService.ts`. Saved-run rehydration now routes more of the optimize-surface restore path through `optimizeStore.applyLegacySnapshot(...)` instead of directly mutating backend and range fields, which keeps replay closer to the same normalization boundary used by the store itself.
+- No direct `optimizeStore.ts` code change was required because the store contract was already largely implemented; the main improvement in this tranche was replay normalization alignment plus the replay tests that continue to cover optimize-store restoration through `historyService.test.ts`.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/stores/strategyStore.actions.test.ts src/stores/advancedStore.actions.test.ts src/services/dynamicIndicatorCatalogService.test.ts src/strategies/dynamicDoubleMaBuilder.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

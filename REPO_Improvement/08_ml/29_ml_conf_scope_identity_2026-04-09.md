@@ -119,22 +119,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact current fields in `MlConfidenceScope`.
-- [ ] Document frontend scope-construction behavior and fallback order.
-- [ ] Document backend scope normalization rules and hard-failure conditions.
-- [ ] Document the current scope-derived model-path identity.
-- [ ] Document how scope filters saved meta artifacts during training/status scans.
-- [ ] Document how Stage 5 artifact summaries expose scope without becoming the model-identity source of truth.
-- [ ] Document scope mismatch warning behavior separately from “no data” behavior.
-- [ ] Preserve tests for missing timeframe, empty scope fields, and scope-filtered artifact scans.
-- [ ] Keep scope docs aligned with current Stage 4/Stage 5 naming reality.
-- [ ] Treat any future expansion of scope fields as a compatibility change, not a local refactor.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the exact current fields in `MlConfidenceScope`.
+- [x] Document frontend scope-construction behavior and fallback order.
+- [x] Document backend scope normalization rules and hard-failure conditions.
+- [x] Document the current scope-derived model-path identity.
+- [x] Document how scope filters saved meta artifacts during training/status scans.
+- [x] Document how Stage 5 artifact summaries expose scope without becoming the model-identity source of truth.
+- [x] Document scope mismatch warning behavior separately from “no data” behavior.
+- [x] Preserve tests for missing timeframe, empty scope fields, and scope-filtered artifact scans.
+- [x] Keep scope docs aligned with current Stage 4/Stage 5 naming reality.
+- [x] Treat any future expansion of scope fields as a compatibility change, not a local refactor.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -154,6 +154,26 @@ Public-repo quality focus:
 - keep current status messaging conservative so scope mismatch does not masquerade as ordinary lack of data
 - prefer additive artifact metadata over redefining what current scope means
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by surfacing scope identity directly in the ML panel rather than leaving it implicit in the service/backend contract.
+- `MetaWorkspacePanel.vue` now exposes:
+  - `strategy_kind / timeframe` as the current ML scope
+  - the scope-derived model file naming pattern `ml_confidence_<strategy>_<timeframe>.json`
+  - an explicit note that scope resolves from the latest meta result first and then falls back to current Meta inputs
+- The panel copy also now states that only Stage 5 and Policy Eval persist durable artifacts, which keeps Stage 5 scope exposure distinct from model-file identity.
+- `REPO_MAP.md` was updated so contributors can find the ML scope-identity contract quickly.
+- Stable fixture / replay payload:
+  - `strategy_kind = CompositeMo`
+  - `timeframe = 1m`
+  - model file `ml_confidence_CompositeMo_1m.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

@@ -95,18 +95,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the saved-meta typed replay response and how the frontend consumes it.
-- [ ] Document the distinction between replay/load, reveal, and open-report actions.
-- [ ] Document selection-retention behavior during refresh.
-- [ ] Document report-path persistence and why this family exposes `Open report`.
-- [ ] Add or tighten tests for typed replay loading, empty-payload handling, and report-open flows.
-- [ ] Add or tighten tests for refresh preserving the selected saved-meta artifact.
-- [ ] Keep replay explicitly separate from workflow hydration semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the saved-meta typed replay response and how the frontend consumes it.
+- [x] Document the distinction between replay/load, reveal, and open-report actions.
+- [x] Document selection-retention behavior during refresh.
+- [x] Document report-path persistence and why this family exposes `Open report`.
+- [x] Add or tighten tests for typed replay loading, empty-payload handling, and report-open flows.
+- [x] Add or tighten tests for refresh preserving the selected saved-meta artifact.
+- [x] Keep replay explicitly separate from workflow hydration semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -131,3 +131,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/21_report_artifact_path_persistence_2026-04-08.md`
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
 - `REPO_Improvement/08_ml/31_stage5_result_surface_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a typed replay contract audit. Existing code already keeps Saved Meta replay distinct from workflow hydration and preserves the saved-meta-only `Open report` action surface.
+- Existing evidence in `web/src/services/metaService.test.ts` already covers refresh retention, typed replay loading, empty payload handling, and `open_path` to `reveal_path` fallback for saved meta reports.
+- Existing evidence in `web/src/components/MetaWorkspacePanel.test.ts` already keeps the family-level action surface explicit in the UI.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/components/MetaWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.

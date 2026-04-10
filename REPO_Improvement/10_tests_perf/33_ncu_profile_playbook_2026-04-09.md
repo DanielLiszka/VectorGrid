@@ -1,6 +1,6 @@
 # Nsight Compute Playbook Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document both runner and bench capture modes clearly.
-- [ ] Document the capture parameters that materially change report meaning.
-- [ ] Keep provenance JSON generation mandatory.
-- [ ] Keep Nsight Compute playbooks non-options only.
-- [ ] Tie capture review back to a concrete regression or investigation question.
-- [ ] Avoid quoting kernel-profile outputs as standalone performance claims.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document both runner and bench capture modes clearly.
+- [x] Document the capture parameters that materially change report meaning.
+- [x] Keep provenance JSON generation mandatory.
+- [x] Keep Nsight Compute playbooks non-options only.
+- [x] Tie capture review back to a concrete regression or investigation question.
+- [x] Avoid quoting kernel-profile outputs as standalone performance claims.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,29 @@ Public-repo quality focus:
 - prefer better provenance and narrower capture questions over adding more flags casually
 - if local Nsight path drift becomes common, improve wrapper discovery before weakening the playbook
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a real runner-mode Nsight Compute capture rather than a source change.
+- Fresh acceptance evidence for this closure:
+  - `powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_ncu.ps1 -Target runner -RunnerWorkload small -RunnerStrategy breakout_momentum -RunnerIterations 1 -RunnerWarmupIterations 0 -LaunchCount 1 -OutputPrefix target/nsight/doc33_runner_small`
+- The wrapper produced both required artifacts:
+  - report: `target/nsight/doc33_runner_small.ncu-rep`
+  - provenance: `target/nsight/doc33_runner_small.provenance.json`
+- The verified provenance captured the playbook details that materially change report meaning:
+  - target mode: `runner`
+  - build profile: `release`
+  - profiler executable: `C:\Program Files\NVIDIA Corporation\Nsight Compute 2026.1.0\ncu.bat`
+  - strategy: `breakout_momentum`
+  - workload: `small`
+  - `launch-count`: `1`
+  - `dynamic-mode`: `off`
+  - `cuda-graphs`: `off`
+  - `heatmap_bins`: `64`
+  - `device_id`: `0`
+- The capture question was intentionally narrow: verify that the wrapper can build the runner target, invoke Nsight Compute in a repeatable mode, and emit provenance beside the `.ncu-rep`. This item remains a diagnostic playbook, not a perf-gate authority surface.
+- Bench mode remains documented in the playbook and wrapper, but a second bench-mode capture was not required for this closure because the runner-mode execution already verified the wrapper’s artifact/provenance contract on the current machine.
+- No `README.md` or `REPO_MAP.md` update was required because this item verified the existing diagnostic workflow rather than changing any public benchmark or routing contract.
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Execution Service and Store Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -98,20 +98,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define source-of-truth ownership for availability, pending, blocked, optimistic, and broker-confirmed state.
-- [ ] Document runtime subscription lifecycle and stale-event handling.
-- [ ] Document manual/best/selected parameter-source semantics.
-- [ ] Document live vs paper vs dry-run state expectations.
-- [ ] Clarify credential persistence and clearing semantics.
-- [ ] Add tests for runner replacement and event-subscription cleanup.
-- [ ] Add tests for optimistic-order refresh reconciliation.
-- [ ] Preserve current backend safety checks and currently supported strategy limitations.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Define source-of-truth ownership for availability, pending, blocked, optimistic, and broker-confirmed state.
+- [x] Document runtime subscription lifecycle and stale-event handling.
+- [x] Document manual/best/selected parameter-source semantics.
+- [x] Document live vs paper vs dry-run state expectations.
+- [x] Clarify credential persistence and clearing semantics.
+- [x] Add tests for runner replacement and event-subscription cleanup.
+- [x] Add tests for optimistic-order refresh reconciliation.
+- [x] Preserve current backend safety checks and currently supported strategy limitations.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -130,6 +130,24 @@ Public-repo quality focus:
 - treat clearer state ownership as additive hardening, not as permission to remove optimistic feedback
 - if credential storage changes later, provide a migration path from current browser storage semantics
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the execution store/runtime subscription contract without restructuring the service/store split:
+  - [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) now proves concurrent `ensureRuntimeSubscriptions()` callers reuse a single subscription install and that the store retries cleanly after an initial subscription failure
+- [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts) now explicitly pins all three execution parameter-source branches:
+  - `selected` continues to route through the top-row snapshot
+  - `manual` now proves `runOnce()` can build a strategy directly from manual fast/slow lengths without reading a top-row snapshot
+  - `best` now proves `startRunner()` resolves the best row before building the live runner request
+- existing tests continue to cover optimistic-order reconciliation, live/paper/dry-run state, and operator monitoring semantics across [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts), [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts), and [ExecutionWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts)
+- Kept scope intentionally additive:
+  - no service/store ownership moved
+  - no backend command contract changed
+  - no optimistic feedback path was removed
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

@@ -7,6 +7,7 @@ import VectorAlphaLogo from './VectorAlphaLogo.vue'
 import ConfirmationDialog from './ConfirmationDialog.vue'
 import { useCommandActionStore } from '../stores/commandActionStore'
 import { useCommandPaletteStore } from '../stores/commandPaletteStore'
+import { useDataStore } from '../stores/dataStore'
 import { useExecutionStore } from '../stores/executionStore'
 import { useOptimizeStore } from '../stores/optimizeStore'
 import { type TrackedTask, shouldGuardDesktopCloseForTask, useTaskStore } from '../stores/taskStore'
@@ -14,6 +15,7 @@ import { useWorkflowStore } from '../stores/workflowStore'
 import { tauriRuntimeAvailable } from '../tauri/invoke'
 import {
   WORKSPACE_SUBTITLES,
+  mlSignalPrimaryActionForStep,
   shellModeLabel,
   normalizeWorkflowStep,
   normalizeWorkspaceTab,
@@ -23,13 +25,14 @@ import {
 
 const commandActionStore = useCommandActionStore()
 const commandPaletteStore = useCommandPaletteStore()
+const dataStore = useDataStore()
 const executionStore = useExecutionStore()
 const optimizeStore = useOptimizeStore()
 const taskStore = useTaskStore()
 const workflowStore = useWorkflowStore()
 
 const { runnerActive } = storeToRefs(executionStore)
-const { canCancel, runDisabled } = storeToRefs(optimizeStore)
+const { canCancel, runDisabled, validateDisabled } = storeToRefs(optimizeStore)
 const { mode, workflowStep, workspace } = storeToRefs(workflowStore)
 
 const desktopRuntimeAvailable = tauriRuntimeAvailable()
@@ -63,11 +66,55 @@ const subtitle = computed(() => {
   return workflowStepSubtitleForMode(normalizedStep, mode.value)
 })
 
+const mlSignalPrimaryAction = computed(() =>
+  mlSignalPrimaryActionForStep(workflowStep.value),
+)
+const mlSignalPrimaryActionDisabled = computed(() => {
+  if (canCancel.value) return false
+  const dataLoaded = String(dataStore.dataId || '').trim().length > 0
+  switch (mlSignalPrimaryAction.value.kind) {
+    case 'dataset_export':
+      return !dataLoaded
+        || !String(optimizeStore.mlSignalDatasetExportPath || '').trim()
+        || !!runDisabled.value
+    case 'score_cache':
+      return !dataLoaded
+        || !String(optimizeStore.mlSignalScoreInputPath || '').trim()
+        || !String(optimizeStore.mlSignalScoreCachePath || '').trim()
+        || !!runDisabled.value
+    case 'validation':
+      return !dataLoaded
+        || !String(optimizeStore.mlSignalScoreCachePath || '').trim()
+        || !!validateDisabled.value
+    case 'policy_sweep':
+      return !dataLoaded
+        || !String(optimizeStore.mlSignalScoreCachePath || '').trim()
+        || !!validateDisabled.value
+    case 'artifacts':
+      return true
+  }
+})
 const actionLabel = computed(() => {
   if (canCancel.value) return 'Stop run'
-  return shellModeLabel(mode.value) === 'ML Signal' ? 'Build score cache' : 'Run optimization'
+  if (shellModeLabel(mode.value) === 'ML Signal') {
+    return mlSignalPrimaryAction.value.label
+  }
+  return 'Run optimization'
 })
-const actionDisabled = computed(() => !canCancel.value && !!runDisabled.value)
+const actionShortLabel = computed(() => {
+  if (canCancel.value) return 'Stop'
+  if (shellModeLabel(mode.value) === 'ML Signal') {
+    return mlSignalPrimaryAction.value.shortLabel
+  }
+  return 'Run'
+})
+const actionDisabled = computed(() => {
+  if (canCancel.value) return false
+  if (shellModeLabel(mode.value) === 'ML Signal') {
+    return mlSignalPrimaryActionDisabled.value
+  }
+  return !!runDisabled.value
+})
 const guardedActiveTasks = computed<TrackedTask[]>(() => {
   const tasks: TrackedTask[] = []
   for (const id of taskStore.activeOrder) {
@@ -267,7 +314,7 @@ onBeforeUnmount(() => {
       >
         <Square v-if="canCancel" :size="15" aria-hidden="true" />
         <Play v-else :size="15" aria-hidden="true" />
-        <span class="titlebarToolLabel">{{ canCancel ? 'Stop' : 'Run' }}</span>
+        <span class="titlebarToolLabel">{{ actionShortLabel }}</span>
       </button>
 
       <div class="windowControls" :class="{ unavailable: !desktopRuntimeAvailable }" aria-label="Window controls">
@@ -285,7 +332,7 @@ onBeforeUnmount(() => {
           type="button"
           class="windowControl"
           :disabled="!desktopRuntimeAvailable"
-          aria-label="Maximize or restore window"
+          :aria-label="isMaximized ? 'Restore window' : 'Maximize window'"
           :title="isMaximized ? 'Restore' : 'Maximize'"
           @click="toggleMaximizeWindow"
         >

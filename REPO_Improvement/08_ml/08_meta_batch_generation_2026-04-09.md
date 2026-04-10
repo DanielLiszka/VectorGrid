@@ -107,17 +107,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every batch-generation control and its request/summary effect.
-- [ ] Audit dataset selection, retry-failed, and resume-incomplete behavior for stale-state risk.
-- [ ] Add or tighten tests for execution mode, preload policy, and auto-meta/auto-stage5 combinations.
-- [ ] Add or tighten tests for summary reveal and resume flows.
-- [ ] Improve help text and status messaging where batch controls currently assume too much user context.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document every batch-generation control and its request/summary effect.
+- [x] Audit dataset selection, retry-failed, and resume-incomplete behavior for stale-state risk.
+- [x] Add or tighten tests for execution mode, preload policy, and auto-meta/auto-stage5 combinations.
+- [x] Add or tighten tests for summary reveal and resume flows.
+- [x] Improve help text and status messaging where batch controls currently assume too much user context.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -142,3 +142,22 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/32_campaign_summary_checkpoint_2026-04-09.md`
 - `REPO_Improvement/08_ml/06_meta_panel_ia_2026-04-09.md`
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
+
+## Execution Notes
+
+- Closed by adding an explicit operating-mode summary to the batch tab instead of hiding or removing controls.
+- `MetaWorkspacePanel.vue` now surfaces a compact batch summary grid for:
+  - execution mode
+  - preload policy
+  - automation mode
+  - selected dataset count
+- The recovery controls (`Retry failed`, `Resume incomplete`, `Reveal summary`) remain visible and unchanged; the improvement is contextual clarity, not workflow simplification.
+- `MetaWorkspacePanel.test.ts` now verifies the batch operating summary against an `optimize_only` + VRAM-staging scenario while preserving the recovery-action surface.
+- `metaServiceCampaignResume.test.ts` and `metaServiceCampaignStrategy.test.ts` remain part of the acceptance evidence for batch resume/strategy semantics.
+- `REPO_MAP.md` was updated so contributors can find the batch-mode summary behavior quickly.
+- Stable fixture / replay payload:
+  - batch state with `batchExecutionMode = optimize_only`, `batchPreloadPolicy = host_plus_doublema_vram`, `batchSelectedCount = 2`, `batchTotalCount = 5`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaServiceCampaignStrategy.test.ts src/stores/analysisStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

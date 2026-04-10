@@ -135,19 +135,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document validation-store state families and field ownership.
-- [ ] Document the current default validation posture and why it exists.
-- [ ] Document local mutation actions versus service-dispatch actions.
-- [ ] Document cross-dataset search, meta, and selection helper behavior.
-- [ ] Document freshness fields (`source`, `updatedAtUnixMs`) and how they are used.
-- [ ] Add tests for default posture and snapshot restore.
-- [ ] Add tests for cross-select-all/none/match and stale-selection cleanup.
-- [ ] Add tests proving service-dispatch actions remain thin wrappers over service methods.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document validation-store state families and field ownership.
+- [x] Document the current default validation posture and why it exists.
+- [x] Document local mutation actions versus service-dispatch actions.
+- [x] Document cross-dataset search, meta, and selection helper behavior.
+- [x] Document freshness fields (`source`, `updatedAtUnixMs`) and how they are used.
+- [x] Add tests for default posture and snapshot restore.
+- [x] Add tests for cross-select-all/none/match and stale-selection cleanup.
+- [x] Add tests proving service-dispatch actions remain thin wrappers over service methods.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -164,6 +164,11 @@ Public-repo quality focus:
 - keep service dispatch in the store rather than duplicating it in the component
 - if the store is later split, preserve current UI behavior and cross-dataset helper semantics first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the validation store as the current source of truth for validation configuration, summaries, cross-dataset selection, and service dispatch. The current store and panel suites still prove defaults, legacy snapshot restore, cross-select-all/none/match behavior, stale-selection cleanup, and thin service-dispatch wrapping.
+- Acceptance evidence for closure: `npm --prefix web run test -- src/stores/validationStore.actions.test.ts src/components/ValidationWorkspacePanel.test.ts src/services/validationService.test.ts`, plus `npm --prefix web run lint` and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

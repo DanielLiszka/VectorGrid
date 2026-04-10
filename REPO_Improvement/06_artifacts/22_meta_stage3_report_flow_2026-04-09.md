@@ -110,18 +110,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the full Stage 3 report generation/save pipeline.
-- [ ] Document `report_xlsx_path` persistence rules in the meta artifact.
-- [ ] Document how `latestMetaReportPath` is sourced and consumed.
-- [ ] Add or tighten tests for saved meta report reopen/reveal behavior.
-- [ ] Add or tighten tests for validation-side Stage 3 fallback.
-- [ ] Document partial-failure behavior if workbook save or artifact save fails independently.
-- [ ] Confirm report retention and artifact retention do not silently diverge.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the full Stage 3 report generation/save pipeline.
+- [x] Document `report_xlsx_path` persistence rules in the meta artifact.
+- [x] Document how `latestMetaReportPath` is sourced and consumed.
+- [x] Add or tighten tests for saved meta report reopen/reveal behavior.
+- [x] Add or tighten tests for validation-side Stage 3 fallback.
+- [x] Document partial-failure behavior if workbook save or artifact save fails independently.
+- [x] Confirm report retention and artifact retention do not silently diverge.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -147,3 +147,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/17_report_meta_workbook_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/19_report_save_open_reveal_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/13_art_retention_tags_compat_2026-04-09.md`
+
+## Execution Notes
+
+- Closed as a Stage 3 report-flow item. The current pipeline already saves the Stage 3 workbook, persists `report_xlsx_path` into the meta artifact, exposes reopen/reveal actions, and preserves validation-side Stage 3 fallback when no validation workbook exists.
+- Re-verified the end-to-end Stage 3 save/open/fallback behavior through `web/src/services/metaService.test.ts`, `web/src/services/validationService.test.ts`, and the campaign/meta resume-related suites.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/services/metaServiceCampaignResume.test.ts src/services/validationService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

@@ -94,19 +94,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact fields emitted by `metaMlScopeBuilder`.
-- [ ] Document current defaults and nullable-timeframe behavior.
-- [ ] Document effective-scope fallback order in `metaService`.
-- [ ] Document that later ML actions are stricter than the builder.
-- [ ] Preserve tests for trimming/default behavior in `metaMlScopeBuilder.test.ts`.
-- [ ] Preserve service tests that exercise effective-scope behavior through ML actions.
-- [ ] Treat any scope expansion beyond strategy/timeframe as a compatibility-sensitive change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the exact fields emitted by `metaMlScopeBuilder`.
+- [x] Document current defaults and nullable-timeframe behavior.
+- [x] Document effective-scope fallback order in `metaService`.
+- [x] Document that later ML actions are stricter than the builder.
+- [x] Preserve tests for trimming/default behavior in `metaMlScopeBuilder.test.ts`.
+- [x] Preserve service tests that exercise effective-scope behavior through ML actions.
+- [x] Treat any scope expansion beyond strategy/timeframe as a compatibility-sensitive change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -122,6 +122,22 @@ Public-repo quality focus:
 - keep service fallback behavior explicit if a later UI introduces more direct scope controls
 - prefer additive scope fields over reinterpreting current ones
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by aligning the auto-built Stage 5 request with the effective Meta scope instead of raw draft fields alone. `tryBuildAutoMetaStage4Request()` now uses `currentMetaScope()` so the documented latest-result fallback is real behavior, not just commentary.
+- `metaService.ts` now documents that ML scope resolution prefers the latest live/saved Meta result before draft store inputs. That keeps rerank/train/apply flows stable after a real Meta run even when the draft timeframe has been cleared.
+- `metaService.test.ts` now covers both sides of the contract:
+  - fallback to the latest Meta result for ML refresh/train and Stage 5
+  - strict blocking when timeframe is missing from both the current drafts and the latest Meta result
+- Stable fixture / replay payload:
+  - `LAST_META_RUN.result = { strategy_kind: CompositeMo, timeframe: 1m }`
+  - blank draft `metaTimeframe`
+  - explicit error: `Timeframe required (set Meta timeframe filter or run meta once).`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/metaMlScopeBuilder.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

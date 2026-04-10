@@ -104,6 +104,10 @@ describe('TaskCenterOverlay', () => {
     expect(panel?.getAttribute('role')).toBe('dialog')
     expect(panel?.contains(document.activeElement)).toBe(true)
     expect(panel?.querySelector('.panelCloseBtn')).not.toBeNull()
+    expect(panel?.querySelector('[aria-label="Task center active posture"]')).not.toBeNull()
+    expect(panel?.querySelector('[aria-label="Task center recent outcomes"]')).not.toBeNull()
+    expect(panel?.querySelector('[aria-label="Task center events"]')).not.toBeNull()
+    expect(panel?.querySelector('[aria-label="Task center timeline"]')).not.toBeNull()
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await nextTick()

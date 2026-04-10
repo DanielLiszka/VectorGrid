@@ -277,11 +277,20 @@ Use this when the real question is:
 - what additional frontier/confidence math is worth deriving?
 - how should verdicts, adequacy, and artifact/frontier coherence improve?
 
-Recommended attachment set: 10 files
+Current starting truth for Consolidated Prompt C:
+
+- Prompt 5 is now closed via:
+  - [options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md](/C:/Rust%20Projects/ta_desktop_demo/options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md)
+- artifact-summary coherence is already shipped at the compact retained-leader/disagreement level
+- tuple-coherent artifact list / compare / reopened summary cues already exist
+- this prompt should evaluate only what embedded validation still needs **beyond that shipped baseline**
+
+Recommended attachment set: 11 files
 
 - `AGENTS.md`
 - `REPO_MAP.md`
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
@@ -314,6 +323,7 @@ Constraints:
 - stay inside the current options optimization + embedded validation workflow
 - no new validation mode
 - no heavyweight rerun/bootstrap suggestions unless they clearly fit the current runtime philosophy
+- do not spend your main recommendation re-solving artifact-summary coherence that Prompt 5 already shipped
 - explicitly state whether each serious candidate statistic is trustworthy:
   - globally across all tuples
   - only within retained `top_k`
@@ -1326,11 +1336,20 @@ This is about stronger decision-grade validation inside the current host, not cr
 
 If the question is specifically about mathematically justified derived validation statistics from the current lane outputs, prefer Prompt 11. Prompt 6 is for deciding how much more validation depth should be surfaced as product behavior inside the current host.
 
+Current Prompt 6 starting truth:
+
+- Prompt 5 is now closed via:
+  - [options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md](/C:/Rust%20Projects/ta_desktop_demo/options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md)
+- compact retained leader/disagreement summary is already present on artifact list, compare, and reopened summary surfaces
+- Prompt 6 should not spend its main answer re-solving that shipped summary-coherence gap
+- the remaining valid question is what embedded validation still needs beyond the shipped holdout / sealed / stress lanes and the shipped Prompt 5 summary baseline
+
 ### Attach These Files
 
 Required:
 
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
@@ -1353,10 +1372,11 @@ Constraints:
 - Do not propose a separate validation mode.
 - Do not add new parent strategy families.
 - Focus on decision-grade validation depth, not dashboard sprawl.
+- Do not spend your main recommendation re-solving compact artifact-summary coherence that Prompt 5 already implemented.
 - Force yourself to analyze:
   - shortlist and finalist-budget economics (`top_k`, `sealed_finalist_count`)
   - validation adequacy / sufficiency cues (event count, trade count, split coverage)
-  - tuple-coherent artifact and frontier surfacing versus summary mixes that splice different tuples together
+  - what embedded validation still needs now that compact tuple-coherent artifact-summary surfacing already exists
 - Distinguish clearly between:
   - validation improvements worth adding now
   - validation improvements worth deferring
@@ -1368,7 +1388,7 @@ Deliverables:
 3. Propose the best next validation-depth additions, if any.
 4. Explicitly state whether the current shortlist / finalist-budget policy can hide robust winners outside the retained tuples, and if so, whether that should change.
 5. Explain where the repo should stop before this becomes a separate product branch.
-6. Identify whether artifact-level validation/frontier summaries should remain scalar maxima or become more tuple-coherent.
+6. Identify whether any remaining artifact/frontier validation summary should deepen beyond the currently shipped Prompt 5 tuple-coherent baseline.
 7. Identify concrete code touch points by file.
 8. Define acceptance and rejection criteria.
 ```

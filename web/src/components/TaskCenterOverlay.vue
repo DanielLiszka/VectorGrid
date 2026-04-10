@@ -511,7 +511,7 @@ function openRelatedView(task: TrackedTask): void {
         </div>
       </div>
 
-      <div class="section">
+      <div class="section" aria-label="Task center active posture">
         <div class="sectionTitle">Active posture</div>
         <div class="postureColumns">
           <div class="postureColumn">
@@ -602,7 +602,7 @@ function openRelatedView(task: TrackedTask): void {
         </div>
       </div>
 
-      <div class="section">
+      <div class="section" aria-label="Task center recent outcomes">
         <div class="sectionTitle">Recent outcomes</div>
         <div class="postureColumns">
           <div class="postureColumn">
@@ -673,7 +673,7 @@ function openRelatedView(task: TrackedTask): void {
         </div>
       </div>
 
-      <div class="section">
+      <div class="section" aria-label="Task center events">
         <div class="sectionTitle">Events</div>
         <div v-if="eventItems.length === 0" class="muted">No events yet.</div>
         <div v-else class="miniList">
@@ -696,7 +696,7 @@ function openRelatedView(task: TrackedTask): void {
         </div>
       </div>
 
-      <div class="section">
+      <div class="section" aria-label="Task center timeline">
         <div class="sectionTitle">Timeline</div>
         <div v-if="timelineItems.length === 0" class="muted">No timeline entries yet.</div>
         <div v-else class="miniList">

@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document route-specific legality for all shortlist and export controls.
-- [ ] Document optimize-side export-all separately from validation/report export.
-- [ ] Document stale-value clearing and restore rules.
-- [ ] Add or tighten tests for conflicting advanced-control combinations.
-- [ ] Add parity checks between UI guidance and request-builder behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document route-specific legality for all shortlist and export controls.
+- [x] Document optimize-side export-all separately from validation/report export.
+- [x] Document stale-value clearing and restore rules.
+- [x] Add or tighten tests for conflicting advanced-control combinations.
+- [x] Add parity checks between UI guidance and request-builder behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - keep optimize-side export-all and validation-side export clearly separated in names and docs
 - if hidden stale fields are auto-cleared later, make the behavior explicit and test it
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed the remaining stale-value clearability gap at the panel layer. `AdvancedWorkspacePanel.vue` now keeps `exportAllCsvPath` visible whenever a saved value exists, even on routes that no longer support export-all, and surfaces an explicit unsupported-route note instead of hiding the field outright. That matches the existing stale-value strategy already used for shortlist slice controls.
+- Kept legality authoritative in the request builder rather than widening product behavior. `optimizeRequestBuilder.ts` and `optimizeService.test.ts` already covered the route-specific shortlist/export restrictions, including export-all vs extra-shortlist/union/confidence/slice conflicts and composite route export legality. The UI change only preserves visibility and clearability for stale values; it does not broaden the allowed request surface.
+- Added direct panel coverage for the stale export-path case. `AdvancedWorkspacePanel.test.ts` now proves an unsupported route still renders the saved export path so the user can clear it, and it asserts the new unsupported-route copy. Existing builder and service tests continue to cover the deeper legality matrix for shortlist and export combinations.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/AdvancedWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/stores/advancedStore.actions.test.ts src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

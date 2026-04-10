@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact purpose of Top compare versus Overview baseline comparison.
-- [ ] Document pin, clear, replace, and remove action behavior.
-- [ ] Document pinned-card identity, summary, badge, and stale-reason expectations.
-- [ ] Document how filter changes and shortlist changes affect pinned candidates.
-- [ ] Add or tighten tests for pinning, replacing, stale-cue reconciliation, and compare-card actions.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the exact purpose of Top compare versus Overview baseline comparison.
+- [x] Document pin, clear, replace, and remove action behavior.
+- [x] Document pinned-card identity, summary, badge, and stale-reason expectations.
+- [x] Document how filter changes and shortlist changes affect pinned candidates.
+- [x] Add or tighten tests for pinning, replacing, stale-cue reconciliation, and compare-card actions.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,11 @@ Public-repo quality focus:
 - if compare grows later, keep shortlist-comparison and saved-baseline comparison as separate concepts
 - if row identity logic changes, update compare reconciliation and stale-cue tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Top compare flow as a dedicated shortlist-comparison subsystem rather than a replacement for Overview baseline comparison. `TopWorkspacePanel.test.ts`, `AnalysisContextDock.test.ts`, and `analysisService.test.ts` continue to cover pinning, compare-card state, and stale/provenance-aware compare behavior at the current scope.
+- No code change was required in this tranche because the existing compare action vocabulary and stale reconciliation behavior already satisfy the documented contract.
 
 ## Related Docs
 

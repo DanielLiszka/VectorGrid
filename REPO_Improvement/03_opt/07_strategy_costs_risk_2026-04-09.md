@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document all shared cost and execution-risk settings.
-- [ ] Document cost-preset derivation and cost-hint behavior.
-- [ ] Document Kaufman-stop and execution-overlay route blockers.
-- [ ] Document DM constraints and long-tail guardrail behavior.
-- [ ] Add or tighten tests for request-builder parity and route blocking.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document all shared cost and execution-risk settings.
+- [x] Document cost-preset derivation and cost-hint behavior.
+- [x] Document Kaufman-stop and execution-overlay route blockers.
+- [x] Document DM constraints and long-tail guardrail behavior.
+- [x] Add or tighten tests for request-builder parity and route blocking.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - if blocker behavior changes, update request-builder, route summaries, and tests together
 - keep shared settings reusable across optimize, validation, and live surfaces
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the visible strategy-panel evidence without changing shared-setting behavior. `StrategyWorkspacePanel.test.ts` now proves the derived cost hint remains visible in the panel after preset-backed cost updates, which makes the cost-preset and commission-fraction logic a visible product contract instead of a store-only implementation detail.
+- Revalidated the guardrail surface already present in the UI and builder. The strategy-panel tests continue to prove grouped long-tail constraints and focusable disclosure behavior, while `strategyStore.actions.test.ts` freezes cost-preset derivation and `optimizeRequestBuilder.test.ts` continues to cover route-aware guardrails for Kaufman-stop and execution overlays.
+- Revalidated backend blocker truth with targeted Rust coverage rather than trusting frontend copy alone. `cargo test -p ta_app_core double_ma_backend --lib` covers capability-report blockers for Kaufman-stop and execution overlays on the GPU-dynamic route while preserving the audited CPU-dynamic fallback path.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/StrategyWorkspacePanel.test.ts src/stores/strategyStore.actions.test.ts src/services/optimizeRequestBuilder.test.ts`, `cargo test -p ta_app_core double_ma_backend --lib`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

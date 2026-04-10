@@ -1,6 +1,6 @@
 # Runtime State Bridge Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -154,23 +154,23 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the runtime bridge layers and owners.
-- [ ] Document tracked-command and event-channel authority.
-- [ ] Document event payload normalization rules.
-- [ ] Document persistence bounds and storage keys.
-- [ ] Document non-Tauri fallback behavior.
-- [ ] Document `runtimeStore` versus `taskStore` ownership boundaries.
-- [ ] Document `runtimePinia` requirements for background services.
-- [ ] Document desktop logging, notification, and window-state bridge behavior.
-- [ ] Add tests for listener teardown, retry, and reset behavior.
-- [ ] Add tests for shared-channel multiplexing and no-duplicate-native-listener behavior.
-- [ ] Add tests for persisted task history/timeline bounds.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the runtime bridge layers and owners.
+- [x] Document tracked-command and event-channel authority.
+- [x] Document event payload normalization rules.
+- [x] Document persistence bounds and storage keys.
+- [x] Document non-Tauri fallback behavior.
+- [x] Document `runtimeStore` versus `taskStore` ownership boundaries.
+- [x] Document `runtimePinia` requirements for background services.
+- [x] Document desktop logging, notification, and window-state bridge behavior.
+- [x] Add tests for listener teardown, retry, and reset behavior.
+- [x] Add tests for shared-channel multiplexing and no-duplicate-native-listener behavior.
+- [x] Add tests for persisted task history/timeline bounds.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -192,6 +192,30 @@ Public-repo quality focus:
 - keep the bridge wrapper-based even if internal files are reorganized later
 - if storage persistence changes later, provide a compatibility path for existing task-center history
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by reinforcing the current runtime bridge where it was thinnest:
+  - [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) now proves the execution store reuses one runtime subscription install for concurrent callers and retries cleanly after a failed install
+- Removed the remaining tracked-command drift risk:
+  - [taskStore.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/taskStore.ts) remains the single authority for `TRACKED_TAURI_COMMANDS`
+  - [instrumentation.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/tauri/instrumentation.ts) now imports that shared registry instead of maintaining a duplicate lifecycle-command list
+- Existing bridge coverage already anchors the rest of the contract:
+  - shared native-listener multiplexing, teardown, and non-Tauri fallback in [events.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/tauri/events.test.ts)
+  - tracked backend event parity in [instrumentation.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/tauri/instrumentation.test.ts)
+  - generated-command and invoke-wrapper authority in [invoke.contract.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/tauri/invoke.contract.test.ts) and [invoke.mockIPC.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/tauri/invoke.mockIPC.test.ts)
+  - boot/runtime-store ownership in [main.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/main.test.ts)
+  - desktop log/notification/window-state bridging in [desktopProductization.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/desktopProductization.test.ts)
+  - persisted task/history throughput and bounds in [taskStoreCampaignProgress.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/taskStoreCampaignProgress.test.ts) and [taskStorePerformance.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/taskStorePerformance.test.ts)
+- Kept scope intentionally additive:
+  - no raw Tauri API bypasses were introduced
+  - no shared event-channel ownership changed
+  - no persistence shape changed
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/tauri/invoke.contract.test.ts src/tauri/invoke.mockIPC.test.ts src/tauri/events.test.ts src/tauri/instrumentation.test.ts`
+  - `npm.cmd --prefix web run test -- src/stores/taskStoreCampaignProgress.test.ts src/stores/taskStorePerformance.test.ts src/main.test.ts src/services/desktopProductization.test.ts src/stores/executionStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

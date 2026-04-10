@@ -124,22 +124,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document all major request fields and current default values for policy evaluation.
-- [ ] Document that the auto-built request currently reuses Stage 5 controls.
-- [ ] Document the scoped historical artifact ordering and prefix-training loop.
-- [ ] Document the three comparison arms and their intended meaning.
-- [ ] Document skip categories and warning surfaces.
-- [ ] Document the current saved artifact kind and filename-prefix behavior.
-- [ ] Document replay/list/delete behavior for saved policy-eval artifacts.
-- [ ] Preserve tests for request normalization, historical evaluation, and replay summary extraction.
-- [ ] Keep docs explicit that policy eval has no workbook/report surface today.
-- [ ] Treat any future “best policy” productization as a new contract, not an implicit property of current offline evaluation.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document all major request fields and current default values for policy evaluation.
+- [x] Document that the auto-built request currently reuses Stage 5 controls.
+- [x] Document the scoped historical artifact ordering and prefix-training loop.
+- [x] Document the three comparison arms and their intended meaning.
+- [x] Document skip categories and warning surfaces.
+- [x] Document the current saved artifact kind and filename-prefix behavior.
+- [x] Document replay/list/delete behavior for saved policy-eval artifacts.
+- [x] Preserve tests for request normalization, historical evaluation, and replay summary extraction.
+- [x] Keep docs explicit that policy eval has no workbook/report surface today.
+- [x] Treat any future “best policy” productization as a new contract, not an implicit property of current offline evaluation.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -158,6 +158,33 @@ Public-repo quality focus:
 - keep skip counters and warning families stable so historical comparisons remain interpretable
 - prefer additive artifact metadata over changing the meaning of current policy-arm metrics
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making policy evaluation visibly distinct from both in-memory Apply and the current live Stage 5 rerank.
+- `MetaWorkspacePanel.vue` now states that policy evaluation:
+  - is offline analysis over saved Meta history
+  - reuses the current Stage 5 thresholds / weights for request building
+  - compares `meta_only`, `ml_only`, and `stage5_blended`
+  - persists a separate saved JSON artifact family
+- `metaService.ts` now renders policy-eval previews with:
+  - scoped history semantics
+  - arm names
+  - skip counters
+  - best-policy and delta summaries
+- `run_artifacts.rs` now has a focused summary-level test for saved policy-eval contract fields so replay/list semantics stay pinned even while the broader artifact-tagging lane has an unrelated failure.
+- Stable fixture / replay payload:
+  - `C:/runs/vectorgrid_ml_confidence_eval_2026-04-09T12-45-00Z.json`
+  - `best_policy = stage5_blended`
+  - `artifacts_evaluated = 3`
+  - `artifacts_considered = 4`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaStage4RequestBuilder.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_desktop_demo_app build_ml_policy_eval_summary_preserves_saved_eval_contract_fields --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
 
 ## Related Docs
 

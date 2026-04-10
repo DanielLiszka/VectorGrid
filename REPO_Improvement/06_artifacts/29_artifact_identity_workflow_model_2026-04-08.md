@@ -93,19 +93,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define config identity, dataset identity, and hydration identity separately.
-- [ ] Document authoritative fields for save/list/detail/hydration/replay paths.
-- [ ] Audit where TypeScript and Rust duplicate canonicalization or fingerprint logic.
-- [ ] Define skip/reload rules for same-path and same-timestamp artifacts.
-- [ ] Clarify how validation/report reuse should key dataset identity.
-- [ ] Add parity tests for TypeScript vs Rust identity outputs.
-- [ ] Add tests for artifact updates that change tags or report paths without changing core timestamps.
-- [ ] Preserve backward compatibility for existing saved artifacts.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define config identity, dataset identity, and hydration identity separately.
+- [x] Document authoritative fields for save/list/detail/hydration/replay paths.
+- [x] Audit where TypeScript and Rust duplicate canonicalization or fingerprint logic.
+- [x] Define skip/reload rules for same-path and same-timestamp artifacts.
+- [x] Clarify how validation/report reuse should key dataset identity.
+- [x] Add parity tests for TypeScript vs Rust identity outputs.
+- [x] Add tests for artifact updates that change tags or report paths without changing core timestamps.
+- [x] Preserve backward compatibility for existing saved artifacts.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -131,3 +131,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/28_workflow_artifacts_sync_2026-04-08.md`
 - `REPO_Improvement/05_validation/25_validation_context_compat_2026-04-08.md`
 - `REPO_Improvement/02_data/22_dataset_provenance_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as an identity-model hardening slice after resolving the open sync-policy question in favor of reloading same-path artifacts when report-path, dataset-path, or tag metadata changed.
+- The identity model now stays split between config identity (`artifactIdentity.ts` and Rust canonicalization/fingerprint helpers), dataset identity (`dataset_meta` and current CSV/timeframe hints), and hydration/sync identity (`workflowArtifactsStore` plus `workflowArtifactsSync`).
+- Added store/service regressions in `web/src/stores/workflowArtifactsStore.test.ts` and `web/src/services/workflowArtifactsSync.test.ts` proving tag/report-path changes are treated as meaningful run updates instead of being hidden behind a coarse path+timestamp skip rule.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/stores/workflowArtifactsStore.test.ts src/services/workflowArtifactsSync.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

@@ -97,18 +97,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document shared cross-ticker sanitation and dedupe behavior.
-- [ ] Document candidate-key canonicalization invariants.
-- [ ] Document cross-gate semantics and defaults.
-- [ ] Document how robust-score and cross pareto updates are computed.
-- [ ] Add or tighten tests for Windows-path normalization and duplicate dataset handling.
-- [ ] Add or tighten tests for candidate-key stability across equivalent JSON shapes.
-- [ ] Add or tighten tests for gate and cross-pareto behavior after aggregation.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document shared cross-ticker sanitation and dedupe behavior.
+- [x] Document candidate-key canonicalization invariants.
+- [x] Document cross-gate semantics and defaults.
+- [x] Document how robust-score and cross pareto updates are computed.
+- [x] Add or tighten tests for Windows-path normalization and duplicate dataset handling.
+- [x] Add or tighten tests for candidate-key stability across equivalent JSON shapes.
+- [x] Add or tighten tests for gate and cross-pareto behavior after aggregation.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -126,6 +126,11 @@ Public-repo quality focus:
 - if gate semantics change, update request-builder preview text and validation docs at the same time
 - treat candidate-key stability as compatibility-sensitive behavior
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added direct shared-backend regression coverage in `validation_common.rs` for canonical candidate-key stability across equivalent nested JSON shapes, on top of the existing path normalization, dedupe, gating, and robust-score folding tests. This keeps the cross-family backend contract explicit rather than relying on downstream behavior only.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app validation_common --lib`, `cargo test -p ta_desktop_demo_app commands_validation --lib`, and the frontend validation request/service suites that depend on the same canonicalization behavior.
 
 ## Related Docs
 

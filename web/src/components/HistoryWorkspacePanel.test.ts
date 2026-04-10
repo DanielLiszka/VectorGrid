@@ -289,4 +289,29 @@ describe("HistoryWorkspacePanel", () => {
     expect(text).toContain("Search filters the saved-run library only.");
     expect(text).toContain("Use Ctrl+K for global commands.");
   });
+
+  it("shows the no-match library state without implying a global search miss", async () => {
+    const history = useHistoryStore();
+    const workflow = useWorkflowStore();
+    vi.spyOn(history, "refreshSessionHistory").mockImplementation(() => {});
+
+    workflow.workspace = "library";
+    history.savedRunCount = 2;
+    history.savedRunsMeta = "saved runs: 0/2";
+    history.savedRunsSearch = "zzz";
+    history.savedRunsVisible = [];
+
+    mount(HistoryWorkspacePanel, {
+      attachTo: document.body,
+      global: { plugins: [pinia] },
+    });
+
+    await nextTick();
+    await nextTick();
+
+    const text = document.body.textContent || "";
+    expect(text).toContain("No saved runs match the current filters.");
+    expect(text).toContain("0 matches for");
+    expect(text).toContain("Use Ctrl+K for global commands.");
+  });
 });

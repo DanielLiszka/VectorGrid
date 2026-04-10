@@ -1,6 +1,6 @@
 # Run Guards Cancel Tokens Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -119,20 +119,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the primary `AppState` run guard and cancel token semantics.
-- [ ] Document background-task guard behavior separately from the primary run slot.
-- [ ] Document live-runner abort handling and generation checks.
-- [ ] Document the difference between cooperative cancellation and immediate task termination.
-- [ ] Document which frontend status surfaces depend on these guards.
-- [ ] Add or tighten tests when guard ownership, cancellation, or generation logic changes.
-- [ ] Keep close-guard UX aligned with protected-task truth.
-- [ ] Review any future concurrency broadening against the current single-slot assumptions.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the primary `AppState` run guard and cancel token semantics.
+- [x] Document background-task guard behavior separately from the primary run slot.
+- [x] Document live-runner abort handling and generation checks.
+- [x] Document the difference between cooperative cancellation and immediate task termination.
+- [x] Document which frontend status surfaces depend on these guards.
+- [x] Add or tighten tests when guard ownership, cancellation, or generation logic changes.
+- [x] Keep close-guard UX aligned with protected-task truth.
+- [x] Review any future concurrency broadening against the current single-slot assumptions.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -152,6 +152,33 @@ Public-repo quality focus:
 - do not remove guarded-close behavior until an equivalent protected-shutdown story exists
 - keep cooperative cancel semantics documented even if lower-level task primitives change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on verified current guard behavior without widening concurrency semantics.
+- Tightened the background-task contract where it had been weakest:
+  - [commands_data.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_data.rs) now routes Polygon background download/top-off commands through `BackgroundTaskState` so reentry is rejected and the shared cancel token is available to the blocking download path
+  - [polygon.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/polygon.rs) now accepts an optional cancel flag and checks it cooperatively during chunked download/top-off work
+  - [state.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/state.rs) now has direct guard tests for both the primary run slot and background-task slot
+- Acceptance evidence now covers the three guard layers this doc owns:
+  - primary/background cancellation commands in [command_runtime_wiring.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/command_runtime_wiring.rs)
+  - managed-state initialization and cleared cancel tokens in [mock_runtime_smoke.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/mock_runtime_smoke.rs)
+  - live-runner abort and generation protections in [commands_execution.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_execution.rs)
+  - background-task exclusivity and drop-reset behavior in [commands_data.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_data.rs) and [state.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/state.rs)
+  - frontend cancellation posture and fallback behavior in [runControlService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/runControlService.test.ts)
+  - close-guard truth in [DesktopTitlebar.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/DesktopTitlebar.test.ts)
+- Kept scope intentionally additive:
+  - no primary run-slot ownership changed
+  - no cancel command names changed
+  - no runner generation logic changed
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app --lib background_download_slot_rejects_reentry`
+  - `cargo test -p ta_desktop_demo_app --lib state_guard_tests`
+  - `cargo test -p ta_desktop_demo_app --test command_runtime_wiring`
+  - `cargo test -p ta_desktop_demo_app --test mock_runtime_smoke`
+  - `npm.cmd --prefix web run test -- src/services/runControlService.test.ts src/stores/executionStore.actions.test.ts src/components/DesktopTitlebar.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

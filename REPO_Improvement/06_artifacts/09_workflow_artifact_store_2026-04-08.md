@@ -106,17 +106,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the normalized `currentRun` and `currentValidation` field families.
-- [ ] Document source-tag semantics and latest identity snapshot semantics.
-- [ ] Document no-op detection and timestamp-churn avoidance.
-- [ ] Document validation-arrives-later behavior for same-run hydration.
-- [ ] Document current producer flows that write this store.
-- [ ] Add or tighten tests if normalization or apply-result semantics change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the normalized `currentRun` and `currentValidation` field families.
+- [x] Document source-tag semantics and latest identity snapshot semantics.
+- [x] Document no-op detection and timestamp-churn avoidance.
+- [x] Document validation-arrives-later behavior for same-run hydration.
+- [x] Document current producer flows that write this store.
+- [x] Add or tighten tests if normalization or apply-result semantics change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -133,6 +133,13 @@ Public-repo quality focus:
 - if signatures or identity helpers change, update sync/history/validation consumers in the same change
 - preserve current source tags until all callers are migrated deliberately
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed as a normalization/identity hardening slice in `web/src/stores/workflowArtifactsStore.ts`. The store contract already centralizes snake_case to camelCase normalization, ML attachment shaping, metric-surface preservation, no-op detection, latest-identity tracking, and validation-arrives-later semantics.
+- Added direct store tests for two previously under-pinned behaviors: snake_case hydrated run payload normalization without losing `reportXlsxPath`, `datasetMeta`, tags, or `mlSignal`, and source-only updates that should mark `sourceChanged` without timestamp churn or run/validation reshaping.
+- Re-verified the main producer/consumer flows around the store: `workflowArtifactsSync`, `historyService`, and validation artifact persistence still behave correctly on top of the same store contract.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/stores/workflowArtifactsStore.test.ts src/services/workflowArtifactsSync.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_desktop_demo_app`.
 
 ## Related Docs
 

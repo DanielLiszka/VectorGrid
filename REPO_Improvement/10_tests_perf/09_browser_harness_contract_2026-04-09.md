@@ -1,6 +1,6 @@
 # Browser Harness Contract Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -32,6 +32,7 @@ The browser UX harness already builds the frontend, serves it through a local pr
 - `web/playwright.config.ts` defines the browser-harness runtime, web server, artifacts, and failure-trace behavior.
 - `web/e2e/browser/support/appHarness.ts` owns mocked-shell boot, shell-ready checks, and overlay helpers.
 - `web/e2e/browser/support/mockTauri.ts` injects the minimal mocked-Tauri surface used by browser smoke.
+- `web/e2e/browser/command-palette-overlays.spec.ts` and `web/e2e/browser/shell-ux.spec.ts` are the current shell-level journey owners.
 - `web/package.json` exposes `test:browser:ux` and therefore the public execution contract for this harness.
 
 ## Current Verification Surface
@@ -87,18 +88,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact responsibilities of browser UX smoke.
-- [ ] Document the explicit non-responsibilities that remain with Vitest or desktop smoke.
-- [ ] Inventory every helper exported from `appHarness.ts` and `mockTauri.ts`.
-- [ ] Keep the browser suite focused on deterministic shell journeys and overlay behavior.
-- [ ] Keep the suite single-worker and deterministic unless there is strong evidence parallelism is safe.
-- [ ] Review browser smoke additions for mock sprawl before accepting them as new coverage.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the exact responsibilities of browser UX smoke.
+- [x] Document the explicit non-responsibilities that remain with Vitest or desktop smoke.
+- [x] Inventory every helper exported from `appHarness.ts` and `mockTauri.ts`.
+- [x] Keep the browser suite focused on deterministic shell journeys and overlay behavior.
+- [x] Keep the suite single-worker and deterministic unless there is strong evidence parallelism is safe.
+- [x] Review browser smoke additions for mock sprawl before accepting them as new coverage.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +116,42 @@ Public-repo quality focus:
 - prefer tightening helper boundaries before expanding the number of specs
 - if a test needs real Tauri behavior, move it to desktop smoke instead of enriching the browser mock
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on current-state harness evidence; no new browser-harness code change was required for this item.
+- Browser UX smoke responsibilities are now explicit and remain narrow:
+  - deterministic app-level keyboard and overlay journeys in mocked-Tauri mode
+  - built-app execution through Playwright against `vite preview`
+  - retained failure traces/screenshots for debugging rather than broad visual baselines
+- Explicit non-responsibilities remain with other layers:
+  - exact interaction/state rendering belongs in Vitest
+  - native shell/runtime proof belongs in WDIO desktop smoke
+  - broad screenshots/perf evidence belongs in `baseline:ui`
+  - broad accessibility scanning belongs in `a11y:smoke`
+- Current helper inventory:
+  - `appHarness.ts`: `gotoMockedShell`, `waitForShellReady`, `openCommandPalette`, `closeCommandPaletteWithEscape`, `openTaskCenter`, `closeTaskCenterWithEscape`
+  - `mockTauri.ts`: `installMockedTauri`, `dismissStartupOverlay`
+  - mock contract details:
+    - unknown invokes fail by default through `strictUnknownInvoke: true`
+    - startup overlay hold is opt-in through `holdStartupOverlay`
+    - explicit command overrides remain limited to `commandResults`
+- Current suite focus remains appropriately small:
+  - `shell-ux.spec.ts` owns keyboard navigation across workspaces and workflow steps
+  - `command-palette-overlays.spec.ts` owns command-palette execution, Escape close behavior, task-center open/close, and focus return
+- Determinism contract remains intact:
+  - `fullyParallel: false`
+  - `workers: 1`
+  - Chromium-only project
+  - built preview host plus retained traces on failure
+- Cross-doc sync:
+  - no `README.md` or `REPO_MAP.md` update was required because the browser-harness contract already matched the current implementation; this closure records fresh verification and helper inventory against the shipped harness
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test:browser:ux`
+  - current browser UX suite passed with the built preview app and mocked-Tauri bootstrap
+  - supporting harness-adjacent evidence from the same tranche:
+    - `npm.cmd --prefix web run a11y:smoke`
+    - `npm.cmd --prefix web run baseline:ui`
 
 ## Related Docs
 

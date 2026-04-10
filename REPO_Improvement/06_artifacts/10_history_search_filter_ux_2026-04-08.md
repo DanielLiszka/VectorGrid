@@ -114,17 +114,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the saved-run search corpus and ranking rules.
-- [ ] Document empty-query ordering as a contract item.
-- [ ] Document short-query versus fuzzy-query behavior.
-- [ ] Document multi-token matching across dataset/artifact/tags.
-- [ ] Add coverage for selection/detail stability and no-match cases.
-- [ ] Preserve library-only scope in both copy and behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the saved-run search corpus and ranking rules.
+- [x] Document empty-query ordering as a contract item.
+- [x] Document short-query versus fuzzy-query behavior.
+- [x] Document multi-token matching across dataset/artifact/tags.
+- [x] Add coverage for selection/detail stability and no-match cases.
+- [x] Preserve library-only scope in both copy and behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -149,3 +149,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/26_history_service_store_2026-04-08.md`
 - `REPO_Improvement/04_results/18_context_docks_2026-04-08.md`
 - `REPO_Improvement/10_tests_perf/01_fe_test_matrix_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a saved-run search UX hardening slice without widening the search scope beyond the local run library.
+- Added coverage in `web/src/stores/historyStore.actions.test.ts` for selection/detail persistence while filters still match and for clean selection reset when filters yield zero results.
+- Added panel coverage in `web/src/components/HistoryWorkspacePanel.test.ts` proving the no-match state stays explicitly library-scoped and continues to direct global search toward `Ctrl+K`.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/components/HistoryWorkspacePanel.test.ts src/stores/historyStore.actions.test.ts src/stores/historyStore.search.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

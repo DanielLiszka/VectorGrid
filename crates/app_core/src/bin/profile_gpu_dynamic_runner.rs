@@ -580,6 +580,7 @@ fn candles_for_run(kind: StrategyKind, shape: CandleShape, len: usize) -> Candle
 
 fn backend_for_strategy(kind: StrategyKind, adx_mode: AdxMode, device_id: u32) -> Backend {
     match kind {
+        StrategyKind::RegimeHybrid => Backend::GpuHybridKernel { device_id },
         StrategyKind::TrendQuality if matches!(adx_mode, AdxMode::On) => {
             Backend::GpuHybridKernel { device_id }
         }
@@ -599,10 +600,10 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn backend_for_strategy_keeps_regime_hybrid_on_exact_gpu_kernel_surface() {
+    fn backend_for_strategy_keeps_regime_hybrid_on_hybrid_surface() {
         assert!(matches!(
             backend_for_strategy(StrategyKind::RegimeHybrid, AdxMode::Off, 7),
-            Backend::GpuKernel { device_id: 7 }
+            Backend::GpuHybridKernel { device_id: 7 }
         ));
     }
 

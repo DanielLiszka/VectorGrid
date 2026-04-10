@@ -476,9 +476,9 @@ describe('validationRequestBuilder', () => {
   })
 
   it.each([
-    ['CompositeTrend', { backend: 'GpuKernel', device_id: 0 }, 'GpuKernel requested'],
-    ['RegimeHybrid', { backend: 'GpuHybridKernel', device_id: 0 }, 'GpuHybridKernel requested'],
-    ['BreakoutMomentum', { backend: 'GpuKernel', device_id: 0 }, 'GpuKernel requested'],
+    ['CompositeTrend', { backend: 'GpuKernel', device_id: 0 }, 'expected GPU kernel main route (CompositeTrend)'],
+    ['RegimeHybrid', { backend: 'GpuHybridKernel', device_id: 0 }, 'expected GPU hybrid main route (RegimeHybrid)'],
+    ['BreakoutMomentum', { backend: 'GpuKernel', device_id: 0 }, 'expected GPU kernel main route (BreakoutMomentum)'],
   ] as const)(
     'treats %s as a double-like validation strategy with preserved-finalists cross reruns',
     (strategy_kind, backend, expectedRouteFragment) => {
@@ -529,11 +529,116 @@ describe('validationRequestBuilder', () => {
 
       const summary = buildValidationCapabilitySummary(req)
       expect(summary.routeSummary).toContain(expectedRouteFragment)
-      expect(summary.routeSummary).toContain('expected GPU main route')
       expect(summary.crossSummary).toContain('finalists only')
       expect(summary.warningSummary).toContain('Preserved-finalists cross reruns keep CSCV/PBO + hard gates')
     }
   )
+
+  it.each([
+    ['CompositeTrend', { backend: 'CpuOnly' }, 'CPU route expected (CompositeTrend)'],
+    ['RegimeHybrid', { backend: 'CpuOnly' }, 'CPU route expected (RegimeHybrid)'],
+    ['BreakoutMomentum', { backend: 'GpuOnly', device_id: 0 }, 'expected CpuOnly fallback for fixed-candidate validation (BreakoutMomentum)'],
+  ] as const)(
+    'keeps strategy-specific route wording for %s when validation cannot stay on the GPU main route',
+    (strategy_kind, backend, expectedRouteFragment) => {
+      const req = buildValidationRequest({
+        currentRunReq: {
+          strategy_kind,
+          data_id: `${strategy_kind}-route-check`,
+          backend,
+          ma_source: 'close',
+          fast_ma_types: ['ema'],
+          slow_ma_types: ['sma'],
+          strategy: { fee_bps: 1.25 },
+        },
+        currentRunRes: { ok: true },
+        topRows: [
+          {
+            params: {
+              fast_ma_type: 'ema',
+              slow_ma_type: 'sma',
+              fast_len: 11,
+              slow_len: 44,
+            },
+          },
+        ],
+        candidates: '4',
+      })
+
+      const summary = buildValidationCapabilitySummary(req)
+      expect(summary.routeSummary).toContain(expectedRouteFragment)
+    },
+  )
+
+  it.each([
+    ['CompositeTrend', { backend: 'CpuOnly' }],
+    ['RegimeHybrid', { backend: 'CpuOnly' }],
+    ['BreakoutMomentum', { backend: 'CpuOnly' }],
+  ] as const)(
+    'keeps %s on the CPU validation route when CpuOnly is requested',
+    (strategy_kind, backend) => {
+      const req = buildValidationRequest({
+        currentRunReq: {
+          strategy_kind,
+          data_id: `${strategy_kind}-cpu-data`,
+          backend,
+          ma_source: 'close',
+          fast_ma_types: ['ema'],
+          slow_ma_types: ['sma'],
+          strategy: { fee_bps: 1.0 },
+        },
+        currentRunRes: { ok: true },
+        topRows: [
+          {
+            params: {
+              fast_ma_type: 'ema',
+              slow_ma_type: 'sma',
+              fast_len: 10,
+              slow_len: 40,
+            },
+          },
+        ],
+        candidates: '4',
+      })
+
+      const summary = buildValidationCapabilitySummary(req)
+      expect(summary.routeSummary).toContain('CpuOnly requested | CPU route expected')
+      expect(summary.routeSummary).toContain(strategy_kind)
+      expect(summary.moduleSummary).toContain(`CPU route (${strategy_kind}):`)
+      expect(summary.warningSummary).toBe('none')
+    },
+  )
+
+  it('treats BreakoutMomentum ADX-on winners as hybrid-route validation reruns', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'BreakoutMomentum',
+        data_id: 'breakout-hybrid-data',
+        backend: { backend: 'GpuHybridKernel', device_id: 0 },
+        ma_source: 'close',
+        fast_ma_types: ['ema'],
+        slow_ma_types: ['sma'],
+        strategy: { fee_bps: 1.0 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 13,
+            slow_len: 55,
+          },
+        },
+      ],
+      candidates: '4',
+    })
+
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('GpuHybridKernel requested')
+    expect(summary.routeSummary).toContain('expected GPU hybrid main route')
+    expect(summary.moduleSummary).toContain('Expected GPU hybrid route')
+  })
 
   it('rejects DynamicDoubleMa validation requests until dynamic IR replay is implemented', () => {
     expect(() =>
@@ -1310,6 +1415,41 @@ describe('validationRequestBuilder', () => {
     const summary = buildValidationCapabilitySummary(req)
     expect(summary.routeSummary).toContain('expected GPU composite route (base composite)')
     expect(summary.warningSummary).toContain('Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists')
+  })
+
+  it('keeps the product-default plain CompositeCpu CpuOnly route explicit in previews', () => {
+    const req = buildValidationRequest({
+      currentRunReq: {
+        strategy_kind: 'CompositeCpu',
+        data_id: 'data-composite-cpu-default',
+        backend: { backend: 'CpuOnly' },
+        ma_source: 'close',
+        strategy: { fee_bps: 1.0 },
+        halftrend: { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+      },
+      currentRunRes: { ok: true },
+      topRows: [
+        {
+          params: {
+            fast_ma_type: 'ema',
+            slow_ma_type: 'sma',
+            fast_len: 9,
+            slow_len: 30,
+            macz: { fast_length: 12 },
+            ott: { period: 2 },
+            signal_mode: 'hard_gate',
+            strategy: { fee_bps: 1.0 },
+          }
+        }
+      ],
+      candidates: '8'
+    })
+
+    expect(req.backend).toEqual({ backend: 'CpuOnly' })
+    const summary = buildValidationCapabilitySummary(req)
+    expect(summary.routeSummary).toContain('CpuOnly requested | CPU composite route expected (base composite)')
+    expect(summary.moduleSummary).toContain('CPU route (base composite):')
+    expect(summary.warningSummary).toBe('none')
   })
 
   it('defaults Carm composite validation to Auto so CPU-preferred policy applies after GPU optimization', () => {

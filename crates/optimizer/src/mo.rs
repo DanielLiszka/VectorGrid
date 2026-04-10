@@ -3267,4 +3267,78 @@ mod tests {
         .expect("bounded helper should not error");
         assert!(res.is_none());
     }
+
+    #[test]
+    fn exact_and_bounded_exact_grid_search_agree_on_pareto_and_stats() {
+        let space = SearchSpace {
+            params: vec![
+                ParamDef {
+                    name: "x".to_string(),
+                    domain: ParamDomain::IntRange {
+                        low: 1,
+                        high: 4,
+                        step: 1,
+                        log: false,
+                    },
+                },
+                ParamDef {
+                    name: "flag".to_string(),
+                    domain: ParamDomain::Bool,
+                },
+            ],
+        };
+        let repair = |values: &mut [ParamValue]| {
+            if matches!(values.get(1), Some(ParamValue::Bool(true))) {
+                values[1] = ParamValue::Bool(false);
+            }
+        };
+        let eval = |values: &[ParamValue]| {
+            let x = match values.first() {
+                Some(ParamValue::Int(v)) => *v as f64,
+                _ => 0.0,
+            };
+            EvalOutcome {
+                objectives: [x, 10.0 - x],
+                constraints: vec![],
+                payload: (),
+            }
+        };
+
+        let exact =
+            exact_grid_mo_search_with_stats(&space, 8, 16, 2, repair, eval).expect("exact grid ok");
+        let bounded = bounded_exact_grid_mo_search_with_stats(&space, 8, 16, 2, repair, eval)
+            .expect("bounded exact grid ok")
+            .expect("bounded grid should fit");
+
+        assert_eq!(
+            exact.stats.requested_evaluations,
+            bounded.stats.requested_evaluations
+        );
+        assert_eq!(
+            exact.stats.actual_evaluations,
+            bounded.stats.actual_evaluations
+        );
+        assert_eq!(
+            exact.stats.unique_evaluations,
+            bounded.stats.unique_evaluations
+        );
+        assert_eq!(
+            exact.stats.duplicate_evaluations_avoided,
+            bounded.stats.duplicate_evaluations_avoided
+        );
+        assert_eq!(exact.stats.exact_grid_used, bounded.stats.exact_grid_used);
+
+        let exact_front: Vec<(Vec<ParamValue>, [f64; 2], f64)> = exact
+            .pareto
+            .iter()
+            .map(|point| (point.values.clone(), point.objectives, point.violation))
+            .collect();
+        let bounded_front: Vec<(Vec<ParamValue>, [f64; 2], f64)> = bounded
+            .pareto
+            .iter()
+            .map(|point| (point.values.clone(), point.objectives, point.violation))
+            .collect();
+
+        assert_eq!(exact_front, bounded_front);
+    }
 }

@@ -103,19 +103,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the initial running-state transition.
-- [ ] Document current run-phase timing fields and their meaning.
-- [ ] Document completion status-line generation and backend summary dependence.
-- [ ] Document artifact-save warning notes and validation follow-up notes.
-- [ ] Document GPU-refresh follow-up behavior.
-- [ ] Document cancel and failure behavior.
-- [ ] Document the relationship between optimize-panel progress and task-center progress.
-- [ ] Add or tighten tests if progress wording or sequencing changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the initial running-state transition.
+- [x] Document current run-phase timing fields and their meaning.
+- [x] Document completion status-line generation and backend summary dependence.
+- [x] Document artifact-save warning notes and validation follow-up notes.
+- [x] Document GPU-refresh follow-up behavior.
+- [x] Document cancel and failure behavior.
+- [x] Document the relationship between optimize-panel progress and task-center progress.
+- [x] Add or tighten tests if progress wording or sequencing changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -132,6 +132,13 @@ Public-repo quality focus:
 - keep panel progress additive and truthful rather than overly terse
 - if task-center and optimize-panel semantics are changed, update both in the same work item
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the optimize-service progress contract without changing production sequencing. `optimizeService.test.ts` already covers the immediate running transition, truthful command-boundary completion wording, artifact-save warnings, validation follow-up notes, cancel/failure posture, and the richer `progressMeta` timing summary.
+- Kept panel-local progress and task-center instrumentation conceptually separate. The targeted test sweep confirmed `optimizeService.ts`, `optimizeStore.actions.test.ts`, `instrumentation.test.ts`, and `instrumentation.mockIPC.test.ts` still align on lifecycle boundaries without forcing one surface to impersonate the other.
+- No product-code change was required in this tranche because the audit did not reveal a missing progress-phase or status-text regression; the current implementation already satisfies the plan’s behavior goals.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts src/utils/strategyOptimizationCapabilities.test.ts src/components/OptimizeWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/tauri/instrumentation.test.ts src/tauri/instrumentation.mockIPC.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

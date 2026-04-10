@@ -4,10 +4,11 @@ Replaces:
 - Prompt 6
 - Prompt 11
 
-Attachment count: 10  Files:
+Attachment count: 11  Files:
 - AGENTS.md
 - REPO_MAP.md
 - options_research/options_expression_future_scope_roadmap_2026-04-07.md
+- options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md
 - crates/app_core/src/options_types.rs
 - crates/app_core/src/options_expression.rs
 - crates/app_core/src/options_expression_gpu.rs

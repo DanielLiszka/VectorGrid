@@ -379,6 +379,8 @@ fn bench_dynamic_cpu_eval(c: &mut Criterion) {
         top_k: Some(10),
         include_all: Some(false),
         heatmap_bins: Some(0),
+        include_trade_metrics: false,
+        metric_contract: None,
     };
     let plan_composite = compile_dynamic_plan_for_composite_cpu_config(
         &req_composite.ma_source,

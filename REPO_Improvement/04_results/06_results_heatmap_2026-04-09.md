@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document heatmap prerequisites and empty-state distinctions.
-- [ ] Document legend, range, palette, and meta responsibilities.
-- [ ] Document marker/crosshair behavior and selected-candidate expectations.
-- [ ] Document Export PNG availability rules.
-- [ ] Add or tighten tests for readiness, handoff, and export gating.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document heatmap prerequisites and empty-state distinctions.
+- [x] Document legend, range, palette, and meta responsibilities.
+- [x] Document marker/crosshair behavior and selected-candidate expectations.
+- [x] Document Export PNG availability rules.
+- [x] Add or tighten tests for readiness, handoff, and export gating.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,12 @@ Public-repo quality focus:
 - prefer additive explanatory cues around the heatmap instead of reducing text to chart-only output
 - if palette or range behavior changes, update legend/status tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Expanded [HeatmapWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/HeatmapWorkspacePanel.test.ts) to prove the panel prefers `restoreHeatmapVisible()` over a full rebuild, falls back to `refreshHeatmapFromWorkflowRun()` when restore cannot reuse a chart, and keeps Export PNG routed through the analysis store.
+- Revalidated [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts), which still covers heatmap restore, disabled-bin handling, legend/meta behavior, and cached repaint protection.
+- No production code change was required in this tranche because the current Heatmap panel and service behavior already satisfy the documented readiness/export contract once the missing regression coverage was added.
 
 ## Related Docs
 

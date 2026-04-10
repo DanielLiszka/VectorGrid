@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the Top table’s role as the canonical ranked-navigation surface.
-- [ ] Document selected-candidate review output and its coupling to row selection.
-- [ ] Document stale cues, guardrails, and filter-meta requirements.
-- [ ] Document compare-ready output and handoff actions into Overview and Drilldown.
-- [ ] Add or tighten tests for shortlist output clarity, selection, compare, and navigation behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the Top table’s role as the canonical ranked-navigation surface.
+- [x] Document selected-candidate review output and its coupling to row selection.
+- [x] Document stale cues, guardrails, and filter-meta requirements.
+- [x] Document compare-ready output and handoff actions into Overview and Drilldown.
+- [x] Add or tighten tests for shortlist output clarity, selection, compare, and navigation behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,12 @@ Public-repo quality focus:
 - prefer additive row/context evidence over flattening the table into a score-only grid
 - if dense-table behavior changes later, update virtualization and selection tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Top table through [TopWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/TopWorkspacePanel.test.ts), which now covers dense shortlist behavior across keyboard navigation, selected-candidate summaries, compare tray actions, stale cues, winner-only empty states, filter-empty recovery, and persisted column visibility.
+- Revalidated the supporting shortlist/build contract through [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts) and the shared matrix-table tests.
+- The remaining follow-up gap is structural rather than untested behavior: Meta and Validation tables still persist positional fallback keys outside the Top table’s stronger semantic-key model.
 
 ## Related Docs
 

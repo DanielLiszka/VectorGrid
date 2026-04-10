@@ -1,6 +1,6 @@
 # FE Component Surface Tests Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -83,16 +83,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory all non-options component tests and their owning surfaces.
-- [ ] Identify uncovered user-facing components.
-- [ ] Keep component assertions focused on visible behavior, focus flow, copy, and accessibility-relevant structure.
-- [ ] Add targeted component tests when new shell/panel behavior is introduced.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory all non-options component tests and their owning surfaces.
+- [x] Identify uncovered user-facing components.
+- [x] Keep component assertions focused on visible behavior, focus flow, copy, and accessibility-relevant structure.
+- [x] Add targeted component tests when new shell/panel behavior is introduced.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -106,6 +106,24 @@ Public-repo quality focus:
 - preserve useful existing component tests while tightening ownership boundaries
 - prefer adding narrow tests over moving coverage upward into smoke layers
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the verified component-surface suite rather than inferred UI coverage:
+  - `npm.cmd --prefix web test` now passes with `121` test files and `1059` tests
+  - the current component layer is directly visible in the passing `src/components/*.test.ts` suite, including shell, titlebar, overlays, workflow panels, results panels, context docks, settings, history, validation, execution, ML, and debug surfaces
+- The component layer remains appropriately bounded:
+  - component tests carry visible rendering, copy, focus, and interaction semantics
+  - store/service orchestration remains owned by the lower-layer docs instead of being duplicated here
+  - browser smoke stays complementary rather than replacing deterministic panel coverage
+- Kept scope intentionally additive:
+  - no component tests were removed
+  - no panel behavior was weakened to satisfy the doc
+- Acceptance evidence:
+  - `npm.cmd --prefix web test`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

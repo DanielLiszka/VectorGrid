@@ -42,9 +42,11 @@ vi.mock('../services/metaService', () => ({
   batchSelectNone: vi.fn(async () => undefined),
   batchStop: vi.fn(async () => undefined),
   deleteSaved: vi.fn(async () => undefined),
+  deletePolicyEvalSaved: vi.fn(async () => undefined),
   deleteStage4Saved: vi.fn(async () => undefined),
   deleteStage5Saved: vi.fn(async () => undefined),
   loadSaved: vi.fn(async () => undefined),
+  loadPolicyEvalSaved: vi.fn(async () => undefined),
   loadStage4Saved: vi.fn(async () => undefined),
   loadStage5Saved: vi.fn(async () => undefined),
   mlApply: vi.fn(async () => undefined),
@@ -54,9 +56,11 @@ vi.mock('../services/metaService', () => ({
   openMetaReport: vi.fn(async () => undefined),
   openSavedReport: vi.fn(async () => undefined),
   refreshSaved: vi.fn(async () => undefined),
+  refreshPolicyEvalSaved: vi.fn(async () => undefined),
   refreshStage4Saved: vi.fn(async () => undefined),
   refreshStage5Saved: vi.fn(async () => undefined),
   revealMetaFiles: vi.fn(async () => undefined),
+  revealPolicyEvalSaved: vi.fn(async () => undefined),
   revealSaved: vi.fn(async () => undefined),
   revealStage4: vi.fn(async () => undefined),
   revealStage5: vi.fn(async () => undefined),
@@ -66,7 +70,9 @@ vi.mock('../services/metaService', () => ({
   runMeta: vi.fn(async () => undefined),
   runStage4: vi.fn(async () => undefined),
   runStage5: vi.fn(async () => undefined),
+  runMlPolicyEvaluation: vi.fn(async () => undefined),
   refreshBatchDatasetView: vi.fn(() => undefined),
+  savePolicyEvalSavedTags: vi.fn(async () => undefined),
   saveSavedTags: vi.fn(async () => undefined),
   saveStage4SavedTags: vi.fn(async () => undefined),
   saveStage5SavedTags: vi.fn(async () => undefined),
@@ -114,9 +120,11 @@ const batchSelectAllMock = vi.mocked(metaService.batchSelectAll)
 const batchSelectNoneMock = vi.mocked(metaService.batchSelectNone)
 const batchStopMock = vi.mocked(metaService.batchStop)
 const deleteSavedMock = vi.mocked(metaService.deleteSaved)
+const deletePolicyEvalSavedMock = vi.mocked(metaService.deletePolicyEvalSaved)
 const deleteStage4SavedMock = vi.mocked(metaService.deleteStage4Saved)
 const deleteStage5SavedMock = vi.mocked(metaService.deleteStage5Saved)
 const loadSavedMock = vi.mocked(metaService.loadSaved)
+const loadPolicyEvalSavedMock = vi.mocked(metaService.loadPolicyEvalSaved)
 const loadStage4SavedMock = vi.mocked(metaService.loadStage4Saved)
 const loadStage5SavedMock = vi.mocked(metaService.loadStage5Saved)
 const mlApplyMock = vi.mocked(metaService.mlApply)
@@ -126,9 +134,11 @@ const mlTrainMock = vi.mocked(metaService.mlTrain)
 const openMetaReportMock = vi.mocked(metaService.openMetaReport)
 const openSavedReportMock = vi.mocked(metaService.openSavedReport)
 const refreshSavedMock = vi.mocked(metaService.refreshSaved)
+const refreshPolicyEvalSavedMock = vi.mocked(metaService.refreshPolicyEvalSaved)
 const refreshStage4SavedMock = vi.mocked(metaService.refreshStage4Saved)
 const refreshStage5SavedMock = vi.mocked(metaService.refreshStage5Saved)
 const revealMetaFilesMock = vi.mocked(metaService.revealMetaFiles)
+const revealPolicyEvalSavedMock = vi.mocked(metaService.revealPolicyEvalSaved)
 const revealSavedMock = vi.mocked(metaService.revealSaved)
 const revealStage4Mock = vi.mocked(metaService.revealStage4)
 const revealStage5Mock = vi.mocked(metaService.revealStage5)
@@ -136,8 +146,10 @@ const revealStage4SavedMock = vi.mocked(metaService.revealStage4Saved)
 const revealStage5SavedMock = vi.mocked(metaService.revealStage5Saved)
 const runBatchMock = vi.mocked(metaService.runBatch)
 const runMetaMock = vi.mocked(metaService.runMeta)
+const runMlPolicyEvaluationMock = vi.mocked(metaService.runMlPolicyEvaluation)
 const runStage4Mock = vi.mocked(metaService.runStage4)
 const runStage5Mock = vi.mocked(metaService.runStage5)
+const savePolicyEvalSavedTagsMock = vi.mocked(metaService.savePolicyEvalSavedTags)
 const saveSavedTagsMock = vi.mocked(metaService.saveSavedTags)
 const saveStage4SavedTagsMock = vi.mocked(metaService.saveStage4SavedTags)
 const saveStage5SavedTagsMock = vi.mocked(metaService.saveStage5SavedTags)
@@ -195,6 +207,7 @@ describe('analysis store actions', () => {
     expect(store.metaTopK).toBe('40')
     expect(store.metaStrategyKind).toBe('MeanReversion')
     expect(store.metaCompareSelected).toBe('baseline-1')
+    expect(store.metaCompareSummary).toBe('Saved Meta baseline selected: baseline-1')
     expect(store.batchDatasetSearch).toBe('btc')
     expect(store.metaSavedSearch).toBe('saved-foo')
     expect(store.metaSavedSelected).toBe('meta-saved-1')
@@ -284,6 +297,11 @@ describe('analysis store actions', () => {
     store.loadStage5Saved()
     store.revealStage5Saved()
     store.deleteStage5Saved()
+    store.savePolicyEvalSavedTags()
+    store.refreshPolicyEvalSaved()
+    store.loadPolicyEvalSaved()
+    store.revealPolicyEvalSaved()
+    store.deletePolicyEvalSaved()
     store.mlRefresh()
     store.mlTrain()
     store.mlApply()
@@ -291,6 +309,7 @@ describe('analysis store actions', () => {
     store.runStage4()
     store.revealStage4()
     store.runStage5()
+    store.runMlPolicyEvaluation()
     store.revealStage5()
     store.runMeta()
     store.openMetaReport()
@@ -321,6 +340,11 @@ describe('analysis store actions', () => {
       expect(loadStage5SavedMock).toHaveBeenCalledTimes(2)
       expect(revealStage5SavedMock).toHaveBeenCalledTimes(2)
       expect(deleteStage5SavedMock).toHaveBeenCalledTimes(2)
+      expect(savePolicyEvalSavedTagsMock).toHaveBeenCalled()
+      expect(refreshPolicyEvalSavedMock).toHaveBeenCalled()
+      expect(loadPolicyEvalSavedMock).toHaveBeenCalled()
+      expect(revealPolicyEvalSavedMock).toHaveBeenCalled()
+      expect(deletePolicyEvalSavedMock).toHaveBeenCalled()
       expect(mlRefreshMock).toHaveBeenCalled()
       expect(mlTrainMock).toHaveBeenCalled()
       expect(mlApplyMock).toHaveBeenCalled()
@@ -328,6 +352,7 @@ describe('analysis store actions', () => {
       expect(runStage4Mock).not.toHaveBeenCalled()
       expect(revealStage4Mock).not.toHaveBeenCalled()
       expect(runStage5Mock).toHaveBeenCalledTimes(2)
+      expect(runMlPolicyEvaluationMock).toHaveBeenCalled()
       expect(revealStage5Mock).toHaveBeenCalledTimes(2)
       expect(runMetaMock).toHaveBeenCalled()
       expect(openMetaReportMock).toHaveBeenCalled()

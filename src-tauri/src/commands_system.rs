@@ -106,3 +106,38 @@ pub fn set_window_effect(
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::get_gpu_status;
+
+    #[test]
+    fn get_gpu_status_reports_consistent_diagnostics_shape() {
+        let status = get_gpu_status().expect("gpu diagnostics should not fail");
+
+        assert_eq!(status.built_with_cuda, cfg!(feature = "cuda"));
+        assert_eq!(
+            status.built_with_cuda_backtest_kernel,
+            cfg!(feature = "cuda-backtest-kernel")
+        );
+
+        if !status.built_with_cuda {
+            assert!(!status.cuda_available);
+        }
+
+        match (
+            status.auto_device_name.as_ref(),
+            status.auto_device_memory_bytes,
+            status.auto_device_error.as_ref(),
+        ) {
+            (Some(_), Some(memory_bytes), None) => {
+                assert!(memory_bytes > 0);
+            }
+            (None, None, Some(error)) => {
+                assert!(!error.trim().is_empty());
+            }
+            (None, None, None) => {}
+            other => panic!("unexpected gpu diagnostics shape: {:?}", other),
+        }
+    }
+}

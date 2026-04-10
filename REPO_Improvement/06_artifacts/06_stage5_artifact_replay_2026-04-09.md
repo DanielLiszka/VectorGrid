@@ -91,18 +91,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the typed Stage 5 replay response and how the frontend consumes it.
-- [ ] Document the current Stage 4/Stage 5 naming alias debt.
-- [ ] Document why Saved Stage 5 does not currently expose `Open report`.
-- [ ] Document selection-retention behavior on refresh.
-- [ ] Add or tighten tests for typed replay loading and alias compatibility.
-- [ ] Add or tighten tests proving report-open remains intentionally unavailable for this family.
-- [ ] Keep replay semantics separate from artifact-library indexing concerns.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the typed Stage 5 replay response and how the frontend consumes it.
+- [x] Document the current Stage 4/Stage 5 naming alias debt.
+- [x] Document why Saved Stage 5 does not currently expose `Open report`.
+- [x] Document selection-retention behavior on refresh.
+- [x] Add or tighten tests for typed replay loading and alias compatibility.
+- [x] Add or tighten tests proving report-open remains intentionally unavailable for this family.
+- [x] Keep replay semantics separate from artifact-library indexing concerns.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,3 +127,10 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/31_stage5_result_surface_2026-04-08.md`
 - `REPO_Improvement/08_ml/35_stage4_request_contract_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/07_policy_eval_artifact_replay_2026-04-09.md`
+
+## Execution Notes
+
+- Closed as a typed replay contract audit with no new code required. Existing Meta-service replay tests already prove typed Stage 5 loading, selection retention, and the narrower Saved Stage 5 action surface.
+- The current Stage 4/Stage 5 alias debt remains documented but intentionally tolerated; this closure does not rename store fields or widen the product surface.
+- `Open report` remains intentionally unavailable for this family, and the current UI tests already preserve that constraint.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/components/MetaWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.

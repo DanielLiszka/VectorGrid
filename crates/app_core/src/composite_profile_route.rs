@@ -167,4 +167,73 @@ mod tests {
             StrategyProfileKind::RegimeHybrid
         );
     }
+
+    #[test]
+    fn default_strategy_stays_on_composite_cpu_route() {
+        let strategy = StrategyConfig::default();
+        assert_eq!(
+            composite_profile_from_strategy(&strategy),
+            StrategyProfileKind::CompositeCpu
+        );
+        assert_eq!(
+            composite_profile_gpu_target(&strategy),
+            CompositeProfileGpuTarget::CpuOnly
+        );
+        assert_eq!(composite_profile_runtime_label(&strategy), "CompositeCpu");
+        assert_eq!(composite_profile_gpu_target_label(&strategy), "CpuOnly");
+    }
+
+    #[test]
+    fn composite_profile_target_labels_match_current_product_route_contract() {
+        let trend_kernel = {
+            let mut strategy = StrategyConfig::default();
+            strategy.trend_quality_enable = true;
+            strategy.trend_quality_use_adx = false;
+            strategy
+        };
+        let trend_hybrid = {
+            let mut strategy = StrategyConfig::default();
+            strategy.trend_quality_enable = true;
+            strategy.trend_quality_use_adx = true;
+            strategy
+        };
+        let breakout_kernel = {
+            let mut strategy = StrategyConfig::default();
+            strategy.breakout_momentum_enable = true;
+            strategy.breakout_use_adx = false;
+            strategy
+        };
+        let breakout_hybrid = {
+            let mut strategy = StrategyConfig::default();
+            strategy.breakout_momentum_enable = true;
+            strategy.breakout_use_adx = true;
+            strategy
+        };
+        let regime_hybrid = {
+            let mut strategy = StrategyConfig::default();
+            strategy.regime_hybrid_enable = true;
+            strategy
+        };
+
+        assert_eq!(
+            composite_profile_gpu_target_label(&trend_kernel),
+            "GpuKernel"
+        );
+        assert_eq!(
+            composite_profile_gpu_target_label(&trend_hybrid),
+            "GpuHybridKernel"
+        );
+        assert_eq!(
+            composite_profile_gpu_target_label(&breakout_kernel),
+            "GpuKernel"
+        );
+        assert_eq!(
+            composite_profile_gpu_target_label(&breakout_hybrid),
+            "GpuHybridKernel"
+        );
+        assert_eq!(
+            composite_profile_gpu_target_label(&regime_hybrid),
+            "GpuHybridKernel"
+        );
+    }
 }

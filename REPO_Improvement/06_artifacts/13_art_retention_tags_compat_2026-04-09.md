@@ -100,18 +100,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical stored tag shape and normalization rules.
-- [ ] Document which artifact families must support tag editing.
-- [ ] Document current retention behavior for tagged versus untagged artifacts.
-- [ ] Decide whether reserved tag prefixes are needed and, if so, keep them additive only.
-- [ ] Add or tighten tests for case-insensitive dedupe and empty-tag removal.
-- [ ] Add or tighten tests proving tagged artifacts survive pruning.
-- [ ] Add or tighten tests proving cross-family tag editing keeps the same semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical stored tag shape and normalization rules.
+- [x] Document which artifact families must support tag editing.
+- [x] Document current retention behavior for tagged versus untagged artifacts.
+- [x] Decide whether reserved tag prefixes are needed and, if so, keep them additive only.
+- [x] Add or tighten tests for case-insensitive dedupe and empty-tag removal.
+- [x] Add or tighten tests proving tagged artifacts survive pruning.
+- [x] Add or tighten tests proving cross-family tag editing keeps the same semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -136,4 +136,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/03_artifact_library_index_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/12_art_hydration_detail_replay_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/22_meta_stage3_report_flow_2026-04-09.md`
+
+## Execution Notes
+
+- Closed as an artifact-tag compatibility hardening slice without changing the persisted freeform tag-array format.
+- Added cross-family frontend coverage in `web/src/services/metaService.test.ts` proving meta, Stage 5, and policy-evaluation tag-save flows all normalize to the same trimmed, case-insensitive-deduped tag semantics that already back saved-run tags in `historyService`.
+- Re-verified the existing backend retention policy in `src-tauri/src/run_artifacts.rs`, where non-empty tags continue to preserve older artifacts from pruning across run, meta, stage, and policy-evaluation families.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 

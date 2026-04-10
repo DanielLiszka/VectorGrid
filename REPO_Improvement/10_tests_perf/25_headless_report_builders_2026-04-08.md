@@ -1,6 +1,6 @@
 # Headless Report Builders Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -113,20 +113,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current authoritative validation workbook builder and all public entrypoints that call it.
-- [ ] Document how the headless byte builder differs from the Tauri base64 build wrapper.
-- [ ] Document artifact-backed rebuild behavior and its dependency on persisted dataset/report fields.
-- [ ] Document the current `max_rows` normalization/parity contract.
-- [ ] Document the default `ta_headless_validate` XLSX output path and how it differs from app-local report saves.
-- [ ] Document compatibility-mode behavior for legacy validation artifacts.
-- [ ] Document which legacy builders remain reference-only and are not on the active product path.
-- [ ] Add or tighten parity/regression tests if any builder entrypoint changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the current authoritative validation workbook builder and all public entrypoints that call it.
+- [x] Document how the headless byte builder differs from the Tauri base64 build wrapper.
+- [x] Document artifact-backed rebuild behavior and its dependency on persisted dataset/report fields.
+- [x] Document the current `max_rows` normalization/parity contract.
+- [x] Document the default `ta_headless_validate` XLSX output path and how it differs from app-local report saves.
+- [x] Document compatibility-mode behavior for legacy validation artifacts.
+- [x] Document which legacy builders remain reference-only and are not on the active product path.
+- [x] Add or tighten parity/regression tests if any builder entrypoint changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -143,6 +143,36 @@ Public-repo quality focus:
 - keep the current base64 Tauri build wrapper and direct-byte headless helper in parity unless there is an explicit migration plan
 - if legacy/reference builders are ever removed, do it only after the active headless and artifact-backed paths are fully documented and verified
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on current-path verification rather than a code rewrite; the active validation-first builder contract already holds.
+- The authoritative workbook path is explicit and unchanged:
+  - `commands_reports_validation_xlsx::build_validation_report_xlsx` is the only active workbook builder
+  - `build_report_xlsx_bytes_headless` returns raw bytes from that builder
+  - `build_report_xlsx` returns base64 around those same bytes for the Tauri invoke boundary
+  - `save_report_xlsx` and `save_report_xlsx_from_artifact` write the same builder output to disk
+  - `ta_headless_validate` calls the headless byte helper and writes the resulting XLSX directly
+- Headless/desktop differences remain intentional and documented:
+  - headless builder callers use raw bytes or repo-local `_write_test/headless_reports/...` output
+  - desktop save flows write to app-local `reports/`
+  - the different output roots do not imply different workbook builders
+- `max_rows` parity remains explicit:
+  - Tauri command wrappers accept `Option<u32>`
+  - headless entrypoints accept `Option<usize>`
+  - both normalize through the same positive-cap path before calling `build_validation_report_xlsx`
+- Compatibility mode and artifact-backed rebuild behavior remain preserved:
+  - legacy validation artifacts without full verdict fields still export through compatibility mode
+  - artifact-backed rebuilds still depend on `build_validation_report_from_artifact` and preserve persisted dataset metadata plus optimization metric-surface context before calling the active workbook builder
+- Legacy/reference builders in `commands_reports.rs` remain reference-only and are not on the active product path; this item closes on explicit documentation plus parity evidence, not on removing those reference builders.
+- No `README.md` or `REPO_MAP.md` update was required because this item confirmed the existing builder-routing contract and added no new user-facing path.
+- Acceptance evidence for this closure:
+  - `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+  - `cargo test -p ta_desktop_demo_app --lib commands_reports_validation_xlsx::tests::`
+  - `cargo test -p ta_desktop_demo_app --lib commands_reports::tests::`
+  - `cargo test -p ta_desktop_demo_app --bin ta_headless_validate`
+  - `cargo run -p ta_desktop_demo_app --bin ta_headless_validate -- --csv data/AAPL.csv --backend cpu --fast-period 5:6:1 --slow-period 20:22:1 --optimize-top-k 4 --validate-max-candidates 4 --xlsx-max-rows 8 --out-xlsx _write_test/headless_reports/doc25_smoke_aapl.xlsx`
+  - resulting smoke artifact: `_write_test/headless_reports/doc25_smoke_aapl.xlsx`
 
 ## Related Docs
 

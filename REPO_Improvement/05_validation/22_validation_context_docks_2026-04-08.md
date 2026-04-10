@@ -107,16 +107,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current validation dock fields and current handoff behavior.
-- [ ] Document that the dock is summary-only and not a validation-edit surface.
-- [ ] Document how dataset/timeframe/strategy compatibility truth reaches the dock indirectly today.
-- [ ] Document responsive/visibility expectations for the dock.
-- [ ] Add or tighten tests if dock visibility or displayed summary semantics change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document current validation dock fields and current handoff behavior.
+- [x] Document that the dock is summary-only and not a validation-edit surface.
+- [x] Document how dataset/timeframe/strategy compatibility truth reaches the dock indirectly today.
+- [x] Document responsive/visibility expectations for the dock.
+- [x] Add or tighten tests if dock visibility or displayed summary semantics change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -132,6 +132,11 @@ Public-repo quality focus:
 - if the dock is redesigned, keep the existing “Open validation” handoff until a replacement navigation pattern exists
 - keep dock copy compact; avoid multi-line complexity that belongs in the workspace panel
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the dock as a compact summary-only surface. The dedicated `ValidationContextDock.test.ts` proves the dock renders current summary state and hands the user back to the validation workspace without becoming a second editing surface, while builder/service tests continue to own the real compatibility contract underneath it.
+- Acceptance evidence for closure: `npm --prefix web run test -- src/components/ValidationContextDock.test.ts src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts src/components/ValidationWorkspacePanel.test.ts`, plus `npm --prefix web run lint` and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

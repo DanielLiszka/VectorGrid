@@ -95,22 +95,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document required export request fields and defaults.
-- [ ] Document optional split-plan fields and their activation rules.
-- [ ] Document optional ticker-holdout fields and their normalization behavior.
-- [ ] Document returned export/result fields and manifest paths.
-- [ ] Document emitted sidecar naming and version constants.
-- [ ] Document the actual exported CSV column groups and label semantics.
-- [ ] Keep UI stage text aligned with backend export outcomes.
-- [ ] Preserve artifact linkage from export into later ML Signal stages.
-- [ ] Add or maintain tests for no-split, split-plan, and ticker-holdout export paths.
-- [ ] Keep export-stage scope bounded to the current workflow.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document required export request fields and defaults.
+- [x] Document optional split-plan fields and their activation rules.
+- [x] Document optional ticker-holdout fields and their normalization behavior.
+- [x] Document returned export/result fields and manifest paths.
+- [x] Document emitted sidecar naming and version constants.
+- [x] Document the actual exported CSV column groups and label semantics.
+- [x] Keep UI stage text aligned with backend export outcomes.
+- [x] Preserve artifact linkage from export into later ML Signal stages.
+- [x] Add or maintain tests for no-split, split-plan, and ticker-holdout export paths.
+- [x] Keep export-stage scope bounded to the current workflow.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -134,3 +134,29 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/16_mlsignal_score_cache_build_2026-04-08.md`
 - `REPO_Improvement/08_ml/19_mlsignal_validation_flow_2026-04-08.md`
 - `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`
+
+## Execution Notes
+
+- Closed by making the stage-1 export contract visible in the ML Signal panel instead of leaving split-plan and holdout semantics implicit.
+- `MlSignalWorkspacePanel.vue` now summarizes:
+  - whether the export is a plain dataset or an active split-plan export
+  - the normalized ticker-holdout rule
+  - the currently attached dataset-export sidecars (`feature_schema`, `export_manifest`, optional `split_manifest`)
+- `mlSignalService.test.ts` now covers the no-split path and proves that ticker-holdout residue is normalized before the export request is sent.
+- `MlSignalWorkspacePanel.test.ts` now verifies the export-contract summary, including split-plan text, normalized holdout text, and attached sidecar basenames.
+- Artifact linkage remains unchanged: exported dataset artifacts still flow through `save_run_artifact`, current-run hydration, and later ML Signal stages.
+- `REPO_MAP.md` was synced so contributors can find the dataset-export contract behavior quickly.
+- Stable fixture / replay payload:
+  - request-side fields:
+    - `output_path = C:\\data\\ml_dataset.csv`
+    - split plan blank for plain export, or `252/63/63` with `gap=10`, `step=63` for manifest export
+    - `ticker_holdout = { modulus: 5, residue: 2 }` after normalization
+  - artifact-side fields:
+    - `dataset_export_path = C:\\data\\ml_dataset.csv`
+    - `feature_schema_path = C:\\data\\ml_dataset.feature_schema.json`
+    - `export_manifest_path = C:\\data\\ml_dataset.export_manifest.json`
+    - optional `split_manifest_path = C:\\data\\ml_dataset.split_manifest.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useDataStore } from '../stores/dataStore'
 import { useValidationStore } from '../stores/validationStore'
+import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { formatUiTimeFromUnixMs } from '../utils/uiTime'
+import { previewValidationContextCompatibilityFromStores } from '../services/validationService'
 
+const dataStore = useDataStore()
 const store = useValidationStore()
+const workflowArtifactsStore = useWorkflowArtifactsStore()
 const workflowStore = useWorkflowStore()
 const {
   validationMeta,
@@ -18,8 +23,15 @@ const {
   statusLine,
   updatedAtUnixMs,
 } = storeToRefs(store)
+const { updatedAtUnixMs: dataUpdatedAtUnixMs } = storeToRefs(dataStore)
+const { updatedAtUnixMs: workflowArtifactsUpdatedAtUnixMs } = storeToRefs(workflowArtifactsStore)
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
+const compatibilityPreview = computed(() => {
+  void dataUpdatedAtUnixMs.value
+  void workflowArtifactsUpdatedAtUnixMs.value
+  return previewValidationContextCompatibilityFromStores()
+})
 
 const gatesLabel = computed(() => {
   const parts: string[] = []
@@ -45,6 +57,18 @@ function openValidationWorkspace(): void {
       <div class="row"><span>Rows</span><strong class="mono">{{ tableRowCount }}</strong></div>
       <div class="row"><span>Cross</span><strong class="mono">{{ crossMeta }}</strong></div>
       <div class="row"><span>Gates</span><strong class="mono">{{ gatesLabel }}</strong></div>
+      <div class="row">
+        <span>Compat</span>
+        <strong
+          :class="['mono', 'compatibilityValue', `compatibilityValue--${compatibilityPreview.state}`]"
+          :title="compatibilityPreview.detail"
+          data-validation-compat
+        >{{ compatibilityPreview.summary }}</strong>
+      </div>
+      <div class="row rowDetail">
+        <span>Detail</span>
+        <strong class="mono detailValue" :title="compatibilityPreview.detail">{{ compatibilityPreview.detail }}</strong>
+      </div>
       <div class="row"><span>Status</span><strong class="mono">{{ statusLine }}</strong></div>
       <div class="row"><span>Preview</span><strong class="mono">{{ validationOutputPreview }}</strong></div>
     </div>
@@ -135,8 +159,37 @@ function openValidationWorkspace(): void {
   white-space: nowrap;
 }
 
+.rowDetail {
+  align-items: start;
+}
+
+.detailValue {
+  white-space: normal;
+  line-height: 1.35;
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
+.compatibilityValue {
+  font-weight: 700;
+}
+
+.compatibilityValue--compatible {
+  color: color-mix(in oklab, var(--dock-accent-ink) 82%, var(--dock-text));
+}
+
+.compatibilityValue--warning {
+  color: color-mix(in oklab, var(--warning-ink) 80%, var(--dock-text));
+}
+
+.compatibilityValue--incompatible {
+  color: color-mix(in oklab, var(--danger-ink) 80%, var(--dock-text));
+}
+
+.compatibilityValue--missing {
+  color: color-mix(in oklab, var(--warning-ink) 80%, var(--dock-text));
 }
 
 .actions {

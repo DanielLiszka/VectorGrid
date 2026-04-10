@@ -100,20 +100,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the stage-specific `ml_signal` payload contract.
-- [ ] Mark carry-forward vs stage-owned vs optional fields.
-- [ ] Document all replay and hydration consumers.
-- [ ] Define dataset/timeframe/score-cache compatibility rules.
-- [ ] Surface or log artifact-save failures more clearly.
-- [ ] Add end-to-end tests for export -> score cache -> validation -> policy sweep continuity.
-- [ ] Add tests for stale-field clearing when stage transitions invalidate prior data.
-- [ ] Preserve replay compatibility for existing ML Signal artifacts.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Define the stage-specific `ml_signal` payload contract.
+- [x] Mark carry-forward vs stage-owned vs optional fields.
+- [x] Document all replay and hydration consumers.
+- [x] Define dataset/timeframe/score-cache compatibility rules.
+- [x] Surface or log artifact-save failures more clearly.
+- [x] Add end-to-end tests for export -> score cache -> validation -> policy sweep continuity.
+- [x] Add tests for stale-field clearing when stage transitions invalidate prior data.
+- [x] Preserve replay compatibility for existing ML Signal artifacts.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -131,6 +131,30 @@ Public-repo quality focus:
 - prefer additive stage metadata over removing current fields abruptly
 - if attachment failures remain non-fatal, make that degradation visible rather than silent
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the stage-owned versus carry-forward `ml_signal` attachment visible in the current-artifact panel.
+- `MlSignalWorkspacePanel.vue` now exposes:
+  - `stage`
+  - dataset export path
+  - export manifest
+  - split manifest
+  - score cache path
+  - score manifest
+  - score-summary metadata
+  - a stage-ownership note that explains which fields belong to the current stage versus which carry forward for replay
+- `mlSignalService.test.ts` now asserts manifest and score-summary carry-forward across validation-stage persistence, which keeps the export -> score cache -> validation chain inspectable after save/reopen.
+- Existing history/workflow artifact normalization remains compatible because no payload keys were removed or renamed.
+- Stable fixture / replay payload:
+  - stage `validation` or `score_cache`
+  - dataset/export manifest/split manifest sidecars from Stage 1
+  - score cache + score manifest from Stage 2
+  - policy / sweep summaries from later stages
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

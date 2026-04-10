@@ -140,21 +140,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document staged ML validation/sweep UX states.
-- [ ] Document prerequisite failures and the exact stage they block.
-- [ ] Document direct-validation and policy-sweep result summaries separately.
-- [ ] Document user-facing score-summary fields and how they should be displayed.
-- [ ] Document Stage 5 attached-validation summary states and wording.
-- [ ] Document artifact reveal/open/replay expectations after successful runs.
-- [ ] Add tests for missing score-cache paths and malformed/partial results.
-- [ ] Add tests preserving stage-specific busy/success/failure wording.
-- [ ] Add tests for artifact-path propagation and retained score-summary fields.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document staged ML validation/sweep UX states.
+- [x] Document prerequisite failures and the exact stage they block.
+- [x] Document direct-validation and policy-sweep result summaries separately.
+- [x] Document user-facing score-summary fields and how they should be displayed.
+- [x] Document Stage 5 attached-validation summary states and wording.
+- [x] Document artifact reveal/open/replay expectations after successful runs.
+- [x] Add tests for missing score-cache paths and malformed/partial results.
+- [x] Add tests preserving stage-specific busy/success/failure wording.
+- [x] Add tests for artifact-path propagation and retained score-summary fields.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -182,3 +182,14 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/19_mlsignal_validation_flow_2026-04-08.md`
 - `REPO_Improvement/08_ml/03_ml_score_cache_bundles_2026-04-08.md`
 - `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`
+
+## Execution Notes
+
+- Closed by hardening the current validation/sweep UX contract instead of changing the ML workflow.
+- `mlSignalService.test.ts` now verifies early failure on missing score-cache paths for both direct validation and policy sweep.
+- `MlSignalWorkspacePanel.test.ts` now pins the disabled-state behavior of the stage buttons until dataset and path prerequisites exist, and keeps the Stage 5 empty-state copy explicit.
+- Existing validation and sweep tests now also retain artifact-path and score-summary assertions through the persisted run-artifact payload.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/mlSignalService.test.ts src/components/MlSignalWorkspacePanel.test.ts src/services/historyService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

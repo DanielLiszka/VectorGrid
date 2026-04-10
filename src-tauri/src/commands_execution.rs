@@ -529,6 +529,25 @@ fn normalize_execute_request(
     Ok((req, symbol, qty))
 }
 
+fn validate_live_runner_stream_preconditions(
+    stream: Option<&crate::state::LiveCandleStreamInfo>,
+    requested_symbol: &str,
+) -> Result<(), String> {
+    let Some(stream) = stream.filter(|stream| stream.active) else {
+        return Err(
+            "Start live candles first. Auto-runner triggers on Polygon live bars.".to_string(),
+        );
+    };
+    if !symbol_matches(&stream.symbol, requested_symbol) {
+        let live_symbol = canonical_symbol_key(&stream.symbol);
+        let requested_symbol = canonical_symbol_key(requested_symbol);
+        return Err(format!(
+            "Live candles are active for {live_symbol}, not {requested_symbol}."
+        ));
+    }
+    Ok(())
+}
+
 fn base_url(mode: LiveExecutionMode) -> &'static str {
     match mode {
         LiveExecutionMode::Paper => "https://paper-api.alpaca.markets",
@@ -1043,6 +1062,8 @@ pub async fn start_live_execution_runner(
         return Err("strategy data_id is required".to_string());
     }
     let _ = state.get_candles(&data_id)?;
+    let live_stream = state.live_candle_stream_info()?;
+    validate_live_runner_stream_preconditions(live_stream.as_ref(), &symbol)?;
 
     let strategy_kind = strategy_kind_label(&req.strategy);
     let generation = LIVE_EXECUTION_RUNNER_GEN.fetch_add(1, Ordering::SeqCst);
@@ -1506,10 +1527,10 @@ mod tests {
         RUNNER_TEST_GUARD.get_or_init(|| Mutex::new(()))
     }
 
-    fn test_runner_runtime(generation: u64) -> LiveExecutionRunnerRuntime {
-        let req = ExecuteStrategySignalRequest {
-            symbol: "AAPL".to_string(),
-            qty: 1.0,
+    fn test_execute_request(symbol: &str, qty: f64) -> ExecuteStrategySignalRequest {
+        ExecuteStrategySignalRequest {
+            symbol: symbol.to_string(),
+            qty,
             mode: LiveExecutionMode::Paper,
             dry_run: true,
             risk: LiveRiskOverride::default(),
@@ -1536,8 +1557,11 @@ mod tests {
                     bins: None,
                 },
             },
-        };
+        }
+    }
 
+    fn test_runner_runtime(generation: u64) -> LiveExecutionRunnerRuntime {
+        let req = test_execute_request("AAPL", 1.0);
         LiveExecutionRunnerRuntime {
             generation,
             abort: RunnerAbortHandle::new(),
@@ -1625,6 +1649,240 @@ mod tests {
     fn symbol_matching_does_not_collapse_punctuation_variants() {
         assert!(symbol_matches("BRK.B", "brk.b"));
         assert!(!symbol_matches("BRKB", "BRK.B"));
+    }
+
+    #[test]
+    fn normalize_execute_request_rejects_missing_symbol_and_invalid_qty() {
+        assert_eq!(
+            normalize_execute_request(test_execute_request("   ", 1.0))
+                .expect_err("blank symbol should fail"),
+            "symbol is required"
+        );
+        assert_eq!(
+            normalize_execute_request(test_execute_request("AAPL", 0.0))
+                .expect_err("zero qty should fail"),
+            "qty must be finite and > 0"
+        );
+        assert_eq!(
+            normalize_execute_request(test_execute_request("AAPL", 0.00001))
+                .expect_err("tiny qty should fail after normalization"),
+            "qty is too small after normalization"
+        );
+    }
+
+    #[test]
+    fn live_runner_stream_preconditions_require_active_stream() {
+        assert_eq!(
+            validate_live_runner_stream_preconditions(None, "AAPL"),
+            Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
+        );
+        assert_eq!(
+            validate_live_runner_stream_preconditions(
+                Some(&crate::state::LiveCandleStreamInfo {
+                    market: "stocks".to_string(),
+                    symbol: "AAPL".to_string(),
+                    delayed: true,
+                    active: false,
+                }),
+                "AAPL",
+            ),
+            Err("Start live candles first. Auto-runner triggers on Polygon live bars.".to_string())
+        );
+    }
+
+    #[test]
+    fn live_runner_stream_preconditions_require_matching_symbol() {
+        assert_eq!(
+            validate_live_runner_stream_preconditions(
+                Some(&crate::state::LiveCandleStreamInfo {
+                    market: "stocks".to_string(),
+                    symbol: "TSLA".to_string(),
+                    delayed: true,
+                    active: true,
+                }),
+                "AAPL",
+            ),
+            Err("Live candles are active for TSLA, not AAPL.".to_string())
+        );
+    }
+
+    #[test]
+    fn live_runner_stream_preconditions_accept_canonical_symbol_match() {
+        assert!(validate_live_runner_stream_preconditions(
+            Some(&crate::state::LiveCandleStreamInfo {
+                market: "stocks".to_string(),
+                symbol: " brk.b ".to_string(),
+                delayed: true,
+                active: true,
+            }),
+            "BRK.B",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn base_url_maps_paper_and_live_modes() {
+        assert_eq!(
+            base_url(LiveExecutionMode::Paper),
+            "https://paper-api.alpaca.markets"
+        );
+        assert_eq!(
+            base_url(LiveExecutionMode::Live),
+            "https://api.alpaca.markets"
+        );
+    }
+
+    #[test]
+    fn normalize_order_snapshot_reduces_broker_payload_to_review_fields() {
+        let snapshot = normalize_order_snapshot(&json!({
+            "id": "ord_123",
+            "symbol": "aapl",
+            "side": "buy",
+            "status": "filled",
+            "type": "market",
+            "qty": "2.5",
+            "filled_qty": "2.5",
+            "filled_avg_price": "182.40",
+            "submitted_at": "2026-04-10T15:31:00Z",
+            "updated_at": "2026-04-10T15:32:00Z",
+            "ignored_nested": { "foo": "bar" }
+        }))
+        .expect("snapshot should normalize");
+
+        assert_eq!(snapshot.id, "ord_123");
+        assert_eq!(snapshot.symbol, "aapl");
+        assert_eq!(snapshot.side, "buy");
+        assert_eq!(snapshot.status, "filled");
+        assert_eq!(snapshot.order_type, "market");
+        assert_eq!(snapshot.qty, Some(2.5));
+        assert_eq!(snapshot.filled_qty, Some(2.5));
+        assert_eq!(snapshot.filled_avg_price, Some(182.40));
+        assert_eq!(
+            snapshot.submitted_at.as_deref(),
+            Some("2026-04-10T15:31:00Z")
+        );
+        assert_eq!(snapshot.updated_at.as_deref(), Some("2026-04-10T15:32:00Z"));
+    }
+
+    #[test]
+    fn normalize_position_snapshot_requires_symbol_and_preserves_position_fields() {
+        assert!(normalize_position_snapshot(&json!({ "qty": "1.0" })).is_none());
+
+        let snapshot = normalize_position_snapshot(&json!({
+            "symbol": "AAPL",
+            "qty": "3",
+            "side": "long",
+            "avg_entry_price": "180.10",
+            "current_price": "181.25",
+            "market_value": "543.75",
+            "unrealized_pl": "3.45",
+            "unrealized_plpc": "0.0064"
+        }))
+        .expect("position should normalize");
+
+        assert_eq!(snapshot.symbol, "AAPL");
+        assert_eq!(snapshot.qty, 3.0);
+        assert_eq!(snapshot.side.as_deref(), Some("long"));
+        assert_eq!(snapshot.avg_entry_price, Some(180.10));
+        assert_eq!(snapshot.current_price, Some(181.25));
+        assert_eq!(snapshot.market_value, Some(543.75));
+        assert_eq!(snapshot.unrealized_pl, Some(3.45));
+        assert_eq!(snapshot.unrealized_plpc, Some(0.0064));
+    }
+
+    #[test]
+    fn alpaca_order_payload_attaches_bracket_only_when_both_risk_bounds_exist() {
+        let mut cfg = StrategyConfig::default();
+        cfg.stop_loss_pct = Some(0.05);
+        cfg.take_profit_pct = Some(0.10);
+
+        let (payload, warnings) = alpaca_order_payload("AAPL", 2.0, &cfg, 100.0);
+        assert!(warnings.is_empty());
+        assert_eq!(
+            payload.get("order_class").and_then(|value| value.as_str()),
+            Some("bracket")
+        );
+        assert_eq!(
+            payload
+                .get("take_profit")
+                .and_then(|value| value.get("limit_price"))
+                .and_then(|value| value.as_str()),
+            Some("110.0000")
+        );
+        assert_eq!(
+            payload
+                .get("stop_loss")
+                .and_then(|value| value.get("stop_price"))
+                .and_then(|value| value.as_str()),
+            Some("95.0000")
+        );
+
+        cfg.take_profit_pct = None;
+        let (payload, warnings) = alpaca_order_payload("AAPL", 2.0, &cfg, 100.0);
+        assert!(payload.get("order_class").is_none());
+        assert_eq!(
+            warnings,
+            vec![
+                "Live bracket was skipped: Alpaca bracket requires both stop_loss_pct and take_profit_pct."
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn runner_status_from_runtime_reports_config_and_counters() {
+        let mut runtime = test_runner_runtime(77);
+        runtime.inflight = true;
+        runtime.started_at_unix_ms = 100;
+        runtime.last_bar_open_unix_ms = Some(200);
+        runtime.last_triggered_at_unix_ms = Some(300);
+        runtime.last_completed_at_unix_ms = Some(400);
+        runtime.run_count = 5;
+        runtime.skip_count = 2;
+        runtime.error_count = 1;
+        runtime.last_action = Some("buy".to_string());
+        runtime.last_order_id = Some("ord_123".to_string());
+        runtime.last_error = Some("last error".to_string());
+
+        let status = runner_status_from_runtime(Some(&runtime));
+        assert!(status.active);
+        assert!(status.inflight);
+        assert_eq!(status.run_count, 5);
+        assert_eq!(status.skip_count, 2);
+        assert_eq!(status.error_count, 1);
+        assert_eq!(status.started_at_unix_ms, Some(100));
+        assert_eq!(status.last_bar_open_unix_ms, Some(200));
+        assert_eq!(status.last_triggered_at_unix_ms, Some(300));
+        assert_eq!(status.last_completed_at_unix_ms, Some(400));
+        assert_eq!(status.last_action.as_deref(), Some("buy"));
+        assert_eq!(status.last_order_id.as_deref(), Some("ord_123"));
+        assert_eq!(status.last_error.as_deref(), Some("last error"));
+        let cfg = status.config.expect("runner config");
+        assert_eq!(cfg.symbol, "AAPL");
+        assert_eq!(cfg.qty, 1.0);
+        assert_eq!(cfg.mode, LiveExecutionMode::Paper);
+        assert_eq!(cfg.data_id, "data_1");
+        assert_eq!(cfg.strategy_kind, "DoubleMa");
+        assert!(cfg.dry_run);
+    }
+
+    #[test]
+    fn runner_status_from_runtime_none_is_inactive_and_zeroed() {
+        let status = runner_status_from_runtime(None);
+
+        assert!(!status.active);
+        assert!(!status.inflight);
+        assert!(status.config.is_none());
+        assert_eq!(status.run_count, 0);
+        assert_eq!(status.skip_count, 0);
+        assert_eq!(status.error_count, 0);
+        assert!(status.last_action.is_none());
+        assert!(status.last_order_id.is_none());
+        assert!(status.last_error.is_none());
+        assert!(status.started_at_unix_ms.is_none());
+        assert!(status.last_bar_open_unix_ms.is_none());
+        assert!(status.last_triggered_at_unix_ms.is_none());
+        assert!(status.last_completed_at_unix_ms.is_none());
     }
 
     #[test]

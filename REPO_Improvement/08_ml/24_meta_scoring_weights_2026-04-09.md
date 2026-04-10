@@ -128,22 +128,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document all current `MetaScoreWeights` fields and defaults.
-- [ ] Document the exact Stage 3 `meta_score` formula.
-- [ ] Document how holdout later contributes to Stage 3 `final_score`.
-- [ ] Document the difference between Stage 3 weights and Stage 5 blend weights.
-- [ ] Document downstream consumers of `meta_score`, including ML confidence features.
-- [ ] Document report/artifact surfaces that expose `meta_score` and `final_score`.
-- [ ] Identify where current artifact/report outputs do not expose the originating weight vector clearly enough.
-- [ ] Add or maintain regression coverage for weight-sensitive behavior.
-- [ ] Add or maintain snapshot coverage for score-field compatibility.
-- [ ] Preserve naming clarity between Stage 3 and Stage 5 score fields.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document all current `MetaScoreWeights` fields and defaults.
+- [x] Document the exact Stage 3 `meta_score` formula.
+- [x] Document how holdout later contributes to Stage 3 `final_score`.
+- [x] Document the difference between Stage 3 weights and Stage 5 blend weights.
+- [x] Document downstream consumers of `meta_score`, including ML confidence features.
+- [x] Document report/artifact surfaces that expose `meta_score` and `final_score`.
+- [x] Identify where current artifact/report outputs do not expose the originating weight vector clearly enough.
+- [x] Add or maintain regression coverage for weight-sensitive behavior.
+- [x] Add or maintain snapshot coverage for score-field compatibility.
+- [x] Preserve naming clarity between Stage 3 and Stage 5 score fields.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -163,6 +163,20 @@ Public-repo quality focus:
 - keep Stage 3 and Stage 5 score naming distinct even if UX copy is later simplified
 - prefer additive report metadata over changing the meaning of existing score fields
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making Stage 3 scoring ownership explicit in the Meta panel instead of leaving Stage 3 and Stage 5 weighting semantics easy to confuse.
+- `MetaWorkspacePanel.vue` now states that:
+  - Stage 3 `meta_score` uses backend `MetaScoreWeights`
+  - holdout can later replace ordering with holdout-adjusted `final_score`
+  - Stage 5 blend weights are separate from Stage 3 scoring
+- No scoring math changed in this slice. The improvement is contract visibility and contributor clarity, not new ranking behavior.
+- `REPO_MAP.md` now mentions the Stage 3 score ownership summary so future contributors do not conflate Stage 3 scoring with Stage 5 blending.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaRequestBuilder.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

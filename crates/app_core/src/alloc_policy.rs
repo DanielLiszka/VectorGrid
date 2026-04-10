@@ -340,6 +340,15 @@ mod tests {
     }
 
     #[test]
+    fn alloc_prefix_helpers_clamp_warm_prefix_to_buffer_len() {
+        let values_f64 = alloc_f64_with_prefix_uninit_tail(3, 9, 4.5);
+        assert_eq!(values_f64, vec![4.5, 4.5, 4.5]);
+
+        let values_f32 = alloc_f32_with_prefix_uninit_tail(2, 7, 3.25);
+        assert_eq!(values_f32, vec![3.25, 3.25]);
+    }
+
+    #[test]
     fn alloc_uninit_scalars_can_be_fully_overwritten() {
         let mut values_f64 = alloc_uninit_f64(4);
         values_f64.copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);

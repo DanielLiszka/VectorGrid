@@ -1,7 +1,8 @@
 use super::{run_artifacts, SaveReportXlsxResponse};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use ta_app_core::MetaSelectionResult;
+use tauri::Manager;
 
 #[path = "commands_reports_csv.rs"]
 mod commands_reports_csv;
@@ -28,6 +29,10 @@ pub(crate) fn open_path_blocking(path: String) -> Result<(), String> {
 
 pub(crate) fn sanitize_filename_component(raw: &str) -> String {
     commands_reports_shared::sanitize_filename_component(raw)
+}
+
+pub(crate) fn reports_dir_for_base(base: &Path) -> Result<PathBuf, String> {
+    commands_reports_shared::reports_dir_for_base(base)
 }
 
 pub(crate) fn build_validation_shortlist_csv_blocking(
@@ -65,19 +70,38 @@ pub fn build_report_xlsx_bytes_headless(
     commands_reports_validation_xlsx::build_validation_report_xlsx(report, max_rows)
 }
 
-pub(crate) fn save_report_xlsx_blocking(
+fn write_report_xlsx_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    std::fs::write(path, bytes).map_err(|e| {
+        format!(
+            "failed to write report workbook at {}: {}",
+            path.to_string_lossy(),
+            e
+        )
+    })
+}
+
+pub(crate) fn save_report_xlsx_for_base(
     report: Value,
     max_rows: Option<u32>,
-    app: tauri::AppHandle,
+    base: &Path,
 ) -> Result<SaveReportXlsxResponse, String> {
     let max_rows = max_rows.map(|n| n as usize).filter(|n| *n > 0);
     let bytes = commands_reports_validation_xlsx::build_validation_report_xlsx(&report, max_rows)?;
-    let path = commands_reports_shared::suggest_report_path(&report, &app)?;
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let path = commands_reports_shared::suggest_report_path_for_base(&report, base)?;
+    write_report_xlsx_file(&path, &bytes)?;
     Ok(SaveReportXlsxResponse {
         path: path.to_string_lossy().to_string(),
         bytes: bytes.len(),
     })
+}
+
+pub(crate) fn save_report_xlsx_blocking(
+    report: Value,
+    max_rows: Option<u32>,
+    app: tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<SaveReportXlsxResponse, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    save_report_xlsx_for_base(report, max_rows, &base)
 }
 
 fn build_report_data_from_dataset_meta(dataset_meta: Option<&Value>) -> Value {
@@ -193,7 +217,7 @@ fn build_validation_report_from_artifact(artifact: &Value) -> Result<Value, Stri
 pub(crate) fn save_report_xlsx_from_artifact_blocking(
     path: String,
     max_rows: Option<u32>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<SaveReportXlsxResponse, String> {
     let artifact = run_artifacts::load_artifact_value_checked_blocking(path, app.clone())?;
     let report = build_validation_report_from_artifact(&artifact)?;
@@ -3176,6 +3200,40 @@ mod tests {
         p
     }
 
+    fn unique_report_ts(prefix: &str) -> String {
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{prefix}_{uniq}")
+    }
+
+    fn minimal_report(ts: &str) -> Value {
+        json!({
+          "version": 1,
+          "kind": "vectorgrid_report",
+          "ts": ts,
+          "validation": {
+            "res": {
+              "data_id": "test",
+              "candidates": [
+                {
+                  "params": {
+                    "fast_ma_type": "sma",
+                    "fast_len": 9,
+                    "slow_ma_type": "ema",
+                    "slow_len": 21
+                  },
+                  "in_sample": { "pnl": 1.0, "sharpe": 2.0, "max_dd": 0.5, "trades": 10 },
+                  "robust_score": 1.23,
+                  "robust_pareto": true
+                }
+              ]
+            }
+          }
+        })
+    }
+
     #[test]
     fn validation_shortlist_csv_smoke() {
         let validation_res = json!({
@@ -3310,6 +3368,44 @@ mod tests {
         let encoded = build_report_xlsx_blocking(report.clone(), Some(1)).expect("wrapped xlsx");
         let bytes = build_report_xlsx_bytes_headless(&report, Some(1)).expect("direct xlsx");
         assert_eq!(encoded, general_purpose::STANDARD.encode(bytes));
+    }
+
+    #[test]
+    fn save_report_xlsx_for_base_uses_collision_suffixes() {
+        let base = make_temp_dir("save_report_xlsx_collision");
+        let ts = unique_report_ts("collision");
+        let existing = reports_dir_for_base(&base)
+            .expect("reports dir")
+            .join(format!("vectorgrid_report_{ts}.xlsx"));
+        std::fs::write(&existing, b"existing").expect("seed existing report");
+
+        let saved = save_report_xlsx_for_base(minimal_report(&ts), Some(1), &base).expect("save");
+        assert!(saved
+            .path
+            .ends_with(&format!("vectorgrid_report_{ts}_2.xlsx")));
+        assert!(Path::new(&saved.path).is_file());
+        assert!(saved.bytes > 0);
+    }
+
+    #[test]
+    fn write_report_xlsx_file_rejects_directory_targets() {
+        let target = make_temp_dir("write_report_xlsx_dir_target");
+        let err =
+            write_report_xlsx_file(&target, b"not-an-xlsx").expect_err("directory write error");
+        assert!(err.contains("failed to write report workbook at"));
+        assert!(err.contains(&target.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn save_report_xlsx_for_base_errors_when_reports_root_is_blocked_by_file() {
+        let base = make_temp_dir("save_report_xlsx_reports_blocked");
+        let reports_path = base.join("reports");
+        std::fs::write(&reports_path, b"not-a-directory").expect("seed file");
+
+        let err =
+            save_report_xlsx_for_base(minimal_report(&unique_report_ts("blocked")), Some(1), &base)
+                .expect_err("reports root blocked");
+        assert!(!err.trim().is_empty());
     }
 
     #[test]
@@ -3525,6 +3621,79 @@ mod tests {
                 .collect::<Vec<_>>()
             )
         );
+    }
+
+    #[test]
+    fn artifact_report_builder_matches_equivalent_direct_report_json() {
+        let artifact = json!({
+          "ts": "2026-04-02T12:00:00Z",
+          "dataset_meta": {
+            "csv_path": "C:/data/AAPL.csv",
+            "timeframe": "1h",
+            "base_timeframe": "1m",
+            "derived_timeframe": "1h",
+            "resample_applied": true,
+            "resample_rule": "session_relative_ohlcv",
+            "resample_anchor": "day_first_timestamp",
+            "label": "AAPL artifact",
+            "symbol": "AAPL",
+            "len": 4321
+          },
+          "optimization_metric_surface": {
+            "surface": "core17",
+            "fields": ["pnl", "trades", "max_dd"]
+          },
+          "run": {
+            "req": { "strategy_kind": "DoubleMa" },
+            "res": { "top": [{ "rank": 1 }] }
+          },
+          "validation": {
+            "req": { "candidates": [{ "fast_len": 10, "slow_len": 40 }] },
+            "res": { "candidates": [{ "rank": 1, "approval_label": "approved" }] }
+          }
+        });
+
+        let report = build_validation_report_from_artifact(&artifact).expect("artifact report");
+        let expected = json!({
+          "version": 1,
+          "kind": "vectorgrid_report",
+          "ts": "2026-04-02T12:00:00Z",
+          "data": {
+            "meta": {
+              "timeframe": "1h",
+              "base_timeframe": "1m",
+              "derived_timeframe": "1h",
+              "resample_rule": "session_relative_ohlcv",
+              "resample_anchor": "day_first_timestamp",
+              "len": 4321
+            },
+            "ctx": {
+              "label": "AAPL artifact",
+              "symbol": "AAPL",
+              "csv_path": "C:/data/AAPL.csv",
+              "timeframe": "1h",
+              "base_timeframe": "1m",
+              "derived_timeframe": "1h",
+              "resample_rule": "session_relative_ohlcv",
+              "resample_anchor": "day_first_timestamp",
+              "resample_applied": true
+            }
+          },
+          "optimization_metric_surface": {
+            "surface": "core17",
+            "fields": ["pnl", "trades", "max_dd"]
+          },
+          "run": {
+            "req": { "strategy_kind": "DoubleMa" },
+            "res": { "top": [{ "rank": 1 }] }
+          },
+          "validation": {
+            "req": { "candidates": [{ "fast_len": 10, "slow_len": 40 }] },
+            "res": { "candidates": [{ "rank": 1, "approval_label": "approved" }] }
+          }
+        });
+
+        assert_eq!(report, expected);
     }
 
     #[test]

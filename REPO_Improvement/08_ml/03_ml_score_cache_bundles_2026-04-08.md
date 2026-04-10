@@ -145,21 +145,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the full score-cache bundle inventory and file/path relationships.
-- [ ] Document required identity and compatibility fields.
-- [ ] Document `score_space` and `score_scope` semantics.
-- [ ] Document coverage, matched-row, and duplicate-timestamp fields as quality signals.
-- [ ] Document bundle-status health/warning classification and missing-manifest behavior.
-- [ ] Document how bundle metadata is attached to run artifacts and history views.
-- [ ] Add tests for mismatched version/kind/schema/data-id cases.
-- [ ] Add tests for raw-score versus probability-space bundle restrictions.
-- [ ] Add tests for manifest and artifact round-trip preservation.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the full score-cache bundle inventory and file/path relationships.
+- [x] Document required identity and compatibility fields.
+- [x] Document `score_space` and `score_scope` semantics.
+- [x] Document coverage, matched-row, and duplicate-timestamp fields as quality signals.
+- [x] Document bundle-status health/warning classification and missing-manifest behavior.
+- [x] Document how bundle metadata is attached to run artifacts and history views.
+- [x] Add tests for mismatched version/kind/schema/data-id cases.
+- [x] Add tests for raw-score versus probability-space bundle restrictions.
+- [x] Add tests for manifest and artifact round-trip preservation.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -183,3 +183,17 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/16_mlsignal_score_cache_build_2026-04-08.md`
 - `REPO_Improvement/08_ml/04_ml_validation_surface_2026-04-08.md`
 - `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`
+
+## Execution Notes
+
+- Closed by tightening bundle-contract verification on the existing service surface.
+- `mlSignalService.test.ts` now covers:
+  - bundle inventory listing and label formatting
+  - bundle-status refresh with explicit manifest-path/status copy
+  - optional bundle-state behavior when no bundle is selected
+  - persisted artifact payloads that retain `score_space`, `score_scope`, `matched_rows`, `coverage_ratio`, and stage-linked score-cache paths
+- `REPO_MAP.md` now documents the score-cache bundle truth anchor and the artifact-visible quality fields.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts src/components/MlSignalWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

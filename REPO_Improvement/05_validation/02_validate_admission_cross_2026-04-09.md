@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document admission policy control behavior and preview semantics.
-- [ ] Document cross enablement, mode selection, and dataset-selection rules.
-- [ ] Document preserved-finalists versus lightweight cross summary language.
-- [ ] Document visible-row filtering and cross-selection helper behavior.
-- [ ] Add or tighten tests for admission preview, cross summaries, and selection counts.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document admission policy control behavior and preview semantics.
+- [x] Document cross enablement, mode selection, and dataset-selection rules.
+- [x] Document preserved-finalists versus lightweight cross summary language.
+- [x] Document visible-row filtering and cross-selection helper behavior.
+- [x] Add or tighten tests for admission preview, cross summaries, and selection counts.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,12 @@ Public-repo quality focus:
 - prefer explicit omitted-module explanations over silent capability downgrades
 - keep preserved-finalists semantics conservative unless backend/runtime support expands intentionally
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened [ValidationWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ValidationWorkspacePanel.test.ts) so the admission/cross preview state is exercised from the real panel, including disabled cross actions and visible cross-selection counts in the ready-to-run stage.
+- Revalidated the deeper branch coverage already present in [validationService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.test.ts), [validationRequestBuilder.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationRequestBuilder.test.ts), and [validationStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/validationStore.actions.test.ts), which already cover admission-policy fallback, preserved-finalists semantics, cross-summary wording, cross selection normalization, and filtered match-current helpers.
+- Revalidated [commands_validation.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_validation.rs) through targeted Rust tests to keep cross-ticker finalist filtering, context compatibility, and bounded-preserved-finalist semantics aligned with the frontend summaries.
 
 ## Related Docs
 

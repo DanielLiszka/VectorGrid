@@ -125,17 +125,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document store ownership versus service ownership clearly.
-- [ ] Document saved-run detail caching and pruning behavior.
-- [ ] Document load/apply/rerun/open/reveal/delete/tag-save semantics separately.
-- [ ] Document ML-signal-specific replay branches and report fallback behavior.
-- [ ] Add or tighten cache-hit, cache-prune, and runtime-gating regressions.
-- [ ] Preserve path-type distinctions between artifacts and reports.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document store ownership versus service ownership clearly.
+- [x] Document saved-run detail caching and pruning behavior.
+- [x] Document load/apply/rerun/open/reveal/delete/tag-save semantics separately.
+- [x] Document ML-signal-specific replay branches and report fallback behavior.
+- [x] Add or tighten cache-hit, cache-prune, and runtime-gating regressions.
+- [x] Preserve path-type distinctions between artifacts and reports.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -160,3 +160,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/10_history_search_filter_ux_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/09_workflow_artifact_store_2026-04-08.md`
 - `REPO_Improvement/05_validation/23_metric_surface_contract_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a store/service ownership hardening slice without merging orchestration back into the history store.
+- Added explicit store regressions in `web/src/stores/historyStore.actions.test.ts` for runtime-running gating and stale-detail-cache pruning, and added service-level report fallback coverage in `web/src/services/historyService.test.ts`.
+- The current split remains: visible state, selection, filtering, and gating in `historyStore`; refresh/load/apply/rerun/open/reveal/delete/tag-save orchestration in `historyService`.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/stores/historyStore.actions.test.ts src/services/historyService.test.ts src/stores/historyStore.search.test.ts src/components/HistoryWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

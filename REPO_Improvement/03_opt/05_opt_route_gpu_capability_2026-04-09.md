@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the route-capability matrix and authority layers.
-- [ ] Document composite-profile route policy including ADX-sensitive branches.
-- [ ] Document export and metric-surface capability by route.
-- [ ] Add or tighten parity tests between frontend capability text and backend route results.
-- [ ] Document fallback reason handling as a first-class UX contract.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the route-capability matrix and authority layers.
+- [x] Document composite-profile route policy including ADX-sensitive branches.
+- [x] Document export and metric-surface capability by route.
+- [x] Add or tighten parity tests between frontend capability text and backend route results.
+- [x] Document fallback reason handling as a first-class UX contract.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,14 @@ Public-repo quality focus:
 - keep frontend capability prose conservative if there is any uncertainty
 - if a route loses capability, surface the fallback reason explicitly instead of hiding it
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the current route-capability matrix instead of broadening it. `strategyOptimizationCapabilities.test.ts` and `compositeProfileGpuPolicy.test.ts` already prove the current authority split: frontend capability summaries are advisory, composite-route previews are ADX-sensitive, export-all is disabled on hybrid or CPU routes, and metric-surface availability remains route-dependent rather than generic “GPU” marketing.
+- Added a direct parity test in `strategyOptimizationCapabilities.test.ts` tying advisory capability flags to real request-builder behavior. The new matrix verifies that `supportsExportAll` agrees with `buildDoubleMaOptimizationRequest()` acceptance for representative kernel, hybrid, and CPU composite routes, so capability prose and request legality no longer drift as separate test islands.
+- Revalidated request-builder truth and export legality through `optimizeRequestBuilder.test.ts`, including Auto-route normalization for the composite trio and rejection of export-all on hybrid or CPU fallback routes. Revalidated panel-facing route text through `OptimizeWorkspacePanel.test.ts`, which exercises the hybrid composite route preview and legacy backend alias normalization.
+- Kept backend-route truth grounded in the existing Rust and service surface. `optimizeService.test.ts` continues to verify parity metadata and surfaced fallback reasons, while the repo already contains backend route-diagnostics coverage in the double-MA and composite Rust modules for deeper route behavior.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts src/strategies/compositeProfileGpuPolicy.test.ts src/components/OptimizeWorkspacePanel.test.ts src/services/optimizeService.test.ts src/services/optimizeRequestBuilder.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

@@ -96,20 +96,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the route contract for CompositeTrend, RegimeHybrid, and BreakoutMomentum.
-- [ ] Define backend runtime route selection as the source of truth.
-- [ ] Keep frontend preview and capability surfaces explicitly synchronized to that truth.
-- [ ] Add or maintain route-matrix evidence for supported route combinations.
-- [ ] Review route-sensitive validation and report behavior so it is not left implicit.
-- [ ] Make route-change review require code, tests, and evidence updates together.
-- [ ] Preserve strategy-local discoverability instead of broad generic routing layers.
-- [ ] Avoid route-policy prose that can become stale without code/test linkage.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the route contract for CompositeTrend, RegimeHybrid, and BreakoutMomentum.
+- [x] Define backend runtime route selection as the source of truth.
+- [x] Keep frontend preview and capability surfaces explicitly synchronized to that truth.
+- [x] Add or maintain route-matrix evidence for supported route combinations.
+- [x] Review route-sensitive validation and report behavior so it is not left implicit.
+- [x] Make route-change review require code, tests, and evidence updates together.
+- [x] Preserve strategy-local discoverability instead of broad generic routing layers.
+- [x] Avoid route-policy prose that can become stale without code/test linkage.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -128,6 +128,13 @@ Public-repo quality focus:
 - if route evidence becomes more formalized, keep the lightweight unit tests too
 - do not hide CPU fallback behavior while improving GPU route clarity
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed this shared policy slice by tightening the route contract in the code and the user-facing preview together. `web/src/components/OptimizeWorkspacePanel.vue` now reflects the exact route-sensitive feature policy for CPU, hybrid GPU, and kernel GPU composite paths, while the route-policy helper and capability tests lock the same distinctions in code.
+- Added route-policy evidence in `web/src/strategies/compositeProfileGpuPolicy.test.ts`, `web/src/utils/strategyOptimizationCapabilities.test.ts`, `web/src/components/OptimizeWorkspacePanel.test.ts`, and `crates/app_core/src/composite_profile_route.rs` so frontend preview, capability copy, and backend target labels all assert the same current route matrix.
+- This gives the composite-route contract one practical authority chain: backend target labels as runtime truth, mirrored by frontend route-preview/capability helpers, and enforced by tests on both sides.
+- Acceptance evidence captured for this closure: `npm.cmd --prefix web run test -- src/strategies/compositeProfileGpuPolicy.test.ts src/utils/strategyOptimizationCapabilities.test.ts src/components/OptimizeWorkspacePanel.test.ts`, `cargo test -p ta_app_core composite_profile_route --lib`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

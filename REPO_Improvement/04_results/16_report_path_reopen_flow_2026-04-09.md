@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current-run versus saved-run report reopen flows.
-- [ ] Document visible cues that a report exists and is reopenable.
-- [ ] Document path/reveal/open action semantics in result-review contexts.
-- [ ] Document fallback behavior when a report path is absent or stale.
-- [ ] Add or tighten tests for report open and reveal action visibility.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document current-run versus saved-run report reopen flows.
+- [x] Document visible cues that a report exists and is reopenable.
+- [x] Document path/reveal/open action semantics in result-review contexts.
+- [x] Document fallback behavior when a report path is absent or stale.
+- [x] Add or tighten tests for report open and reveal action visibility.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,12 @@ Public-repo quality focus:
 - if report generation becomes more conditional later, surface that distinction explicitly before changing reopen affordances
 - keep History and result-surface messaging aligned whenever artifact-path semantics change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated report-path and reopen behavior through [HistoryWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/HistoryWorkspacePanel.test.ts), [historyService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/historyService.test.ts), [historyStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/historyStore.actions.test.ts), and [commandActionStore.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/commandActionStore.test.ts).
+- The current evidence confirms current-run fallback report paths, saved-run report open/reveal actions, and stale-path fallback to `reveal_path` are still visible and truthful.
+- No production code change was required in this tranche because the current report-path/reopen contract is already satisfied by the existing results/history action surface.
 
 ## Related Docs
 

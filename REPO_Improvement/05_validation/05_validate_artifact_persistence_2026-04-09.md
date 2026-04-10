@@ -99,18 +99,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the minimum persisted validation-artifact fields and their consumers.
-- [ ] Document the sequence from run result to saved artifact to workflow-artifact reapplication.
-- [ ] Document how `report_xlsx_path` and `dataset_meta` are sourced and preserved.
-- [ ] Document partial-success behavior when validation succeeds but artifact persistence fails.
-- [ ] Document how current-run and current-validation payloads must remain separable in the workflow-artifacts store.
-- [ ] Add or tighten tests for successful persistence, partial persistence failure, and later hydration compatibility.
-- [ ] Add or tighten tests for persisted report-path propagation after export.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the minimum persisted validation-artifact fields and their consumers.
+- [x] Document the sequence from run result to saved artifact to workflow-artifact reapplication.
+- [x] Document how `report_xlsx_path` and `dataset_meta` are sourced and preserved.
+- [x] Document partial-success behavior when validation succeeds but artifact persistence fails.
+- [x] Document how current-run and current-validation payloads must remain separable in the workflow-artifacts store.
+- [x] Add or tighten tests for successful persistence, partial persistence failure, and later hydration compatibility.
+- [x] Add or tighten tests for persisted report-path propagation after export.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -129,6 +129,13 @@ Public-repo quality focus:
 - if persistence semantics tighten, update history/detail/hydration docs and tests at the same time
 - keep frontend normalization compatible with existing saved artifacts first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened [validationService.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.ts) so non-fatal artifact-persistence failure is now surfaced explicitly in `statusLine` instead of being silently swallowed.
+- Added a new partial-success regression test in [validationService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.test.ts) that proves validation still succeeds, preserves the current artifact identity/dataset metadata, and updates in-memory run/validation state even when `save_run_artifact` fails, while also making the persistence warning visible to the operator.
+- Revalidated the hydration/persistence consumers in [workflowArtifactsStore.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/workflowArtifactsStore.test.ts), [workflowArtifactsSync.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/workflowArtifactsSync.test.ts), and [run_artifacts.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/run_artifacts.rs), which still cover report-path normalization, dataset-meta propagation, config-fingerprint stability, and workflow hydration shape.
+- The final verification set for this item was `npm --prefix web run test -- src/services/validationService.test.ts src/stores/workflowArtifactsStore.test.ts src/services/workflowArtifactsSync.test.ts`, `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo test -p ta_desktop_demo_app run_artifacts --lib`.
 
 ## Related Docs
 

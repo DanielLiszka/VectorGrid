@@ -1,6 +1,6 @@
 # Desktop Task Center Navigation Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the minimum task-center sections that must appear in desktop smoke.
-- [ ] Document the required open and close behavior in the native shell.
-- [ ] Keep the spec tied to stable dialog and launcher selectors.
-- [ ] Avoid widening the spec into full task-data validation.
-- [ ] Keep the task-center desktop smoke non-options only.
-- [ ] Cross-check failures against the overlay component and visibility composable before broadening the test.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the minimum task-center sections that must appear in desktop smoke.
+- [x] Document the required open and close behavior in the native shell.
+- [x] Keep the spec tied to stable dialog and launcher selectors.
+- [x] Avoid widening the spec into full task-data validation.
+- [x] Keep the task-center desktop smoke non-options only.
+- [x] Cross-check failures against the overlay component and visibility composable before broadening the test.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,28 @@ Public-repo quality focus:
 - add deeper task-center assertions only when a real user-facing regression requires them
 - keep launcher drag/persistence separate unless it is promoted intentionally into smoke coverage
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed after tightening the task-center smoke contract from aggregate dialog text scraping to section-scoped selectors.
+- The real-shell spec now asserts stable section labels directly:
+  - `Task center active posture`
+  - `Task center recent outcomes`
+  - `Task center events`
+  - `Task center timeline`
+- This keeps the desktop smoke focused on open, stable section presence, and close behavior while leaving richer task-state permutations to component/composable tests.
+- The overlay implementation and shared visibility composable remain the first cross-check points when the desktop task-center smoke fails; no wider harness or shell changes were required for this closure.
+- No additional `README.md` or `REPO_MAP.md` update was required because the change tightened selectors without changing the user-facing desktop journey.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/TaskCenterOverlay.test.ts src/composables/useTaskCenterVisibility.test.ts src/components/SettingsWorkspacePanel.test.ts src/components/VueWorkspaceShell.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run typecheck:desktop`
+  - `npm.cmd --prefix web run test:desktop:smoke:spec -- .\\e2e\\desktop\\specs\\desktop-task-center.spec.ts`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+- Raw evidence paths refreshed in this session:
+  - targeted task-center run: `output/wdio/desktop-smoke/2026-04-10T17-38-59-916Z/`
+  - stable desktop smoke: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
 
 ## Related Docs
 

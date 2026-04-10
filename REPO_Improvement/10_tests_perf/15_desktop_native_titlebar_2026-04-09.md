@@ -1,6 +1,6 @@
 # Desktop Native Titlebar Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the required titlebar controls and their accessible labels.
-- [ ] Document the minimal maximize/restore responsiveness journey.
-- [ ] Keep titlebar selectors aligned with the actual component accessibility contract.
-- [ ] Review any titlebar implementation change against both browser shell assumptions and desktop smoke.
-- [ ] Keep the titlebar smoke spec non-options only.
-- [ ] Avoid turning titlebar smoke into a broader task-lifecycle integration suite.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the required titlebar controls and their accessible labels.
+- [x] Document the minimal maximize/restore responsiveness journey.
+- [x] Keep titlebar selectors aligned with the actual component accessibility contract.
+- [x] Review any titlebar implementation change against both browser shell assumptions and desktop smoke.
+- [x] Keep the titlebar smoke spec non-options only.
+- [x] Avoid turning titlebar smoke into a broader task-lifecycle integration suite.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,28 @@ Public-repo quality focus:
 - if maximize/restore remains noisy, improve waits and triage before widening the assertions
 - preserve close-guard functionality in the component even if the smoke contract stays narrower
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed after aligning the shared desktop selector contract with the titlebar component accessibility contract.
+- The maximize toggle now exposes stateful accessible labels:
+  - `Maximize window` when the shell is not maximized
+  - `Restore window` when the shell is maximized
+- Proof layers are now cleanly split:
+  - `DesktopTitlebar.test.ts` covers accessible labels, restore-label state, and close-guard semantics
+  - `desktop-titlebar-native-controls.spec.ts` covers native control availability plus post-maximize shell responsiveness in the real Tauri window
+- The smoke spec intentionally remains narrow. It still uses `browser.pause(250)` after maximize, so geometry and persistence semantics stay tracked under `18_desktop_geometry_behavior` instead of keeping this item open.
+- No `README.md` or `REPO_MAP.md` sync was required because this change only reconciled the existing titlebar selector contract with the implemented component behavior.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/DesktopTitlebar.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run typecheck:desktop`
+  - `npm.cmd --prefix web run test:desktop:smoke:spec -- .\\e2e\\desktop\\specs\\desktop-titlebar-native-controls.spec.ts`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+- Raw evidence paths refreshed in this session:
+  - targeted titlebar run: `output/wdio/desktop-smoke/2026-04-10T17-29-35-668Z/`
+  - stable desktop smoke: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
 
 ## Related Docs
 

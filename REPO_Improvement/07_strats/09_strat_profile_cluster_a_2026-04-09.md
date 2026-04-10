@@ -1,6 +1,6 @@
 # Profile Cluster A Strategy Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -119,19 +119,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact membership of Cluster A and why these families are grouped together.
-- [ ] Document route, fallback, and validation expectations for each member of the cluster.
-- [ ] Document which behaviors are strategy-local versus shared in `composite_cpu.rs` and `composite_validate.rs`.
-- [ ] Add or tighten tests for route diagnostics and fallback notes.
-- [ ] Add or tighten capability-summary and request-builder tests for these profile kinds.
-- [ ] Review whether benchmark coverage should be normalized across all five cluster members.
-- [ ] Keep artifact/result expectations aligned with the rest of the standard optimize workflow.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the exact membership of Cluster A and why these families are grouped together.
+- [x] Document route, fallback, and validation expectations for each member of the cluster.
+- [x] Document which behaviors are strategy-local versus shared in `composite_cpu.rs` and `composite_validate.rs`.
+- [x] Add or tighten tests for route diagnostics and fallback notes.
+- [x] Add or tighten capability-summary and request-builder tests for these profile kinds.
+- [x] Review whether benchmark coverage should be normalized across all five cluster members.
+- [x] Keep artifact/result expectations aligned with the rest of the standard optimize workflow.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -151,6 +151,29 @@ Public-repo quality focus:
 - if shared orchestration is reduced later, move behavior into strategy-local files without changing result or validation semantics
 - use this cluster's stronger benchmark/test posture as the minimum bar for future standalone-profile changes
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making Cluster A explicit in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md): `Asr`, `Vcc`, `Vemr`, `Rocb`, and `Vcet` are now documented as a fixed standalone-profile tier with strategy-local owners, validation posture, and shared orchestration truth anchors.
+- Tightened frontend evidence by adding a positive `Asr` optimize-request builder test in [optimizeRequestBuilder.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/optimizeRequestBuilder.test.ts) and by adding a dedicated Cluster A capability-summary test in [strategyOptimizationCapabilities.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/utils/strategyOptimizationCapabilities.test.ts).
+- Tightened artifact/export evidence by extending the strategy-agnostic workbook family smoke in [validation_xlsx_report_tests.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/validation_xlsx_report_tests.rs) to include `vcet`, so the full Cluster A family now appears in the workbook export surface instead of leaving `Vcet` implicit.
+- Benchmark review result:
+  - current dedicated optimize benches already exist for all five Cluster A families:
+    - `crates/app_core/benches/asr_opt.rs`
+    - `crates/app_core/benches/vcc_opt.rs`
+    - `crates/app_core/benches/vemr_opt.rs`
+    - `crates/app_core/benches/rocb_opt.rs`
+    - `crates/app_core/benches/vcet_opt.rs`
+  - no new bench files were required for this tranche.
+- Stable truth anchors:
+  - strategy-local runtime owners in `crates/app_core/src/{asr,vcc,vemr,rocb,vcet}.rs`
+  - shared optimize orchestration in `crates/app_core/src/composite_cpu.rs`
+  - shared validation orchestration in `crates/app_core/src/composite_validate.rs`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts src/services/optimizeRequestBuilder.test.ts`
+  - `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

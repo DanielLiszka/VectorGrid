@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which strategies resolve to `run_composite_cpu_optimization`.
-- [ ] Document the Composite CPU `Grid`-only product normalization rule.
-- [ ] Document the run guard, cancel token, and progress sink behavior.
-- [ ] Add or tighten routing-parity tests for Composite CPU families.
-- [ ] Document the relationship between frontend capability messaging and command truth.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document which strategies resolve to `run_composite_cpu_optimization`.
+- [x] Document the Composite CPU `Grid`-only product normalization rule.
+- [x] Document the run guard, cancel token, and progress sink behavior.
+- [x] Add or tighten routing-parity tests for Composite CPU families.
+- [x] Document the relationship between frontend capability messaging and command truth.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - treat the command boundary as the authoritative product contract if UI copy drifts
 - update staged-family routing and this plan together when new families are surfaced
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Composite CPU command as a distinct product route rather than a backend detail. `commands_optimize.rs` already pins Composite CPU product mode to `Grid`, and the internal command tests cover that normalization directly.
+- Frontend command routing is already frozen by tests. `optimizeService.test.ts` and `optimizeRequestBuilder.test.ts` continue to prove Composite CPU request construction and command selection for `Asr`, `Vcc`, `Vemr`, `Rocb`, `Vcet`, the staged families, and `CompositeCpu` itself.
+- No code change was required in this tranche because the targeted audit did not reveal a command-boundary or routing mismatch; the existing implementation already matches the documented contract.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app commands_optimize --lib`, `npm.cmd --prefix web run test -- src/services/optimizeService.test.ts src/services/optimizeRequestBuilder.test.ts src/components/OptimizeWorkspacePanel.test.ts src/services/runControlService.test.ts src/tauri/instrumentation.test.ts src/stores/taskStore.lifecycle.test.ts src/utils/statusPresentation.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

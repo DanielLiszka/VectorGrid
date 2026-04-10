@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document supported schema versions and compatibility behavior.
-- [ ] Document static profiles and graph-size limits.
-- [ ] Document CPU versus GPU-unified plan compilation behavior.
-- [ ] Document the reduced GPU-v1 subset and its purpose.
-- [ ] Add or tighten parity tests across builder, preview, and plan compilation.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document supported schema versions and compatibility behavior.
+- [x] Document static profiles and graph-size limits.
+- [x] Document CPU versus GPU-unified plan compilation behavior.
+- [x] Document the reduced GPU-v1 subset and its purpose.
+- [x] Add or tighten parity tests across builder, preview, and plan compilation.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -125,6 +125,12 @@ Public-repo quality focus:
 - keep builder constraints conservative if backend support is uncertain
 - update builder, preview, and plan docs together when schema or route support changes
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the current IR lifecycle across schema validation, backend preview, and product-safe plan compilation. The existing `strategy_ir.rs`, `strategy_plan.rs`, and `strategy_dynamic.rs` tests still cover supported schema versions, static-profile builders, route-aware compilation, and the reduced GPU-v1 subset restrictions described in this plan.
+- The command-boundary preview evidence remains current: `cargo test -p ta_desktop_demo_app commands_dynamic --lib` passed and continues to prove that JSON preview parsing and product preview behavior stay wired through the Tauri layer.
+- No code change was required in this tranche because the current builder and backend preview/plan stack already implement the documented schema compatibility and reduced GPU-v1 subset. The remaining known gap is a true end-to-end parity test that feeds frontend-emitted IR through the backend preview/compile path in one assertion.
 
 ## Related Docs
 

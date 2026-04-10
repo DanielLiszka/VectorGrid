@@ -1,6 +1,6 @@
 # System GPU Window Surface Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -128,20 +128,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current GPU diagnostics payload and what it does not guarantee.
-- [ ] Document the current OS-specific window-effect matrix and rejection behavior.
-- [ ] Document how the custom titlebar maps to real Tauri window actions.
-- [ ] Document guarded-close behavior for runner-active and protected-task states.
-- [ ] Document when desktop productization bridges are active versus unavailable.
-- [ ] Document current window-state persistence behavior and where it is sourced from.
-- [ ] Document WebView/runtime persistence assumptions that affect settings and desktop state.
-- [ ] Add or tighten tests if effect options, titlebar actions, or desktop bridge activation rules change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the current GPU diagnostics payload and what it does not guarantee.
+- [x] Document the current OS-specific window-effect matrix and rejection behavior.
+- [x] Document how the custom titlebar maps to real Tauri window actions.
+- [x] Document guarded-close behavior for runner-active and protected-task states.
+- [x] Document when desktop productization bridges are active versus unavailable.
+- [x] Document current window-state persistence behavior and where it is sourced from.
+- [x] Document WebView/runtime persistence assumptions that affect settings and desktop state.
+- [x] Add or tighten tests if effect options, titlebar actions, or desktop bridge activation rules change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -161,6 +161,26 @@ Public-repo quality focus:
 - keep browser-mode fallback behavior intact so non-Tauri verification still works
 - preserve current close-guard semantics until runner/task cancellation contracts are explicitly revised
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the system-surface truth anchors without widening desktop behavior:
+  - [commands_system.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_system.rs) now has a direct smoke test for `get_gpu_status()` so the shipped diagnostics payload is covered at the command boundary, not only indirectly through optimize flows
+  - existing desktop tests already anchor the rest of the contract:
+    - titlebar action mapping and guarded-close behavior in [DesktopTitlebar.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/DesktopTitlebar.test.ts)
+    - desktop bridge activation, notification handling, and window-state metadata in [desktopProductization.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/desktopProductization.test.ts)
+    - persisted settings/window-effect application in [settingsStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/settingsStore.actions.test.ts), [settingsService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/settingsService.test.ts), and [settings_tests.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/settings_tests.rs)
+- Kept scope intentionally additive:
+  - no titlebar affordances were removed
+  - no window-effect options were broadened
+  - no browser-mode fallback behavior changed
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app commands_system --lib`
+  - `npm.cmd --prefix web run test -- src/components/DesktopTitlebar.test.ts src/services/desktopProductization.test.ts src/stores/settingsStore.actions.test.ts src/services/settingsService.test.ts`
+  - `cargo test -p ta_desktop_demo_app --test settings_tests`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo check -p ta_desktop_demo_app`
 
 ## Related Docs
 

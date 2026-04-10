@@ -119,20 +119,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the major responsibility slices owned by `metaService.ts`.
-- [ ] Document which request builders it composes.
-- [ ] Document the backend command families it orchestrates.
-- [ ] Document current replay/recovery ownership in the service layer.
-- [ ] Document Stage 4/Stage 5 compatibility aliasing concentrated in the service.
-- [ ] Document status/rendering ownership and global `statusLine` coupling.
-- [ ] Preserve tests for service orchestration, campaign recovery, and result rendering.
-- [ ] Treat large service refactors as compatibility-sensitive across store, component, and artifact surfaces.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the major responsibility slices owned by `metaService.ts`.
+- [x] Document which request builders it composes.
+- [x] Document the backend command families it orchestrates.
+- [x] Document current replay/recovery ownership in the service layer.
+- [x] Document Stage 4/Stage 5 compatibility aliasing concentrated in the service.
+- [x] Document status/rendering ownership and global `statusLine` coupling.
+- [x] Preserve tests for service orchestration, campaign recovery, and result rendering.
+- [x] Treat large service refactors as compatibility-sensitive across store, component, and artifact surfaces.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -151,6 +151,20 @@ Public-repo quality focus:
 - prefer extracting smaller service helpers over in-place semantic rewrites if decomposition work begins
 - keep replay and recovery behavior explicit if the service is split later
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the documentation-to-code match around `metaService.ts` rather than attempting a risky decomposition. [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md) now routes contributors through the exact builder split and makes `metaService.ts` the explicit orchestration owner for Stage 3, Stage 5, policy eval, saved replay, and campaigns.
+- The service now carries a clear builder-boundary comment at the auto-build path and a scope-fallback comment at `currentMetaScope()`, which makes the service’s contract readable without changing product semantics outside the corrected Stage 5 scope fallback.
+- Acceptance evidence remains cross-surface on purpose: `metaService.test.ts`, `metaServiceCampaignResume.test.ts`, `metaServiceCampaignStrategy.test.ts`, and `MetaWorkspacePanel.test.ts` together prove orchestration, replay/recovery, campaign routing, alias handling, and rendering/status behavior.
+- Stable fixture / replay payload:
+  - `meta_json_path=C:/runs/vectorgrid_meta.json`
+  - `stage5_json_path=C:/runs/vectorgrid_stage5.json`
+  - `eval_json_path=C:/runs/vectorgrid_ml_policy_eval.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaServiceCampaignStrategy.test.ts src/components/MetaWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

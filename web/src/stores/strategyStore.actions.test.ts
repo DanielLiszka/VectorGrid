@@ -93,4 +93,34 @@ describe('strategy store actions', () => {
     expect(harness.eventsById.trendUseAdx).toBeUndefined()
     expect(harness.eventsById.longOnly).toBeUndefined()
   })
+
+  it('rehydrates strategy snapshots while preserving forced tradeOnNext semantics', () => {
+    const store = useStrategyStore()
+
+    store.applyLegacySnapshot({
+      costPreset: 'crypto_spot_taker',
+      feeBps: '7.50',
+      spreadBps: '5.00',
+      slippageBps: '2.50',
+      commission: '0.123',
+      costHint: 'Legacy hint',
+      breakoutMacdFast: '21',
+      longOnly: false,
+      allowFlip: false,
+      tradeOnNext: false,
+    })
+
+    expect(store.costPreset).toBe('crypto_spot_taker')
+    expect(store.feeBps).toBe('7.50')
+    expect(store.spreadBps).toBe('5.00')
+    expect(store.slippageBps).toBe('2.50')
+    expect(store.commission).toBe('0.123')
+    expect(store.costHint).toBe('Legacy hint')
+    expect(store.breakoutMacdFast).toBe('21')
+    expect(store.longOnly).toBe(false)
+    expect(store.allowFlip).toBe(false)
+    expect(store.tradeOnNext).toBe(true)
+    expect(store.source).toBe('vue')
+    expect(store.updatedAtUnixMs).toBeGreaterThan(0)
+  })
 })

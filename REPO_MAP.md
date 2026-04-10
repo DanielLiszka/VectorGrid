@@ -1,6 +1,6 @@
 # REPO_MAP
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -40,6 +40,9 @@ Do not treat this as the full implementation spec. Use it together with:
 - `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md` for the current Prompt 2 follow-up execution guide covering the one-factor `event_chronological` versus `session_chronological` split-assignment ablation, fixed SPY/QQQ sign-off pair, and reject/defer/promote checklist
 - `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md` for the current Prompt 4 follow-up execution guide covering realism-lane semantic lock-in, aggregate-only provider-download scope freeze, and quote-aware versus derived-mid clarity hardening
 - `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md` for the current Prompt 5 follow-up execution guide covering retained-leader/disagreement summary hardening for artifact list, compare, and reopened summary surfaces without widening hot-path GPU state
+- `options_research/options_expression_support_aware_validation_semantics_implementation_guide_2026-04-10.md` for the current Prompt 6 follow-up execution guide covering support-aware tuple verdict semantics, reopened-artifact truth refresh, and compact validation support cues inside the existing options workflow
+- `CUDA kernel review/rtcore_barrier_validation_experiment_implementation_plan_2026-04-10.md` for the repo-grounded RT-core experiment guide scoped to validation-side intrabar barrier resolution, with viability gates and checklist
+- `CUDA kernel review/tensorcore_alma_indicator_prep_experiment_implementation_plan_2026-04-10.md` for the repo-grounded Tensor Core experiment guide scoped to ALMA indicator preparation behind the existing `vector-ta` VRAM MA interface, with viability gates and checklist
 
 ## How To Use This Map
 
@@ -111,6 +114,7 @@ If the task is about the current options backtest optimization / embedded valida
   - `options_research/options_expression_split_assignment_ablation_implementation_guide_2026-04-09.md`
   - `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md`
   - `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md`
+  - `options_research/options_expression_support_aware_validation_semantics_implementation_guide_2026-04-10.md`
 - frontend host / request shaping
   - `web/src/components/OptionsExpressionPanel.vue`
   - `web/src/stores/optionsExpressionStore.ts`
@@ -175,6 +179,8 @@ If the task is about the current options backtest optimization / embedded valida
 - `research/`
 - `ma_review/`
 - `validation_review/`
+- `CUDA kernel review/`
+  - experiment notes, SASS dumps, and implementation guides for CUDA-adjacent performance investigations
 - `section5_strategies/`
 - `docs/`
   - currently mostly benchmark/supporting assets rather than a major routing surface
@@ -359,6 +365,21 @@ Open in this order:
 - `crates/app_core/src/meta_select.rs`
 - `crates/app_core/src/ml_confidence.rs`
 
+Research-campaign orchestration truth anchors:
+
+- frontend orchestration:
+  - `web/src/services/metaService.ts`
+  - `web/src/services/metaServiceCampaignStrategy.test.ts`
+  - `web/src/services/metaServiceCampaignResume.test.ts`
+  - `web/src/stores/taskStoreCampaignProgress.test.ts`
+- backend orchestration:
+  - `src-tauri/src/commands_campaign.rs`
+- keep these campaign contract layers explicit:
+  - request contract owns dataset list, execution mode (`full`, `optimize_only`, `validate_only`), preload policy, validation payload, and optional auto-meta / auto-stage5 follow-ups
+  - progress payload owns stage labels, counts, and summary-path disclosure during long-running work
+  - saved campaign summary artifacts are the source of truth for retry, resume, and reveal behavior
+  - supported campaign strategy surface is narrower than the full strategy catalog; `DynamicDoubleMa` and `MlSignal` remain explicitly rejected
+
 ### If the task is ML Signal
 
 Open in this order:
@@ -393,6 +414,29 @@ Open in this order:
 
 - `web/src/services/analysisService.ts`
 - `web/src/stores/analysisStore.ts`
+- `src-tauri/src/commands_analysis.rs`
+- `crates/app_core/src/double_ma.rs`
+- `crates/app_core/src/composite_cpu.rs`
+
+Current drilldown/local-stability coverage matrix:
+
+- Double-MA family:
+  - `DoubleMa`, `Pit`, `Set`, `Mts`, `Orc`, `Marrt`, `Vfct`, `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the Double-MA drilldown and local-stability path
+- Composite-family analysis:
+  - `CompositeCpu` supports both drilldown and local stability on its own analysis path
+  - `Asr` supports both drilldown and local stability on the composite-family analysis path
+  - `Vemr` supports both drilldown and local stability on the composite-family analysis path
+  - `Vcc` currently supports local stability, but drilldown remains intentionally unimplemented
+  - `Rocb` currently supports local stability, but drilldown remains intentionally unimplemented
+  - `Vcet`, `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` currently keep both drilldown and local stability explicit as “not implemented yet” on the composite-family analysis path
+- `MlSignal` does not participate in optimizer drilldown/local-stability views; loading an `MlSignal` artifact should leave analysis views in the explicit non-optimizer state
+
+Truth anchors for this coverage:
+
+- `web/src/services/analysisService.ts`
+- `web/src/services/analysisService.test.ts`
+- `web/src/components/TopWorkspacePanel.test.ts`
+- `web/src/components/DrillWorkspacePanel.test.ts`
 - `src-tauri/src/commands_analysis.rs`
 - `crates/app_core/src/double_ma.rs`
 - `crates/app_core/src/composite_cpu.rs`
@@ -436,6 +480,24 @@ Open in this order:
 - `web/src/utils/strategyOptimizationCapabilities.ts`
 - `web/src/strategies/compositeProfileGpuPolicy.ts`
 - the relevant `web/src/services/*Service.ts`
+
+Strategy-surface matrix truth anchors:
+
+- hard legality first:
+  - backend/request-builder truth in `web/src/services/optimizeRequestBuilder.ts`, `web/src/services/validationRequestBuilder.ts`, `src-tauri/src/commands_campaign.rs`, and the backend route owners
+- shared matrix/copy second:
+  - `web/src/utils/strategyOptimizationCapabilities.ts`
+  - `web/src/strategies/compositeProfileGpuPolicy.ts`
+- UI gating third:
+  - `web/src/components/OptimizeWorkspacePanel.vue`
+  - `web/src/components/AdvancedWorkspacePanel.vue`
+  - `web/src/components/MetaWorkspacePanel.vue`
+
+If one layer disagrees with another, prefer:
+
+1. backend/request-builder legality
+2. capability-summary and route-preview truth
+3. component copy or visibility logic
 
 ### If the task is GPU route policy or kernel eligibility
 
@@ -631,6 +693,9 @@ Visible-shell routing and restored state also depend on:
   - restores `workspace`, `workflowStep`, `controlsTab`, `resultsTab`, and `aggregateTab` from storage
 - `web/src/components/MetaWorkspacePanel.vue`
   - owns the `meta` / `batch` / `saved` / `compare` aggregate switch once the shell has routed to the meta result surface
+  - compare is explicitly provenance-scoped: working side = current Meta Selection output, baseline side = one Saved Meta artifact; Saved Stage 5 and Saved Policy Evaluation remain separate saved-library families instead of compare baselines
+  - batch generation now exposes a compact operating-mode summary for execution mode, preload policy, automation mode, and selected dataset count without hiding retry/resume/reveal controls
+  - the batch pane now also states the current holdout/skip posture, dataset-registry assumptions, and recovery contract directly in the UI: same-timeframe selection unless Data overrides, tags dedup on run, retry/resume depend on the saved batch summary, and both recovery flows force skip-completed behavior
 
 If you are debugging navigation, visible panels, or why a tab is allowed or hidden, start with `workflowModel.ts`, then follow `VueWorkspaceShell.vue`, `workflowStore.ts`, and `workflowBootstrap.ts`.
 
@@ -657,6 +722,9 @@ These are good first files when the task is startup flow, global shortcuts, quic
   - owns the top-level workspace shell plus the control/result mount slots that decide where those panels render
 - `web/src/components/MetaWorkspacePanel.vue`
   - owns aggregate-subworkspace switching for `meta`, `batch`, `saved`, and `compare`
+  - compare now surfaces selected baseline provenance directly in-panel while keeping compare summary store-driven
+  - saved aggregate families keep family role and active selection visible while switching between Saved Meta, Saved Stage 5, and Saved Policy Eval so family identity does not collapse into generic “saved results”
+  - the ML confidence section now separates model status, live Stage 5 output, and live policy-evaluation status into explicit summary cards and raises a visible warning callout when model health text is unhealthy or scan-error driven
 - `web/src/components/ContextActionMenu.vue`
   - shared secondary-action menu primitive now used to collapse repeated saved-artifact action clusters without losing keyboard access or focus return
 - `web/src/components/HistoryWorkspacePanel.vue`
@@ -774,9 +842,25 @@ The frontend event path is:
 Current named event channels handled on the frontend:
 
 - `double_ma_progress`
+- `research_campaign_progress`
 - `live_execution_runner_event`
 - `polygon_live_status`
 - `polygon_live_bar`
+
+Progress truth anchors:
+
+- `double_ma_progress`
+  - optimize/runtime progress from `src-tauri/src/commands_optimize.rs` and `crates/app_core/src/progress.rs`
+- `research_campaign_progress`
+  - staged dataset preparation, preload, optimization, validation, meta, and stage5 progress from `src-tauri/src/commands_campaign.rs`
+- `load_price_data`
+  - still a direct command in `src-tauri/src/commands_data.rs`; it does not currently emit incremental progress events and should be described as stage-based status only unless additive progress hooks are introduced
+- current task/progress aggregation authority:
+  - `web/src/stores/taskStore.ts`
+  - `web/src/stores/taskStoreCampaignProgress.test.ts`
+  - `web/src/stores/taskStoreEventThrottle.test.ts`
+  - `web/src/services/optimizeService.test.ts`
+  - `web/src/services/metaServiceCampaignStrategy.test.ts`
 
 ### Settings, bootstrapping, and persistence
 
@@ -939,6 +1023,25 @@ These are smaller support modules that often answer high-level questions faster 
 - `crates/app_core/src/alloc_policy.rs`
   - allocation policy helpers for hot-path buffers
 
+### Allocation policy truth anchors
+
+Treat `crates/app_core/src/alloc_policy.rs` as the only shared helper surface for repo-approved uninitialized / prefix-initialized allocation patterns.
+
+Current hot consumer anchors:
+
+- `crates/app_core/src/double_ma.rs`
+  - overwrite-heavy MA/regime/value buffers
+- `crates/app_core/src/gpu_backtest_kernel.rs`
+  - host staging, heatmap, shortlist, and scratch buffers
+- `crates/app_core/src/standalone_gpu_runtime.rs`
+  - reusable runtime staging buffers
+
+Current policy boundaries:
+
+- new unsafe allocation tricks should go through `alloc_policy.rs`, not ad hoc local helpers
+- warm-prefix semantics stay observable behavior and must remain explicit at the call site
+- debug-poison behavior in debug/test builds is intentional and part of the current safety story
+
 ### Dynamic strategy surface
 
 - `crates/app_core/src/strategy_ir.rs`
@@ -980,6 +1083,23 @@ These are smaller support modules that often answer high-level questions faster 
 | `RegimeHybrid` | trend-quality regime plus ADX enter/exit and mean-reversion thresholds | routed through Double-MA; current target `GpuHybridKernel`, CPU fallback | treated as double-like fixed-candidate validation |
 | `BreakoutMomentum` | Bollinger breakout, MACD, CMO, ADOSC, optional ADX | routed through Double-MA; `GpuKernel` without ADX, `GpuHybridKernel` with ADX, CPU fallback | treated as double-like fixed-candidate validation; requires high/low/volume |
 
+#### Double-MA family truth anchors
+
+- exact-grid Double-MA remains the truth anchor for optimization fidelity and any cheaper route claims
+- `DynamicDoubleMa` is a constrained builder + preview surface:
+  - preview happens first against the strategy-plan backend
+  - execution then re-enters the normal Double-MA optimizer path
+  - fixed-candidate validation replay is still intentionally unsupported
+- `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` are routed Double-MA family members, not `CompositeCpu` members
+- the canonical code surfaces for this family are:
+  - `crates/app_core/src/double_ma.rs`
+  - `crates/app_core/src/double_ma_validate.rs`
+  - `web/src/services/optimizeRequestBuilder.ts`
+  - `web/src/services/validationRequestBuilder.ts`
+  - `web/src/utils/strategyOptimizationCapabilities.ts`
+- the bounded exact-vs-cheaper comparison surface lives in:
+  - `crates/app_core/src/bin/real_data_fidelity_audit.rs`
+
 #### Composite/advanced family
 
 These currently use the `CompositeCpuRequest` product surface and `Grid` mode in product routes.
@@ -997,6 +1117,81 @@ These currently use the `CompositeCpuRequest` product surface and `Grid` mode in
 | `Carm` | Coppock, AO, ROCR, APO, OTTO HOTT/LOTT | CPU and `GpuKernel` | mixed validation route; `Auto` currently prefers CPU |
 | `Kvdf` | Keltner, VWAP, DTI, DevStop, FVG trailing-stop logic | CPU and `GpuKernel` | GPU route exists, but `Auto` currently prefers CPU; requires high/low/close/volume |
 | `Cdmc` | DPO, correlation cycle, MAMA/FAMA, decycler, phase threshold | CPU and `GpuKernel` | mixed validation route; current measured policy is more GPU-favorable than CARM |
+
+#### Standalone profile cluster truth anchors
+
+- Cluster A membership is fixed today:
+  - `Asr`
+  - `Vcc`
+  - `Vemr`
+  - `Rocb`
+  - `Vcet`
+- Cluster A is the stronger bench-backed standalone-profile tier:
+  - strategy-local owners live in `crates/app_core/src/{asr,vcc,vemr,rocb,vcet}.rs`
+  - GPU companions live in the corresponding `*_gpu_kernel.rs` files
+  - frontend request/capability truth anchors live in:
+    - `web/src/services/optimizeRequestBuilder.test.ts`
+    - `web/src/utils/strategyOptimizationCapabilities.test.ts`
+    - `web/src/services/validationRequestBuilder.test.ts`
+- Cluster A validation posture to keep truthful across preview, post-run summaries, and report export:
+  - `Asr`, `Vemr`, and `Rocb` currently keep `Auto` CPU-preferred on measured validation workloads
+  - `Vcc` keeps a mixed validation route with CPU-reference signal prep and exact CPU-series metrics
+  - `Vcet` keeps the main fixed-candidate GPU validation route, but walk-forward, reopt walk-forward, perturb, and bootstrap remain CPU-tail work
+
+- Cluster B membership is fixed today:
+  - `Mkcs`
+  - `Kqsr`
+  - `Carm`
+  - `Kvdf`
+  - `Cdmc`
+- Cluster B is the staged unified-GPU standalone-profile tier:
+  - strategy-local owners live in `crates/app_core/src/{mkcs,kqsr,carm,kvdf,cdmc}.rs`
+  - GPU companions live in the corresponding `*_gpu_kernel.rs` files
+  - frontend request/capability truth anchors live in:
+    - `web/src/services/optimizeRequestBuilder.test.ts`
+    - `web/src/utils/strategyOptimizationCapabilities.test.ts`
+    - `web/src/services/validationRequestBuilder.test.ts`
+- Cluster B validation posture to keep truthful across preview, post-run summaries, and report export:
+  - `Mkcs`, `Kqsr`, `Carm`, and `Kvdf` currently keep `Auto` CPU-preferred or CPU-fallback-sensitive validation policies
+  - `Cdmc` keeps the mixed validation route where current measured policy is more GPU-favorable than `Carm`, while still using CPU-reference signal prep for exact CPU-series validation metrics
+
+#### CompositeCpu / CompositeMo truth anchors
+
+- `CompositeCpu` is the broad strategy-local composite request/optimization family. It owns:
+  - request/result shapes in `crates/app_core/src/composite_cpu.rs`
+  - product request shaping in `web/src/services/optimizeRequestBuilder.ts`
+  - analysis follow-ups in `web/src/services/analysisService.ts`
+  - Tauri drilldown/local-stability bridging in `src-tauri/src/commands_analysis.rs`
+- `CompositeCpu` is not a routed Double-MA family member. It keeps its own:
+  - family-specific route diagnostics
+  - drilldown path
+  - local-stability path
+  - native Top-K/include-all result surface
+- `CompositeMo` is a distinct Pareto/sampler/search-space product surface, not a normal Top-K/grid optimizer. It owns:
+  - sampler/search-space/prescan runtime in `crates/app_core/src/composite_mo.rs`
+  - optimizer-core multi-objective primitives in `crates/optimizer/src/mo.rs`
+  - frontend request normalization in `web/src/services/optimizeRequestBuilder.ts`
+  - user-facing capability summaries in `web/src/utils/strategyOptimizationCapabilities.ts`
+- `CompositeMo` keeps:
+  - explicit sampler families (`Nsga2`, `Random`, `Tpe`, `Qmc`)
+  - optional stage-0 GPU prescan narrowing
+  - bounded exact-grid collapse for tiny discrete spaces
+  - CPU-preferred validation, with current GPU fixed-candidate limits only for plain `CompositeCpu` hard-gate candidates
+  - an explicit prescan contract owned by `web/src/services/optimizeRequestBuilder.ts` and `crates/app_core/src/composite_mo.rs`:
+    - `top_k`
+    - `window`
+    - `predictive_top_k`
+    - `predictive_stride`
+    - `device_id`
+    - `require_gpu`
+    - `objectives`
+    - `mode`
+    - `ma_pairs`
+- Composite validation matrix to keep in sync across preview builders, post-run summaries, and workbook export:
+  - `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` use the fixed-candidate Double-MA validation path in `crates/app_core/src/double_ma_validate.rs`
+  - plain `CompositeCpu` can keep the GPU fixed-candidate validation route only when finalist sets remain compatible with the current HalfTrend-uniformity constraints
+  - `CompositeMo` remains CPU-preferred for validation; current GPU fixed-candidate support is intentionally limited to plain `CompositeCpu` hard-gate candidates
+  - standalone profile Cluster A and Cluster B families validate through `run_composite_validation` with family-specific route notes that must stay aligned with `web/src/services/validationRequestBuilder.ts`, `web/src/services/validationService.ts`, and `src-tauri/tests/validation_xlsx_report_tests.rs`
 
 ### Strategy-local owners and GPU companions
 
@@ -1088,6 +1283,33 @@ The normalized indicator descriptors already summarize:
 - GPU-kernel support
 - GPU preference by speedup table
 - output count and parameter schema
+
+### Discovery catalog truth anchors
+
+Treat the pre-run discovery layer as one family with different responsibility types:
+
+- plain inventory:
+  - repo/sample CSV discovery in `web/src/services/dataService.ts` and `src-tauri/src/commands_data.rs`
+  - Polygon-cache dataset discovery via the same data-service/command family
+- hard capability:
+  - moving-average registry export in `src-tauri/src/ma_registry.rs` and `web/src/services/movingAverageCatalogService.ts`
+  - dynamic-indicator registry export in `crates/app_core/src/indicator_catalog.rs` and `web/src/services/dynamicIndicatorCatalogService.ts`
+- advisory telemetry:
+  - GPU speedup hints in `src-tauri/src/commands_data.rs` and `web/src/services/gpuSpeedupsService.ts`
+
+Keep the boundary explicit:
+
+- hard capability governs what request builders may legally send
+- advisory telemetry is guidance for copy/ranking/hints, not legality
+- plain inventory tells the app what data exists, not which strategies are supported
+
+Cross-consumer truth anchors:
+
+- `web/src/services/dataService.test.ts`
+- `web/src/services/movingAverageCatalogService.test.ts`
+- `web/src/services/dynamicIndicatorCatalogService.test.ts`
+- `web/src/services/gpuSpeedupsService.test.ts`
+- `web/src/services/metaService.test.ts`
 
 ### Request-builder and candle-field authority
 
@@ -1230,6 +1452,10 @@ Start here:
 - `crates/app_core/src/meta_select.rs`
 - `crates/app_core/src/ml_confidence.rs`
 - `web/src/services/metaService.ts`
+- `web/src/services/metaRequestBuilder.ts`
+- `web/src/services/metaStage4RequestBuilder.ts`
+- `web/src/services/metaBatchRequestBuilder.ts`
+- `web/src/services/metaMlScopeBuilder.ts`
 
 Important current-state notes:
 
@@ -1240,6 +1466,31 @@ Important current-state notes:
 - saved meta-selection reports go to `app_local_data_dir/reports` and saved meta-selection JSON artifacts go to `app_local_data_dir/runs`
 - meta ML-confidence models live under `app_local_data_dir/models/confidence` as `ml_confidence_<strategy>_<timeframe>.json`
 - meta selection operates over saved run artifacts and filters by strategy/timeframe/tags and presence of validation results
+- frontend builder ownership is intentionally split:
+  - `metaRequestBuilder.ts` owns Stage 3 meta-selection request shaping
+  - `metaStage4RequestBuilder.ts` owns the current Stage 5 compatibility request
+  - `metaBatchRequestBuilder.ts` owns campaign request shaping
+  - `metaMlScopeBuilder.ts` owns the lightweight ML scope object only
+  - `metaService.ts` is the orchestration layer that composes those builders into command calls
+- the Stage 3 meta panel now surfaces request-contract summaries for scope, holdout, grouping, shortlist posture, Stage 3 scoring ownership, and evidence-flag meaning directly in the UI instead of leaving them implicit in builder code
+- the Stage 3 holdout summary now explicitly distinguishes `light` versus `heavy` mode semantics: `heavy` emits nested validation config, `light` omits it, and backend rank fallback/warnings still own the final holdout interpretation
+- Stage 3 grouping remains backend-owned: clustered mode is the default, representative count stays clamped to `1..=3`, and `strict_shortlist` remains hard-enabled with shortlist fallback off
+- evidence flags remain warning signals rather than hard gates, and the current UI now says so explicitly while the JSON/artifact payload remains the strongest evidence-detail surface
+- the ML-confidence panel now surfaces contract summaries for:
+  - scope identity and model-file naming
+  - available rows versus trained rows
+  - label-threshold provenance
+  - backend-owned family selection plus resolved `model_kind`
+  - health/stale/retrain state
+  - apply-path separation between in-memory apply, saved Stage 5, and saved policy eval
+- the ML-confidence panel now also states the Stage 5 / policy-eval contract split explicitly:
+  - Stage 5 request scope resolves from the latest Meta artifact first and then Saved Meta fallback
+  - Stage 5 selection order is weighted rank -> `min_ml_confidence` filter -> optional meta fallback -> decision buckets
+  - `run_meta_stage5_ml_confidence` is the authoritative command while `runStage4()` remains a compatibility alias
+  - Stage 5 saved replay is JSON-only today, `stage4_json_path` and `stage5_json_path` currently point to the same artifact, and the Saved Stage 5 UI is still backed by `stage4Saved*` compatibility store fields
+  - policy evaluation is an offline saved-Meta history comparison over `meta_only`, `ml_only`, and `stage5_blended`, not the same thing as in-memory Apply or the current live Stage 5 rerank
+- `analysisStore.ts` remains the canonical Meta workspace state surface, and its `stage4Saved*` / `metaStage4*` families are still compatibility names for the user-facing Stage 5 surface
+- current ML UI copy also states that auto target prefers per-dataset holdout rows when present, falls back to aggregate holdout gates otherwise, and treats explicit unhealthy models differently from stale/retrain freshness signals
 
 ### ML Signal
 
@@ -1253,11 +1504,27 @@ Start here:
 Important current-state notes:
 
 - workflow is separate from normal optimizer analysis
+- `mlSignalService.ts` is the dedicated frontend owner for export, score-cache, validation, sweep, artifact persistence, and ML-specific busy/status text; it is not part of the Meta campaign/service family
 - high-level stages are dataset export, score-cache generation, validation, and policy sweep
+- shared shell primary actions are step-aware in ML mode:
+  - `data` -> Export dataset
+  - `optimize` -> Build score cache
+  - `validate` -> Run ML validation
+  - `analyze` -> Run ML policy sweep
+  - `finalize` -> inspect-only; no shared primary dispatch
 - results still persist through the run-artifact channel, but use an `ml_signal` sub-payload
+- dataset export now surfaces split-plan activation, ticker-holdout normalization, and attached sidecars directly in the ML panel so users can see when they are doing a plain export vs a manifest-producing export
+- split-plan gap/step semantics are now described in-panel, including the current blank-field contract of `gap=0` and `step=1`
+- dataset-export and current-artifact views now distinguish the always-generated export manifest from the conditional split manifest, and keep score-cache manifests separate as stage-2 artifacts
 - ML-signal model bundles are bundle-based, not meta-model-based, and live under `app_local_data_dir/models/ml_signal/<bundle_id>/manifest.json`
+- stage-2 ML copy now makes the score-CSV ingest contract explicit: `timestamp` is required, at least one of `p_long` / `p_short` / `raw_long` / `raw_short` must exist, and calibrated probability columns are preferred when present
+- the ML artifact panel now treats feature schema path/version as an operational contract, not just metadata: schema version must stay aligned across exported datasets, score caches, and reopened ML runs
+- score-cache bundle truth is the cache JSON plus manifest plus feature-schema metadata, with `score_space`, `score_scope`, `matched_rows`, `duplicate_timestamps`, and `coverage_ratio` carried into artifacts and UI summaries
 - when validation context is present, ML-signal validation and policy sweep enforce strategy kind and dataset/timeframe compatibility against the loaded data
+- stage-3 and stage-4 ML panel summaries now surface the active validation context, current policy form, probability requirements, and sweep budget note; the UI keeps its explicit `top_k` contract even though Rust still defaults omitted sweep `top_k` to `25`
+- the current ML artifact section now exposes stage, dataset export path, export manifest, split manifest, score manifest, and score-summary metadata so replay state is inspectable without opening the saved artifact JSON
 - ML-signal runs commonly leave `report_xlsx_path` empty even when they persist a run artifact
+- saved-run load/apply/rerun restores ML shell mode and the matching workflow step from the persisted `ml_signal.stage` when available
 
 ## Data, Polygon, And Live Execution
 
@@ -1321,8 +1588,9 @@ Important current-state notes:
 - broker integration is Alpaca over REST
 - `dry_run=true` requires no broker credentials; non-dry-run requires Alpaca credentials
 - the runner emits `live_execution_runner_event` status messages as bars are processed
+- runner cancellation remains intentionally silent on the event bus; the shipped runner event vocabulary is `started`, `stopped`, `triggered`, `queued_latest`, `signal_processed`, `order_submitted`, and `error`
 - execution targets the delta between desired and current position; bracket orders are only attached when both stop-loss and take-profit are present
-- the live runner depends on an active Polygon live stream
+- the live runner depends on an active Polygon live stream, and runner start now enforces that the active stream symbol matches the requested execution symbol on both the frontend and Rust command boundary
 - only one active live execution runner slot exists at a time
 
 ### System and desktop runtime
@@ -1457,6 +1725,8 @@ These are useful when the task is benchmarking, profiling, or reproducing specif
 - `crates/app_core/src/bin/ta_cli.rs`
 - `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs`
 - `crates/app_core/src/bin/real_data_optimizer_eval.rs`
+- `crates/app_core/src/bin/profile_doublema_campaign_prefetch.rs`
+- `crates/app_core/src/bin/real_data_fidelity_audit.rs`
 - `crates/app_core/src/bin/stage6b_kernel_report.rs`
 
 Notes:
@@ -1467,6 +1737,18 @@ Notes:
   - supplemental MlSignal timing surfaces; not current perf-gate authority
 - `e2e_workflow_ml.rs`
   - Stage 5 ML confidence plus CompositeCpu/meta/holdout workflow evidence, not the primary MlSignal perf-authority surface
+- `real_data_fidelity_audit.rs`
+  - maintained evidence bin for exact-vs-cheaper optimization/validation comparisons
+  - current CLI contract lives in `parse_args()` / `print_help()`
+  - current artifact truth surface lives in `FidelityAuditArtifact`, `TimeframeAudit`, `CaseAudit`, `OptimizationFidelityAudit`, and `ValidationFidelityAudit`
+- `profile_doublema_campaign_prefetch.rs`
+  - supplemental/manual dataset-prefetch and staging diagnostic; useful for campaign/data-loading work, but not a primary product contract
+- `real_data_optimizer_eval.rs`
+  - supplemental/manual real-data optimizer comparison bin; useful for bounded backend measurements, not a desktop-facing contract
+- `stage6b_kernel_report.rs`
+  - exploratory kernel-report helper; treat output shape as diagnostic unless a script or doc explicitly freezes it
+- `ta_cli.rs`
+  - headless CLI parity surface for synthetic/data-path runs and script-backed faceoffs; preserve flags and output semantics when scripts depend on it
 
 ### Tauri-side headless and workflow tools
 
@@ -1482,6 +1764,21 @@ Notes:
   - app-path benchmark/faceoff utility
 - `src-tauri/src/bin/ta_refactor_snapshots.rs`
   - parity snapshot helper for refactor work
+
+Headless family role split:
+
+- `crates/app_core/src/bin/ta_cli.rs`
+  - bounded optimize-and-print utility for synthetic or CSV-backed Double-MA runs
+- `src-tauri/src/bin/ta_headless_validate.rs`
+  - optimize -> validate -> JSON/XLSX report builder for manual or script-driven report generation
+- `src-tauri/src/bin/ta_workflow_regression.rs`
+  - deterministic workflow-regression gate with timing and holdout summaries
+
+When changing these surfaces, preserve:
+
+- argument semantics that existing wrapper scripts depend on
+- the current output-role split between stdout JSON, saved JSON summaries, and saved XLSX workbooks
+- the app-core-only versus Tauri-linked boundary between the tools
 
 ## Large Files To Avoid Opening First
 

@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document hard capability versus speedup-derived preference versus numeric telemetry.
-- [ ] Document the backend embedded-table rule and fallback behavior.
-- [ ] Document the frontend normalization contract for numeric speedup rows.
-- [ ] Document UI guidance limits so speedup hints are not overstated.
-- [ ] Add or tighten tests when the CSV schema or interpretation changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document hard capability versus speedup-derived preference versus numeric telemetry.
+- [x] Document the backend embedded-table rule and fallback behavior.
+- [x] Document the frontend normalization contract for numeric speedup rows.
+- [x] Document UI guidance limits so speedup hints are not overstated.
+- [x] Add or tighten tests when the CSV schema or interpretation changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,11 @@ Public-repo quality focus:
 - keep backend routing conservative if speedup data is unavailable or incomplete
 - if new policy thresholds are introduced later, document them separately from the raw telemetry export
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the separation between hard kernel capability, speedup-derived preference, and numeric telemetry. `gpuSpeedupsService.test.ts`, `movingAverageCatalogService.test.ts`, and `optimizeService.test.ts` remain green, which keeps the frontend explanatory telemetry aligned with the current backend preference model.
+- No code change was required in this tranche because the current policy/telemetry separation is already implemented. The important outcome here is verified preservation of the rule that speedup-table membership influences preference hints but does not manufacture runtime legality.
 
 ## Related Docs
 

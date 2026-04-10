@@ -194,3 +194,120 @@ pub(crate) fn predictive_prescan_seed_pairs(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cap_periods_even, predictive_prescan_seed_pairs, sample_periods_by_stride,
+        PredictivePrescanParams,
+    };
+    use vector_ta::utilities::data_loader::Candles;
+
+    fn make_trending_candles(len: usize) -> Candles {
+        let mut ts = Vec::with_capacity(len);
+        let mut open = Vec::with_capacity(len);
+        let mut high = Vec::with_capacity(len);
+        let mut low = Vec::with_capacity(len);
+        let mut close = Vec::with_capacity(len);
+        let mut vol = Vec::with_capacity(len);
+        let mut price = 100.0_f64;
+        for i in 0..len {
+            let drift = 0.18 + (i as f64 * 0.003).sin() * 0.04;
+            price += drift;
+            let open_px = price - 0.12;
+            let close_px = price + 0.12;
+            ts.push(i as i64);
+            open.push(open_px);
+            high.push(close_px + 0.18);
+            low.push(open_px - 0.18);
+            close.push(close_px);
+            vol.push(1_000.0 + i as f64);
+        }
+        Candles::new(ts, open, high, low, close, vol)
+    }
+
+    #[test]
+    fn sample_periods_by_stride_keeps_endpoints_and_stride_steps() {
+        let periods = vec![5, 6, 7, 9, 13, 14, 20];
+        assert_eq!(sample_periods_by_stride(&periods, 1), periods);
+        assert_eq!(sample_periods_by_stride(&periods, 4), vec![5, 9, 13, 20]);
+    }
+
+    #[test]
+    fn cap_periods_even_preserves_extremes_and_evenly_spaced_samples() {
+        let capped = cap_periods_even(vec![5, 7, 9, 11, 13, 15, 17], 4);
+        assert_eq!(capped, vec![5, 9, 13, 17]);
+    }
+
+    #[test]
+    fn predictive_prescan_seed_pairs_returns_sorted_long_only_pairs() {
+        let candles = make_trending_candles(512);
+        let pairs = predictive_prescan_seed_pairs(PredictivePrescanParams {
+            candles: &candles,
+            ma_source: "close",
+            fast_periods: &[5, 8, 13, 21],
+            slow_periods: &[34, 55, 89],
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_alma_offset: 0.85,
+            fast_alma_sigma: 6.0,
+            slow_alma_offset: 0.85,
+            slow_alma_sigma: 6.0,
+            long_only: true,
+            top_k: 3,
+            period_stride: 2,
+        })
+        .expect("predictive prescan");
+
+        assert!(!pairs.is_empty());
+        assert!(pairs.len() <= 3);
+        assert!(pairs.windows(2).all(|row| row[0] <= row[1]));
+        assert!(pairs.iter().all(|(fast, slow)| fast < slow));
+    }
+
+    #[test]
+    fn predictive_prescan_seed_pairs_returns_empty_for_disabled_or_empty_inputs() {
+        let candles = make_trending_candles(256);
+        let disabled = predictive_prescan_seed_pairs(PredictivePrescanParams {
+            candles: &candles,
+            ma_source: "close",
+            fast_periods: &[5, 8, 13],
+            slow_periods: &[21, 34, 55],
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_alma_offset: 0.85,
+            fast_alma_sigma: 6.0,
+            slow_alma_offset: 0.85,
+            slow_alma_sigma: 6.0,
+            long_only: true,
+            top_k: 0,
+            period_stride: 2,
+        })
+        .expect("disabled predictive prescan");
+        assert!(disabled.is_empty());
+
+        let empty_fast = predictive_prescan_seed_pairs(PredictivePrescanParams {
+            candles: &candles,
+            ma_source: "close",
+            fast_periods: &[],
+            slow_periods: &[21, 34, 55],
+            fast_ma_type: "sma",
+            slow_ma_type: "sma",
+            fast_ma_params: None,
+            slow_ma_params: None,
+            fast_alma_offset: 0.85,
+            fast_alma_sigma: 6.0,
+            slow_alma_offset: 0.85,
+            slow_alma_sigma: 6.0,
+            long_only: true,
+            top_k: 3,
+            period_stride: 2,
+        })
+        .expect("empty fast-period predictive prescan");
+        assert!(empty_fast.is_empty());
+    }
+}

@@ -1,6 +1,6 @@
 # Tauri Runtime Wiring Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -140,22 +140,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the wrapper-only runtime policy.
-- [ ] Document invoke lifecycle hook behavior and token flow.
-- [ ] Document shared-event listener multiplexing and teardown behavior.
-- [ ] Document runtime error-normalization expectations.
-- [ ] Document non-Tauri fallback behavior and no-op event wiring.
-- [ ] Document generated-command freshness and regeneration expectations.
-- [ ] Document mock IPC strictness expectations for tests.
-- [ ] Add tests for reset/hot-dispose/retry behavior.
-- [ ] Add tests for duplicate-listener prevention.
-- [ ] Add tests or lintable checks preventing raw Tauri API bypass in feature code.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the wrapper-only runtime policy.
+- [x] Document invoke lifecycle hook behavior and token flow.
+- [x] Document shared-event listener multiplexing and teardown behavior.
+- [x] Document runtime error-normalization expectations.
+- [x] Document non-Tauri fallback behavior and no-op event wiring.
+- [x] Document generated-command freshness and regeneration expectations.
+- [x] Document mock IPC strictness expectations for tests.
+- [x] Add tests for reset/hot-dispose/retry behavior.
+- [x] Add tests for duplicate-listener prevention.
+- [x] Add tests or lintable checks preventing raw Tauri API bypass in feature code.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -176,6 +176,36 @@ Public-repo quality focus:
 - prefer additive guardrails over hard rewrites of the runtime layer
 - if tracked-command registries are unified later, keep compatibility with current event names first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the current frontend runtime-wiring surface after verification-focused hardening rather than a broad runtime rewrite.
+- Wrapper-only runtime policy is now explicitly enforced:
+  - raw `@tauri-apps/api/core` and `@tauri-apps/api/event` imports remain confined to `web/src/tauri/invoke.ts` and `web/src/tauri/events.ts`
+  - `web/src/tauri/runtimeWiringPolicy.test.ts` scans non-test source files and fails if feature code bypasses that wrapper layer
+- Invoke lifecycle/token flow remains the owned path:
+  - `invokeCommand()` and `invokeByName()` still centralize command dispatch and runtime-error normalization
+  - `setInvokeLifecycleHooks()` remains the single instrumentation hook point for `beforeInvoke`, `afterSuccess`, and `afterError`
+  - `installTauriInstrumentation()` continues to install those hooks once and `resetTauriInstrumentationForTests()` clears them explicitly
+- Shared event listener behavior remains covered and documented by current tests:
+  - `listenEvent()` multiplexes one native listener per channel
+  - sibling subscribers stay alive when one subscriber throws
+  - explicit reset tears down native listeners
+  - non-Tauri contexts still return a safe `null`/no-op result instead of throwing
+- Retry and reset behavior are now directly tested:
+  - `web/src/tauri/instrumentation.retry.test.ts` verifies deferred event subscription retries until the event API becomes available
+  - the same test verifies explicit reset clears pending retry work and lifecycle hooks
+- Command freshness and strict mock IPC expectations remain part of the runtime contract:
+  - `npm.cmd --prefix web run lint` passed `generate-tauri-commands.mjs --check`
+  - strict mock-IPC/runtime failure handling remains covered by `invoke.mockIPC`, `instrumentation.mockIPC`, and `errorPathQa`
+- No `README.md` or `REPO_MAP.md` update was required for this item because the implementation only tightened runtime verification and wrapper ownership; user-facing workflow routing did not change.
+- Acceptance evidence for this closure:
+  - `npm.cmd --prefix web run test -- src/tauri/events.test.ts src/tauri/invoke.contract.test.ts src/tauri/invoke.mockIPC.test.ts src/tauri/instrumentation.test.ts src/tauri/instrumentation.mockIPC.test.ts src/tauri/instrumentation.retry.test.ts src/tauri/runtimeWiringPolicy.test.ts src/tauri/errorPathQa.test.ts src/stores/taskStoreCampaignProgress.test.ts src/stores/taskStorePerformance.test.ts src/services/workflowArtifactsSync.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - companion visible-shell evidence retained from the same frontend tranche because this item changed verification/guardrails only, not desktop runtime behavior:
+    - `npm.cmd --prefix web run test:desktop:smoke`
+    - artifact path: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
 
 ## Related Docs
 

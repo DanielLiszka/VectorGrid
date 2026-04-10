@@ -1,6 +1,6 @@
 # Tauri Settings Persistence Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -128,18 +128,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current `app_settings.json` schema and supported key set.
-- [ ] Document the frontend-localStorage versus Tauri-settings split explicitly.
-- [ ] Document absolute-path validation and default resolution behavior.
-- [ ] Add or tighten command-level tests for get/set/clear flows.
-- [ ] Add malformed-JSON and write-failure coverage where still missing.
-- [ ] Preserve cache-move safety and failure visibility.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the current `app_settings.json` schema and supported key set.
+- [x] Document the frontend-localStorage versus Tauri-settings split explicitly.
+- [x] Document absolute-path validation and default resolution behavior.
+- [x] Add or tighten command-level tests for get/set/clear flows.
+- [x] Add malformed-JSON and write-failure coverage where still missing.
+- [x] Preserve cache-move safety and failure visibility.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -158,6 +158,31 @@ Public-repo quality focus:
 - keep malformed settings recoverable where possible instead of turning startup into a brittle failure
 - if more Tauri-side settings are added later, document them separately from browser UI preferences
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the existing narrow Tauri settings contract with targeted test hardening; no user-facing settings-scope expansion was required.
+- The current Rust-side schema remains explicitly narrow:
+  - `app_settings.json` currently persists only `market_data_root_dir`
+  - unset state still resolves to the app-local data directory
+  - configured paths must remain absolute
+- The frontend/localStorage versus Tauri-settings split remains explicit and unchanged:
+  - filesystem/data-root settings stay on the Rust/Tauri side
+  - browser appearance/help/layout preferences remain in frontend local state and bootstrap through the existing web services/stores
+- Rust-side verification was tightened in two places:
+  - `src-tauri/tests/settings_tests.rs` now covers malformed JSON parse failure and deterministic write failure when the provided settings base path is a file
+  - `src-tauri/src/commands_data.rs` now routes `get/set/clear_market_data_dir` behavior through base-path helpers, and the local unit tests cover default resolution, set/clear flows, invalid inputs, cache moves, and destination-conflict failure visibility
+- Cache-move safety remains explicitly pinned:
+  - move requests still refuse self-nesting cache moves
+  - non-empty destination cache directories still fail loudly instead of silently overwriting data
+- No `README.md` or `REPO_MAP.md` update was required because this work only hardened tests and command-local helper structure inside the existing settings boundary.
+- Acceptance evidence for this closure:
+  - `cargo test -p ta_desktop_demo_app --test settings_tests`
+  - `cargo test -p ta_desktop_demo_app --lib commands_data::tests::`
+  - `npm.cmd --prefix web run test -- src/services/settingsBootstrap.test.ts src/stores/settingsStore.actions.test.ts`
+- Verification note:
+  - the broader `cargo test -p ta_desktop_demo_app commands_data` filter was not a trustworthy verifier on this machine in the current repo state because it pulled in unrelated bin/test compilation and failed with paging-file / unrelated crate errors outside the touched settings surface
+  - the narrower `--lib commands_data::tests::` target was used intentionally because it owns the command-layer tests added for this item
 
 ## Related Docs
 

@@ -109,18 +109,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the latest-artifact discovery flow and assumptions.
-- [ ] Document identity-compare and skip-load rules.
-- [ ] Document when source tags should update even on no-op sync.
-- [ ] Document when analysis refresh should and should not run.
-- [ ] Add tests for same-path/same-ts skip behavior with and without validation.
-- [ ] Add tests for invoke-failure and malformed-payload best-effort behavior.
-- [ ] Add tests proving meaningful-change detection stays aligned with store normalization.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the latest-artifact discovery flow and assumptions.
+- [x] Document identity-compare and skip-load rules.
+- [x] Document when source tags should update even on no-op sync.
+- [x] Document when analysis refresh should and should not run.
+- [x] Add tests for same-path/same-ts skip behavior with and without validation.
+- [x] Add tests for invoke-failure and malformed-payload best-effort behavior.
+- [x] Add tests proving meaningful-change detection stays aligned with store normalization.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -143,4 +143,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/04_artifact_hydration_contract_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/29_artifact_identity_workflow_model_2026-04-08.md`
 - `REPO_Improvement/05_validation/20_validation_service_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a workflow-artifact sync hardening slice with one real behavior fix: same-path/same-ts artifacts are no longer skipped when summary-level report-path, dataset-path, or tag metadata changed.
+- Updated `web/src/services/workflowArtifactsSync.ts` to keep the fast skip path only when the latest summary still matches the currently loaded run summary hints, and added regressions in `web/src/services/workflowArtifactsSync.test.ts` for summary metadata changes and malformed hydration payloads.
+- Re-verified that same-path/same-ts artifacts still reload when validation newly appears and that analysis refresh only fires on meaningful payload application.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/workflowArtifactsSync.test.ts src/stores/workflowArtifactsStore.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 

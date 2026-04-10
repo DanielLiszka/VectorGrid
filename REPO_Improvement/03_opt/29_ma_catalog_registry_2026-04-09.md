@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the MA catalog authority chain from VectorTA registry through frontend normalization.
-- [ ] Document the meaning of each capability and preference field separately.
-- [ ] Document parameter-schema ordering, dedupe, and numeric-normalization expectations.
-- [ ] Document cache-reset, force-refresh, and stale-state expectations for tests.
-- [ ] Add or tighten tests when new MA fields, capabilities, or params are introduced.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the MA catalog authority chain from VectorTA registry through frontend normalization.
+- [x] Document the meaning of each capability and preference field separately.
+- [x] Document parameter-schema ordering, dedupe, and numeric-normalization expectations.
+- [x] Document cache-reset, force-refresh, and stale-state expectations for tests.
+- [x] Add or tighten tests when new MA fields, capabilities, or params are introduced.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,12 @@ Public-repo quality focus:
 - if VectorTA adds new MA metadata, stage it through Tauri and frontend normalization in one change
 - keep UI hinting advisory unless backend legality has also been updated and verified
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added direct Tauri command coverage for the exported catalog surface. `commands_data.rs` now includes `list_moving_averages_returns_nonempty_unique_ids` and `list_dynamic_indicators_returns_only_dynamic_strategy_eligible_descriptors`, which closes the gap where catalog correctness was previously inferred mostly through frontend normalization tests.
+- Revalidated the frontend catalog consumers at the same time: `movingAverageCatalogService.test.ts`, `optimizeRequestBuilder.test.ts`, and `OptimizeWorkspacePanel`-side behavior continue to pass, so the backend-exported catalog and frontend normalization remain aligned.
+- The acceptance evidence for this tranche is now stronger because it covers both sides of the Tauri boundary instead of only the frontend normalization layer.
 
 ## Related Docs
 

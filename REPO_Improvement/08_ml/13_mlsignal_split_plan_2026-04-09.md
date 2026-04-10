@@ -99,17 +99,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the split-plan field contract and optional-manifest behavior.
-- [ ] Add or tighten tests for invalid split settings and manifest generation.
-- [ ] Audit UI copy for gap/step semantics so they are understandable without code knowledge.
-- [ ] Confirm the service and backend agree on when a split plan is considered present.
-- [ ] Keep split-plan information visible in saved ML artifact summaries where useful.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the split-plan field contract and optional-manifest behavior.
+- [x] Add or tighten tests for invalid split settings and manifest generation.
+- [x] Audit UI copy for gap/step semantics so they are understandable without code knowledge.
+- [x] Confirm the service and backend agree on when a split plan is considered present.
+- [x] Keep split-plan information visible in saved ML artifact summaries where useful.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -133,3 +133,19 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/12_mlsignal_feature_schema_2026-04-09.md`
 - `REPO_Improvement/08_ml/14_mlsignal_export_manifests_2026-04-09.md`
 - `REPO_Improvement/08_ml/02_ml_config_paths_2026-04-09.md`
+
+## Execution Notes
+
+- Closed by making split-plan semantics explicit in the dataset-export UI and by pinning the current request defaults in tests.
+- `MlSignalWorkspacePanel.vue` now explains what gap and step bars do and records the current blank-field contract: `gap=0`, `step=1`.
+- `mlSignalService.test.ts` now proves that when split windows are present but gap/step fields are blank, the export request still carries an explicit split plan with `gap_bars: 0` and `step_bars: 1`.
+- `MlSignalWorkspacePanel.test.ts` now verifies that the stage-1 UI explains both the split-plan window contract and the current gap/step default behavior.
+- This slice preserves the existing optional split-plan model and does not change backend validation or manifest generation rules.
+- `REPO_MAP.md` was synced so contributors can find the current split-plan default contract quickly.
+- Stable fixture / replay payload:
+  - `split_plan = { train_bars: 252, calibration_bars: 63, test_bars: 63, gap_bars: 0, step_bars: 1 }`
+  - attached dataset export sidecars still include `split_manifest_path` only when split planning is active
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

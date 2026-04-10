@@ -541,4 +541,35 @@ mod tests {
         assert!(candidates[0].cross_ticker_pareto.is_some());
         assert!(candidates[1].cross_ticker_pareto.is_some());
     }
+
+    #[test]
+    fn candidate_key_canonical_is_stable_for_equivalent_nested_json_shapes() {
+        let a = serde_json::json!({
+            "b": 1,
+            "a": {
+                "z": true,
+                "x": [
+                    { "k2": 2, "k1": 1 }
+                ]
+            }
+        });
+        let b = serde_json::json!({
+            "a": {
+                "x": [
+                    { "k1": 1, "k2": 2 }
+                ],
+                "z": true
+            },
+            "b": 1
+        });
+
+        let key_a = candidate_key_canonical(&a).expect("canonical key a");
+        let key_b = candidate_key_canonical(&b).expect("canonical key b");
+
+        assert_eq!(key_a, key_b);
+        assert_eq!(
+            key_a,
+            "{\"a\":{\"x\":[{\"k1\":1,\"k2\":2}],\"z\":true},\"b\":1}"
+        );
+    }
 }

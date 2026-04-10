@@ -1,15 +1,86 @@
 import { describe, expect, it } from 'vitest'
 import { describeStrategyOptimizationCapabilities } from './strategyOptimizationCapabilities'
+import { buildDoubleMaOptimizationRequest } from '../services/optimizeRequestBuilder'
+
+function buildCompositeExportRequest(
+  kind: 'CompositeTrend' | 'RegimeHybrid' | 'BreakoutMomentum',
+  options: {
+    backend: 'Auto' | 'CpuOnly' | 'GpuKernel'
+    trendUseAdx?: boolean
+    breakoutUseAdx?: boolean
+  },
+) {
+  return buildDoubleMaOptimizationRequest({
+    context: {
+      strategy_kind: kind,
+      data_id: `data-${kind.toLowerCase()}`,
+      current_data_meta: { has_close: true, has_high: true, has_low: true },
+    },
+    backend: options.backend,
+    fastStart: '5',
+    fastEnd: '15',
+    fastStep: '5',
+    slowStart: '20',
+    slowEnd: '40',
+    slowStep: '10',
+    fastMaType: 'sma',
+    slowMaType: 'ema',
+    maSource: 'close',
+    objective: 'Sharpe',
+    mode: 'Grid',
+    topK: '20',
+    includeAll: 'false',
+    heatmapBins: '64',
+    exportAllCsvPath: 'composite-export.csv',
+    startingEquity: '10000',
+    costPreset: 'custom',
+    feeBps: '0',
+    spreadBps: '0',
+    slippageBps: '0',
+    epsRel: '0',
+    stopLossPct: '',
+    takeProfitPct: '',
+    cooldownBars: '0',
+    signalPersistenceBars: '1',
+    exitMode: 'cross',
+    kaufmanStopPeriod: '22',
+    kaufmanStopMult: '2.0',
+    kaufmanStopMaType: 'sma',
+    longOnly: true,
+    allowFlip: true,
+    tradeOnNext: false,
+    trendUseAdx: options.trendUseAdx ?? false,
+    trendAdxPeriod: '14',
+    trendAdxMin: '20',
+    breakoutUseAdx: options.breakoutUseAdx ?? false,
+    breakoutAdxPeriod: '14',
+    breakoutAdxMin: '20',
+  })
+}
 
 describe('strategyOptimizationCapabilities', () => {
-  it('describes KQSR, CARM, KVDF, and CDMC as real GPU-capable composite optimizer routes', () => {
-    for (const kind of ['Kqsr', 'Carm', 'Kvdf', 'Cdmc'] as const) {
+  it('describes Cluster A standalone profiles as real GPU-capable composite optimizer routes', () => {
+    for (const kind of ['Asr', 'Vcc', 'Vemr', 'Rocb', 'Vcet'] as const) {
       const caps = describeStrategyOptimizationCapabilities(kind)
       expect(caps.kind).toBe(kind)
       expect(caps.usesGlobalBackend).toBe(true)
       expect(caps.usesGlobalMode).toBe(false)
       expect(caps.executionSummary).toContain('CPU')
       expect(caps.executionSummary).toContain('GPU')
+      expect(caps.modeSummary).toContain('Grid mode')
+      expect(caps.executionSummary).not.toContain('not implemented yet')
+    }
+  })
+
+  it('describes Cluster B standalone profiles as real GPU-capable composite optimizer routes', () => {
+    for (const kind of ['Mkcs', 'Kqsr', 'Carm', 'Kvdf', 'Cdmc'] as const) {
+      const caps = describeStrategyOptimizationCapabilities(kind)
+      expect(caps.kind).toBe(kind)
+      expect(caps.usesGlobalBackend).toBe(true)
+      expect(caps.usesGlobalMode).toBe(false)
+      expect(caps.executionSummary).toContain('CPU')
+      expect(caps.executionSummary).toContain('GPU')
+      expect(caps.modeSummary).toContain('Grid mode')
       expect(caps.executionSummary).not.toContain('not implemented yet')
     }
   })
@@ -105,6 +176,24 @@ describe('strategyOptimizationCapabilities', () => {
     expect(dynamicCpuCaps.supportsAdvancedExactKernelControls).toBe(false)
   })
 
+  it('treats legacy DynamicDoubleMa GPU aliases as exact-kernel preview routes', () => {
+    for (const requestedBackend of ['GpuOnly', 'GpuHybridKernel'] as const) {
+      const caps = describeStrategyOptimizationCapabilities('DynamicDoubleMa', {
+        requestedBackend,
+      })
+
+      expect(caps.supportsExportAll).toBe(true)
+      expect(caps.supportsExtraShortlistObjectives).toBe(true)
+      expect(caps.supportsTradeMetrics).toBe(true)
+      expect(caps.supportsCore17MetricSurface).toBe(true)
+      expect(caps.supportsMetricContract).toBe(true)
+      expect(caps.supportsShortlistConfidenceMode).toBe(true)
+      expect(caps.supportsShortlistUnionMode).toBe(true)
+      expect(caps.supportsAdvancedExactKernelControls).toBe(true)
+      expect(caps.outputSummary).toContain('exact-compatible dynamic_strategy_v1 GpuKernel shapes')
+    }
+  })
+
   it('describes Double-MA family mode selection without claiming grid-only execution', () => {
     for (const kind of ['DoubleMa', 'Vfct', 'CompositeTrend', 'RegimeHybrid', 'BreakoutMomentum'] as const) {
       const caps = describeStrategyOptimizationCapabilities(kind)
@@ -165,6 +254,86 @@ describe('strategyOptimizationCapabilities', () => {
     expect(cpuCaps.outputSummary).toContain('advanced exact-kernel shortlist/score controls remain disabled')
   })
 
+  it.each([
+    ['CompositeTrend', { requestedBackend: 'Auto', trendUseAdx: false }, 'GPU kernel route', true, true],
+    ['CompositeTrend', { requestedBackend: 'Auto', trendUseAdx: true }, 'hybrid GPU route', false, false],
+    ['BreakoutMomentum', { requestedBackend: 'GpuKernel', breakoutUseAdx: true }, 'hybrid GPU route', false, false],
+    ['RegimeHybrid', { requestedBackend: 'Auto' }, 'hybrid GPU route', false, false],
+    ['RegimeHybrid', { requestedBackend: 'CpuOnly' }, 'CPU fallback route', false, false],
+  ] as const)(
+    'keeps %s capability summaries aligned with the route preview for %j',
+    (kind, inputs, executionFragment, supportsExportAll, supportsAdvancedExactKernelControls) => {
+      const caps = describeStrategyOptimizationCapabilities(kind, inputs)
+      expect(caps.executionSummary).toContain(executionFragment)
+      expect(caps.supportsExportAll).toBe(supportsExportAll)
+      expect(caps.supportsAdvancedExactKernelControls).toBe(supportsAdvancedExactKernelControls)
+      expect(caps.supportsTradeMetrics).toBe(true)
+      expect(caps.supportsCore17MetricSurface).toBe(true)
+      expect(caps.supportsMetricContract).toBe(true)
+    },
+  )
+
+  it('describes composite execution summaries with strategy-specific route policy text', () => {
+    const trendKernelCaps = describeStrategyOptimizationCapabilities('CompositeTrend', {
+      requestedBackend: 'GpuKernel',
+      trendUseAdx: false,
+    })
+    const breakoutHybridCaps = describeStrategyOptimizationCapabilities('BreakoutMomentum', {
+      requestedBackend: 'GpuKernel',
+      breakoutUseAdx: true,
+    })
+    const regimeHybridCaps = describeStrategyOptimizationCapabilities('RegimeHybrid', {
+      requestedBackend: 'GpuKernel',
+    })
+
+    expect(trendKernelCaps.executionSummary).toContain('GPU kernel route')
+    expect(trendKernelCaps.executionSummary).toContain('ADX is off')
+    expect(trendKernelCaps.outputSummary).toContain('advanced exact-kernel shortlist/score/metric-contract controls apply')
+    expect(breakoutHybridCaps.executionSummary).toContain('hybrid GPU route')
+    expect(breakoutHybridCaps.executionSummary).toContain('ADX is on')
+    expect(breakoutHybridCaps.outputSummary).toContain('advanced exact-kernel shortlist/score controls remain disabled')
+    expect(regimeHybridCaps.executionSummary).toContain('hybrid GPU route')
+    expect(regimeHybridCaps.executionSummary).toContain('future GpuKernel support only if a true no-ADX form is implemented')
+    expect(regimeHybridCaps.outputSummary).toContain('advanced exact-kernel shortlist/score controls remain disabled')
+  })
+
+  it('keeps advisory export capability in parity with request-builder route legality', () => {
+    const kernelCaps = describeStrategyOptimizationCapabilities('CompositeTrend', {
+      requestedBackend: 'GpuKernel',
+      trendUseAdx: false,
+    })
+    const hybridCaps = describeStrategyOptimizationCapabilities('CompositeTrend', {
+      requestedBackend: 'GpuKernel',
+      trendUseAdx: true,
+    })
+    const cpuCaps = describeStrategyOptimizationCapabilities('RegimeHybrid', {
+      requestedBackend: 'CpuOnly',
+    })
+
+    expect(kernelCaps.supportsExportAll).toBe(true)
+    expect(
+      buildCompositeExportRequest('CompositeTrend', {
+        backend: 'GpuKernel',
+        trendUseAdx: false,
+      }),
+    ).toBeTruthy()
+
+    expect(hybridCaps.supportsExportAll).toBe(false)
+    expect(() =>
+      buildCompositeExportRequest('CompositeTrend', {
+        backend: 'GpuKernel',
+        trendUseAdx: true,
+      }),
+    ).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
+
+    expect(cpuCaps.supportsExportAll).toBe(false)
+    expect(() =>
+      buildCompositeExportRequest('RegimeHybrid', {
+        backend: 'CpuOnly',
+      }),
+    ).toThrow(/exportAllCsvPath is currently supported only for the GPU kernel route/)
+  })
+
   it('describes include-all native candidate return on standalone strategy routes and CompositeCpu', () => {
     for (const kind of ['Asr', 'Vcc', 'Vemr', 'Rocb', 'Vcet', 'Kqsr', 'Carm', 'Mkcs', 'Kvdf', 'Cdmc'] as const) {
       const caps = describeStrategyOptimizationCapabilities(kind)
@@ -190,8 +359,12 @@ describe('strategyOptimizationCapabilities', () => {
     expect(compositeCpuCaps.supportsShortlistConfidenceMode).toBe(false)
     expect(compositeCpuCaps.supportsShortlistUnionMode).toBe(false)
     expect(compositeCpuCaps.supportsAdvancedExactKernelControls).toBe(false)
+    expect(compositeCpuCaps.executionSummary).toContain('route diagnostics')
+    expect(compositeCpuCaps.executionSummary).toContain('drilldown/local-stability')
+    expect(compositeCpuCaps.modeSummary).toContain('route-diagnostic')
     expect(compositeCpuCaps.outputSummary).toContain('include-all')
     expect(compositeCpuCaps.outputSummary).toContain('native candidate returns')
+    expect(compositeCpuCaps.outputSummary).toContain('drilldown and local-stability follow-ups')
     expect(compositeCpuCaps.outputSummary).toContain('Explicit Full17 and Trade22 metric-contract requests are available')
   })
 
@@ -319,12 +492,37 @@ describe('strategyOptimizationCapabilities', () => {
     expect(caps.supportsCore17MetricSurface).toBe(true)
     expect(caps.supportsMetricContract).toBe(false)
     expect(caps.executionSummary).toContain('CPU-side multi-objective evaluator')
+    expect(caps.executionSummary).toContain('Nsga2, Random, Tpe, and Qmc')
     expect(caps.executionSummary).toContain('optional GPU prescan')
+    expect(caps.executionSummary).toContain('bounded exact-grid evaluation')
     expect(caps.modeSummary).toContain('does not use the global backend selector')
     expect(caps.modeSummary).toContain('stage-0 Double-MA narrowing pass')
+    expect(caps.modeSummary).toContain('sampler choice and search-space shape')
     expect(caps.outputSummary).toContain('Pareto points')
+    expect(caps.outputSummary).toContain('search-space, sampler, and prescan settings')
     expect(caps.outputSummary).toContain('canonical Trade22 surface')
     expect(caps.outputSummary).toContain('Validation currently uses the CPU route')
     expect(caps.outputSummary).toContain('CompositeCpu HardGate candidates')
+  })
+
+  it('keeps MlSignal outside optimizer-only controls while describing its dedicated workflow', () => {
+    const caps = describeStrategyOptimizationCapabilities('MlSignal')
+
+    expect(caps.kind).toBe('MlSignal')
+    expect(caps.usesGlobalBackend).toBe(false)
+    expect(caps.usesGlobalMode).toBe(false)
+    expect(caps.supportsHeatmap).toBe(false)
+    expect(caps.supportsExportAll).toBe(false)
+    expect(caps.supportsTopK).toBe(false)
+    expect(caps.supportsIncludeAll).toBe(false)
+    expect(caps.supportsExtraShortlistObjectives).toBe(false)
+    expect(caps.supportsTradeMetrics).toBe(false)
+    expect(caps.supportsCore17MetricSurface).toBe(false)
+    expect(caps.supportsMetricContract).toBe(false)
+    expect(caps.executionSummary).toContain('dedicated CPU research path')
+    expect(caps.modeSummary).toContain('does not use the global optimization-mode selector')
+    expect(caps.outputSummary).toContain('dataset-export')
+    expect(caps.outputSummary).toContain('score-cache')
+    expect(caps.outputSummary).toContain('validation artifacts')
   })
 })

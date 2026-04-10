@@ -5,10 +5,12 @@ import { useStorage } from "@vueuse/core";
 import { useShellMount } from "../composables/useShellMount";
 import { useTaskLifecycleSummary } from "../composables/useTaskLifecycleSummary";
 import { useAnalysisStore } from "../stores/analysisStore";
+import { useDataStore } from "../stores/dataStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useCommandActionStore } from "../stores/commandActionStore";
 import { taskPostureSnapshot, useTaskStore } from "../stores/taskStore";
 import { useWorkflowStore } from "../stores/workflowStore";
+import { mlSignalPrimaryActionForStep } from "../utils/core/workflowModel";
 import {
   formatOverallProgressLabel,
   taskLifecycleLabel,
@@ -17,12 +19,14 @@ import { formatUiTimeFromUnixMs } from "../utils/uiTime";
 
 const analysisStore = useAnalysisStore();
 const commandActionStore = useCommandActionStore();
+const dataStore = useDataStore();
 const optimizeStore = useOptimizeStore();
 const taskStore = useTaskStore();
 const workflowStore = useWorkflowStore();
 const {
   runDisabled,
   canCancel,
+  validateDisabled,
   progressMeta,
   runPlanMeta,
   runReadinessHint,
@@ -33,7 +37,7 @@ const {
 const { bestMeta, bestTitle, drillStatus, heatmapMeta, topRows } =
   storeToRefs(analysisStore);
 const { overallProgress } = storeToRefs(taskStore);
-const { mode, resultsTab, workspace } = storeToRefs(workflowStore);
+const { mode, resultsTab, workflowStep, workspace } = storeToRefs(workflowStore);
 const {
   activeTaskCount,
   centerStatusLabel,
@@ -48,6 +52,9 @@ const footerVisible = computed(
 );
 const mlSignalModeActive = computed(
   () => String(mode.value || "").trim() === "ml-signal",
+);
+const mlSignalPrimaryAction = computed(() =>
+  mlSignalPrimaryActionForStep(workflowStep.value),
 );
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value));
@@ -104,11 +111,44 @@ const overallProgressLabel = computed(() => {
   if (shared && shared !== "No active progress") return shared;
   return formatOverallProgressLabel(overallProgress.value);
 });
-const primaryActionLabel = computed(() =>
-  mlSignalModeActive.value
-    ? "Build score cache"
-    : "Run optimization",
-);
+const primaryActionLabel = computed(() => {
+  if (!mlSignalModeActive.value) return "Run optimization";
+  return mlSignalPrimaryAction.value.label;
+});
+const primaryActionDisabled = computed(() => {
+  if (canCancel.value) return false;
+  if (!mlSignalModeActive.value) return !!runDisabled.value;
+  const dataLoaded = String(dataStore.dataId || "").trim().length > 0;
+  switch (mlSignalPrimaryAction.value.kind) {
+    case "dataset_export":
+      return (
+        !dataLoaded ||
+        !String(optimizeStore.mlSignalDatasetExportPath || "").trim() ||
+        !!runDisabled.value
+      );
+    case "score_cache":
+      return (
+        !dataLoaded ||
+        !String(optimizeStore.mlSignalScoreInputPath || "").trim() ||
+        !String(optimizeStore.mlSignalScoreCachePath || "").trim() ||
+        !!runDisabled.value
+      );
+    case "validation":
+      return (
+        !dataLoaded ||
+        !String(optimizeStore.mlSignalScoreCachePath || "").trim() ||
+        !!validateDisabled.value
+      );
+    case "policy_sweep":
+      return (
+        !dataLoaded ||
+        !String(optimizeStore.mlSignalScoreCachePath || "").trim() ||
+        !!validateDisabled.value
+      );
+    case "artifacts":
+      return true;
+  }
+});
 
 function runOptimizationAction(): void {
   commandActionStore.runOptimization();
@@ -145,7 +185,7 @@ function toggleFooterDetails(): void {
           <button
             type="button"
             class="primary"
-            :disabled="runDisabled"
+            :disabled="primaryActionDisabled"
             @click="runOptimizationAction"
           >
             {{ primaryActionLabel }}

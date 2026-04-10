@@ -1007,6 +1007,18 @@ function summarizeDynamicStrategyPreview(
   };
 }
 
+function resolveDynamicStrategyRuntimeBackend(
+  requestedBackend: unknown,
+  response: RawDynamicDoubleMaStrategyIrJsonPreviewResponse,
+): string {
+  const preview = asRecord(
+    response.preview,
+  ) as RawDynamicDoubleMaStrategyIrPreview | null;
+  const resolvedBackend = normalizeText(preview?.resolved_backend).toLowerCase();
+  if (resolvedBackend === "cpu") return "CpuOnly";
+  return normalizeText(requestedBackend);
+}
+
 async function requestDynamicStrategyPreview(
   irJson: string,
   backend: unknown,
@@ -1987,6 +1999,10 @@ async function buildDynamicDoubleMaRuntimeRequest(
     dynamicStrategyPreviewReasons: summary.reasons,
     dynamicStrategyPreviewPrettyJson: summary.prettyJson,
   });
+  const runtimeBackend = resolveDynamicStrategyRuntimeBackend(
+    optimizeStore?.backend,
+    response,
+  );
 
   const maSupportMap = await getMovingAverageSupportMap();
   const storeMaParamState = readOptimizeStoreMaParamState();
@@ -2000,7 +2016,7 @@ async function buildDynamicDoubleMaRuntimeRequest(
     context,
     dynamicStrategyIr: ir,
     maSupportMap,
-    backend: readStoreTextInputValue("backend"),
+    backend: runtimeBackend || readStoreTextInputValue("backend"),
     fastStart: readStoreTextInputValue("fastStart"),
     fastEnd: readStoreTextInputValue("fastEnd"),
     fastStep: readStoreTextInputValue("fastStep"),

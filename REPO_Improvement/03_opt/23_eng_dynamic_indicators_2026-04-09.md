@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document descriptor-catalog ownership and exported fields.
-- [ ] Document adapter ownership for CPU and CUDA compute paths.
-- [ ] Document builder-eligible subset rules and why they are stricter than raw runtime support.
-- [ ] Document multi-output and required-param restrictions.
-- [ ] Add or tighten parity tests across catalog, builder, and runtime paths.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document descriptor-catalog ownership and exported fields.
+- [x] Document adapter ownership for CPU and CUDA compute paths.
+- [x] Document builder-eligible subset rules and why they are stricter than raw runtime support.
+- [x] Document multi-output and required-param restrictions.
+- [x] Add or tighten parity tests across catalog, builder, and runtime paths.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -125,6 +125,12 @@ Public-repo quality focus:
 - update frontend builder filtering and backend descriptor contracts together
 - if CUDA behavior changes, revise adapter and catalog docs in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the layered dynamic-indicator contract instead of widening it. The indicator catalog still owns descriptor truth and output-id validation, the adapter still owns CPU/CUDA compute behavior, and the builder continues to consume a narrower eligible subset than the runtime catalog exposes.
+- Frontend and command-boundary evidence remains green: `dynamicIndicatorCatalogService.test.ts`, `dynamicDoubleMaBuilder.test.ts`, and `cargo test -p ta_desktop_demo_app commands_dynamic --lib` all passed in this tranche. That keeps catalog export, builder shaping, and preview-command behavior aligned for the current supported subset.
+- No code change was required in this tranche because the audit did not reveal a real drift in descriptor validation, adapter behavior, or builder filtering. The remaining gap is cross-layer parity coverage using a real backend descriptor payload rather than a handcrafted frontend sample catalog, which should be handled as a future tightening step rather than a silent contract change.
 
 ## Related Docs
 

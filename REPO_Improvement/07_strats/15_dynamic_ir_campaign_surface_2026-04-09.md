@@ -1,6 +1,6 @@
 # Dynamic IR Campaign Surface Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -104,19 +104,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the campaign request contract, including execution mode and preload policy.
-- [ ] Document the progress payload and summary artifact responsibilities.
-- [ ] Document resume/retry semantics from a saved summary artifact.
-- [ ] Add or tighten backend tests for summary persistence and per-item diagnostics.
-- [ ] Add or tighten frontend tests for strategy passthrough, preload policy, and resume behavior.
-- [ ] Add or tighten progress-store tests for campaign stage/count updates.
-- [ ] Keep auto-meta/stage5 chaining explicit in docs and verification.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the campaign request contract, including execution mode and preload policy.
+- [x] Document the progress payload and summary artifact responsibilities.
+- [x] Document resume/retry semantics from a saved summary artifact.
+- [x] Add or tighten backend tests for summary persistence and per-item diagnostics.
+- [x] Add or tighten frontend tests for strategy passthrough, preload policy, and resume behavior.
+- [x] Add or tighten progress-store tests for campaign stage/count updates.
+- [x] Keep auto-meta/stage5 chaining explicit in docs and verification.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -136,6 +136,30 @@ Public-repo quality focus:
 - if campaign summaries change shape, update resume logic and tests in the same slice
 - keep campaign orchestration additive and observable, not opaque
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by publishing the research-campaign contract in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md): request ownership, progress-payload ownership, saved-summary authority, and the explicitly supported strategy surface are now documented as one orchestration truth anchor instead of being scattered across the batch pane and backend code.
+- Existing frontend campaign coverage remains the acceptance backbone and was re-verified:
+  - strategy passthrough, preload policy, execution mode, and auto-meta/stage5 chaining in `metaServiceCampaignStrategy.test.ts`
+  - saved-summary resume/retry/reveal behavior in `metaServiceCampaignResume.test.ts`
+  - task/progress-stage counts in `taskStoreCampaignProgress.test.ts`
+- Existing backend campaign coverage was re-verified with the current command test matrix in `src-tauri/src/commands_campaign.rs`, including:
+  - supported strategy acceptance
+  - strategy-family routing
+  - validation-backend normalization
+  - CompositeMo frontier ordering and shortlist diversity rules
+- Stable truth anchors:
+  - `web/src/services/metaService.ts`
+  - `src-tauri/src/commands_campaign.rs`
+  - `web/src/services/metaServiceCampaignStrategy.test.ts`
+  - `web/src/services/metaServiceCampaignResume.test.ts`
+  - `web/src/stores/taskStoreCampaignProgress.test.ts`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/metaServiceCampaignStrategy.test.ts src/services/metaServiceCampaignResume.test.ts src/stores/taskStoreCampaignProgress.test.ts`
+  - `cargo test -p ta_desktop_demo_app campaign_ --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

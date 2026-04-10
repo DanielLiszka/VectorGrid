@@ -9,7 +9,9 @@ import { useWorkflowArtifactsStore } from "../stores/workflowArtifactsStore";
 import {
   exportMlSignalDataset,
   generateMlSignalScoreCache,
+  listMlSignalModelBundles,
   openMlSignalArtifactPath,
+  refreshMlSignalModelStatus,
   revealMlSignalArtifactPath,
   runMlSignalPolicySweep,
   runMlSignalValidation,
@@ -21,6 +23,16 @@ vi.mock("../tauri/invoke", () => ({
 
 const invokeCommandMock = vi.mocked(invokeCommand);
 let pinia: ReturnType<typeof createPinia>;
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("mlSignalService", () => {
   beforeEach(() => {
@@ -53,7 +65,8 @@ describe("mlSignalService", () => {
       timeframe: "1d",
       sourceSizeBytes: null,
       sourceMtimeUtcMs: null,
-    };
+      sourceContentFingerprint: "fp-prices-1d",
+    } as never;
 
     optimize.mlSignalDatasetExportPath = "C:\\data\\ml_dataset.csv";
     optimize.mlSignalScoreInputPath = "C:\\data\\scores.csv";
@@ -144,6 +157,19 @@ describe("mlSignalService", () => {
         },
       }),
     });
+    expect(invokeCommandMock).toHaveBeenCalledWith("save_run_artifact", {
+      artifact: expect.objectContaining({
+        dataset_meta: expect.objectContaining({
+          csv_path: "C:\\data\\prices.csv",
+          timeframe: "1d",
+          base_timeframe: "1d",
+          derived_timeframe: "1d",
+          min_ts: 1_700_000_000_000,
+          max_ts: 1_700_086_400_000,
+          source_content_fingerprint: "fp-prices-1d",
+        }),
+      }),
+    });
     expect(useOptimizeStore(pinia).mlSignalDatasetMeta).toContain("321 rows");
     expect(useOptimizeStore(pinia).mlSignalDatasetMeta).toContain("splits 3");
     expect(useOptimizeStore(pinia).mlSignalDatasetMeta).toContain(
@@ -161,6 +187,98 @@ describe("mlSignalService", () => {
       "C:\\data\\ml_dataset.export_manifest.json",
     );
     expect(workflowArtifacts.currentRun?.mlSignal?.scoreCachePath).toBe("");
+  });
+
+  it("omits split plans when blank and normalizes ticker-holdout residue before export", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalSplitTrainBars = "";
+    optimize.mlSignalSplitCalibrationBars = "";
+    optimize.mlSignalSplitTestBars = "";
+    optimize.mlSignalSplitGapBars = "";
+    optimize.mlSignalSplitStepBars = "";
+    optimize.mlSignalHoldoutModulus = "5";
+    optimize.mlSignalHoldoutResidue = "7";
+
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "export_ml_signal_dataset") {
+        return {
+          row_count: 120,
+          feature_count: 40,
+          pattern_count: 24,
+          horizon_bars: 10,
+          split_count: 0,
+          ticker_holdout: true,
+          feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
+          export_manifest_path: "C:\\data\\ml_dataset.export_manifest.json",
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_ml_dataset_plain.json" };
+      }
+      return {};
+    });
+
+    await exportMlSignalDataset();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith("export_ml_signal_dataset", {
+      req: expect.objectContaining({
+        output_path: "C:\\data\\ml_dataset.csv",
+        split_plan: null,
+        ticker_holdout: {
+          modulus: 5,
+          residue: 2,
+        },
+      }),
+    });
+    expect(useOptimizeStore(pinia).mlSignalDatasetMeta).not.toContain("splits ");
+    expect(useWorkflowArtifactsStore(pinia).currentRun?.artifactPath).toBe(
+      "runs/vectorgrid_ml_dataset_plain.json",
+    );
+  });
+
+  it("defaults split-plan gap and step bars when windows are present but optional fields are blank", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalSplitTrainBars = "252";
+    optimize.mlSignalSplitCalibrationBars = "63";
+    optimize.mlSignalSplitTestBars = "63";
+    optimize.mlSignalSplitGapBars = "";
+    optimize.mlSignalSplitStepBars = "";
+
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "export_ml_signal_dataset") {
+        return {
+          row_count: 321,
+          feature_count: 88,
+          pattern_count: 61,
+          horizon_bars: 10,
+          split_count: 3,
+          split_manifest_path: "C:\\data\\ml_dataset.split_manifest.json",
+          feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
+          export_manifest_path: "C:\\data\\ml_dataset.export_manifest.json",
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_ml_dataset_gap_step_defaults.json" };
+      }
+      return {};
+    });
+
+    await exportMlSignalDataset();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith("export_ml_signal_dataset", {
+      req: expect.objectContaining({
+        split_plan: {
+          version: 1,
+          train_bars: 252,
+          calibration_bars: 63,
+          test_bars: 63,
+          gap_bars: 0,
+          step_bars: 1,
+        },
+      }),
+    });
   });
 
   it("builds score caches and persists validation artifacts through the workflow store", async () => {
@@ -252,6 +370,35 @@ describe("mlSignalService", () => {
         score_cache_path: "C:\\data\\score_cache.json",
         min_psr: 0.6,
         min_dsr: 0.4,
+        validation_context: {
+          strategy_kind: "MlSignal",
+          csv_path: "C:\\data\\prices.csv",
+          timeframe: "1d",
+          label: "prices.csv",
+        },
+      }),
+    });
+    expect(invokeCommandMock).toHaveBeenCalledWith("save_run_artifact", {
+      artifact: expect.objectContaining({
+        config_fingerprint: expect.any(String),
+        dataset_meta: expect.objectContaining({
+          csv_path: "C:\\data\\prices.csv",
+          timeframe: "1d",
+        }),
+        validation: expect.objectContaining({
+          req: expect.objectContaining({
+            validation_context: expect.objectContaining({
+              strategy_kind: "MlSignal",
+              timeframe: "1d",
+            }),
+          }),
+        }),
+        ml_signal: expect.objectContaining({
+          stage: "validation",
+          score_cache_path: "C:\\data\\score_cache.json",
+          score_space: "Probability",
+          score_scope: "CalibrationSlice",
+        }),
       }),
     });
 
@@ -262,12 +409,31 @@ describe("mlSignalService", () => {
     expect(workflowArtifacts.currentRun?.mlSignal?.datasetExportPath).toBe(
       "C:\\data\\ml_dataset.csv",
     );
+    expect(workflowArtifacts.currentRun?.mlSignal?.exportManifestPath).toBe(
+      "C:\\data\\ml_dataset.export_manifest.json",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.splitManifestPath).toBe(
+      "C:\\data\\ml_dataset.split_manifest.json",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.scoreManifestPath).toBe(
+      "C:\\data\\score_cache.manifest.json",
+    );
+    expect(workflowArtifacts.currentRun?.mlSignal?.featureSchemaPath).toBe(
+      "C:\\data\\ml_dataset.feature_schema.json",
+    );
+    expect(
+      Number(workflowArtifacts.currentRun?.mlSignal?.featureSchemaVersion),
+    ).toBe(1);
     expect(workflowArtifacts.currentRun?.mlSignal?.scoreSpace).toBe(
       "Probability",
     );
     expect(workflowArtifacts.currentRun?.mlSignal?.scoreScope).toBe(
       "CalibrationSlice",
     );
+    expect(workflowArtifacts.currentRun?.mlSignal?.matchedRows).toBe(75);
+    expect(workflowArtifacts.currentRun?.mlSignal?.skippedRows).toBe(4);
+    expect(workflowArtifacts.currentRun?.mlSignal?.coverageRatio).toBe(0.75);
+    expect(workflowArtifacts.currentRun?.mlSignal?.duplicateTimestamps).toBe(2);
     expect(workflowArtifacts.currentValidation?.req).toMatchObject({
       data_id: "data-1",
       score_cache_path: "C:\\data\\score_cache.json",
@@ -347,9 +513,40 @@ describe("mlSignalService", () => {
           min_psr: 0.6,
           min_dsr: 0.4,
           top_k: 4,
+          validation_context: {
+            strategy_kind: "MlSignal",
+            csv_path: "C:\\data\\prices.csv",
+            timeframe: "1d",
+            label: "prices.csv",
+          },
         }),
       },
     );
+    expect(invokeCommandMock).toHaveBeenCalledWith("save_run_artifact", {
+      artifact: expect.objectContaining({
+        config_fingerprint: expect.any(String),
+        dataset_meta: expect.objectContaining({
+          csv_path: "C:\\data\\prices.csv",
+          timeframe: "1d",
+        }),
+        validation: expect.objectContaining({
+          req: expect.objectContaining({
+            validation_context: expect.objectContaining({
+              strategy_kind: "MlSignal",
+              timeframe: "1d",
+            }),
+          }),
+        }),
+        ml_signal: expect.objectContaining({
+          stage: "policy_sweep",
+          score_cache_path: "C:\\data\\score_cache.json",
+          policy_sweep: expect.objectContaining({
+            sweep_size: 27,
+            top_k: 4,
+          }),
+        }),
+      }),
+    });
     expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain(
       "27 candidates",
     );
@@ -359,11 +556,190 @@ describe("mlSignalService", () => {
       max_hold_bars: 10,
     });
     expect(workflowArtifacts.currentRun?.mlSignal?.stage).toBe("policy_sweep");
+    expect(workflowArtifacts.currentRun?.mlSignal?.featureSchemaPath).toBe(
+      "C:\\data\\ml_dataset.feature_schema.json",
+    );
+    expect(
+      Number(workflowArtifacts.currentRun?.mlSignal?.featureSchemaVersion),
+    ).toBe(1);
     expect(workflowArtifacts.currentRun?.mlSignal?.policySweep).toMatchObject({
       sweep_size: 27,
       top_k: 4,
       best_label: "best_sweep",
     });
+  });
+
+  it("lists model bundles and refreshes bundle status through explicit bundle metadata", async () => {
+    seedStores();
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "list_ml_signal_model_bundles") {
+        return [
+          {
+            bundle_id: "bundle-a",
+            manifest_path: "C:\\models\\ml_signal\\bundle-a\\manifest.json",
+            state: "healthy",
+            model_family: "CatBoost",
+          },
+          {
+            bundle_id: "bundle-b",
+            manifest_path: "",
+            state: "warning",
+            model_family: "",
+          },
+        ];
+      }
+      if (command === "ml_signal_model_status") {
+        return {
+          models_dir: "C:\\models\\ml_signal",
+          status: {
+            bundle_id: "bundle-a",
+            state: "healthy",
+            manifest_path: "C:\\models\\ml_signal\\bundle-a\\manifest.json",
+          },
+        };
+      }
+      return {};
+    });
+
+    const listed = await listMlSignalModelBundles();
+    expect(listed).toEqual([
+      {
+        bundleId: "bundle-a",
+        manifestPath: "C:\\models\\ml_signal\\bundle-a\\manifest.json",
+        state: "healthy",
+        label: "bundle-a • CatBoost • healthy",
+      },
+      {
+        bundleId: "bundle-b",
+        manifestPath: "",
+        state: "warning",
+        label: "bundle-b • warning",
+      },
+    ]);
+
+    await refreshMlSignalModelStatus();
+    expect(invokeCommandMock).toHaveBeenCalledWith("ml_signal_model_status", {
+      bundleId: "bundle-a",
+    });
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain("bundle-a");
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain("healthy");
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain("manifest.json");
+  });
+
+  it("keeps bundle status optional when no bundle is selected", async () => {
+    seedStores();
+    useOptimizeStore(pinia).mlSignalModelBundleId = "";
+
+    const result = await refreshMlSignalModelStatus();
+
+    expect(result).toBeNull();
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "ml_signal_model_status",
+      expect.anything(),
+    );
+    expect(useOptimizeStore(pinia).mlSignalModelStatus).toContain(
+      "optional for score-cache-backed validation",
+    );
+  });
+
+  it("owns ML-specific busy and status state while dataset export is in flight", async () => {
+    seedStores();
+    const deferred = createDeferred<Record<string, unknown>>();
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "export_ml_signal_dataset") {
+        return deferred.promise;
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_ml_dataset_busy.json" };
+      }
+      return {};
+    });
+
+    const optimize = useOptimizeStore(pinia);
+    let settled = false;
+    const runPromise = exportMlSignalDataset().then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(optimize.runDisabled).toBe(true);
+    expect(optimize.validateDisabled).toBe(true);
+    expect(optimize.canCancel).toBe(true);
+    expect(optimize.progressMeta).toBe("Exporting ML feature dataset…");
+    expect(optimize.statusLine).toBe("Exporting ML feature dataset…");
+
+    deferred.resolve({
+      row_count: 111,
+      feature_count: 44,
+      split_count: 0,
+      feature_schema_path: "C:\\data\\ml_dataset.feature_schema.json",
+      export_manifest_path: "C:\\data\\ml_dataset.export_manifest.json",
+    });
+    await runPromise;
+
+    expect(optimize.runDisabled).toBe(false);
+    expect(optimize.validateDisabled).toBe(false);
+    expect(optimize.canCancel).toBe(false);
+    expect(optimize.statusLine).toContain("ML feature dataset exported.");
+    expect(optimize.progressMeta).toContain("ML dataset export");
+  });
+
+  it("fails validation and policy sweep early when no score cache path is configured", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalScoreCachePath = "";
+
+    await expect(runMlSignalValidation()).rejects.toThrow(
+      "Generate or choose a score cache path first.",
+    );
+    await expect(runMlSignalPolicySweep()).rejects.toThrow(
+      "Generate or choose a score cache path first.",
+    );
+  });
+
+  it("omits unset sweep axes while keeping the dedicated policy-sweep contract", async () => {
+    seedStores();
+    const optimize = useOptimizeStore(pinia);
+    optimize.mlSignalSweepDeltaStart = "";
+    optimize.mlSignalSweepDeltaEnd = "";
+    optimize.mlSignalSweepDeltaStep = "";
+    optimize.mlSignalSweepHoldStart = "";
+    optimize.mlSignalSweepHoldEnd = "";
+    optimize.mlSignalSweepHoldStep = "";
+    invokeCommandMock.mockImplementation(async (command) => {
+      if (command === "run_ml_signal_policy_sweep") {
+        return {
+          sweep_size: 9,
+          top_k: 3,
+          validation: {
+            candidates: [{ params: { label: "best_sweep" }, robust_score: 1.2 }],
+          },
+        };
+      }
+      if (command === "save_run_artifact") {
+        return { path: "runs/vectorgrid_run_ml_signal_sweep.json" };
+      }
+      return {};
+    });
+
+    await runMlSignalPolicySweep();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith(
+      "run_ml_signal_policy_sweep",
+      {
+        req: expect.objectContaining({
+          t_long: { start: 0.5, end: 0.7, step: 0.1 },
+          t_short: { start: 0.5, end: 0.7, step: 0.1 },
+          delta: null,
+          max_hold_bars: null,
+          top_k: 4,
+        }),
+      },
+    );
+    expect(useOptimizeStore(pinia).mlSignalSweepMeta).toContain("9 candidates");
   });
 
   it("opens ML artifact paths with open-path fallback to reveal-path", async () => {

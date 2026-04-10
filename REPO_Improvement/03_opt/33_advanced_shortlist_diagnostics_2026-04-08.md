@@ -88,19 +88,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory all advanced shortlist/exact-related controls and payload fields.
-- [ ] Document each control’s effect on ranking, export, rerun behavior, and output shape.
-- [ ] Separate exact-kernel vs host-side rerank semantics in user-facing copy.
-- [ ] Document hard prerequisites and route-family limitations.
-- [ ] Define stale-value behavior when route or mode changes.
-- [ ] Add tests for non-default advanced combinations and clearable-state transitions.
-- [ ] Add parity checks between UI diagnostics, request builder, and backend behavior.
-- [ ] Preserve existing safe advanced defaults unless there is a documented improvement reason.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Inventory all advanced shortlist/exact-related controls and payload fields.
+- [x] Document each control’s effect on ranking, export, rerun behavior, and output shape.
+- [x] Separate exact-kernel vs host-side rerank semantics in user-facing copy.
+- [x] Document hard prerequisites and route-family limitations.
+- [x] Define stale-value behavior when route or mode changes.
+- [x] Add tests for non-default advanced combinations and clearable-state transitions.
+- [x] Add parity checks between UI diagnostics, request builder, and backend behavior.
+- [x] Preserve existing safe advanced defaults unless there is a documented improvement reason.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -117,6 +117,12 @@ Public-repo quality focus:
 - prefer clearer copy and stricter parity over removing controls
 - if terminology changes, keep legacy wording visible in release notes or inline helper text until users can adjust
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the advanced shortlist/exact diagnostic surface across UI, request builder, and backend expectations. `AdvancedWorkspacePanel.test.ts` and `optimizeRequestBuilder.test.ts` continue to cover route-family gating, stale clearable values, exact-compatible DynamicDoubleMa messaging, standalone unified-GPU shortlist behavior, and shortlist slice diagnostics.
+- The earlier store and replay hardening from this session strengthens this doc indirectly too: advanced replay now normalizes legacy modes through store-owned logic, and stale/export helper behavior is directly covered in `advancedStore.actions.test.ts`, which reduces the chance of UI diagnostics drifting from underlying advanced-state behavior.
+- No additional code change was required in this tranche because the current shortlist diagnostics, request-builder enforcement, and clearable-state transitions already satisfy the documented contract after the preceding store fixes.
 
 ## Related Docs
 

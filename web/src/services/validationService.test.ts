@@ -8,6 +8,7 @@ import {
   exportValidationJson,
   openReportsDir,
   previewValidationAdmissionComparisonFromStores,
+  previewValidationContextCompatibilityFromStores,
   previewValidationExecutionSummaryFromStores,
   runValidation,
   toggleCrossDataset,
@@ -24,6 +25,19 @@ vi.mock('../tauri/invoke', () => ({
 
 const invokeCommandMock = vi.mocked(invokeCommand)
 let pinia: ReturnType<typeof createPinia>
+const baseDataMeta = {
+  len: 0,
+  hasOpen: true,
+  hasHigh: true,
+  hasLow: true,
+  hasClose: true,
+  hasVolume: true,
+  minTs: 0,
+  maxTs: 0,
+  timeframe: '15m',
+  sourceSizeBytes: null,
+  sourceMtimeUtcMs: null,
+} as const
 
 function installDefaultInvokeCommandMock(): void {
   invokeCommandMock.mockImplementation(async (command: string) => {
@@ -248,7 +262,14 @@ describe('validationService', () => {
     const saveCall = invokeCommandMock.mock.calls.find(([commandName]) => commandName === 'save_run_artifact')
     const savedArtifact = (saveCall?.[1] as { artifact?: Record<string, unknown> } | undefined)?.artifact
     expect(savedArtifact?.kind).toBe('vectorgrid_run_artifact')
+    expect(typeof savedArtifact?.config_fingerprint).toBe('string')
+    expect(String(savedArtifact?.config_fingerprint || '').length).toBeGreaterThan(0)
     expect(invokeCommandMock).toHaveBeenCalledWith('save_run_artifact', expect.any(Object))
+    expect(
+      (validationState.validationColumns as Array<Record<string, unknown>>).map((column) => String(column.label || '')),
+    ).toEqual(
+      expect.arrayContaining(['Gate', 'Robust Pareto', 'Cross Pareto', 'PSR', 'DSR']),
+    )
 
   })
 
@@ -409,6 +430,195 @@ describe('validationService', () => {
     expect(preview.summary).toContain('scalar_union')
   })
 
+  it('previews explicit compatible validation context when dataset, timeframe, and strategy match', () => {
+    const dataStore = useDataStore(pinia)
+    dataStore.csvPath = 'C:/data/AAPL.csv'
+    dataStore.dataTimeframe = '15m'
+    dataStore.baseDataMeta = { ...baseDataMeta }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T10:30:00Z',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/AAPL.csv',
+          timeframe: '15m',
+          label: 'AAPL',
+          symbol: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-aapl-compatible',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationContextCompatibilityFromStores()
+
+    expect(preview.state).toBe('compatible')
+    expect(preview.summary).toBe('Compatible: dataset + timeframe + strategy aligned')
+    expect(preview.detail).toContain('AAPL')
+    expect(preview.detail).toContain('15m')
+    expect(preview.detail).toContain('DoubleMa')
+  })
+
+  it('previews explicit incompatible validation context when the current dataset mismatches the optimization artifact', () => {
+    const dataStore = useDataStore(pinia)
+    dataStore.csvPath = 'C:/data/MSFT.csv'
+    dataStore.dataTimeframe = '15m'
+    dataStore.baseDataMeta = { ...baseDataMeta }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T10:45:00Z',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/AAPL.csv',
+          timeframe: '15m',
+          label: 'AAPL',
+          symbol: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-aapl-incompatible',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationContextCompatibilityFromStores()
+
+    expect(preview.state).toBe('incompatible')
+    expect(preview.summary).toBe('Incompatible: dataset mismatch')
+    expect(preview.detail).toContain('Validation artifact expects dataset')
+  })
+
+  it('reports partial validation context compatibility for thin legacy artifacts without dataset metadata', () => {
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T10:50:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-thin-artifact',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationContextCompatibilityFromStores()
+
+    expect(preview.state).toBe('warning')
+    expect(preview.summary).toBe('Partial: missing dataset + timeframe')
+    expect(preview.detail).toContain('missing dataset, timeframe metadata')
+  })
+
+  it('prefers the saved validation request strategy context when it mismatches the current run', () => {
+    const dataStore = useDataStore(pinia)
+    dataStore.csvPath = 'C:/data/AAPL.csv'
+    dataStore.dataTimeframe = '15m'
+    dataStore.baseDataMeta = { ...baseDataMeta }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-04T10:55:00Z',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/AAPL.csv',
+          timeframe: '15m',
+          label: 'AAPL',
+          symbol: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-aapl-compatible',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: {
+        ts: '2026-04-04T11:00:00Z',
+        req: {
+          validation_context: {
+            strategy_kind: 'CompositeMo',
+            csv_path: 'C:/data/AAPL.csv',
+            timeframe: '15m',
+            label: 'AAPL',
+          },
+        },
+        res: {},
+      },
+    })
+
+    const preview = previewValidationContextCompatibilityFromStores()
+
+    expect(preview.state).toBe('incompatible')
+    expect(preview.summary).toBe('Incompatible: strategy mismatch')
+    expect(preview.detail).toContain('CompositeMo')
+    expect(preview.detail).toContain('DoubleMa')
+  })
+
   it('reports requested-policy fallback when preview admission downgrades to legacy', () => {
     const validationStore = useValidationStore(pinia)
     validationStore.candidates = '2'
@@ -559,6 +769,8 @@ describe('validationService', () => {
     expect(String(validationState.validationAuxCpuSummary || '')).toContain('perturb + trade bootstrap compare (iid + stationary, stat block=auto)')
     expect(String(validationState.validationBootstrapSummary || '')).toContain('iid + stationary closed-trade compare • stat block=auto')
     expect(String(validationState.validationCrossSummary || '')).toContain('not run')
+    expect(Number(validationState.tableRowCount || 0)).toBe(0)
+    expect(Boolean(validationState.tableVisible)).toBe(false)
     expect(String(validationState.validationSkippedSummary || '')).toContain('Cross: unavailable')
     expect(String(validationState.validationSkippedSummary || '')).toContain('Cross reruns: omit walk_forward + reopt WF + SPA + perturb + trade bootstrap')
     expect(String(validationState.validationSkippedSummary || '')).toContain('Reopt WF: unavailable')
@@ -954,6 +1166,84 @@ describe('validationService', () => {
     expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • CpuOnly • route note: CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.')
     expect(String(validationState.validationRouteDetailSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.')
     expect(String(validationState.validationWarningSummary || '')).toContain('CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only.')
+  })
+
+  it('surfaces plain CompositeCpu GPU route notes explicitly in post-run summaries', async () => {
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Gpu',
+          backend_route: 'GpuKernel',
+          runtime_ms: 88,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_composite_cpu_gpu.json', bytes: 128 }
+      }
+      return {}
+    })
+
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '4',
+      seed: '1',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-14T00:00:00Z',
+        req: {
+          strategy_kind: 'CompositeCpu',
+          data_id: 'data-composite-cpu-post-run',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          strategy: { fee_bps: 1.0 },
+          signal_mode: 'hard_gate',
+          halftrend: { amplitude: 2, channel_deviation: 2.0, atr_period: 100 },
+          macz: {},
+          ott: {},
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 12,
+                slow_len: 36,
+                signal_mode: 'hard_gate',
+                strategy: { fee_bps: 1.0 },
+                macz: {},
+                ott: {},
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationRouteSummary || '')).toContain('Gpu • GpuKernel • route note: Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU.')
+    expect(String(validationState.validationRouteDetailSummary || '')).toContain('Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU.')
+    expect(String(validationState.validationWarningSummary || '')).toBe('none')
   })
 
   it('surfaces Carm GPU validation route detail explicitly in post-run summaries', async () => {
@@ -1502,6 +1792,93 @@ describe('validationService', () => {
     expect(summary.categorySummary).toContain('GPU main + CPU tail: perturb + trade_bootstrap')
   })
 
+  it('previews validation context compatibility when the loaded dataset matches the artifact', () => {
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/AAPL.csv',
+      dataTimeframe: '1h',
+      datasetLabel: 'AAPL',
+      baseDataMeta: { timeframe: '1h' },
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:00:00Z',
+        csvPath: 'C:/data/AAPL.csv',
+        datasetMeta: { csv_path: 'C:/data/AAPL.csv', timeframe: '1h', symbol: 'AAPL' },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'aapl_1h',
+        },
+        res: {
+          top: [{ params: { fast_ma_type: 'alma', slow_ma_type: 'alma', fast_len: 9, slow_len: 30 } }],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationContextCompatibilityFromStores()
+    expect(preview.state).toBe('compatible')
+    expect(preview.summary).toContain('Compatible')
+    expect(preview.detail).toContain('matches the artifact context')
+  })
+
+  it('previews validation context incompatibility when the loaded timeframe mismatches the artifact', () => {
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/AAPL.csv',
+      dataTimeframe: '15m',
+      datasetLabel: 'AAPL',
+      baseDataMeta: { timeframe: '15m' },
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:00:00Z',
+        csvPath: 'C:/data/AAPL.csv',
+        datasetMeta: { csv_path: 'C:/data/AAPL.csv', timeframe: '1h', symbol: 'AAPL' },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'aapl_1h',
+        },
+        res: {
+          top: [{ params: { fast_ma_type: 'alma', slow_ma_type: 'alma', fast_len: 9, slow_len: 30 } }],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationContextCompatibilityFromStores()
+    expect(preview.state).toBe('incompatible')
+    expect(preview.summary).toBe('Incompatible: timeframe mismatch')
+    expect(preview.detail).toContain('expects timeframe 1h')
+  })
+
+  it('previews partial compatibility when artifact metadata is thin', () => {
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/AAPL.csv',
+      dataTimeframe: '1h',
+      datasetLabel: 'AAPL',
+      baseDataMeta: { timeframe: '1h' },
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:00:00Z',
+        csvPath: '',
+        datasetMeta: null,
+        req: {},
+        res: {
+          top: [{ params: { fast_ma_type: 'alma', slow_ma_type: 'alma', fast_len: 9, slow_len: 30 } }],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const preview = previewValidationContextCompatibilityFromStores()
+    expect(preview.state).toBe('warning')
+    expect(preview.summary).toBe('Partial: missing dataset + timeframe + strategy')
+    expect(preview.detail).toContain('cannot be fully confirmed')
+  })
+
   it('classifies VCET validation as mixed GPU/CPU in preview summaries', () => {
     ;(pinia.state.value as Record<string, unknown>).data = {
       csvPath: 'C:/data/AAPL.csv',
@@ -1663,7 +2040,7 @@ describe('validationService', () => {
     }
 
     useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
-        currentRun: {
+      currentRun: {
           ts: '2026-03-09T18:00:00Z',
           csv_path: 'C:/data/AAPL.csv',
           dataset_meta: {
@@ -1685,6 +2062,10 @@ describe('validationService', () => {
           ml_signal: {
             stage: 'stage5',
           model_summary: 'cached model',
+        },
+        optimization_metric_surface: {
+          surface: 'core17',
+          fields: ['pnl', 'trades', 'max_dd'],
         },
         req: {
           strategy_kind: 'DoubleMa',
@@ -1724,6 +2105,10 @@ describe('validationService', () => {
     expect(artifact?.ml_signal).toMatchObject({
       stage: 'stage5',
     })
+    expect(artifact?.optimization_metric_surface).toMatchObject({
+      surface: 'core17',
+      fields: ['pnl', 'trades', 'max_dd'],
+    })
 
     const workflowStore = useWorkflowArtifactsStore(pinia)
       expect(workflowStore.currentRun?.datasetMeta).toMatchObject({
@@ -1744,6 +2129,10 @@ describe('validationService', () => {
       })
     expect(workflowStore.currentRun?.mlSignal).toMatchObject({
       stage: 'stage5',
+    })
+    expect(workflowStore.currentRun?.optimizationMetricSurface).toMatchObject({
+      surface: 'core17',
+      fields: ['pnl', 'trades', 'max_dd'],
     })
   })
 
@@ -2181,6 +2570,331 @@ describe('validationService', () => {
     expect(String(validationState.statusLine || '')).toContain('save failed')
   })
 
+  it('keeps validation successful when artifact persistence fails', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '10',
+      seed: '2',
+      minPsr: '',
+      minDsr: '',
+      autoExportXlsx: false,
+      autoRevealReport: false,
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+    ;(pinia.state.value as Record<string, unknown>).data = {
+      csvPath: 'C:/data/preserved.csv',
+      dataTimeframe: '1m',
+      datasetLabel: 'Preserved',
+      datasetContext: 'source=file',
+      dataFields: ['open', 'high', 'low', 'close', 'volume'],
+      dataLen: '1000',
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        artifact_path: 'runs/vectorgrid_existing_validation_test.json',
+        csv_path: 'C:/data/preserved.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/preserved.csv',
+          timeframe: '1m',
+          label: 'Preserved',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-persist-fail',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 30,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_double_ma_validation' || command === 'run_composite_validation') {
+        return {
+          backend_used: 'Cpu',
+          candidates: [{ score: 1 }],
+          runtime_ms: 123,
+        }
+      }
+      if (command === 'save_run_artifact') {
+        throw new Error('artifact persistence failed')
+      }
+      if (command === 'open_path' || command === 'reveal_path') return true
+      if (command === 'polygon_get_cache_info') return { datasets: [] }
+      return {}
+    })
+
+    await expect(runValidation({ switchTab: false })).resolves.toBeUndefined()
+
+    const workflowStore = useWorkflowArtifactsStore(pinia)
+    expect(workflowStore.currentValidation?.res).toBeTruthy()
+    expect(workflowStore.currentRun?.artifactPath).toBe('runs/vectorgrid_existing_validation_test.json')
+    expect(workflowStore.currentRun?.datasetMeta).toMatchObject({
+      csv_path: 'C:/data/preserved.csv',
+      timeframe: '1m',
+      label: 'Preserved',
+    })
+    expect(
+      invokeCommandMock.mock.calls.filter(([command]) => command === 'save_run_artifact'),
+    ).toHaveLength(1)
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.statusLine || '')).toContain('Validation completed in')
+    expect(String(validationState.statusLine || '')).toContain('Validation artifact persistence failed:')
+  })
+
+  it('falls back to a downloadable XLSX when direct save fails', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      autoRevealReport: false,
+      autoExportTopN: '9',
+    }
+    useValidationStore(pinia)
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-10T12:34:56Z',
+        artifact_path: '',
+        report_xlsx_path: '',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/AAPL.csv',
+          timeframe: '1h',
+          label: 'AAPL artifact',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-export-direct-fallback',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: {
+        ts: '2026-03-10T12:34:56Z',
+        req: {
+          data_id: 'data-export-direct-fallback',
+          candidates: [
+            {
+              fast_ma_type: 'sma',
+              slow_ma_type: 'ema',
+              fast_len: 10,
+              slow_len: 40,
+            },
+          ],
+        },
+        res: {
+          candidates: [{ score: 1 }],
+        },
+      },
+    })
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'save_report_xlsx') throw new Error('save failed')
+      if (command === 'build_report_xlsx') return 'AA=='
+      if (command === 'open_path' || command === 'reveal_path') return true
+      return {}
+    })
+
+    await exportReportXlsx()
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx', expect.objectContaining({
+      max_rows: 9,
+      report: expect.any(Object),
+    }))
+    expect(invokeCommandMock).toHaveBeenCalledWith('build_report_xlsx', expect.objectContaining({
+      max_rows: 9,
+      report: expect.any(Object),
+    }))
+    expect([
+      'Exported XLSX report as a file download.',
+      'Built XLSX report (download unavailable in this environment).',
+    ]).toContain(String(validationState.statusLine || ''))
+  })
+
+  it('reports when XLSX save succeeds without returning a path', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      autoRevealReport: false,
+      autoExportTopN: '5',
+    }
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-10T12:34:56Z',
+        artifact_path: '',
+        report_xlsx_path: '',
+        csv_path: 'C:/data/AAPL.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/AAPL.csv',
+          timeframe: '1h',
+          label: 'AAPL artifact',
+        },
+        optimization_metric_surface: {
+          surface: 'core17',
+          fields: ['pnl', 'trades', 'max_dd'],
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-export-empty-path',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: {
+        ts: '2026-03-10T12:34:56Z',
+        req: {
+          data_id: 'data-export-empty-path',
+          candidates: [
+            {
+              fast_ma_type: 'sma',
+              slow_ma_type: 'ema',
+              fast_len: 10,
+              slow_len: 40,
+            },
+          ],
+        },
+        res: {
+          candidates: [{ score: 1 }],
+        },
+      },
+    })
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'save_report_xlsx') return { path: '' }
+      if (command === 'open_path' || command === 'reveal_path') return true
+      return {}
+    })
+
+    await exportReportXlsx()
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx', expect.objectContaining({
+      report: expect.objectContaining({
+        optimization_metric_surface: {
+          surface: 'core17',
+          fields: ['pnl', 'trades', 'max_dd'],
+        },
+      }),
+    }))
+    expect(String(validationState.statusLine || '')).toBe('Saved XLSX report, but no path was returned.')
+  })
+
+  it('reports CSV and JSON export status strings explicitly', async () => {
+    useValidationStore(pinia)
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:34:56Z',
+        artifact_path: 'runs/vectorgrid_run_validation_test.json',
+        report_xlsx_path: '',
+        csv_path: 'C:/data/test.csv',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-export-status',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: {
+        ts: '2026-02-25T12:34:56Z',
+        req: {
+          data_id: 'data-export-status',
+          candidates: [
+            {
+              fast_ma_type: 'sma',
+              slow_ma_type: 'ema',
+              fast_len: 10,
+              slow_len: 40,
+            },
+          ],
+        },
+        res: {
+          candidates: [{ score: 1 }],
+        },
+      },
+    })
+
+    await exportShortlistCsv()
+    let validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect([
+      'Exported validation shortlist CSV.',
+      'Built validation shortlist CSV (download unavailable in this environment).',
+    ]).toContain(String(validationState.statusLine || ''))
+
+    await exportValidationJson()
+    validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect([
+      'Exported validation JSON.',
+      'Built validation JSON (download unavailable in this environment).',
+    ]).toContain(String(validationState.statusLine || ''))
+
+    await exportReportJson()
+    validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect([
+      'Exported report JSON.',
+      'Built report JSON (download unavailable in this environment).',
+    ]).toContain(String(validationState.statusLine || ''))
+  })
+
   it('normalizes cross-refresh datasets from polygon cache info', async () => {
     invokeCommandMock.mockResolvedValueOnce({
       datasets: [
@@ -2403,26 +3117,269 @@ describe('validationService', () => {
     expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
   })
 
-  it('preserves Stage 3 meta XLSX fallback when no validation artifact exists', async () => {
+  it('keeps CompositeMo Pareto artifacts on pareto-frontier admission and artifact-backed XLSX export', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      candidates: '3',
+      seed: '1',
+      admissionPolicy: 'auto',
+      autoRevealReport: false,
+      autoExportTopN: '5',
+      wfEnable: false,
+      perturbEnable: false,
+      mcEnable: false,
+      cscvEnable: false,
+      crossEnable: false,
+    }
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'run_composite_validation') {
+        return {
+          backend_used: 'Cpu',
+          backend_route: 'CpuOnly',
+          runtime_ms: 91,
+          candidates: [{ score: 1 }],
+          run_verdict: {
+            passed: true,
+            approved: true,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 1,
+            final_recommendation: 'single_candidate_supported',
+            warning_flags: [],
+            fail_reasons: [],
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return { path: 'runs/vectorgrid_run_validation_composite_mo_pareto.json', bytes: 196 }
+      }
+      if (command === 'save_report_xlsx_from_artifact') {
+        return { path: 'runs/vectorgrid_report_validation_composite_mo_pareto.xlsx' }
+      }
+      if (command === 'open_path' || command === 'reveal_path') {
+        return true
+      }
+      return {}
+    })
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-03-15T00:00:00Z',
+        artifact_path: 'runs/vectorgrid_run_validation_composite_mo_pareto.json',
+        req: {
+          strategy_kind: 'CompositeMo',
+          data_id: 'data-composite-mo-artifact',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          objectives: { maximize: 'Sharpe', minimize: 'MaxDrawdown' },
+          base_strategy: { fee_bps: 1.0 },
+        },
+        res: {
+          pareto: [
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 9,
+                slow_len: 30,
+                halftrend: { amplitude: 2 },
+                macz: { fast_length: 12 },
+                ott: { period: 2 },
+                signal_mode: 'soft_vote',
+                strategy: { fee_bps: 1.0 },
+              },
+              metrics: { pnl: 0.12, sharpe: 1.1, max_dd: 0.12 },
+              maximize_value: 1.1,
+              minimize_value: 0.12,
+              violation: 0,
+            },
+            {
+              params: {
+                fast_ma_type: 'ema',
+                slow_ma_type: 'sma',
+                fast_len: 7,
+                slow_len: 25,
+                halftrend: { amplitude: 3 },
+                macz: { fast_length: 10 },
+                ott: { period: 3 },
+                signal_mode: 'hard_gate',
+                strategy: { fee_bps: 1.0 },
+              },
+              metrics: { pnl: 0.1, sharpe: 1.0, max_dd: 0.08 },
+              maximize_value: 1.0,
+              minimize_value: 0.08,
+              violation: 0,
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    const req = firstValidationRequest()
+    expect(req.admission_policy).toBe('pareto_frontier')
+    expect(req.admission_provenance).toMatchObject({
+      requested_policy: 'auto',
+      applied_policy: 'pareto_frontier',
+      source_kind: 'pareto_frontier',
+    })
+
+    const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
+    expect(String(validationState.validationMeta || '')).toContain('admission=pareto_frontier')
+    expect(String(validationState.validationRouteSummary || '')).toContain('Cpu • CpuOnly')
+
+    await exportReportXlsx()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('save_report_xlsx_from_artifact', {
+      path: 'runs/vectorgrid_run_validation_composite_mo_pareto.json',
+      max_rows: 5,
+    })
+    expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
+  })
+
+  it('preserves Stage 3 meta XLSX fallback with a single reveal when open_path fails', async () => {
     ;(pinia.state.value as Record<string, unknown>).validation = {
       autoRevealReport: true,
     }
-    ;(pinia.state.value as Record<string, unknown>).commandActions = {
-      latestMetaReportPath: 'C:/reports/meta_latest.xlsx',
-    }
+    vi.stubGlobal('document', {
+      documentElement: {
+        dataset: {
+          latestMetaReportPath: 'C:/reports/meta_latest.xlsx',
+        },
+      },
+    })
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'open_path') {
+        throw new Error('blocked')
+      }
+      if (command === 'reveal_path') {
+        return true
+      }
+      return {}
+    })
 
     await exportReportXlsx()
 
     expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx', expect.anything())
     expect(invokeCommandMock).not.toHaveBeenCalledWith('save_report_xlsx_from_artifact', expect.anything())
-    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
-      path: 'C:/reports/meta_latest.xlsx',
-    })
-    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
-      path: 'C:/reports/meta_latest.xlsx',
-    })
+    expect(
+      invokeCommandMock.mock.calls.filter(([command, payload]) =>
+        command === 'reveal_path'
+        && (payload as Record<string, unknown>)?.path === 'C:/reports/meta_latest.xlsx')
+    ).toHaveLength(1)
 
     const validationState = (pinia.state.value as Record<string, unknown>).validation as Record<string, unknown>
     expect(validationState.statusLine).toBe('Opened Stage 3 XLSX report: C:/reports/meta_latest.xlsx')
+  })
+
+  it('prefers the runtime Stage 3 meta XLSX path over a stale command-action store value', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      autoRevealReport: true,
+    }
+    ;(pinia.state.value as Record<string, unknown>).commandActions = {
+      latestMetaReportPath: 'C:/reports/stale_meta.xlsx',
+    }
+    vi.stubGlobal('document', {
+      documentElement: {
+        dataset: {
+          latestMetaReportPath: 'C:/reports/runtime_meta.xlsx',
+        },
+      },
+    })
+
+    await exportReportXlsx()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
+      path: 'C:/reports/runtime_meta.xlsx',
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
+      path: 'C:/reports/runtime_meta.xlsx',
+    })
+  })
+
+  it('reveals a newly saved report path only once when open_path fails and autoRevealReport is enabled', async () => {
+    ;(pinia.state.value as Record<string, unknown>).validation = {
+      autoExportXlsx: true,
+      autoRevealReport: true,
+      autoExportTopN: '7',
+    }
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'save_report_xlsx') {
+        return {
+          path: 'runs/vectorgrid_report_validation_test.xlsx',
+        }
+      }
+      if (command === 'open_path') {
+        throw new Error('blocked')
+      }
+      if (command === 'reveal_path') {
+        return true
+      }
+      if (command === 'run_double_ma_validation' || command === 'run_composite_validation') {
+        return {
+          backend_used: 'Cpu',
+          backend_route: 'GpuKernel->CpuOnly',
+          backend_fallback_reason: 'GPU validation runtime not implemented yet; using CPU validation.',
+          candidates: [{ score: 1 }],
+          runtime_ms: 123,
+          cross_ticker: { datasets: [] },
+          run_verdict: {
+            passed: true,
+            approved: false,
+            candidates_tested: 1,
+            candidates_survived_hard_gates: 1,
+            approved_candidate_count: 0,
+            final_recommendation: 'evidence_too_short_min_track_record',
+            top_candidate_track_record_bars: 120,
+            top_candidate_min_track_record_length_bars: 240,
+          },
+        }
+      }
+      if (command === 'save_run_artifact') {
+        return {
+          path: 'runs/vectorgrid_run_validation_test.json',
+          bytes: 256,
+        }
+      }
+      return {}
+    })
+
+    useWorkflowArtifactsStore(pinia).applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-02-25T12:00:00Z',
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-auto-export',
+          backend: { backend: 'GpuKernel', device_id: 0 },
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    await runValidation({ switchTab: false })
+
+    expect(
+      invokeCommandMock.mock.calls.filter(([command, payload]) =>
+        command === 'reveal_path'
+        && (payload as Record<string, unknown>)?.path === 'runs/vectorgrid_report_validation_test.xlsx')
+    ).toHaveLength(1)
   })
 })

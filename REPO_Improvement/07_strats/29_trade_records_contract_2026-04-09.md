@@ -1,6 +1,6 @@
 # Trade Records Contract Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -110,18 +110,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document `TradeRecord` and `TradeRecords` as the canonical shared trade-array shape.
-- [ ] Add or tighten tests for record validation, conversion, and per-column extraction.
-- [ ] Add or tighten parity tests between `TradeRecords`-derived stats and current `TradeStats` summary flows.
-- [ ] Audit report and artifact surfaces to identify where full trade arrays are intentionally omitted today.
-- [ ] Decide whether a JSON and/or CSV trade-record artifact contract should be formalized now or deferred.
-- [ ] Prevent parallel ad hoc trade-record shapes from appearing in app-core or Tauri report code.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document `TradeRecord` and `TradeRecords` as the canonical shared trade-array shape.
+- [x] Add or tighten tests for record validation, conversion, and per-column extraction.
+- [x] Add or tighten parity tests between `TradeRecords`-derived stats and current `TradeStats` summary flows.
+- [x] Audit report and artifact surfaces to identify where full trade arrays are intentionally omitted today.
+- [x] Decide whether a JSON and/or CSV trade-record artifact contract should be formalized now or deferred.
+- [x] Prevent parallel ad hoc trade-record shapes from appearing in app-core or Tauri report code.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -139,6 +139,18 @@ Public-repo quality focus:
 - if a consumer only needs `TradeStats`, keep the lighter path unless there is a clear benefit to carrying full records
 - treat any field-set change in `TradeRecord` as a compatibility-sensitive event
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the canonical record contract in [records.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/strategies/src/records.rs):
+  - added per-column isolation coverage for `to_trades_for_col()` and `trade_stats_for_col()`
+  - added overflow rejection coverage for `TradeRecord::try_from_trade()`
+- Kept scope intentionally additive:
+  - no trade-record field shape changed
+  - no report/artifact payloads changed
+  - existing `trade22` summary surfaces remain the active user-facing output path
+- Acceptance evidence:
+  - `cargo test -p ta_strategies records --lib`
 
 ## Related Docs
 

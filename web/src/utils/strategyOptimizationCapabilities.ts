@@ -411,9 +411,11 @@ export function describeStrategyOptimizationCapabilities(
       supportsShortlistUnionMode: false,
       supportsAdvancedExactKernelControls: false,
       executionSummary:
-        'CompositeCpu uses the composite CPU optimization path.',
-      modeSummary: `${kind} always runs in Grid mode.`,
-      outputSummary: `${kind} supports ranked Top-K and include-all native candidate returns, but does not emit the Double MA heatmap or CSV export. Explicit Full17 and Trade22 metric-contract requests are available on this route.`,
+        'CompositeCpu uses the strategy-local composite CPU optimization path, keeps family-specific route diagnostics close to execution, and feeds drilldown/local-stability follow-ups from the same request family.',
+      modeSummary:
+        `${kind} always runs in Grid mode and keeps route-diagnostic, drilldown, and local-stability follow-ups on its fixed composite path.`,
+      outputSummary:
+        `${kind} supports ranked Top-K and include-all native candidate returns plus route-diagnostic-aware drilldown and local-stability follow-ups for the selected candidate, but does not emit the Double MA heatmap or CSV export. Explicit Full17 and Trade22 metric-contract requests are available on this route.`,
     }
   }
   if (kind === 'CompositeMo') {
@@ -433,11 +435,11 @@ export function describeStrategyOptimizationCapabilities(
       supportsShortlistUnionMode: false,
       supportsAdvancedExactKernelControls: false,
       executionSummary:
-        'Composite MO runs a CPU-side multi-objective evaluator with its own sampler settings. An optional GPU prescan can narrow MA domains before the CPU search begins.',
+        'Composite MO runs a CPU-side multi-objective evaluator with explicit sampler families (Nsga2, Random, Tpe, and Qmc). An optional GPU prescan can narrow MA domains before the CPU search begins, and tiny discrete spaces can collapse into bounded exact-grid evaluation.',
       modeSummary:
-        'Composite MO does not use the global backend selector or the global optimization-mode selector. Prescan mode only affects the stage-0 Double-MA narrowing pass.',
+        'Composite MO does not use the global backend selector or the global optimization-mode selector. Prescan mode only affects the stage-0 Double-MA narrowing pass, while sampler choice and search-space shape stay inside the Composite MO contract.',
       outputSummary:
-        'Composite MO returns Pareto points from its own search-space and prescan settings rather than Double-MA Top-K, heatmap, include-all, or export-all outputs. Saved optimization artifacts on this audited route emit the canonical Trade22 surface for Pareto points, but there is no explicit metric-contract selector on this workflow. Validation currently uses the CPU route; GPU fixed-candidate validation only supports plain CompositeCpu HardGate candidates.',
+        'Composite MO returns Pareto points from its own search-space, sampler, and prescan settings rather than Double-MA Top-K, heatmap, include-all, or export-all outputs. Saved optimization artifacts on this audited route emit the canonical Trade22 surface for Pareto points, but there is no explicit metric-contract selector on this workflow. Validation currently uses the CPU route; GPU fixed-candidate validation only supports plain CompositeCpu HardGate candidates.',
     }
   }
   return {

@@ -100,18 +100,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the ordered stages of verdict construction from candidate metrics to run recommendation.
-- [ ] Document the meaning of `passed`, `approved`, `approved_candidate_count`, and `final_recommendation`.
-- [ ] Document how track-record and minimum-track-record fields affect approval and recommendation.
-- [ ] Document how CSCV/PBO and SPA influence warnings, failures, and recommendation language.
-- [ ] Document how post-cross-filter verdict recomputation must behave.
-- [ ] Add or tighten backend tests for representative recommendation outcomes.
-- [ ] Add or tighten frontend summary tests for recommendation and warning parity.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the ordered stages of verdict construction from candidate metrics to run recommendation.
+- [x] Document the meaning of `passed`, `approved`, `approved_candidate_count`, and `final_recommendation`.
+- [x] Document how track-record and minimum-track-record fields affect approval and recommendation.
+- [x] Document how CSCV/PBO and SPA influence warnings, failures, and recommendation language.
+- [x] Document how post-cross-filter verdict recomputation must behave.
+- [x] Add or tighten backend tests for representative recommendation outcomes.
+- [x] Add or tighten frontend summary tests for recommendation and warning parity.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -133,6 +133,11 @@ Public-repo quality focus:
 - if recommendation tokens change, update frontend summary tests and artifact consumers immediately
 - keep optional robustness modules non-silent even when disabled or unavailable
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the backend verdict-engine evidence in `validation_pipeline.rs` with explicit recommendation tests for SPA-not-significant rejection and approved-with-warnings outcomes, alongside the existing min-track-record and cross-filter recomputation coverage.
+- Acceptance evidence for closure: `cargo test -p ta_app_core validation_pipeline --lib`, `cargo test -p ta_desktop_demo_app commands_validation --lib`, `npm --prefix web run test -- src/services/validationService.test.ts`, `npm --prefix web run lint`, and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

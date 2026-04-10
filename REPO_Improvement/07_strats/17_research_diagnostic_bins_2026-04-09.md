@@ -1,6 +1,6 @@
 # Research Diagnostic Bins Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -107,18 +107,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every currently supported diagnostic bin and its role.
-- [ ] Document which bins are evidence-producing versus exploratory.
-- [ ] Document CLI flag conventions and output-file conventions for the maintained bins.
-- [ ] Add or tighten tests for any bin whose output is consumed by scripts or docs.
-- [ ] Review whether shared JSON artifact helpers should be reused more consistently across bins.
-- [ ] Keep the fidelity-audit harness documented as the primary strategy-facing evidence tool.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document every currently supported diagnostic bin and its role.
+- [x] Document which bins are evidence-producing versus exploratory.
+- [x] Document CLI flag conventions and output-file conventions for the maintained bins.
+- [x] Add or tighten tests for any bin whose output is consumed by scripts or docs.
+- [x] Review whether shared JSON artifact helpers should be reused more consistently across bins.
+- [x] Keep the fidelity-audit harness documented as the primary strategy-facing evidence tool.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -136,6 +136,24 @@ Public-repo quality focus:
 - if a bin is exploratory-only, label it clearly rather than implying product support
 - keep the desktop product contract separate from the headless diagnostic contract
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by expanding the diagnostic-bin map in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md):
+  - added `profile_doublema_campaign_prefetch.rs`
+  - added `real_data_fidelity_audit.rs`
+  - documented maintained evidence bins versus supplemental/exploratory helpers
+  - documented the current role of `ta_cli.rs`, `profile_gpu_dynamic_runner.rs`, `real_data_optimizer_eval.rs`, `profile_doublema_campaign_prefetch.rs`, `real_data_fidelity_audit.rs`, and `stage6b_kernel_report.rs`
+- Kept the fidelity-audit harness as the primary maintained strategy-facing evidence bin and reused its newly testable CLI contract as the main tightened test surface for this tranche.
+- Review result:
+  - `real_data_fidelity_audit.rs` is the primary maintained evidence tool
+  - `profile_gpu_dynamic_runner.rs` remains gate-backed via `scripts/run_gpu_perf_gate.ps1`
+  - `profile_doublema_campaign_prefetch.rs`, `real_data_optimizer_eval.rs`, and `stage6b_kernel_report.rs` remain supplemental/exploratory and are now labeled that way in the routing doc
+- Acceptance evidence:
+  - `cargo test -p ta_app_core --bin real_data_fidelity_audit`
+  - `cargo test -p ta_desktop_demo_app campaign_ --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

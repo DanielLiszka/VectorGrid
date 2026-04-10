@@ -1,0 +1,40 @@
+// Suggested integration sketch for the existing VRAM-resident exact path.
+// Place this near the ALMA indicator-prep branch, not inside the lockstep backtest kernel itself.
+
+#[cfg(feature = "tensorcore-alma")]
+fn maybe_tensorcore_alma_family(
+    device_prices: *const f32,
+    n_prices: usize,
+    alma_specs: &[tensorcore_alma::AlmaSpec],
+    device_out: *mut f32,
+    cuda_stream: *mut std::ffi::c_void,
+) -> Result<Option<(usize, usize)>, Box<dyn std::error::Error>> {
+    // Heuristic: only use Tensor Cores when the sweep is large enough to amortize packing/GEMM overhead.
+    if alma_specs.len() < 128 || n_prices < 65_536 {
+        return Ok(None);
+    }
+
+    let plan = tensorcore_alma::TensorCoreAlmaPlan::from_alma_specs(
+        alma_specs,
+        tensorcore_alma::TcPrecision::Tf32Fast,
+    )?;
+
+    let rows = unsafe {
+        plan.run_on_device_raw(
+            device_prices,
+            n_prices,
+            device_out,
+            8192,
+            cuda_stream,
+        )?
+    };
+
+    // Return (rows, valid_from). The slab layout is row-major [rows, params].
+    Ok(Some((rows, plan.valid_from())))
+}
+
+// Intended usage in the exact double_ma path:
+// 1. Deduplicate unique fast ALMA configs -> one tensor-core slab
+// 2. Deduplicate unique slow ALMA configs -> one tensor-core slab
+// 3. Feed both slabs into the existing row_first_global_topk exact evaluator
+// 4. Use max(fast_valid_from, slow_valid_from) as the pair warmup offset

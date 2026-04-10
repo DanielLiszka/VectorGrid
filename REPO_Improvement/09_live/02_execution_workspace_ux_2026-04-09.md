@@ -1,6 +1,6 @@
 # Execution Workspace UX Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -120,20 +120,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current execution panel layout groups in order.
-- [ ] Document which actions currently require confirmation and which do not.
-- [ ] Document posture and safety-copy semantics shown to the user.
-- [ ] Document the current settings-workspace embedding and its UX implications.
-- [ ] Document current chart/review surface limitations.
-- [ ] Document “Remember keys” persistence behavior accurately.
-- [ ] Preserve component tests for dry-run, broker-armed confirmation, and review rendering.
-- [ ] Preserve store/service tests for blocked-reason and preflight behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the current execution panel layout groups in order.
+- [x] Document which actions currently require confirmation and which do not.
+- [x] Document posture and safety-copy semantics shown to the user.
+- [x] Document the current settings-workspace embedding and its UX implications.
+- [x] Document current chart/review surface limitations.
+- [x] Document “Remember keys” persistence behavior accurately.
+- [x] Preserve component tests for dry-run, broker-armed confirmation, and review rendering.
+- [x] Preserve store/service tests for blocked-reason and preflight behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -151,6 +151,20 @@ Public-repo quality focus:
 - preserve the current panel/store/service ownership split until a larger workspace move is intentional
 - if the execution panel later becomes a standalone workspace, document that as a product-structure change rather than silently rewriting current assumptions
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by hardening the existing execution UX regression surface in [ExecutionWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts):
+  - added explicit confirmation coverage for `Start live`, `Start runner`, and `Clear keys`
+  - preserved the existing direct dry-run one-shot behavior while keeping broker-armed one-shot actions confirmation-gated
+- Kept scope intentionally additive:
+  - no panel layout groups moved
+  - no confirmation copy was removed
+  - no settings-workspace embedding behavior changed
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

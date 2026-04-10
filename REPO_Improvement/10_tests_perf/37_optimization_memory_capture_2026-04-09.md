@@ -1,6 +1,6 @@
 # Optimization Memory Capture Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact sampled process and workload boundary.
-- [ ] Document the meaning of working-set versus private-byte fields.
-- [ ] Keep the telemetry-only framing explicit.
-- [ ] Keep this capture non-options only.
-- [ ] Cross-link the output into post-release review rather than a main perf gate.
-- [ ] Avoid implying VRAM insight from host-memory telemetry.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the exact sampled process and workload boundary.
+- [x] Document the meaning of working-set versus private-byte fields.
+- [x] Keep the telemetry-only framing explicit.
+- [x] Keep this capture non-options only.
+- [x] Cross-link the output into post-release review rather than a main perf gate.
+- [x] Avoid implying VRAM insight from host-memory telemetry.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,34 @@ Public-repo quality focus:
 - prefer additive notes and provenance over more aggressive thresholds
 - keep VRAM-specific concerns in separate tools and docs
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a fresh release-profile memory capture, a refreshed downstream supplemental review, and the workflow-regression bin’s inline tests rather than a code change.
+- Fresh acceptance evidence for this closure:
+  - `powershell -ExecutionPolicy Bypass -File scripts/capture_optimization_memory.ps1 -BuildProfile release -SampleIntervalMs 50`
+  - `node scripts/post_release_telemetry_review.mjs`
+  - `cargo test -p ta_desktop_demo_app --bin ta_workflow_regression`
+- The release memory-capture script refreshed the tracked telemetry artifact:
+  - `scripts/baselines/ui_capture/optimization_memory_metrics.json`
+- The refreshed telemetry payload preserved the intended non-options framing and release-bin provenance:
+  - `timing_boundary`: `process-memory-sampling`
+  - `timing_boundary_note`: `Peak process working-set/private-byte sampling over a synthetic ta_workflow_regression run. Supplemental telemetry only; not a perf gate and not optimization-only.`
+  - `build_profile`: `release`
+  - `telemetry_only`: `true`
+  - sampled executable: `target/release/ta_workflow_regression.exe`
+  - sampled arguments: `--out target/workflow_regression_summary.json --candles-len 10000 --train-assets 10 --holdout-assets 6`
+  - `runtime_ms_wall`: `283`
+  - `peak_working_set_mb`: `40.95`
+  - `peak_private_mb`: `38.55`
+- The downstream supplemental review also refreshed the tracked consumer artifacts:
+  - `scripts/baselines/post_release/telemetry_review.json`
+  - `scripts/baselines/post_release/telemetry_review.md`
+- The refreshed post-release review passed `17/17` checks and now explicitly preserves the supplemental-only framing rather than reading like a perf-authority gate.
+- The targeted bin tests also passed:
+  - `tests::stage_budget_skips_zero_baseline_and_applies_multiplier`
+  - `tests::workflow_summary_deserializes_legacy_payload_without_envelope`
+- No `README.md` or `REPO_MAP.md` update was required because this item verified and refreshed the existing telemetry workflow rather than changing product behavior, perf-gate policy, or route contracts.
 
 ## Related Docs
 

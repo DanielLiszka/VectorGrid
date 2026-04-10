@@ -1,6 +1,6 @@
 # FE Results Surface Adequacy Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -89,16 +89,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Map each major results surface to at least one direct component test owner.
-- [ ] Keep empty-state, stale/provenance, and warning cues explicitly covered.
-- [ ] Use browser proof only for cross-panel interaction and navigation.
-- [ ] Add tests when new result tabs or docked decision surfaces appear.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Map each major results surface to at least one direct component test owner.
+- [x] Keep empty-state, stale/provenance, and warning cues explicitly covered.
+- [x] Use browser proof only for cross-panel interaction and navigation.
+- [x] Add tests when new result tabs or docked decision surfaces appear.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -113,6 +113,26 @@ Public-repo quality focus:
 - keep component-level adequacy assertions even if browser coverage expands
 - avoid snapshot-heavy testing that hides the actual decision-surface contract
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on current-state results evidence instead of inferred coverage:
+  - targeted results-surface component proof passed across `OverviewWorkspacePanel`, `TopWorkspacePanel`, `ParetoWorkspacePanel`, `HeatmapWorkspacePanel`, `DrillWorkspacePanel`, `AnalysisContextDock`, `ValidationWorkspacePanel`, and `OptimizeWorkspacePanel`
+  - browser UX smoke passed and still proves cross-panel shell navigation without replacing the lower component layer
+  - accessibility smoke and baseline capture both passed, so the adequacy lane now includes user-visible artifact refresh instead of only Vitest proof
+- The current adequacy contract remains properly layered:
+  - direct component tests own visible structure, empty states, warning cues, provenance chips, dock content, and dense table behavior
+  - browser smoke stays limited to end-user navigation and overlay interaction rather than duplicating component assertions
+  - artifact capture remains supplemental evidence for public-repo review and regression inspection
+- Kept scope intentionally additive:
+  - no results-surface behavior was loosened to satisfy the doc
+  - no existing component or smoke proofs were removed
+  - no backend/report scope was widened from this frontend adequacy closure
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/OverviewWorkspacePanel.test.ts src/components/TopWorkspacePanel.test.ts src/components/ParetoWorkspacePanel.test.ts src/components/HeatmapWorkspacePanel.test.ts src/components/DrillWorkspacePanel.test.ts src/components/AnalysisContextDock.test.ts src/components/ValidationWorkspacePanel.test.ts src/components/OptimizeWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run a11y:smoke`
+  - `npm.cmd --prefix web run baseline:ui`
 
 ## Related Docs
 

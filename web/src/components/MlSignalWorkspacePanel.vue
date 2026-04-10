@@ -146,6 +146,11 @@ function basename(path: string): string {
   return normalized.split(/[\\/]/).pop() || normalized;
 }
 
+function parseNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function formatPolicySummary(
   policy: Record<string, unknown> | null | undefined,
 ): string {
@@ -271,6 +276,169 @@ const currentValidationSummary = computed(() => {
     return `Policy sweep attached • ${Math.max(0, Math.floor(sweepSize))} candidates searched • ${candidates.length} retained`;
   }
   return `Single validation attached • ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}`;
+});
+
+const datasetExportSplitSummary = computed(() => {
+  const trainBars = Number(mlSignalSplitTrainBars.value);
+  const calibrationBars = Number(mlSignalSplitCalibrationBars.value);
+  const testBars = Number(mlSignalSplitTestBars.value);
+  const splitEnabled =
+    Number.isFinite(trainBars) &&
+    trainBars > 0 &&
+    Number.isFinite(calibrationBars) &&
+    calibrationBars > 0 &&
+    Number.isFinite(testBars) &&
+    testBars > 0;
+  if (!splitEnabled) return "Plain dataset export";
+  const gapBars = Math.max(0, Number(mlSignalSplitGapBars.value || 0) || 0);
+  const stepBars = Math.max(1, Number(mlSignalSplitStepBars.value || 1) || 1);
+  return `train ${Math.floor(trainBars)} • calibration ${Math.floor(calibrationBars)} • test ${Math.floor(testBars)} • gap ${Math.floor(gapBars)} • step ${Math.floor(stepBars)}`;
+});
+
+const datasetExportHoldoutSummary = computed(() => {
+  const modulus = Math.max(0, Number(mlSignalHoldoutModulus.value || 0) || 0);
+  if (modulus <= 0) return "Ticker holdout off";
+  const residueRaw = Math.max(0, Number(mlSignalHoldoutResidue.value || 0) || 0);
+  const residue = modulus > 0 ? residueRaw % modulus : 0;
+  return `ticker_id % ${Math.floor(modulus)} == ${Math.floor(residue)}`;
+});
+
+const datasetExportArtifactSummary = computed(() => {
+  const artifact = currentMlArtifact.value;
+  const exportPath = String(artifact?.datasetExportPath || "").trim();
+  if (!exportPath) return "No dataset export artifact attached yet.";
+  const parts = [basename(exportPath)];
+  if (artifact?.featureSchemaPath) parts.push(`schema ${basename(String(artifact.featureSchemaPath))}`);
+  if (artifact?.exportManifestPath) parts.push(`manifest ${basename(String(artifact.exportManifestPath))}`);
+  if (artifact?.splitManifestPath) parts.push(`splits ${basename(String(artifact.splitManifestPath))}`);
+  return parts.join(" • ");
+});
+
+const featureSchemaContractSummary = computed(() => {
+  const artifact = currentMlArtifact.value;
+  const schemaPath = String(artifact?.featureSchemaPath || "").trim();
+  const version = Number(artifact?.featureSchemaVersion);
+  if (schemaPath && Number.isFinite(version) && version > 0) {
+    return `Schema v${Math.floor(version)} is required for score-cache compatibility and saved-run reopen consistency.`;
+  }
+  if (schemaPath) {
+    return "Feature schema path is attached, but the schema version is missing.";
+  }
+  return "No feature schema attached to the current ML artifact.";
+});
+
+const currentScoreCoverageSummary = computed(() => {
+  const artifact = currentMlArtifact.value;
+  if (!artifact) return "No score-cache summary attached yet.";
+  const parts = [
+    String(artifact.scoreSpace || "").trim(),
+    String(artifact.scoreScope || "").trim(),
+    Number.isFinite(Number(artifact.matchedRows))
+      ? `matched ${Math.max(0, Math.floor(Number(artifact.matchedRows)))}`
+      : "",
+    Number.isFinite(Number(artifact.skippedRows))
+      ? `skipped ${Math.max(0, Math.floor(Number(artifact.skippedRows)))}`
+      : "",
+    Number.isFinite(Number(artifact.barsScored))
+      ? `bars ${Math.max(0, Math.floor(Number(artifact.barsScored)))}`
+      : "",
+    Number.isFinite(Number(artifact.coverageRatio))
+      ? `coverage ${(Number(artifact.coverageRatio) * 100).toFixed(1)}%`
+      : "",
+    Number.isFinite(Number(artifact.duplicateTimestamps))
+      ? `duplicates ${Math.max(
+          0,
+          Math.floor(Number(artifact.duplicateTimestamps)),
+        )}`
+      : "",
+  ].filter((part) => part);
+  return parts.join(" • ") || "No score-cache summary attached yet.";
+});
+
+const validationContextSummary = computed(() => {
+  const parts = ["MlSignal"];
+  const label = String(dataStore.datasetLabel || "").trim();
+  const timeframe = String(dataStore.dataTimeframe || "").trim();
+  const csvPath = String(dataStore.csvPath || "").trim();
+  if (label && label !== "—") parts.push(label);
+  if (timeframe) parts.push(`timeframe ${timeframe}`);
+  if (csvPath) parts.push(`csv ${basename(csvPath)}`);
+  return parts.join(" • ");
+});
+
+const currentPolicyControlSummary = computed(() => {
+  return [
+    `tL ${parseNumber(mlSignalLongThreshold.value, 0.55).toFixed(2)}`,
+    `tS ${parseNumber(mlSignalShortThreshold.value, 0.55).toFixed(2)}`,
+    `d ${parseNumber(mlSignalDelta.value, 0.05).toFixed(2)}`,
+    `hold ${Math.max(
+      1,
+      Math.floor(parseNumber(mlSignalMaxHoldBars.value, 10)),
+    )}`,
+    mlSignalExitOnFlat.value ? "exit flat on" : "exit flat off",
+    mlSignalExitOnOpposite.value ? "exit opposite on" : "exit opposite off",
+  ].join(" • ");
+});
+
+const scoreRequirementSummary = computed(() => {
+  const base =
+    "Matching data_id, loaded csv_path, and timeframe are required before validation starts.";
+  if (strategyStore.longOnly) {
+    return `${base} Current strategy is long-only, so long probability coverage is sufficient. Raw-margin-only caches are still rejected for threshold validation.`;
+  }
+  return `${base} Current strategy is long+short, so validation requires both long and short probability coverage. Raw-margin-only caches are rejected for threshold validation.`;
+});
+
+const currentSweepAxisSummary = computed(() => {
+  return [
+    `long ${parseNumber(mlSignalSweepLongStart.value, 0.5).toFixed(2)}-${parseNumber(
+      mlSignalSweepLongEnd.value,
+      0.7,
+    ).toFixed(2)}@${parseNumber(mlSignalSweepLongStep.value, 0.1).toFixed(2)}`,
+    `short ${parseNumber(
+      mlSignalSweepShortStart.value,
+      0.5,
+    ).toFixed(2)}-${parseNumber(mlSignalSweepShortEnd.value, 0.7).toFixed(
+      2,
+    )}@${parseNumber(mlSignalSweepShortStep.value, 0.1).toFixed(2)}`,
+    `delta ${parseNumber(
+      mlSignalSweepDeltaStart.value,
+      0,
+    ).toFixed(2)}-${parseNumber(mlSignalSweepDeltaEnd.value, 0.1).toFixed(
+      2,
+    )}@${parseNumber(mlSignalSweepDeltaStep.value, 0.05).toFixed(2)}`,
+    `hold ${Math.max(
+      1,
+      Math.floor(parseNumber(mlSignalSweepHoldStart.value, 5)),
+    )}-${Math.max(
+      1,
+      Math.floor(parseNumber(mlSignalSweepHoldEnd.value, 15)),
+    )}@${Math.max(
+      1,
+      Math.floor(parseNumber(mlSignalSweepHoldStep.value, 5)),
+    )}`,
+  ].join(" • ");
+});
+
+const currentSweepBudgetSummary = computed(() => {
+  const topK = Math.max(1, Math.floor(parseNumber(mlSignalSweepTopK.value, 10)));
+  return `UI retain top ${topK}. Rust still defaults top_k to 25 when omitted, but this panel always sends an explicit top_k. Candidate expansion stays capped at 20,000.`;
+});
+
+const currentArtifactStageSummary = computed(() => {
+  const stage = String(currentMlArtifact.value?.stage || "").trim();
+  switch (stage) {
+    case "dataset_export":
+      return "Stage 1 owns the dataset CSV, feature schema, export manifest, and optional split manifest.";
+    case "score_cache":
+      return "Stage 2 owns the score cache and score manifest. Dataset-export sidecars carry forward for replay and compatibility checks.";
+    case "validation":
+      return "Stage 3 owns the validation result and current policy selection. Dataset-export and score-cache attachments carry forward for replay.";
+    case "policy_sweep":
+      return "Stage 4 owns the retained sweep summary and best-policy view. Dataset-export and score-cache attachments carry forward for replay.";
+    default:
+      return "ML artifacts keep stage-owned outputs plus carry-forward dataset and score-cache attachments for replay.";
+  }
 });
 
 async function browseSaveCsv(
@@ -466,6 +634,30 @@ onMounted(() => {
         Optional split manifest: leave the train/calibration/test fields blank
         to export a plain dataset, or fill them to emit a walk-forward
         `split_manifest.json` sidecar.
+      </div>
+      <div class="summaryGrid" aria-label="ML dataset export contract">
+        <article>
+          <div class="panelMetricKey">Split plan</div>
+          <div class="panelMetricValue mono">{{ datasetExportSplitSummary }}</div>
+        </article>
+        <article>
+          <div class="panelMetricKey">Ticker holdout</div>
+          <div class="panelMetricValue mono">{{ datasetExportHoldoutSummary }}</div>
+        </article>
+        <article>
+          <div class="panelMetricKey">Current export artifact</div>
+          <div class="panelMetricValue mono">{{ datasetExportArtifactSummary }}</div>
+        </article>
+      </div>
+      <div class="muted">
+        Gap bars separate train to calibration and calibration to test windows. Step bars move the next emitted split window forward when split-manifest generation is active. In the current export contract, blank gap and step fields resolve to gap 0 and step 1.
+      </div>
+      <div class="muted">
+        Dataset export always writes the CSV, feature schema, and
+        <span class="mono">.export_manifest.json</span> sidecar. The
+        <span class="mono">.split_manifest.json</span> sidecar is emitted only
+        when the split-plan fields are active. Score-cache manifests are Stage
+        2 artifacts and remain separate from dataset-export manifests.
       </div>
       <div class="gridTwo">
         <div>
@@ -678,6 +870,12 @@ onMounted(() => {
         </div>
       </div>
       <div class="muted mono">{{ mlSignalModelStatus }}</div>
+      <div class="muted">
+        Model bundles are discovered from the desktop app-local inventory.
+        Bundle selection is optional for score-cache-backed validation. When a
+        bundle is selected, the status line above should name the current bundle
+        state and manifest path.
+      </div>
       <label for="mlSignalScoreInputPath">Model score CSV input</label>
       <div class="inputWithAction">
         <input
@@ -697,6 +895,17 @@ onMounted(() => {
         >
           Browse
         </button>
+      </div>
+      <div class="muted">
+        Score CSV ingest contract: include
+        <span class="mono">timestamp</span> plus at least one of
+        <span class="mono">p_long</span>,
+        <span class="mono">p_short</span>,
+        <span class="mono">raw_long</span>, or
+        <span class="mono">raw_short</span>. If calibrated columns like
+        <span class="mono">p_long_cal</span> /
+        <span class="mono">p_short_cal</span> are present, they take priority
+        over the uncalibrated probability columns.
       </div>
       <label for="mlSignalScoreCachePath">Score cache output</label>
       <div class="inputWithAction">
@@ -732,6 +941,12 @@ onMounted(() => {
         >
           Build score cache
         </button>
+      </div>
+      <div class="muted">
+        Score-cache build writes a JSON cache plus a
+        <span class="mono">.manifest.json</span> sidecar. Raw-margin-only caches
+        can build successfully, but threshold validation and policy sweep later
+        require probability scores.
       </div>
       <div class="muted mono">{{ mlSignalScoreMeta }}</div>
     </section>
@@ -850,6 +1065,22 @@ onMounted(() => {
           />
         </div>
       </div>
+      <div class="summaryGrid" aria-label="ML validation contract">
+        <article>
+          <div class="panelMetricKey">Validation context</div>
+          <div class="panelMetricValue mono">{{ validationContextSummary }}</div>
+        </article>
+        <article>
+          <div class="panelMetricKey">Current policy</div>
+          <div class="panelMetricValue mono">
+            {{ currentPolicyControlSummary }}
+          </div>
+        </article>
+        <article>
+          <div class="panelMetricKey">Score requirements</div>
+          <div class="panelMetricValue mono">{{ scoreRequirementSummary }}</div>
+        </article>
+      </div>
       <div class="toggleRow">
         <label class="inlineToggle">
           <input
@@ -910,6 +1141,22 @@ onMounted(() => {
       <div class="sectionNote mono">
         Sweep cached score streams across thresholds and hold windows, then keep
         the best `top_k` candidates by robust score.
+      </div>
+      <div class="summaryGrid" aria-label="ML policy sweep contract">
+        <article>
+          <div class="panelMetricKey">Sweep axes</div>
+          <div class="panelMetricValue mono">{{ currentSweepAxisSummary }}</div>
+        </article>
+        <article>
+          <div class="panelMetricKey">Inherited exit policy</div>
+          <div class="panelMetricValue mono">
+            {{ currentPolicyControlSummary }}
+          </div>
+        </article>
+        <article>
+          <div class="panelMetricKey">Budget</div>
+          <div class="panelMetricValue mono">{{ currentSweepBudgetSummary }}</div>
+        </article>
       </div>
       <div class="gridThree">
         <div>
@@ -1164,6 +1411,129 @@ onMounted(() => {
       </div>
       <div class="summaryList">
         <div class="summaryRow">
+          <span class="summaryKey">Stage</span>
+          <span class="summaryValue mono">
+            {{ currentMlArtifact?.stage || "—" }}
+          </span>
+        </div>
+        <div class="summaryRow">
+          <span class="summaryKey">Dataset export</span>
+          <div class="summaryValue summaryValueActions">
+            <span
+              class="mono"
+              :title="currentMlArtifact?.datasetExportPath || ''"
+            >
+              {{ basename(currentMlArtifact?.datasetExportPath || "") }}
+            </span>
+            <div class="rowActions">
+              <button
+                type="button"
+                :disabled="
+                  !hasTauriRuntime || !currentMlArtifact?.datasetExportPath
+                "
+                @click="
+                  void onOpenArtifactPath(
+                    currentMlArtifact?.datasetExportPath || '',
+                  )
+                "
+              >
+                Open
+              </button>
+              <button
+                type="button"
+                :disabled="
+                  !hasTauriRuntime || !currentMlArtifact?.datasetExportPath
+                "
+                @click="
+                  void onRevealArtifactPath(
+                    currentMlArtifact?.datasetExportPath || '',
+                  )
+                "
+              >
+                Reveal
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="summaryRow">
+          <span class="summaryKey">Export manifest</span>
+          <div class="summaryValue summaryValueActions">
+            <span
+              class="mono"
+              :title="currentMlArtifact?.exportManifestPath || ''"
+            >
+              {{ basename(currentMlArtifact?.exportManifestPath || "") }}
+            </span>
+            <div class="rowActions">
+              <button
+                type="button"
+                :disabled="
+                  !hasTauriRuntime || !currentMlArtifact?.exportManifestPath
+                "
+                @click="
+                  void onOpenArtifactPath(
+                    currentMlArtifact?.exportManifestPath || '',
+                  )
+                "
+              >
+                Open
+              </button>
+              <button
+                type="button"
+                :disabled="
+                  !hasTauriRuntime || !currentMlArtifact?.exportManifestPath
+                "
+                @click="
+                  void onRevealArtifactPath(
+                    currentMlArtifact?.exportManifestPath || '',
+                  )
+                "
+              >
+                Reveal
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="summaryRow">
+          <span class="summaryKey">Split manifest</span>
+          <div class="summaryValue summaryValueActions">
+            <span
+              class="mono"
+              :title="currentMlArtifact?.splitManifestPath || ''"
+            >
+              {{ basename(currentMlArtifact?.splitManifestPath || "") }}
+            </span>
+            <div class="rowActions">
+              <button
+                type="button"
+                :disabled="
+                  !hasTauriRuntime || !currentMlArtifact?.splitManifestPath
+                "
+                @click="
+                  void onOpenArtifactPath(
+                    currentMlArtifact?.splitManifestPath || '',
+                  )
+                "
+              >
+                Open
+              </button>
+              <button
+                type="button"
+                :disabled="
+                  !hasTauriRuntime || !currentMlArtifact?.splitManifestPath
+                "
+                @click="
+                  void onRevealArtifactPath(
+                    currentMlArtifact?.splitManifestPath || '',
+                  )
+                "
+              >
+                Reveal
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="summaryRow">
           <span class="summaryKey">Bundle</span>
           <span
             class="summaryValue mono"
@@ -1291,6 +1661,16 @@ onMounted(() => {
           <span class="summaryValue mono">
             {{ currentMlArtifact?.featureSchemaVersion || "—" }}
           </span>
+        </div>
+        <div class="summaryRow">
+          <span class="summaryKey">Score summary</span>
+          <span class="summaryValue mono">{{ currentScoreCoverageSummary }}</span>
+        </div>
+        <div class="muted">
+          {{ featureSchemaContractSummary }}
+        </div>
+        <div class="muted">
+          {{ currentArtifactStageSummary }}
         </div>
         <div class="summaryRow">
           <span class="summaryKey">Policy</span>
@@ -1464,6 +1844,32 @@ label + input,
   font-family: var(--mono);
 }
 
+.summaryGrid {
+  margin-top: 0.65rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.summaryGrid article {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--panel-footer) 92%, var(--surface));
+  padding: 0.55rem 0.6rem;
+  min-width: 0;
+}
+
+.panelMetricKey {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.panelMetricValue {
+  margin-top: 0.24rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .summaryList {
   display: grid;
   gap: 0.45rem;
@@ -1543,6 +1949,7 @@ label + input,
 }
 
 @media (max-width: 980px) {
+  .summaryGrid,
   .gridTwo,
   .gridThree,
   .inputWithAction {

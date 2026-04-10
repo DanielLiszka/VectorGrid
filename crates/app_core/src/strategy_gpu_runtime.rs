@@ -557,6 +557,42 @@ mod tests {
         assert_ne!(base_key, overridden_key);
     }
 
+    #[test]
+    fn reset_gpu_strategy_executable_cache_clears_entries_and_counters() {
+        let _guard = lock_strategy_executable_cache_test();
+        reset_gpu_strategy_executable_cache();
+        let plan = compile_dynamic_plan_for_double_ma_config(
+            "close",
+            "sma",
+            "sma",
+            None,
+            None,
+            &StrategyConfig::default(),
+            None,
+            StrategyPlanBackend::GpuUnified,
+        )
+        .expect("compile dynamic plan");
+        let handle = StrategyHandle::from_plan(plan, StrategyCapabilityReport::gpu_dynamic_ready())
+            .expect("build strategy handle");
+        let _exec = get_or_build_gpu_strategy_executable(&handle, 0).expect("build executable");
+
+        let warm_stats = gpu_strategy_executable_cache_stats();
+        assert_eq!(warm_stats.compiled_bundle_entries, 1);
+        assert_eq!(warm_stats.entries, 1);
+        assert!(warm_stats.compiled_bundle_misses >= 1);
+        assert!(warm_stats.misses >= 1);
+
+        reset_gpu_strategy_executable_cache();
+        let cleared_stats = gpu_strategy_executable_cache_stats();
+        assert_eq!(cleared_stats.compiled_bundle_hits, 0);
+        assert_eq!(cleared_stats.compiled_bundle_misses, 0);
+        assert_eq!(cleared_stats.compiled_bundle_entries, 0);
+        assert_eq!(cleared_stats.hits, 0);
+        assert_eq!(cleared_stats.misses, 0);
+        assert_eq!(cleared_stats.entries, 0);
+        assert_eq!(cleared_stats.uploaded_thread_entries, 0);
+    }
+
     #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
     #[test]
     fn uploaded_executable_is_available_after_cache_build() {

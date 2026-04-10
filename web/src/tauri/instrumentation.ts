@@ -7,6 +7,7 @@ import {
   recordPolygonLiveBarEvent,
   recordLiveExecutionRunnerEvent,
   recordPolygonLiveStatusEvent,
+  TRACKED_TAURI_COMMANDS,
   type DoubleMaProgressPayload,
   type LiveExecutionRunnerEventPayload,
   type PolygonLiveBarEventPayload,
@@ -32,35 +33,6 @@ export const INSTRUMENTED_EVENT_CHANNELS = [
   'polygon_live_status',
   'polygon_live_bar',
 ] as const
-
-const TRACKED_TAURI_COMMANDS = new Set<TauriCommand>([
-  'run_double_ma_optimization',
-  'run_composite_cpu_optimization',
-  'run_composite_mo_optimization',
-  'run_double_ma_validation',
-  'run_composite_validation',
-  'run_meta_selection',
-  'run_meta_stage4_experimental',
-  'run_meta_stage5_ml_confidence',
-  'run_research_campaign',
-  'export_ml_signal_dataset',
-  'generate_ml_signal_score_cache',
-  'run_ml_signal_validation',
-  'run_ml_signal_policy_sweep',
-  'polygon_download_1m_and_load',
-  'train_ml_confidence_model',
-  'apply_ml_confidence_model',
-  'evaluate_ml_confidence_policy',
-  'compute_double_ma_drilldown',
-  'compute_composite_cpu_drilldown',
-  'compute_double_ma_local_stability',
-  'compute_composite_cpu_local_stability',
-  'execute_strategy_signal_once',
-  'start_live_execution_runner',
-  'stop_live_execution_runner',
-  'polygon_start_live_candle_stream',
-  'polygon_stop_live_candle_stream',
-])
 
 let invokeHooksInstalled = false
 let disposeRegistered = false

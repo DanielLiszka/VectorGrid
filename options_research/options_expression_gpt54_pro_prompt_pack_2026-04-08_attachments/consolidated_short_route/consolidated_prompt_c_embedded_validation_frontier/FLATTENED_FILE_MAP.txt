@@ -7,6 +7,7 @@ flattened_name <- original_relative_path
 AGENTS.md <- AGENTS.md
 REPO_MAP.md <- REPO_MAP.md
 options_expression_future_scope_roadmap_2026-04-07.md <- options_research/options_expression_future_scope_roadmap_2026-04-07.md
+options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md <- options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md
 options_types.rs <- crates/app_core/src/options_types.rs
 options_expression.rs <- crates/app_core/src/options_expression.rs
 options_expression_gpu.rs <- crates/app_core/src/options_expression_gpu.rs

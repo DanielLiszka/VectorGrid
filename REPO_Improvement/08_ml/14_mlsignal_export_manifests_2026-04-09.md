@@ -100,17 +100,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the export manifest and split manifest roles clearly.
-- [ ] Add or tighten tests for manifest generation and path attachment.
-- [ ] Audit frontend summary text so users know which manifest they are looking at.
-- [ ] Confirm saved-run reopen preserves relevant manifest paths.
-- [ ] Keep manifest naming/version semantics stable unless a deliberate migration exists.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the export manifest and split manifest roles clearly.
+- [x] Add or tighten tests for manifest generation and path attachment.
+- [x] Audit frontend summary text so users know which manifest they are looking at.
+- [x] Confirm saved-run reopen preserves relevant manifest paths.
+- [x] Keep manifest naming/version semantics stable unless a deliberate migration exists.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -127,6 +127,26 @@ Public-repo quality focus:
 - keep manifest visibility explicit in the workspace and saved-run detail
 - if a cleanup obscures manifest provenance, restore the clearer path-by-path presentation
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making manifest-family roles explicit in the ML Signal panel instead of leaving them split across stage notes and artifact JSON.
+- `MlSignalWorkspacePanel.vue` now:
+  - states that dataset export always writes the CSV, feature schema, and `.export_manifest.json`
+  - states that `.split_manifest.json` is conditional on split-plan activation
+  - exposes `datasetExportPath`, `exportManifestPath`, and `splitManifestPath` directly in the current-artifact section with open/reveal affordances
+- `mlSignalService.test.ts` now asserts that `exportManifestPath`, `splitManifestPath`, and `scoreManifestPath` survive validation-stage artifact carry-forward.
+- `MlSignalWorkspacePanel.test.ts` now proves the panel shows the export/split manifest basenames and the stage-owned attachment summary.
+- `REPO_MAP.md` was synced so contributors can find the manifest-role contract quickly.
+- Stable fixture / replay payload:
+  - `dataset_export_path = C:\\data\\ml_dataset.csv`
+  - `export_manifest_path = C:\\data\\ml_dataset.export_manifest.json`
+  - `split_manifest_path = C:\\data\\ml_dataset.split_manifest.json`
+  - `score_manifest_path = C:\\data\\score_cache.manifest.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

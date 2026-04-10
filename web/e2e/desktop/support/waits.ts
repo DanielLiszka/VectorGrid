@@ -2,21 +2,6 @@ import { $, browser } from '@wdio/globals'
 import { desktopSmokeAppUrl } from './appPaths.js'
 import { commandPaletteSelectors, shellSelectors, taskCenterSelectors, type WorkspaceKey, workspaceTabSelector } from './selectors.js'
 
-async function waitForText(selector: string, expectedText: string, timeout = 30000): Promise<void> {
-  await browser.waitUntil(
-    async () => {
-      const element = await $(selector)
-      if (!(await element.isExisting()) || !(await element.isDisplayed())) return false
-      const text = await element.getText()
-      return text.includes(expectedText)
-    },
-    {
-      timeout,
-      timeoutMsg: `Timed out waiting for text "${expectedText}" in ${selector}`,
-    },
-  )
-}
-
 export async function waitForShellReady(timeout = 30000): Promise<void> {
   const currentUrl = await browser.getUrl().catch(() => '')
   if (!currentUrl || currentUrl === 'about:blank') {
@@ -39,11 +24,13 @@ export async function waitForShellReady(timeout = 30000): Promise<void> {
   await (await $(shellSelectors.runFooter)).waitForDisplayed({ timeout })
 
   await browser.waitUntil(
-    async () => {
-      const workspaceBar = await $(shellSelectors.workspaceBar)
-      const text = await workspaceBar.getText()
-      return ['Workflow', 'Run Library', 'Aggregate Analysis', 'Settings'].every((label) => text.includes(label))
-    },
+      async () => {
+        const workspaceBar = await $(shellSelectors.workspaceBar)
+        const text = await workspaceBar.getText()
+        return ['Workflow', 'Run Library', 'Aggregate Analysis', 'Pro Tools', 'Settings'].every((label) =>
+          text.includes(label),
+        )
+      },
     {
       timeout,
       timeoutMsg: 'Workspace bar did not expose the expected top-level sections.',
@@ -124,5 +111,5 @@ export async function closeTaskCenter(timeout = 10000): Promise<void> {
 
 export async function waitForSettingsWorkspace(timeout = 10000): Promise<void> {
   await (await $(shellSelectors.settingsGrid)).waitForDisplayed({ timeout })
-  await waitForText(shellSelectors.settingsGrid, 'Runtime and task center', timeout)
+  await (await $(shellSelectors.settingsDiagnosticsSection)).waitForDisplayed({ timeout })
 }

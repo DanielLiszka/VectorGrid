@@ -1,6 +1,6 @@
 # Desktop Harness Contract Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -89,18 +89,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the required prerequisites and accepted override paths.
-- [ ] Document the stable default suite and the opt-in suites separately.
-- [ ] Document the artifact/log outputs and how they are used during review.
-- [ ] Document what belongs in browser smoke instead of desktop smoke.
-- [ ] Keep the desktop harness non-options only.
-- [ ] Define when a new scenario is heavy enough to stay opt-in.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the required prerequisites and accepted override paths.
+- [x] Document the stable default suite and the opt-in suites separately.
+- [x] Document the artifact/log outputs and how they are used during review.
+- [x] Document what belongs in browser smoke instead of desktop smoke.
+- [x] Keep the desktop harness non-options only.
+- [x] Define when a new scenario is heavy enough to stay opt-in.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -117,6 +117,34 @@ Public-repo quality focus:
 - keep prerequisite verification and artifact capture mandatory
 - treat opt-in suites as supplemental until they prove stable enough for wider use
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on current desktop harness evidence; no additional harness refactor was required for this item.
+- The stable default suite is now concretely frozen in `web/wdio.desktop.conf.ts` as:
+  - `desktop-shell-readiness.spec.ts`
+  - `desktop-workspace-navigation.spec.ts`
+  - `desktop-command-palette.spec.ts`
+  - `desktop-task-center.spec.ts`
+  - `desktop-settings-diagnostics.spec.ts`
+  - `desktop-titlebar-native-controls.spec.ts`
+- The geometry path remains opt-in only through `test:desktop:geometry`; `test:desktop:smoke:debug` remains a troubleshooting path, not closure evidence.
+- The README already documents prerequisite discovery, accepted override paths, the browser-vs-desktop verification boundary, and the stable-vs-opt-in suite split, so no additional `README.md` or `REPO_MAP.md` sync was required for this closure.
+- The artifact contract is run-scoped under `output/wdio/desktop-smoke/<runId>/`:
+  - `logs/environment.txt`
+  - `logs/preview-server.log`
+  - `logs/tauri-driver.log`
+  - `logs/wdio/*.log`
+  - `screenshots/` for failures
+- Acceptance evidence:
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run typecheck:desktop`
+  - `npm.cmd --prefix web run test:browser:ux`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+- Raw evidence paths refreshed in this session:
+  - stable desktop smoke: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
+  - earlier targeted titlebar run retained under `output/wdio/desktop-smoke/2026-04-10T17-29-35-668Z/`
 
 ## Related Docs
 

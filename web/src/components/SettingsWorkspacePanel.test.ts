@@ -118,6 +118,15 @@ describe('SettingsWorkspacePanel', () => {
     expect(text).toContain('Desktop presence')
     expect(text).toContain('Foreground-first workstation')
     expect(text).toContain('Close exits the app by default.')
+    expect(document.querySelector('[aria-label="Desktop settings diagnostics"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Runtime diagnostics card"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Native desktop diagnostics card"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Desktop presence diagnostics card"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Task posture diagnostics card"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Desktop logs diagnostics card"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Desktop notification permission"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Desktop window state summary"]')).not.toBeNull()
+    expect(document.querySelector('[aria-label="Desktop presence summary"]')).not.toBeNull()
     expect(document.querySelector('.diagnosticsBadgeIcon')).not.toBeNull()
     expect(document.querySelector('img.diagnosticsBadgeIcon')).not.toBeNull()
   })
@@ -136,9 +145,7 @@ describe('SettingsWorkspacePanel', () => {
     await nextTick()
     await nextTick()
 
-    const openTaskCenter = Array.from(document.querySelectorAll('button')).find((button) =>
-      String(button.textContent || '').includes('Open task center'),
-    ) as HTMLButtonElement | undefined
+    const openTaskCenter = document.querySelector<HTMLButtonElement>('button[aria-label="Open task center"]')
 
     expect(openTaskCenter).toBeTruthy()
     openTaskCenter?.click()
@@ -485,9 +492,7 @@ describe('SettingsWorkspacePanel', () => {
     await nextTick()
     await nextTick()
 
-    const copyButton = Array.from(document.querySelectorAll('button')).find((button) =>
-      String(button.textContent || '').includes('Copy diagnostics snapshot'),
-    ) as HTMLButtonElement | undefined
+    const copyButton = document.querySelector<HTMLButtonElement>('button[aria-label="Copy diagnostics snapshot"]')
 
     expect(copyButton).toBeTruthy()
     copyButton?.click()

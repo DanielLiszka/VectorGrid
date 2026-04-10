@@ -1,6 +1,6 @@
 # Broker Connectivity Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -101,20 +101,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current Alpaca-only broker path.
-- [ ] Document paper/live endpoint behavior and `dry_run` credential rules.
-- [ ] Document connectivity-check and snapshot-review commands separately.
-- [ ] Document symbol-scoped snapshot limitations.
-- [ ] Document optimistic-versus-broker-confirmed state distinctions.
-- [ ] Document current credential-storage posture and its limits.
-- [ ] Preserve service/store tests for connectivity and snapshot behavior.
-- [ ] Preserve targeted backend tests for broker path normalization and execution gating.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the current Alpaca-only broker path.
+- [x] Document paper/live endpoint behavior and `dry_run` credential rules.
+- [x] Document connectivity-check and snapshot-review commands separately.
+- [x] Document symbol-scoped snapshot limitations.
+- [x] Document optimistic-versus-broker-confirmed state distinctions.
+- [x] Document current credential-storage posture and its limits.
+- [x] Preserve service/store tests for connectivity and snapshot behavior.
+- [x] Preserve targeted backend tests for broker path normalization and execution gating.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -135,6 +135,21 @@ Public-repo quality focus:
 - prefer additive credential hardening over pretending current storage already has OS-secret guarantees
 - keep broker snapshot semantics narrow and explicit rather than overextending into portfolio-management claims
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening broker-connectivity acceptance evidence in [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts):
+  - added explicit live-mode snapshot coverage so `refreshOrders({ mode: 'live' })` is locked to the live Alpaca endpoint path, not only the connectivity check path
+  - preserved the existing paper/live connection test split and symbol-scoped snapshot review coverage
+- Kept scope intentionally additive:
+  - no broker abstraction was added
+  - no credential-storage model changed
+  - no review surface broadened beyond the current Alpaca-only contract
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts src/utils/executionRisk.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo test -p ta_desktop_demo_app commands_execution --lib`
 
 ## Related Docs
 

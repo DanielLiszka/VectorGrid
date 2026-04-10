@@ -139,22 +139,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every current batch request field and its normalization/default behavior.
-- [ ] Document current defaults for `holdout_pct`, `holdout_tag`, `execution_mode`, `preload_policy`, `auto_meta`, `auto_stage5`, and `skip_done`.
-- [ ] Document timeframe-compatibility and strategy-eligibility checks that gate batch request construction.
-- [ ] Document how `execution_mode` affects `auto_meta` and `auto_stage5`.
-- [ ] Document all allowed `preload_policy` values and their current meaning.
-- [ ] Document tag parsing and deduplication semantics.
-- [ ] Document which selected-path state lives in the store versus the saved batch summary.
-- [ ] Document which fields batch summaries must preserve for later replay/resume understanding.
-- [ ] Add or preserve tests for invalid mode normalization, holdout clamping, and unsupported campaign inputs.
-- [ ] Keep batch-surface docs aligned with `metaBatchRequestBuilder`, `metaService`, and `commands_campaign` whenever mode semantics change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document every current batch request field and its normalization/default behavior.
+- [x] Document current defaults for `holdout_pct`, `holdout_tag`, `execution_mode`, `preload_policy`, `auto_meta`, `auto_stage5`, and `skip_done`.
+- [x] Document timeframe-compatibility and strategy-eligibility checks that gate batch request construction.
+- [x] Document how `execution_mode` affects `auto_meta` and `auto_stage5`.
+- [x] Document all allowed `preload_policy` values and their current meaning.
+- [x] Document tag parsing and deduplication semantics.
+- [x] Document which selected-path state lives in the store versus the saved batch summary.
+- [x] Document which fields batch summaries must preserve for later replay/resume understanding.
+- [x] Add or preserve tests for invalid mode normalization, holdout clamping, and unsupported campaign inputs.
+- [x] Keep batch-surface docs aligned with `metaBatchRequestBuilder`, `metaService`, and `commands_campaign` whenever mode semantics change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -175,6 +175,30 @@ Public-repo quality focus:
 - if a stronger backend registry abstraction is later introduced, document that transition explicitly rather than silently reusing current terminology
 - keep summary files replay-safe so later resume/retry logic can remain conservative and idempotent
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by surfacing the batch registry contract in the Meta batch pane instead of leaving it spread across service and builder code.
+- `MetaWorkspacePanel.vue` now states:
+  - holdout percentage, holdout tag, and skip-completed posture
+  - deduped batch tags as they will be normalized at run time
+  - same-timeframe selection requirements unless the Data workspace overrides timeframe
+  - current execution-mode consequences, including `optimize_only` and `validate_only` posture
+- `metaBatchRequestBuilder.test.ts` now covers conservative fallback for invalid `execution_mode` and `preload_policy` values while preserving current tag deduplication and default holdout-tag behavior.
+- `REPO_MAP.md` was synced so contributors can find the batch registry/mode contract quickly from the routing doc.
+- Stable fixture / replay payload:
+  - `selected_paths = [C:/a.csv, C:/b.csv]`
+  - `holdout_pct = 15`
+  - `holdout_tag = holdout-a`
+  - `execution_mode = optimize_only`
+  - `preload_policy = host_plus_doublema_vram`
+  - `skip_done = true`
+  - `tags = [alpha, beta]`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaBatchRequestBuilder.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_campaign --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

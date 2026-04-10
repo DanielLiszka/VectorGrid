@@ -1116,6 +1116,26 @@ mod tests {
         )
     }
 
+    fn candles_from_rows(
+        rows: &[(i64, f64, f64, f64, f64, f64)],
+    ) -> vector_ta::utilities::data_loader::Candles {
+        vector_ta::utilities::data_loader::Candles::new_with_fields(
+            rows.iter().map(|row| row.0).collect(),
+            rows.iter().map(|row| row.1).collect(),
+            rows.iter().map(|row| row.2).collect(),
+            rows.iter().map(|row| row.3).collect(),
+            rows.iter().map(|row| row.4).collect(),
+            rows.iter().map(|row| row.5).collect(),
+            vector_ta::utilities::data_loader::CandleFieldFlags {
+                open: true,
+                high: true,
+                low: true,
+                close: true,
+                volume: true,
+            },
+        )
+    }
+
     fn loaded_ctx(path: &str, timeframe: Option<&str>) -> LoadedDataContext {
         LoadedDataContext {
             csv_path: path.to_string(),
@@ -1182,6 +1202,53 @@ mod tests {
         let aligned = align_cross_ticker_candles_to_base_horizon(&base, &cross);
 
         assert!(matches!(aligned, AlignedCandles::Borrowed(_)));
+    }
+
+    #[test]
+    fn build_price_bars_clamps_cap_and_preserves_aggregated_ranges() {
+        let rows: Vec<(i64, f64, f64, f64, f64, f64)> = (0..301)
+            .map(|idx| {
+                let base = idx as f64;
+                (idx as i64, base, base + 10.0, base - 10.0, base + 0.5, 1.0)
+            })
+            .collect();
+        let candles = candles_from_rows(&rows);
+
+        let bars = build_price_bars(&candles, 1).expect("price bars");
+
+        assert_eq!(bars.len(), 151, "min cap should clamp to 300 points");
+        assert_eq!(bars[0].time, 0);
+        assert_eq!(bars[0].from_index, 0);
+        assert_eq!(bars[0].to_index, 1);
+        assert!((bars[0].open - 0.0).abs() < 1e-12);
+        assert!((bars[0].close - 1.5).abs() < 1e-12);
+        assert!((bars[0].high - 11.0).abs() < 1e-12);
+        assert!((bars[0].low + 10.0).abs() < 1e-12);
+        assert!((bars[0].volume - 2.0).abs() < 1e-12);
+        assert_eq!(bars.last().map(|bar| bar.to_index), Some(300));
+        assert!(bars.windows(2).all(|pair| pair[1].time > pair[0].time));
+        assert!(bars
+            .windows(2)
+            .all(|pair| pair[1].from_index == pair[0].to_index.saturating_add(1)));
+    }
+
+    #[test]
+    fn build_price_bars_skips_non_increasing_timestamps() {
+        let candles = candles_from_rows(&[
+            (10, 1.0, 2.0, 0.5, 1.5, 5.0),
+            (10, 2.0, 3.0, 1.5, 2.5, 6.0),
+            (11, 3.0, 4.0, 2.5, 3.5, 7.0),
+        ]);
+
+        let bars = build_price_bars(&candles, 6000).expect("price bars");
+
+        assert_eq!(bars.len(), 2, "duplicate timestamps should be skipped");
+        assert_eq!(bars[0].time, 10);
+        assert_eq!(bars[0].from_index, 0);
+        assert_eq!(bars[0].to_index, 0);
+        assert_eq!(bars[1].time, 11);
+        assert_eq!(bars[1].from_index, 2);
+        assert_eq!(bars[1].to_index, 2);
     }
 
     #[test]

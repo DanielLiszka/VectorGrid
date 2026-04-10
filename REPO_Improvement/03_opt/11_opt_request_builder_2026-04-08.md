@@ -109,22 +109,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical request sections and field ownership.
-- [ ] Document which fields are product policy vs backend contract.
-- [ ] Document route-preview shaping and capability gating.
-- [ ] Document export/all/heatmap/top-k normalization rules.
-- [ ] Document DynamicDoubleMa IR handoff rules.
-- [ ] Document strategy-family-specific parameter clamps and defaults.
-- [ ] Document exact-route-only shortlist objective, confidence, union, and slice rules.
-- [ ] Document `vdps` enablement, defaulting, and rejection rules.
-- [ ] Document metric-surface selector behavior and current audited-route expectations.
-- [ ] Add or tighten edge-case fixtures for invalid or borderline UI inputs.
-- [ ] Keep benchmark coverage for hot request-builder paths.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical request sections and field ownership.
+- [x] Document which fields are product policy vs backend contract.
+- [x] Document route-preview shaping and capability gating.
+- [x] Document export/all/heatmap/top-k normalization rules.
+- [x] Document DynamicDoubleMa IR handoff rules.
+- [x] Document strategy-family-specific parameter clamps and defaults.
+- [x] Document exact-route-only shortlist objective, confidence, union, and slice rules.
+- [x] Document `vdps` enablement, defaulting, and rejection rules.
+- [x] Document metric-surface selector behavior and current audited-route expectations.
+- [x] Add or tighten edge-case fixtures for invalid or borderline UI inputs.
+- [x] Keep benchmark coverage for hot request-builder paths.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -141,6 +141,14 @@ Public-repo quality focus:
 - treat builder refactoring as contract-preserving unless explicitly approved otherwise
 - if the builder must split into smaller modules later, keep the external request shape unchanged first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the request-builder contract instead of widening it. `optimizeRequestBuilder.test.ts` already freezes the legality matrix for export-all, metric-contract handling, `include_trade_metrics`, exact-route shortlist controls, standalone unified-GPU shortlist semantics, composite route preview shaping, `DynamicDoubleMa` IR handoff, and `vdps` knobs.
+- Closed the remaining consumer-side round-trip gap in `historyService.ts`. Saved-run restore now rehydrates the advanced builder-owned fields that the request builder actually consumes, including `scoreMode`, `hurdleTau`, `metricContract`, `includeTradeMetrics`, shortlist/export controls, and output-shaping fields. Missing advanced fields are actively cleared back to the current defaults so stale unsupported values do not survive into the restored form.
+- Added focused restore coverage in `historyService.test.ts` for both directions of the saved-run contract: a full advanced-field restore case and a stale-value clearing case when the saved run omits advanced controls.
+- Kept the builder benchmark as part of closure evidence. `optimizeRequestBuilder.bench.test.ts` still writes the timing artifact for the hot request-builder path, so the plan’s performance-surveillance requirement remains active without changing production code.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/stores/advancedStore.actions.test.ts src/stores/optimizeStore.actions.test.ts src/components/AdvancedWorkspacePanel.test.ts src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts src/utils/strategyOptimizationCapabilities.test.ts src/components/OptimizeWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/tauri/instrumentation.test.ts src/tauri/instrumentation.mockIPC.test.ts`, `npm.cmd --prefix web run bench:request-builder`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

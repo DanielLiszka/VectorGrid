@@ -173,6 +173,20 @@ describe('command action store', () => {
     expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/runtime_meta.xlsx' })
   })
 
+  it('prefers the runtime dataset latest meta report path over a stale legacy snapshot', () => {
+    const dataset = ensureDocumentDataset()
+    dataset.latestMetaReportPath = 'C:/reports/runtime_meta.xlsx'
+    const store = useCommandActionStore()
+    store.applyLegacyQuickActionsSnapshot({
+      latestMetaReportPath: 'C:/reports/stale_meta.xlsx',
+    })
+
+    store.openLatestMetaReport()
+
+    expect(store.canOpenLatestMetaReport).toBe(true)
+    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', { path: 'C:/reports/runtime_meta.xlsx' })
+  })
+
   it('prefers the local store report path over artifact and runtime fallback paths', () => {
     const dataset = ensureDocumentDataset()
     dataset.latestReportPath = 'C:/reports/runtime.xlsx'
@@ -223,6 +237,21 @@ describe('command action store', () => {
     await vi.waitFor(() => {
       expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'open_path', { path: 'C:/reports/latest.xlsx' })
       expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'reveal_path', { path: 'C:/reports/latest.xlsx' })
+    })
+  })
+
+  it('falls back to reveal_path when opening the latest meta report path fails', async () => {
+    const store = useCommandActionStore()
+    invokeCommandMock.mockRejectedValueOnce(new Error('open failed'))
+    store.applyLegacyQuickActionsSnapshot({
+      latestMetaReportPath: 'C:/reports/meta_latest.xlsx',
+    })
+
+    store.openLatestMetaReport()
+
+    await vi.waitFor(() => {
+      expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'open_path', { path: 'C:/reports/meta_latest.xlsx' })
+      expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'reveal_path', { path: 'C:/reports/meta_latest.xlsx' })
     })
   })
 

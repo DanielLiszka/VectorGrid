@@ -102,18 +102,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current robustness method taxonomy and default posture.
-- [ ] Document which methods are always available versus route-conditional.
-- [ ] Document omitted/degraded method behavior for cross reruns and constrained composite routes.
-- [ ] Document how hard gates differ from warning-only methods in the final recommendation.
-- [ ] Add or tighten tests for route-specific omitted-method summaries.
-- [ ] Add or tighten tests for method-default behavior and recommendation parity.
-- [ ] Add or tighten tests for CSCV, SPA, and track-record interactions at the run-verdict layer.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current robustness method taxonomy and default posture.
+- [x] Document which methods are always available versus route-conditional.
+- [x] Document omitted/degraded method behavior for cross reruns and constrained composite routes.
+- [x] Document how hard gates differ from warning-only methods in the final recommendation.
+- [x] Add or tighten tests for route-specific omitted-method summaries.
+- [x] Add or tighten tests for method-default behavior and recommendation parity.
+- [x] Add or tighten tests for CSCV, SPA, and track-record interactions at the run-verdict layer.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -132,6 +132,11 @@ Public-repo quality focus:
 - if a route begins supporting more methods, update preview warnings and tests in the same change
 - keep omitted-method messaging explicit even when the route still returns a successful validation result
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the robustness-method stack as a layered contract instead of changing defaults casually. The builder/service tests still prove route-specific omitted-method summaries, while the backend tests now lock CSCV, SPA, track-record, and run-level recommendation interactions.
+- Acceptance evidence for closure: `cargo test -p ta_app_core validation_pipeline --lib`, `cargo test -p ta_app_core validation_stats --lib`, `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts`, plus `cargo test -p ta_desktop_demo_app commands_validation --lib`.
 
 ## Related Docs
 

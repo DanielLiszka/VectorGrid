@@ -99,16 +99,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the shared analysis-state categories and their consumers.
-- [ ] Document stable panel-facing fields versus render-internal state.
-- [ ] Document live-run versus saved-run hydration expectations.
-- [ ] Document comparison, drill, pareto, and heatmap state as part of one shared contract.
-- [ ] Add or tighten tests whenever analysis-store or analysis-service field semantics change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the shared analysis-state categories and their consumers.
+- [x] Document stable panel-facing fields versus render-internal state.
+- [x] Document live-run versus saved-run hydration expectations.
+- [x] Document comparison, drill, pareto, and heatmap state as part of one shared contract.
+- [x] Add or tighten tests whenever analysis-store or analysis-service field semantics change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,6 +127,12 @@ Public-repo quality focus:
 - if a panel needs a new summary, add it through the shared analysis contract before introducing panel-local derivations
 - update saved-run hydration and live-run hydration together when shared state semantics change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the shared analysis contract through [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts), [analysisStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/analysisStore.actions.test.ts), and the major consuming panel tests.
+- The new Drilldown and Heatmap component tests added in this tranche increase coverage around panel consumption of the same shared contract without widening the runtime blast radius.
+- The main remaining gap is not panel drift but missing Tauri integration coverage for the analysis commands feeding this contract.
 
 ## Related Docs
 

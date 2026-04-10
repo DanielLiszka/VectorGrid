@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document canonical strategy-store ownership.
-- [ ] Document derived cost behavior and cost-preset application.
-- [ ] Document special semantic rules such as `tradeOnNext`.
-- [ ] Document snapshot and history rehydration expectations.
-- [ ] Add or tighten tests for behavior-bearing fields.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document canonical strategy-store ownership.
+- [x] Document derived cost behavior and cost-preset application.
+- [x] Document special semantic rules such as `tradeOnNext`.
+- [x] Document snapshot and history rehydration expectations.
+- [x] Add or tighten tests for behavior-bearing fields.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,13 @@ Public-repo quality focus:
 - keep snapshot compatibility explicit during refactors
 - if semantic rules change, update store tests and consumer docs together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed a real contract gap in saved-run replay. `historyService.ts` no longer writes cost fields and `tradeOnNext` directly into `strategyStore`; it now routes replayed strategy values through store setters so derived `commission`/`costHint` recompute correctly and the store’s forced `tradeOnNext=true` rule still applies on hydration.
+- Tightened direct store coverage to match the doc’s behavior claims. `strategyStore.actions.test.ts` now includes explicit replay-oriented coverage showing that `applyLegacySnapshot(...)` preserves the store’s forced `tradeOnNext` semantics while still restoring cost fields and behavior-bearing values.
+- Revalidated the consumer side too: `historyService.test.ts` now proves an `MlSignal` saved-run replay recomputes strategy cost fields and preserves `tradeOnNext=true` even when the saved strategy payload requests `trade_on_next_bar=false`.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/stores/strategyStore.actions.test.ts src/stores/advancedStore.actions.test.ts src/services/dynamicIndicatorCatalogService.test.ts src/strategies/dynamicDoubleMaBuilder.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

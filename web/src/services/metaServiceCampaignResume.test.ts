@@ -191,6 +191,35 @@ describe('meta-service campaign resume and retry', () => {
     installMemoryStorage().clear()
   })
 
+  it('aborts cleanly when no saved summary path exists', async () => {
+    vi.resetModules()
+    installMemoryStorage().clear()
+
+    const { bindRuntimePinia } = await import('../stores/runtimePinia')
+    const { useAnalysisStore } = await import('../stores/analysisStore')
+    const { useOptimizeStore } = await import('../stores/optimizeStore')
+    const { invokeCommand } = await import('../tauri/invoke')
+    const invokeCommandMock = vi.mocked(invokeCommand)
+    invokeCommandMock.mockReset()
+    invokeCommandMock.mockResolvedValue(undefined)
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
+
+    const optimizeStore = useOptimizeStore()
+    optimizeStore.strategyKind = 'DoubleMa'
+    optimizeStore.updatedAtUnixMs = Date.now()
+
+    const analysisStore = useAnalysisStore()
+    const { batchResumeIncomplete } = await import('./metaService')
+
+    await batchResumeIncomplete()
+
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'run_research_campaign')).toBe(false)
+    expect(analysisStore.statusLine).toBe('No batch summary loaded.')
+  })
+
   it('resumes an incomplete campaign from the saved summary path on disk', async () => {
     const summaryPath = 'C:/runs/incomplete_campaign.json'
     const summary = summaryFor('cancelled', [
@@ -268,5 +297,52 @@ describe('meta-service campaign resume and retry', () => {
       },
     })
     expect(analysisStore.batchSkipDone).toBe(true)
+  })
+
+  it('does not resume when the saved summary lacks a resumable request', async () => {
+    const summaryPath = 'C:/runs/non_resumable_campaign.json'
+    const summary = {
+      ...summaryFor('cancelled', [
+        {
+          csv_path: 'C:/a.csv',
+          label: 'AAPL',
+          timeframe: '1m',
+          is_holdout: false,
+          status: 'failed',
+          error: 'validation: cancelled',
+        },
+      ]),
+      request: null,
+    }
+    const { invokeCommandMock, analysisStore } = await setupHarness(summaryPath, summary)
+    const { batchResumeIncomplete } = await import('./metaService')
+
+    await batchResumeIncomplete()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_run_artifact', { path: summaryPath })
+    expect(invokeCommandMock.mock.calls.some(([command]) => command === 'run_research_campaign')).toBe(false)
+    expect(analysisStore.statusLine).toBe('Current summary does not contain a resumable campaign request.')
+  })
+
+  it('reveals the saved summary path by hydrating the last batch summary from storage', async () => {
+    const summaryPath = 'C:/runs/completed_campaign.json'
+    const summary = summaryFor('completed', [
+      {
+        csv_path: 'C:/a.csv',
+        label: 'AAPL',
+        timeframe: '1m',
+        is_holdout: false,
+        status: 'validated',
+      },
+    ])
+    const { invokeCommandMock, analysisStore } = await setupHarness(summaryPath, summary)
+    const { batchRevealSummary } = await import('./metaService')
+
+    await batchRevealSummary()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_run_artifact', { path: summaryPath })
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', { path: summaryPath })
+    expect(analysisStore.batchOutputPreview).toContain(summaryPath)
+    expect(analysisStore.statusLine).toBe('Revealed batch summary.')
   })
 })

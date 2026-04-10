@@ -16,6 +16,7 @@ describe('desktop shell readiness', () => {
     expect(workspaceText).toContain('Workflow')
     expect(workspaceText).toContain('Run Library')
     expect(workspaceText).toContain('Aggregate Analysis')
+    expect(workspaceText).toContain('Pro Tools')
     expect(workspaceText).toContain('Settings')
   })
 })

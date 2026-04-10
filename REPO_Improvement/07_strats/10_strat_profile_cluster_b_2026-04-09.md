@@ -1,6 +1,6 @@
 # Profile Cluster B Strategy Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -115,19 +115,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exact membership of Cluster B and why these families are grouped together.
-- [ ] Document route, fallback, and validation expectations for each member of the cluster.
-- [ ] Document current benchmark gaps and diagnostic-only coverage gaps.
-- [ ] Add or tighten route-diagnostic tests where runtime fallback is important.
-- [ ] Add or tighten capability-summary and request-builder tests for these profile kinds.
-- [ ] Review whether additional dedicated benches are needed beyond `mkcs_opt.rs`.
-- [ ] Keep result, validation, and artifact behavior aligned with the standard product workflow.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the exact membership of Cluster B and why these families are grouped together.
+- [x] Document route, fallback, and validation expectations for each member of the cluster.
+- [x] Document current benchmark gaps and diagnostic-only coverage gaps.
+- [x] Add or tighten route-diagnostic tests where runtime fallback is important.
+- [x] Add or tighten capability-summary and request-builder tests for these profile kinds.
+- [x] Review whether additional dedicated benches are needed beyond `mkcs_opt.rs`.
+- [x] Keep result, validation, and artifact behavior aligned with the standard product workflow.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -147,6 +147,27 @@ Public-repo quality focus:
 - if benchmark coverage is expanded, do it without altering current route semantics
 - keep the shared product workflow intact even if more strategy-local code is extracted over time
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making Cluster B explicit in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md): `Mkcs`, `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` are now documented as the staged unified-GPU standalone-profile tier with family-specific validation posture and shared truth anchors.
+- Tightened capability evidence by expanding the dedicated standalone capability test in [strategyOptimizationCapabilities.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/utils/strategyOptimizationCapabilities.test.ts) so Cluster B coverage now explicitly includes `Mkcs` instead of leaving it implied by broader loops only.
+- Request-builder evidence remains anchored in [optimizeRequestBuilder.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/optimizeRequestBuilder.test.ts), where all five Cluster B families already have positive request-shaping coverage through the shared composite CPU builder path and the staged unified-GPU expansion cases.
+- Benchmark review result:
+  - dedicated optimize bench exists for `Mkcs` in `crates/app_core/benches/mkcs_opt.rs`
+  - shared benchmark coverage for `Kqsr`, `Carm`, `Kvdf`, and `Cdmc` already exists in:
+    - `crates/app_core/benches/gpu_native_expansion_opt.rs`
+    - `crates/app_core/benches/composite_validation_workflow.rs`
+  - current shared benches are sufficient for this tranche; no new per-profile bench files were required.
+- Stable truth anchors:
+  - strategy-local runtime owners in `crates/app_core/src/{mkcs,kqsr,carm,kvdf,cdmc}.rs`
+  - shared optimize orchestration in `crates/app_core/src/composite_cpu.rs`
+  - shared validation orchestration in `crates/app_core/src/composite_validate.rs`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts src/services/optimizeRequestBuilder.test.ts`
+  - `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

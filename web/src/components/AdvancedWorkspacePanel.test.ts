@@ -74,7 +74,9 @@ describe('AdvancedWorkspacePanel', () => {
     expect(document.querySelector('#vueTopK')).toBeNull()
     expect(document.querySelector('#vueIncludeAll')).toBeNull()
     expect(document.querySelector('#vueExportAllCsvPath')).toBeNull()
-    expect(document.body.textContent || '').toContain('Composite MO returns Pareto points from its own search-space and prescan settings')
+    expect(document.body.textContent || '').toContain(
+      'Composite MO returns Pareto points from its own search-space, sampler, and prescan settings',
+    )
 
     wrapper.unmount()
   })
@@ -223,6 +225,57 @@ describe('AdvancedWorkspacePanel', () => {
     expect(document.querySelector('#vueShortlistConfidenceMode')).toBeNull()
     expect(document.querySelector('#vueShortlistUnionMode')).toBeNull()
     expect(document.querySelector('#vueShortlistSliceMode')).toBeNull()
+    expect(document.body.textContent || '').toContain('Explicit Full17 and Trade22 metric-contract requests are available')
+    expect(document.body.textContent || '').toContain('advanced exact-kernel shortlist/score controls remain disabled')
+
+    wrapper.unmount()
+  })
+
+  it('shows exact-kernel-only controls for BreakoutMomentum when ADX is off on the kernel route', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const strategy = useStrategyStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'BreakoutMomentum'
+    optimize.backend = 'GpuKernel'
+    strategy.breakoutUseAdx = false
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueMetricContract')).not.toBeNull()
+    expect(document.querySelector('#vueExtraShortlistObjectives')).not.toBeNull()
+    expect(document.querySelector('#vueShortlistConfidenceMode')).not.toBeNull()
+
+    wrapper.unmount()
+  })
+
+  it('keeps RegimeHybrid on the hybrid-safe advanced control set', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'RegimeHybrid'
+    optimize.backend = 'GpuKernel'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueMetricContract')).not.toBeNull()
+    expect(document.querySelector('#vueExtraShortlistObjectives')).toBeNull()
+    expect(document.querySelector('#vueShortlistConfidenceMode')).toBeNull()
+    expect(document.querySelector('#vueShortlistUnionMode')).toBeNull()
     expect(document.body.textContent || '').toContain('Explicit Full17 and Trade22 metric-contract requests are available')
     expect(document.body.textContent || '').toContain('advanced exact-kernel shortlist/score controls remain disabled')
 
@@ -472,6 +525,30 @@ describe('AdvancedWorkspacePanel', () => {
 
     expect(document.querySelector('#vueShortlistSliceMode')).not.toBeNull()
     expect(document.body.textContent || '').toContain('The current route does not support shortlist slice mode')
+
+    wrapper.unmount()
+  })
+
+  it('keeps export-all path visible with a stale unsupported value so it can be cleared', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const advanced = useAdvancedStore(pinia)
+    workflow.selectControlsTab('advanced', { persist: false })
+    optimize.strategyKind = 'CompositeMo'
+    advanced.exportAllCsvPath = 'C:/tmp/all_pairs.csv'
+
+    const wrapper = mount(AdvancedWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    const exportPath = document.querySelector('#vueExportAllCsvPath') as HTMLInputElement | null
+    expect(exportPath).not.toBeNull()
+    expect(exportPath?.value).toContain('all_pairs.csv')
+    expect(document.body.textContent || '').toContain('does not support export-all CSV output')
 
     wrapper.unmount()
   })

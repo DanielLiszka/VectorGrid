@@ -576,6 +576,101 @@ describe("optimizeService", () => {
     expect(String(optimize.dynamicStrategyIrJson || "")).toContain('"profile"');
   });
 
+  it("applies preview-resolved CPU fallback before enforcing exact-kernel-only dynamic controls", async () => {
+    (pinia.state.value as Record<string, unknown>).optimize = {
+      strategyKind: "DynamicDoubleMa",
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "sma",
+      slowMaType: "ema",
+      dynamicStrategyIrJson: '{"profile":"double_ma"}',
+      statusLine: "Ready.",
+    };
+    (pinia.state.value as Record<string, unknown>).advanced = {
+      objective: "Sharpe",
+      topK: "20",
+      includeAll: "false",
+      extraShortlistObjectives: "Omega",
+    };
+    (pinia.state.value as Record<string, unknown>).data = {
+      dataId: "data-dyn-preview-cpu",
+      dataFields: ["close"],
+      dataLen: 256,
+    };
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === "get_gpu_status") {
+        return {
+          built_with_cuda: true,
+          built_with_cuda_backtest_kernel: true,
+          cuda_available: true,
+          auto_device_name: "NVIDIA RTX 4090",
+          auto_device_memory_bytes: 24 * 1024 * 1024 * 1024,
+        };
+      }
+      if (command === "list_moving_averages") {
+        return [
+          {
+            id: "sma",
+            supports_cpu: true,
+            supports_cuda: true,
+            supports_cuda_kernel: true,
+          },
+          {
+            id: "ema",
+            supports_cpu: true,
+            supports_cuda: true,
+            supports_cuda_kernel: true,
+          },
+        ];
+      }
+      if (command === "preview_dynamic_double_ma_strategy_ir_json") {
+        return {
+          schema_compatibility: "Compatible",
+          ir: { profile: "double_ma" },
+          pretty_json: '{\n  "profile": "double_ma"\n}',
+          preview: {
+            requested_backend: "gpu_unified",
+            resolved_backend: "cpu",
+            plan_fingerprint_hex: "fallback123",
+            indicator_count: 3,
+            condition_count: 2,
+            group_count: 2,
+            capability: {
+              gpu_dynamic_supported: false,
+              cpu_dynamic_supported: true,
+              reasons: ["halftrend unsupported in gpu v1"],
+            },
+          },
+        };
+      }
+      return {};
+    });
+
+    await runOptimization({ switchTab: false });
+
+    const optimize = (pinia.state.value as Record<string, unknown>)
+      .optimize as Record<string, unknown>;
+    expect(String(optimize.dynamicStrategyPreviewMeta || "")).toContain(
+      "resolved=cpu",
+    );
+    expect(String(optimize.dynamicStrategyPreviewReasons || "")).toContain(
+      "halftrend unsupported",
+    );
+    expect(String(optimize.statusLine || "")).toContain(
+      "Extra shortlist objectives are currently supported only for the GPU kernel route.",
+    );
+    expect(invokeCommandMock).not.toHaveBeenCalledWith(
+      "run_double_ma_optimization",
+      expect.anything(),
+    );
+  });
+
   it("preserves non-grid double-ma modes through the product request path when exact-grid outputs are disabled", async () => {
     (pinia.state.value as Record<string, unknown>).optimize = {
       strategyKind: "DoubleMa",

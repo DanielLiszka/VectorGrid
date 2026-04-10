@@ -1,6 +1,6 @@
 # Request Builder Bench Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -37,6 +37,7 @@ The repo already has a dedicated benchmark file that uses benchmark-style execut
 
 - `npm --prefix web run bench:request-builder`
 - `node web/scripts/compare-request-builder-bench.mjs <baseline.json> <candidate.json>`
+- generated benchmark artifact under `target/request-builder-bench.json`
 - normal Vitest request-builder correctness tests for functional regressions
 
 ## Strengths Already Present
@@ -86,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current benchmark fixtures and why they are representative.
-- [ ] Document the benchmark output format and compare workflow.
-- [ ] Keep the benchmark non-options only.
-- [ ] Keep correctness assertions in ordinary tests rather than the benchmark file.
-- [ ] Review fixture coverage whenever request-builder routing or request shape changes.
-- [ ] Avoid implying browser or end-user timing from micro-benchmark results.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the current benchmark fixtures and why they are representative.
+- [x] Document the benchmark output format and compare workflow.
+- [x] Keep the benchmark non-options only.
+- [x] Keep correctness assertions in ordinary tests rather than the benchmark file.
+- [x] Review fixture coverage whenever request-builder routing or request shape changes.
+- [x] Avoid implying browser or end-user timing from micro-benchmark results.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +115,31 @@ Public-repo quality focus:
 - prefer improving fixture representativeness over multiplying benchmark cases
 - if a threshold policy is added later, keep it clearly separated from user-facing latency claims
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on verification of the existing benchmark harness rather than a source change. The current tree already had the intended request-builder micro-benchmark contract:
+  - `web/src/services/optimizeRequestBuilder.bench.test.ts` uses `tinybench` to measure fixture-driven request construction only
+  - the harness writes structured JSON to `target/request-builder-bench.json`
+  - `web/scripts/compare-request-builder-bench.mjs` compares the candidate JSON against a stored baseline
+  - ordinary correctness assertions remain in the normal Vitest suites instead of being overloaded into the benchmark loop
+- Fresh acceptance evidence for this closure:
+  - `npm.cmd --prefix web run bench:request-builder`
+  - `npm.cmd --prefix web run bench:request-builder:compare -- ../target/request-builder-bench-baseline.json ../target/request-builder-bench.json`
+  - `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`
+- The fresh benchmark run passed and rewrote `target/request-builder-bench.json`.
+- The compare workflow also ran successfully against `target/request-builder-bench-baseline.json` and produced advisory deltas for all six benchmark cases. Those deltas were large in percentage terms on this run, but this item still has no hard threshold gate and the benchmark remains a supplemental micro-benchmark rather than a release authority surface.
+- The current fixture set remains clearly non-options and representative of the active optimization request-builder surface:
+  - `double_ma/grid_baseline`
+  - `double_ma/composite_trend_kernel_route`
+  - `double_ma/composite_trend_hybrid_route`
+  - `double_ma/composite_cpu_route_with_support_lookup`
+  - `composite_cpu/grid_request`
+  - `composite_mo/range_builder_request`
+- Normal correctness coverage remained green after the benchmark run:
+  - `src/services/optimizeRequestBuilder.test.ts`: `92` tests passed
+  - `src/services/optimizeService.test.ts`: `63` tests passed
+- No `README.md` or `REPO_MAP.md` update was required because the micro-benchmark contract, fixture set, package scripts, and artifact paths were confirmed rather than changed.
 
 ## Related Docs
 

@@ -98,21 +98,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the dashboard’s required top-level summary blocks.
-- [ ] Define what must always be visible without opening another sheet.
-- [ ] Define which warnings and route notes deserve high-visibility placement.
-- [ ] Define which charts are mandatory, optional, or removable.
-- [ ] Define the exact role split between `Dashboard`, `Distributions`, and `Audit Data`.
-- [ ] Define the dashboard behavior for zero-survivor and thin-evidence cases.
-- [ ] Define compatibility-mode copy requirements when verdict fields are missing.
-- [ ] Define formatting priorities for readability over density.
-- [ ] Add XML or content checks for key dashboard labels where feasible.
-- [ ] Manually review one representative workbook after any dashboard change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define the dashboard’s required top-level summary blocks.
+- [x] Define what must always be visible without opening another sheet.
+- [x] Define which warnings and route notes deserve high-visibility placement.
+- [x] Define which charts are mandatory, optional, or removable.
+- [x] Define the exact role split between `Dashboard`, `Distributions`, and `Audit Data`.
+- [x] Define the dashboard behavior for zero-survivor and thin-evidence cases.
+- [x] Define compatibility-mode copy requirements when verdict fields are missing.
+- [x] Define formatting priorities for readability over density.
+- [x] Add XML or content checks for key dashboard labels where feasible.
+- [x] Manually review one representative workbook after any dashboard change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,6 +127,11 @@ Public-repo quality focus:
 - preserve the workbook even if the dashboard needs to degrade gracefully
 - prefer clearer labels and fewer but better charts over adding more summary decoration
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the dashboard sheet as a decision surface rather than changing workbook presentation opportunistically. The current tests still prove recommendation visibility, warning and skipped-module visibility, route and fallback summaries, shortlist counts, and fallback-chart behavior for degraded runs.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests` and the existing workbook/content checks in `commands_reports.rs`.
 
 ## Related Docs
 

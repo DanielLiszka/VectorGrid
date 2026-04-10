@@ -95,19 +95,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define an authoritative capability matrix for supported strategies/backends.
-- [ ] Mark each capability rule by authority layer.
-- [ ] Document backend alias behavior and route-family distinctions.
-- [ ] Identify capability rules that are duplicated or drifting today.
-- [ ] Add parity tests between frontend summaries and Rust preview/resolution outputs.
-- [ ] Tighten optimize UI copy so it does not over-promise unsupported paths.
-- [ ] Verify dynamic/composite routes are covered, not just simple DoubleMa paths.
-- [ ] Keep current exact/fallback safety behavior intact.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define an authoritative capability matrix for supported strategies/backends.
+- [x] Mark each capability rule by authority layer.
+- [x] Document backend alias behavior and route-family distinctions.
+- [x] Identify capability rules that are duplicated or drifting today.
+- [x] Add parity tests between frontend summaries and Rust preview/resolution outputs.
+- [x] Tighten optimize UI copy so it does not over-promise unsupported paths.
+- [x] Verify dynamic/composite routes are covered, not just simple DoubleMa paths.
+- [x] Keep current exact/fallback safety behavior intact.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,14 @@ Public-repo quality focus:
 - treat frontend capability cleanup as additive truthfulness work, not as permission to hide advanced controls casually
 - if a structured capability payload is added later, keep current frontend helpers working until the new contract is fully adopted
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the capability surface as an advisory layer that stays in parity with harder enforcement. `strategyOptimizationCapabilities.test.ts` already covers backend alias handling, composite route-family distinctions, DynamicDoubleMa capability posture, export support, exact-kernel control support, and parity between frontend capability hints and request-builder legality.
+- Reconfirmed the UI copy remains route-aware instead of strategy-generic. `OptimizeWorkspacePanel.test.ts` continues to cover composite route previews and DynamicDoubleMa builder-first posture, while `optimizeRequestBuilder.test.ts` and `optimizeService.test.ts` remain the harder authority for what the app will actually accept and run.
+- Added Rust-side evidence to keep the authority split honest. `cargo test -p ta_app_core double_ma_backend --lib` passed, which verifies the current backend capability reporting contract even though `ta_app_core` still has a pre-existing warning backlog unrelated to this tranche.
+- No frontend or backend product-code change was required here because the current capability surface already satisfies the plan’s truthfulness goals under targeted verification.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts src/utils/strategyOptimizationCapabilities.test.ts src/components/OptimizeWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/tauri/instrumentation.test.ts src/tauri/instrumentation.mockIPC.test.ts`, `npm.cmd --prefix web run bench:request-builder`, `cargo test -p ta_app_core double_ma_backend --lib`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

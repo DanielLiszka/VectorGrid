@@ -103,18 +103,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the validation report export state machine and branch outcomes.
-- [ ] Document the precedence order among artifact-backed save, direct save, download fallback, and Stage 3 open fallback.
-- [ ] Document which actions should set or preserve `reportXlsxPath`.
-- [ ] Document the relationship between successful XLSX save and workflow-artifact updates.
-- [ ] Document the expected status-line language for success, partial success, and fallback cases.
-- [ ] Add or tighten tests for auto-export failure, artifact-backed save, direct fallback, and Stage 3 fallback.
-- [ ] Add or tighten tests for preserved report-path behavior after successful export.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the validation report export state machine and branch outcomes.
+- [x] Document the precedence order among artifact-backed save, direct save, download fallback, and Stage 3 open fallback.
+- [x] Document which actions should set or preserve `reportXlsxPath`.
+- [x] Document the relationship between successful XLSX save and workflow-artifact updates.
+- [x] Document the expected status-line language for success, partial success, and fallback cases.
+- [x] Add or tighten tests for auto-export failure, artifact-backed save, direct fallback, and Stage 3 fallback.
+- [x] Add or tighten tests for preserved report-path behavior after successful export.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -133,6 +133,12 @@ Public-repo quality focus:
 - keep Stage 3 fallback explicit until a better dedicated validation fallback exists
 - if report-path semantics change, update artifact persistence and history reopen flows in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened [validationService.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.ts) and [validationService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.test.ts) so the export contract is now regression-locked across direct save, base64 download fallback, empty-path save responses, artifact-backed save, Stage 3 fallback, and the explicit CSV/JSON status-line branches.
+- Revalidated the Rust-side workbook/report path through [validation_xlsx_report_tests.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/validation_xlsx_report_tests.rs) and [commands_reports.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_reports.rs), which still prove workbook quality, expected sheet/chart content, and artifact-backed report generation behavior.
+- The final frontend verification set for this item was `npm --prefix web run test -- src/services/validationService.test.ts src/components/ValidationWorkspacePanel.test.ts src/stores/validationStore.actions.test.ts src/services/validationRequestBuilder.test.ts src/stores/workflowArtifactsStore.test.ts src/services/workflowArtifactsSync.test.ts`, plus `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests -- --nocapture`.
 
 ## Related Docs
 

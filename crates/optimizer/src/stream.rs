@@ -411,12 +411,32 @@ mod tests {
         }
     }
 
+    fn metrics_with_sharpe_and_pnl(sharpe: f64, pnl: f64) -> Metrics {
+        Metrics {
+            sharpe,
+            pnl,
+            ..Metrics::default()
+        }
+    }
+
     fn params(fast: u16, slow: u16) -> DoubleMaParams {
         DoubleMaParams {
             fast_len: fast,
             slow_len: slow,
             fast_ma_id: 0,
             slow_ma_id: 0,
+        }
+    }
+
+    fn score_by_pnl(metrics: &Metrics) -> f64 {
+        metrics.pnl
+    }
+
+    fn score_by_fast_len_or_nan(params: &DoubleMaParams, _metrics: &Metrics) -> f64 {
+        if params.fast_len == 5 {
+            f64::NAN
+        } else {
+            params.fast_len as f64
         }
     }
 
@@ -448,5 +468,57 @@ mod tests {
         assert_eq!(heatmap.values[0], Some(3.0));
         assert_eq!(heatmap.mean_values.as_ref().expect("means")[0], Some(2.0));
         assert_eq!(heatmap.sample_counts.as_ref().expect("counts")[0], 2);
+    }
+
+    #[test]
+    fn with_score_fn_uses_custom_ranking_instead_of_objective() {
+        let mut agg =
+            StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100).with_score_fn(score_by_pnl);
+        agg.push(params(5, 20), metrics_with_sharpe_and_pnl(2.0, 10.0));
+        agg.push(params(6, 24), metrics_with_sharpe_and_pnl(1.0, 25.0));
+
+        let result = agg.finalize().expect("result");
+        assert_eq!(result.best_params.fast_len, 6);
+        assert_eq!(result.best_score, Some(25.0));
+        assert_eq!(result.top_scores, Some(vec![25.0, 10.0]));
+    }
+
+    #[test]
+    fn with_pair_score_fn_clamps_non_finite_values_and_keeps_finite_best() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 2, false, 100)
+            .with_pair_score_fn(score_by_fast_len_or_nan);
+        agg.push(params(5, 20), metrics_with_sharpe(10.0));
+        agg.push(params(8, 30), metrics_with_sharpe(1.0));
+
+        let result = agg.finalize().expect("result");
+        assert_eq!(result.best_params.fast_len, 8);
+        assert_eq!(result.best_score, Some(8.0));
+        assert_eq!(result.top_scores, Some(vec![8.0, f64::NEG_INFINITY]));
+    }
+
+    #[test]
+    fn include_all_preserves_push_order_while_topk_remains_score_sorted() {
+        let mut agg = StreamAggregator::new(ObjectiveKind::Sharpe, 2, true, 100);
+        agg.push(params(5, 20), metrics_with_sharpe(0.5));
+        agg.push(params(6, 24), metrics_with_sharpe(1.5));
+        agg.push(params(8, 30), metrics_with_sharpe(1.0));
+
+        let result = agg.finalize().expect("result");
+        let all = result.all.expect("include-all rows");
+        assert_eq!(
+            all.iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(5, 20), (6, 24), (8, 30)]
+        );
+        assert_eq!(
+            result
+                .top
+                .iter()
+                .map(|(params, _)| (params.fast_len, params.slow_len))
+                .collect::<Vec<_>>(),
+            vec![(6, 24), (8, 30)]
+        );
+        assert_eq!(result.top_scores, Some(vec![1.5, 1.0]));
     }
 }

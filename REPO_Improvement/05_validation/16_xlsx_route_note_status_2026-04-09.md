@@ -103,18 +103,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical vocabulary for execution-status fields.
-- [ ] Document the canonical ordering of summary text fragments.
-- [ ] Document when the workbook should show `not run`, `disabled`, `skipped`, or `omitted by cross mode`.
-- [ ] Document the difference between actual and expected execution summaries.
-- [ ] Add or tighten tests for actual/expected parity on representative route scenarios.
-- [ ] Add or tighten tests for zero-survivor and skipped-module dashboard text.
-- [ ] Add or tighten tests for composite route-note explanations.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical vocabulary for execution-status fields.
+- [x] Document the canonical ordering of summary text fragments.
+- [x] Document when the workbook should show `not run`, `disabled`, `skipped`, or `omitted by cross mode`.
+- [x] Document the difference between actual and expected execution summaries.
+- [x] Add or tighten tests for actual/expected parity on representative route scenarios.
+- [x] Add or tighten tests for zero-survivor and skipped-module dashboard text.
+- [x] Add or tighten tests for composite route-note explanations.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -132,6 +132,11 @@ Public-repo quality focus:
 - if wording changes are necessary, update tests and dashboard preview surfaces in the same change
 - avoid introducing strategy-specific one-off wording where a category-level explanation would suffice
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated workbook route, fallback, and status reporting against the current actual-versus-expected execution summaries. The workbook tests still prove route-note visibility, skipped-module visibility, composite route details, and degraded-run explanation text.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`, `cargo test -p ta_desktop_demo_app commands_validation --lib`, and `cargo test -p ta_desktop_demo_app commands_reports --lib`.
 
 ## Related Docs
 

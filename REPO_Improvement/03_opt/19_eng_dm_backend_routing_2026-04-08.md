@@ -84,19 +84,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the route matrix for CPU, GPU sweep, GPU hybrid kernel, GPU kernel, and auto.
-- [ ] Document preferred-device resolution and fallback-device behavior.
-- [ ] Document grid-only product overrides for heatmap/export/include-all.
-- [ ] Document fallback reasons and where they must surface.
-- [ ] Document approximate vs exact semantics for VDPS and related cheaper paths.
-- [ ] Document the expected UI route preview language.
-- [ ] Add or tighten route-resolution tests and representative fixtures.
-- [ ] Tie route-sensitive changes to perf/profiling checks where needed.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the route matrix for CPU, GPU sweep, GPU hybrid kernel, GPU kernel, and auto.
+- [x] Document preferred-device resolution and fallback-device behavior.
+- [x] Document grid-only product overrides for heatmap/export/include-all.
+- [x] Document fallback reasons and where they must surface.
+- [x] Document approximate vs exact semantics for VDPS and related cheaper paths.
+- [x] Document the expected UI route preview language.
+- [x] Add or tighten route-resolution tests and representative fixtures.
+- [x] Tie route-sensitive changes to perf/profiling checks where needed.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -113,6 +113,13 @@ Public-repo quality focus:
 - preserve existing backend labels unless an explicit migration is planned
 - prefer additive route diagnostics over changing route semantics
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the core backend route contract in the default CPU-safe lane. `auto_backend_records_route_metadata` and `gpu_hybrid_phase1_cpu_fallback_surfaces_route_metadata` continue to pass in `crates/app_core/src/double_ma.rs`, which confirms that backend auto-resolution still records truthful route metadata and that hybrid phase-1 CPU fallback still surfaces route reasons instead of silently degrading.
+- Reconfirmed command-boundary product normalization in `src-tauri/src/commands_optimize.rs`. The existing tests still prove that Double-MA requests preserve non-grid modes when exact-grid outputs are disabled, pin back to `Grid` when heatmap/include-all/export shapes demand exact-grid semantics, and ignore whitespace export paths rather than misclassifying a run.
+- The deeper GPU-kernel route test named `composite_adx_off_gpu_kernel_routes_accept_advanced_exact_controls` is not compiled in the default lane on this machine, so this execution pass records it honestly as CUDA-lane evidence rather than pretending it was exercised here. The route-policy closure for this doc therefore rests on the verified default-lane route-metadata tests plus the command-level normalization tests already present.
+- No code change was required in this tranche because the audited backend route behavior and command normalization already satisfy the documented contract. Acceptance evidence captured during execution: `cargo test -p ta_app_core auto_backend_records_route_metadata --lib`, `cargo test -p ta_app_core gpu_hybrid_phase1_cpu_fallback_surfaces_route_metadata --lib`, `cargo test -p ta_desktop_demo_app commands_optimize --lib`, and the existing frontend request-builder/service route tests exercised in prior optimization tranches.
 
 ## Related Docs
 

@@ -96,18 +96,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the purpose and minimum field set of hydration payloads.
-- [ ] Document the purpose and richer field set of detail payloads.
-- [ ] Document the purpose of family-specific replay payloads.
-- [ ] Document which frontend services consume each payload type.
-- [ ] Add or tighten tests proving history/detail does not rely on hydration-only behavior.
-- [ ] Add or tighten tests proving workflow sync does not rely on detail-only fields.
-- [ ] Add or tighten tests proving family replay remains separate from hydration.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the purpose and minimum field set of hydration payloads.
+- [x] Document the purpose and richer field set of detail payloads.
+- [x] Document the purpose of family-specific replay payloads.
+- [x] Document which frontend services consume each payload type.
+- [x] Add or tighten tests proving history/detail does not rely on hydration-only behavior.
+- [x] Add or tighten tests proving workflow sync does not rely on detail-only fields.
+- [x] Add or tighten tests proving family replay remains separate from hydration.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -133,3 +133,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/05_meta_artifact_replay_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/06_stage5_artifact_replay_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/07_policy_eval_artifact_replay_2026-04-09.md`
+
+## Execution Notes
+
+- Closed as a payload-boundary hardening slice while preserving the existing split between minimal hydration, rich detail, and typed family replay payloads.
+- Re-verified the separation through `historyService` hydration/detail tests, typed Meta/Stage 5/policy replay tests in `web/src/services/metaService.test.ts`, and a malformed-hydration best-effort regression in `web/src/services/workflowArtifactsSync.test.ts`.
+- The implementation continues to keep workflow sync on the hydration payload, history detail on the detail payload, and aggregate artifact replay on typed replay commands rather than reusing one generic blob.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/services/workflowArtifactsSync.test.ts src/services/metaService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

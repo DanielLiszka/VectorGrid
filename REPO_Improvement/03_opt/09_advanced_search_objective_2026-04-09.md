@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document ownership of objective and mode across stores and panels.
-- [ ] Document score-mode semantics and prerequisites.
-- [ ] Document metric-contract precedence and `includeTradeMetrics` interaction.
-- [ ] Audit snapshot and history round-trip behavior for these fields.
-- [ ] Add or tighten tests for drift and precedence bugs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document ownership of objective and mode across stores and panels.
+- [x] Document score-mode semantics and prerequisites.
+- [x] Document metric-contract precedence and `includeTradeMetrics` interaction.
+- [x] Audit snapshot and history round-trip behavior for these fields.
+- [x] Add or tighten tests for drift and precedence bugs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,13 @@ Public-repo quality focus:
 - if duplicated fields are removed later, migrate snapshot or history behavior deliberately
 - keep UI guidance conservative when route-specific legality is uncertain
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed the real ownership gap instead of only documenting it. `objective` and `mode` were still user-editable in `OptimizeWorkspacePanel.vue` through `optimizeStore`, while `optimizeService.ts` reads the authoritative optimization request fields from `advancedStore`. `optimizeStore.ts` and `advancedStore.ts` now mirror `objective` and `mode` into each other for both direct user edits and legacy snapshot hydration, which removes the drift path without widening scope into a larger store redesign.
+- Revalidated the rest of the advanced objective contract instead of rewriting it. `AdvancedWorkspacePanel.vue`, `optimizeRequestBuilder.ts`, and `optimizeService.ts` already enforced score-mode prerequisites, metric-contract precedence, and `includeTradeMetrics` interactions; those behaviors remain unchanged and are now backed by explicit parity tests.
+- Added direct store-level regression coverage for both directions of the sync contract. `optimizeStore.actions.test.ts` now proves optimize-surface changes and optimize snapshot hydration update the advanced-store authority fields, and the new `advancedStore.actions.test.ts` proves advanced-surface edits and advanced snapshot hydration keep optimize-surface summary fields aligned.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/AdvancedWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/stores/advancedStore.actions.test.ts src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

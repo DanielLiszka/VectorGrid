@@ -101,18 +101,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical backend aggregate-library fields and family slices.
-- [ ] Document how History and Meta currently consume different artifact sets.
-- [ ] Document sorting/count and refresh-selection semantics for aggregate families.
-- [ ] Document field-name normalization rules between backend and frontend.
-- [ ] Decide whether unified non-options indexing is a later goal or explicitly out of scope for now.
-- [ ] Add or tighten tests for family refresh, selection retention, and normalization.
-- [ ] Keep options-expression indexing excluded from this non-options doc.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical backend aggregate-library fields and family slices.
+- [x] Document how History and Meta currently consume different artifact sets.
+- [x] Document sorting/count and refresh-selection semantics for aggregate families.
+- [x] Document field-name normalization rules between backend and frontend.
+- [x] Decide whether unified non-options indexing is a later goal or explicitly out of scope for now.
+- [x] Add or tighten tests for family refresh, selection retention, and normalization.
+- [x] Keep options-expression indexing excluded from this non-options doc.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -138,3 +138,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/24_history_library_core_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/26_history_service_store_2026-04-08.md`
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as an aggregate-library index hardening slice without consolidating History and Meta into one UI surface.
+- Added a direct frontend regression test in `web/src/services/metaService.test.ts` proving aggregate library refresh still accepts backend `policy_evals` snake_case while preserving the selected policy-eval artifact in the current analysis store.
+- Re-verified current split ownership: run artifacts remain History-owned, aggregate meta/stage5/policy-eval slices remain Meta-owned, and options-expression indexing stays out of scope for this non-options contract.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.

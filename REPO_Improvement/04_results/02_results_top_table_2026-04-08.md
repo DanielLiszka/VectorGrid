@@ -122,19 +122,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document filter fields, filter meta, and selection guardrail behavior.
-- [ ] Document column visibility persistence and restore-default behavior.
-- [ ] Document row selection, pinning, and compare interactions.
-- [ ] Document stale-cue and provenance-chip behavior.
-- [ ] Document keyboard navigation and drilldown/overview handoff behavior.
-- [ ] Add tests for persisted column visibility and restore-default.
-- [ ] Add tests for row selection, pinning, and keyboard interaction.
-- [ ] Add tests for stale cues, guardrails, and empty-state transitions.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document filter fields, filter meta, and selection guardrail behavior.
+- [x] Document column visibility persistence and restore-default behavior.
+- [x] Document row selection, pinning, and compare interactions.
+- [x] Document stale-cue and provenance-chip behavior.
+- [x] Document keyboard navigation and drilldown/overview handoff behavior.
+- [x] Add tests for persisted column visibility and restore-default.
+- [x] Add tests for row selection, pinning, and keyboard interaction.
+- [x] Add tests for stale cues, guardrails, and empty-state transitions.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -151,6 +151,11 @@ Public-repo quality focus:
 - keep persisted column-state behavior backward compatible with existing local state keys where possible
 - if deeper table features are added later, keep current keyboard and pinning flows intact first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Top Results table as the current shortlist-triage surface. `TopWorkspacePanel.test.ts` and `analysisService.test.ts` remain green, which keeps filter behavior, selection, pinning, stale cues, and drilldown/overview handoff aligned with the existing contract.
+- No code change was required in this tranche because the current persisted-column, virtualization-adjacent, and shortlist-selection flows already satisfy the documented scope for the current UI.
 
 ## Related Docs
 

@@ -100,20 +100,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document BreakoutMomentum route behavior for ADX off, ADX on, and CPU fallback.
-- [ ] Document high/low/volume prerequisites and how they affect availability.
-- [ ] Ensure frontend route preview stays aligned with `composite_profile_route.rs`.
-- [ ] Keep advanced-control and export messaging route-sensitive.
-- [ ] Add or maintain route-evidence coverage for BreakoutMomentum cases.
-- [ ] Verify validation summaries and route notes match the runtime route actually used.
-- [ ] Preserve strategy-local ownership instead of hiding rules in generic helpers.
-- [ ] Avoid adding new implicit special cases without tests and route evidence.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document BreakoutMomentum route behavior for ADX off, ADX on, and CPU fallback.
+- [x] Document high/low/volume prerequisites and how they affect availability.
+- [x] Ensure frontend route preview stays aligned with `composite_profile_route.rs`.
+- [x] Keep advanced-control and export messaging route-sensitive.
+- [x] Add or maintain route-evidence coverage for BreakoutMomentum cases.
+- [x] Verify validation summaries and route notes match the runtime route actually used.
+- [x] Preserve strategy-local ownership instead of hiding rules in generic helpers.
+- [x] Avoid adding new implicit special cases without tests and route evidence.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -133,6 +133,14 @@ Public-repo quality focus:
 - if route visibility improves in the UI, keep actual backend route semantics unchanged unless explicitly documented
 - preserve existing data-prerequisite checks rather than hiding them behind generic unsupported-state messaging
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed this item by hardening the concrete BreakoutMomentum contract instead of altering the strategy surface. The route-preview and capability layers already treated BreakoutMomentum as a Double-MA-routed profile with ADX-sensitive kernel vs hybrid behavior; this tranche turned the remaining assumptions into explicit regression tests.
+- Revalidated the existing high/low/volume prerequisite enforcement rather than replacing it. `optimizeRequestBuilder.test.ts` already keeps missing-volume and missing-high/low failure cases explicit; this pass focused on the remaining route-preview and report-summary drift risks.
+- Added direct kernel-route UI coverage for BreakoutMomentum in `OptimizeWorkspacePanel.test.ts` and `AdvancedWorkspacePanel.test.ts`, so the ADX-off kernel path stays visibly different from hybrid/CPU fallback cases and exact-kernel controls cannot silently drift.
+- Tightened validation-summary wording for routed composites so BreakoutMomentum ADX-on winners stay tied to `GpuHybridKernel` wording instead of collapsing into the plainer generic GPU-main wording used for exact-kernel cases.
+- Acceptance evidence for closure: `cargo test -p ta_app_core composite_profile_route --lib`, `cargo test -p ta_app_core double_ma_validation_gpu_kernel_matches_cpu_metrics_breakout_momentum_adx_off --quiet`, `cargo test -p ta_app_core double_ma_validation_gpu_hybrid_matches_cpu_metrics_breakout_momentum_adx_on --quiet`, `npm.cmd --prefix web run test -- src/strategies/compositeProfileGpuPolicy.test.ts src/components/OptimizeWorkspacePanel.test.ts src/components/AdvancedWorkspacePanel.test.ts src/services/validationRequestBuilder.test.ts`, `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

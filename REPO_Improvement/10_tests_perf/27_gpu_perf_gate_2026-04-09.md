@@ -1,6 +1,6 @@
 # GPU Perf Gate Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -37,6 +37,7 @@ The current GPU perf gate already behaves like an authority wrapper. It waits fo
 
 - `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
 - `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode baseline` when intentionally refreshing the GPU baseline
+- `target/release/profile_gpu_dynamic_runner.exe` steady-state runs invoked by the gate for the dynamic-strategy ratio check
 - generated summary JSON under `target/gpu_perf_summary.json`
 - candidate case-specific Criterion estimates under `target/criterion/`
 
@@ -87,18 +88,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the authoritative default GPU cases and any allowed custom-case use.
-- [ ] Document the GPU identity assumptions carried by the baseline.
-- [ ] Keep process-drain serialization behavior mandatory.
-- [ ] Keep schema-version and case-registry compatibility checks explicit.
-- [ ] Keep the GPU gate non-options only.
-- [ ] Require explanation before any GPU baseline refresh.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the authoritative default GPU cases and any allowed custom-case use.
+- [x] Document the GPU identity assumptions carried by the baseline.
+- [x] Keep process-drain serialization behavior mandatory.
+- [x] Keep schema-version and case-registry compatibility checks explicit.
+- [x] Keep the GPU gate non-options only.
+- [x] Require explanation before any GPU baseline refresh.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +116,35 @@ Public-repo quality focus:
 - use Nsight or CUPTI only as follow-up diagnostics when the gate points to trouble
 - if a case becomes obsolete, replace it with a documented baseline migration rather than silent drift
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh verification of the existing gate rather than a code change. The current tree already had the intended authority-wrapper behavior:
+  - mandatory perf-process drain checks before launch and before exit
+  - default authoritative GPU Criterion cases for `double_ma/gpu_kernel/sma_sma/200k/small` and `double_ma/gpu_kernel/alma_alma/200k/large`
+  - GPU identity capture through `nvidia-smi`
+  - explicit summary/baseline schema and case-registry compatibility checks
+  - a separate dynamic-strategy steady-state runner ratio check through `profile_gpu_dynamic_runner`
+- Fresh acceptance evidence was captured on the current machine with no concurrent benchmark/profiler processes active:
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_gpu_perf_gate.ps1 -Mode candidate`
+- The fresh candidate gate passed on:
+  - GPU: `NVIDIA GeForce RTX 4090`
+  - driver: `595.71`
+  - summary artifact: `target/gpu_perf_summary.json`
+  - default Criterion cases:
+    - `gpu_sma_small`: `72.994617 ms` vs baseline `70.640588 ms`
+    - `gpu_alma_large`: `71.366369 ms` vs baseline `85.373831 ms`
+  - dynamic-strategy steady-state wall-clock check:
+    - `off_mean_ms`: `68.75`
+    - `on_mean_ms`: `64.5`
+    - `ratio_on_over_off`: `0.938182` vs baseline `0.966667`
+- The passing gate emitted the expected authority lines:
+  - `gpu_criterion_case_gpu_sma_small_not_regressed_10pct`
+  - `gpu_criterion_case_gpu_alma_large_not_regressed_10pct`
+  - `gpu_dynamic_strategy_ratio_not_regressed_20pct`
+  - `gpu_dynamic_strategy_static_off_latency_not_regressed_20pct`
+- No baseline refresh was performed. The authoritative default-case path and the custom-case path remain intentionally distinct: default cases are baseline-bearing gate authority, while custom-case mode remains an investigative surface that must not be treated as equivalent baseline evidence.
+- No `README.md` or `REPO_MAP.md` update was required because the gate contract, default case inventory, GPU identity handling, and artifact locations were confirmed rather than changed.
 
 ## Related Docs
 

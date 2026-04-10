@@ -1,6 +1,6 @@
 # Profile Runner Bins Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -87,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory the current non-options profiling/helper bins and their timing boundaries.
-- [ ] Document feature and environment prerequisites for each one.
-- [ ] Map helper bins to the scripts or docs that rely on them.
-- [ ] Keep helper-bin guidance non-options only.
-- [ ] Avoid presenting helper-bin outputs as authority unless a separate gate wraps them.
-- [ ] Review whether any helper bin has become obsolete or redundant.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory the current non-options profiling/helper bins and their timing boundaries.
+- [x] Document feature and environment prerequisites for each one.
+- [x] Map helper bins to the scripts or docs that rely on them.
+- [x] Keep helper-bin guidance non-options only.
+- [x] Avoid presenting helper-bin outputs as authority unless a separate gate wraps them.
+- [x] Review whether any helper bin has become obsolete or redundant.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +115,30 @@ Public-repo quality focus:
 - prefer better cataloging over adding wrappers if the existing bins already answer the question
 - retire or de-emphasize helper bins only after confirming no gate or playbook still depends on them
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh helper-bin build/interface checks plus one real staged helper-bin run rather than a code change.
+- Fresh acceptance evidence for this closure:
+  - `cargo build -p ta_app_core --release --bin profile_gpu_dynamic_runner --features cuda,cuda-backtest-kernel`
+  - `cargo run -p ta_app_core --release --bin profile_doublema_campaign_prefetch --features cuda,cuda-backtest-kernel -- --mode staged`
+  - `cargo run -p ta_desktop_demo_app --release --bin ta_app_path_faceoff -- --help`
+  - `cargo run -p ta_desktop_demo_app --release --bin ta_campaign_perf -- --help`
+  - `nvidia-smi --query-gpu=name,driver_version --format=csv,noheader`
+- Verified local CUDA provenance for the helper-bin tranche:
+  - GPU: `NVIDIA GeForce RTX 4090`
+  - driver: `595.71`
+- The helper-bin surfaces exercised in this closure matched the documented catalog:
+  - `profile_gpu_dynamic_runner` built successfully in `release` with `cuda,cuda-backtest-kernel`, which keeps the lower-level GPU runner surface available to `10_tests_perf/27`, `10_tests_perf/33`, and `10_tests_perf/34`
+  - `profile_doublema_campaign_prefetch` completed a real staged run and returned structured JSON with `stage_attempts=3`, `stage_successes=3`, `stage_errors=0`, and `GpuKernel` on both first and second route observations for every measured iteration
+  - `ta_app_path_faceoff --help` confirmed the app-path faceoff CLI still exposes the documented same-thread faceoff boundary, including required `--csv` and `--output-json` arguments plus backend and trial controls
+  - `ta_campaign_perf --help` confirmed the headless campaign perf harness still exposes the documented preload/staging boundary, including `--mode`, `--scope`, `--backend`, and `--output-json`
+- The current repo-local dependency map remains intact rather than indicating obsolescence:
+  - `profile_gpu_dynamic_runner` is still the runner surface underneath the GPU perf gate and Nsight playbooks
+  - `profile_doublema_campaign_prefetch` still isolates staged prefetch behavior for deeper campaign/runtime investigation
+  - `ta_app_path_faceoff` still provides the app-path faceoff surface
+  - `ta_campaign_perf` still provides the higher-level headless campaign preload/perf harness
+- No `README.md` or `REPO_MAP.md` update was required because the helper-bin inventory and boundary catalog were already present; this item verified those existing surfaces rather than adding or retiring bins.
 
 ## Related Docs
 

@@ -112,20 +112,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current saved Stage 5 family and its user-facing actions.
-- [ ] Document `stage4Saved*` as compatibility state backing the saved Stage 5 UI.
-- [ ] Document the current replay/load/reveal/delete/tag flows and their owners.
-- [ ] Document the `stage4_json_path` / `stage5_json_path` compatibility behavior.
-- [ ] Document JSON-only replay expectations for saved Stage 5 runs.
-- [ ] Preserve tests for saved Stage 5 load, reveal, delete, and alias handling.
-- [ ] Preserve artifact replay tests in `run_artifacts.rs`.
-- [ ] Treat Stage 4 naming cleanup as compatibility-sensitive across all saved-replay surfaces.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the current saved Stage 5 family and its user-facing actions.
+- [x] Document `stage4Saved*` as compatibility state backing the saved Stage 5 UI.
+- [x] Document the current replay/load/reveal/delete/tag flows and their owners.
+- [x] Document the `stage4_json_path` / `stage5_json_path` compatibility behavior.
+- [x] Document JSON-only replay expectations for saved Stage 5 runs.
+- [x] Preserve tests for saved Stage 5 load, reveal, delete, and alias handling.
+- [x] Preserve artifact replay tests in `run_artifacts.rs`.
+- [x] Treat Stage 4 naming cleanup as compatibility-sensitive across all saved-replay surfaces.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -144,6 +144,27 @@ Public-repo quality focus:
 - keep replay behavior additive if richer report surfaces are introduced later
 - prefer explicit deprecation notes over silent renames for saved-family fields
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the Saved Stage 5 replay contract explicit in both the panel copy and the saved-artifact summaries.
+- `metaService.ts` now enriches saved Stage 5 metadata with:
+  - `alias=stage4Saved*`
+  - `replay=json`
+  - `path_alias=stage4/stage5`
+- Saved policy-eval metadata now also carries `arms=meta/ml/stage5` and `replay=json`, which keeps the saved-family split explicit when reopening artifacts later.
+- `MetaWorkspacePanel.vue` now tells the user that Saved Stage 5 is still backed by `stage4Saved*` compatibility fields and that Stage 4 / Stage 5 path aliases currently point at the same JSON artifact.
+- Stable fixture / replay payload:
+  - saved Stage 5 artifact `C:/runs/stage5_saved.json`
+  - saved policy evaluation artifact `C:/runs/policy_saved.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaStage4RequestBuilder.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_desktop_demo_app build_stage5_artifact_summary_preserves_stage4_stage5_alias_contract --lib`
+  - `cargo test -p ta_desktop_demo_app build_ml_policy_eval_summary_preserves_saved_eval_contract_fields --lib`
+  - note: `cargo test -p ta_desktop_demo_app run_artifacts --lib` still has an unrelated baseline failure in `update_artifact_tags_trims_and_dedupes_case_insensitively`, so replay validation here was pinned with the focused summary-level tests above instead of the full filtered suite
 
 ## Related Docs
 

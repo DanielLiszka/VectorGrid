@@ -1,6 +1,6 @@
 # Execution Order / Position Review Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -110,20 +110,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current review actions and their scope.
-- [ ] Document current order-table columns and what they intentionally omit.
-- [ ] Document position summary states, including `Position: -` versus confirmed `flat`.
-- [ ] Document optimistic row insertion and later broker-refresh reconciliation.
-- [ ] Document chart-context and raw-output roles in the review surface.
-- [ ] Preserve component tests for empty and populated order tables.
-- [ ] Preserve service/store tests for broker refresh and optimistic row behavior.
-- [ ] Preserve targeted backend snapshot tests if payload fields change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the current review actions and their scope.
+- [x] Document current order-table columns and what they intentionally omit.
+- [x] Document position summary states, including `Position: -` versus confirmed `flat`.
+- [x] Document optimistic row insertion and later broker-refresh reconciliation.
+- [x] Document chart-context and raw-output roles in the review surface.
+- [x] Preserve component tests for empty and populated order tables.
+- [x] Preserve service/store tests for broker refresh and optimistic row behavior.
+- [x] Preserve targeted backend snapshot tests if payload fields change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -145,6 +145,22 @@ Public-repo quality focus:
 - keep optimistic row behavior explicit if UI copy is refined
 - prefer additive table/detail expansion over changing the meaning of existing review states
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening review-state truth anchors in [ExecutionWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ExecutionWorkspacePanel.test.ts):
+  - added explicit coverage for the unfetched placeholder review state
+  - locked `Position: -` as distinct from broker-confirmed `Position: flat`
+  - kept the chart/review placeholder copy explicit before any broker refresh occurs
+- Existing review coverage continues to anchor the rest of the contract:
+  - empty and populated broker-order table rendering
+  - confirmed-flat mapping on broker refresh
+  - optimistic-row replacement after broker-confirmed refresh
+  - raw JSON preview remaining visible alongside the reduced review table
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts src/utils/executionRisk.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

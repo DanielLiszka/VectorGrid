@@ -1,11 +1,11 @@
 import { defineStore } from 'pinia'
-import { invokeCommand } from '../tauri/invoke'
 import { useAnalysisStore } from './analysisStore'
 import { useDataStore } from './dataStore'
 import { useOptimizeStore } from './optimizeStore'
 import { resolveRuntimePinia } from './runtimePinia'
 import { useSettingsStore } from './settingsStore'
 import { useValidationStore } from './validationStore'
+import { openPathWithRevealFallback } from '../utils/openPath'
 import { useWorkflowArtifactsStore } from './workflowArtifactsStore'
 
 function normalizedPath(value: unknown): string {
@@ -36,18 +36,8 @@ function resolvedLatestReportPath(state: { latestReportPath: string }): string {
 }
 
 function resolvedLatestMetaReportPath(state: { latestMetaReportPath: string }): string {
-  return normalizedPath(state.latestMetaReportPath)
-    || rootRuntimePath('latestMetaReportPath')
-}
-
-async function openPathWithFallback(path: string): Promise<void> {
-  const nextPath = String(path || '').trim()
-  if (!nextPath) return
-  try {
-    await invokeCommand('open_path', { path: nextPath })
-  } catch {
-    await invokeCommand('reveal_path', { path: nextPath }).catch(() => undefined)
-  }
+  return rootRuntimePath('latestMetaReportPath')
+    || normalizedPath(state.latestMetaReportPath)
 }
 
 export const useCommandActionStore = defineStore('commandActions', {
@@ -136,12 +126,12 @@ export const useCommandActionStore = defineStore('commandActions', {
       if (runtimeRunning()) return
       const path = resolvedLatestReportPath(this)
       if (path === workflowArtifactsReportPath()) this.source = 'vue-artifacts'
-      void openPathWithFallback(path)
+      void openPathWithRevealFallback(path).catch(() => undefined)
     },
 
     openLatestMetaReport(): void {
       if (runtimeRunning()) return
-      void openPathWithFallback(resolvedLatestMetaReportPath(this))
+      void openPathWithRevealFallback(resolvedLatestMetaReportPath(this)).catch(() => undefined)
     },
 
     toggleControls(): void {

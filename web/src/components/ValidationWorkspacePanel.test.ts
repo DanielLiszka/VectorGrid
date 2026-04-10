@@ -14,8 +14,11 @@ import { VALIDATION_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
 
 function installValidationPanelMountShell(): void {
   document.body.innerHTML = `
-    <section data-vue-panel="validate"></section>
-    <div id="validationVueShellMount"></div>
+    <section id="shellResultsColumn" class="resultsColumn">
+      <div id="results_panel_validate" class="panelHost" data-vue-panel="validate">
+        <div id="validationVueShellMount"></div>
+      </div>
+    </section>
   `
 }
 
@@ -28,6 +31,44 @@ describe('ValidationWorkspacePanel', () => {
   beforeEach(() => {
     installValidationPanelMountShell()
     localStorage.clear()
+  })
+
+  it('shows empty-state guidance before data load and before optimization runs exist', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const dataStore = useDataStore(pinia)
+    workflow.selectResultsTab('validate', { persist: false })
+
+    const first = mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    expect(document.body.textContent || '').toContain('Load data before running validation.')
+    expect(document.body.textContent || '').toContain(
+      'Validation works on shortlisted optimization candidates, so the first step is loading a dataset.',
+    )
+
+    first.unmount()
+
+    dataStore.dataId = 'dataset_validation_ready'
+    dataStore.datasetLabel = 'AAPL 1m'
+
+    const second = mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    expect(document.body.textContent || '').toContain('Run an optimization before validation.')
+    expect(document.body.textContent || '').toContain(
+      'Your dataset is ready. Generate candidates with an optimization run, then return here to execute robustness checks.',
+    )
+
+    second.unmount()
   })
 
   it('keeps the primary validation action inline in the panel', async () => {
@@ -57,6 +98,135 @@ describe('ValidationWorkspacePanel', () => {
       (button) => button.textContent?.trim() === 'Run validation',
     )
     expect(runButtons).toHaveLength(1)
+
+    wrapper.unmount()
+  })
+
+  it('shows expected execution guidance and disables actions that are not currently available', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const validationStore = useValidationStore(pinia)
+    const artifactsStore = useWorkflowArtifactsStore(pinia)
+
+    workflow.selectResultsTab('validate', { persist: false })
+    dataStore.dataId = 'dataset_validation_preview'
+    dataStore.csvPath = 'C:/data/aapl.csv'
+    dataStore.dataTimeframe = '1m'
+    validationStore.candidates = '2'
+    validationStore.admissionPolicy = 'scalar_union'
+    validationStore.canExportValidationCsv = false
+    validationStore.canExportValidationJson = false
+    validationStore.canExportReportJson = false
+    validationStore.canExportReportXlsx = false
+    validationStore.canOpenReportsDir = false
+    validationStore.canCrossRefresh = false
+    validationStore.canCrossSelectAll = false
+    validationStore.canCrossSelectNone = false
+    validationStore.canCrossSelectMatch = false
+    validationStore.crossDatasets = [
+      {
+        path: 'C:/data/msft.csv',
+        label: 'MSFT',
+        meta: 'stocks (adj) • tf=1m',
+        checked: false,
+        disabled: false,
+      },
+    ]
+    validationStore.crossSelectedCount = 0
+    validationStore.crossTotalCount = 1
+    validationStore.crossMeta = 'selected 0/1'
+    artifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:00:00Z',
+        csv_path: 'C:/data/aapl.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/aapl.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-validation-preview-disabled',
+          objective: 'Sharpe',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+              metrics: {
+                pnl: 0.15,
+                sharpe: 1.8,
+                calmar: 0.7,
+                omega: 1.02,
+                max_dd: 0.32,
+              },
+            },
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 8,
+                slow_len: 26,
+              },
+              metrics: {
+                pnl: 0.1,
+                sharpe: 0.9,
+                calmar: 1.6,
+                omega: 1.35,
+                max_dd: 0.06,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+
+    const wrapper = mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const bodyText = document.body.textContent || ''
+    expect(bodyText).toContain('Validation is ready to run.')
+    expect(bodyText).toContain('Expected Route')
+    expect(bodyText).toContain('Expected Cross')
+    expect(bodyText).toContain('Expected Modules')
+    expect(bodyText).toContain('Expected Categories')
+    expect(bodyText).toContain('Expected Skips')
+    expect(bodyText).toContain('Expected Notes')
+    expect(bodyText).toContain('Admission Compare')
+    expect(bodyText).toContain('selected 0/1')
+    expect(bodyText).toContain('Selected 0/1')
+
+    const buttonByText = (label: string) =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => String(button.textContent || '').trim() === label,
+      )
+
+    expect(buttonByText('Export shortlist CSV')?.disabled).toBe(true)
+    expect(buttonByText('Export validation JSON')?.disabled).toBe(true)
+    expect(buttonByText('Export report JSON')?.disabled).toBe(true)
+    expect(buttonByText('Export report XLSX')?.disabled).toBe(true)
+    expect(buttonByText('Open reports folder')?.disabled).toBe(true)
+    expect(buttonByText('Refresh list')?.disabled).toBe(true)
+    expect(buttonByText('All')?.disabled).toBe(true)
+    expect(buttonByText('None')?.disabled).toBe(true)
+    expect(buttonByText('Match current')?.disabled).toBe(true)
+    expect(document.querySelector('table.validationTableVue')).toBeNull()
 
     wrapper.unmount()
   })
@@ -159,6 +329,108 @@ describe('ValidationWorkspacePanel', () => {
     )
     expect(bodyText).toContain('Admission Delta')
     expect(bodyText).toContain('heads=Sharpe/MaxDrawdown/Omega/Calmar')
+
+    wrapper.unmount()
+  })
+
+  it('shows validation summaries, dense result rows, and JSON preview once validation results are ready', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    bindRuntimePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const validationStore = useValidationStore(pinia)
+    const artifactsStore = useWorkflowArtifactsStore(pinia)
+
+    workflow.selectResultsTab('validate', { persist: false })
+    dataStore.dataId = 'dataset_validation_results'
+    dataStore.datasetLabel = 'AAPL 1m'
+    artifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:30:00Z',
+        csv_path: 'C:/data/aapl.csv',
+        dataset_meta: {
+          csv_path: 'C:/data/aapl.csv',
+          timeframe: '1m',
+          label: 'AAPL',
+        },
+        req: {
+          strategy_kind: 'DoubleMa',
+          data_id: 'data-validation-results',
+          objective: 'Sharpe',
+          ma_source: 'close',
+          fast_ma_types: ['sma'],
+          slow_ma_types: ['ema'],
+          strategy: { fee_bps: 1.5 },
+        },
+        res: {
+          top: [
+            {
+              params: {
+                fast_ma_type: 'sma',
+                slow_ma_type: 'ema',
+                fast_len: 10,
+                slow_len: 40,
+              },
+            },
+          ],
+        },
+      },
+      currentValidation: null,
+    })
+    validationStore.tableVisible = true
+    validationStore.tableRowCount = 1
+    validationStore.validationRouteSummary = 'Cpu • Auto->CpuOnly'
+    validationStore.validationRouteDetailSummary = 'GPU validation runtime not implemented yet; using CPU validation.'
+    validationStore.validationCategorySummary = 'CPU-only: base reruns + hard gates'
+    validationStore.validationAuxCpuSummary = 'perturb + trade bootstrap compare (iid + stationary, stat block=auto)'
+    validationStore.validationBootstrapSummary = 'iid + stationary closed-trade compare • stat block=auto'
+    validationStore.validationRegimeSummary = 'broad support'
+    validationStore.validationFrictionSummary = '3/4 stress scenarios'
+    validationStore.validationCrossSummary = 'requested=preserved_finalists • ran 1/1'
+    validationStore.validationSkippedSummary = 'Cross reruns: preserved_finalists omit walk_forward + reopt WF + SPA + perturb + trade bootstrap'
+    validationStore.validationWarningSummary = 'cross_ticker_filtered_all_candidates'
+    validationStore.validationMeta =
+      'backend=Cpu • route=Auto->CpuOnly • heads=legacy_topk • rec=single_candidate_supported'
+    validationStore.validationReoptMeta = 'reopt_wf: windows=3 • winners=2'
+    validationStore.validationShortlistMeta = 'shortlist=1 • approved=1'
+    validationStore.validationOutputPreview = '{"backend_used":"Cpu","approved":true}'
+    validationStore.validationColumns = [
+      { label: 'Gate', alignLeft: true },
+      { label: 'Cross', alignLeft: true },
+      { label: 'Sharpe', alignLeft: false },
+    ]
+    validationStore.validationRows = [
+      {
+        cells: [
+          { text: 'pass', className: 'left mono', title: 'pass' },
+          { text: 'cross', className: 'left', title: 'cross' },
+          { text: '1.2400', className: 'mono', title: '1.2400' },
+        ],
+      },
+    ]
+
+    const wrapper = mount(ValidationWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const bodyText = document.body.textContent || ''
+    expect(bodyText).toContain('Validation summary table')
+    expect(bodyText).toContain('Cpu • Auto->CpuOnly')
+    expect(bodyText).toContain('GPU validation runtime not implemented yet; using CPU validation.')
+    expect(bodyText).toContain('requested=preserved_finalists • ran 1/1')
+    expect(bodyText).toContain('cross_ticker_filtered_all_candidates')
+    expect(bodyText).toContain('shortlist=1 • approved=1')
+    expect(bodyText).toContain('Table visible: yes')
+    expect(bodyText).toContain('Validation JSON preview')
+    expect(bodyText).toContain('{"backend_used":"Cpu","approved":true}')
+    expect(Array.from(document.querySelectorAll('th')).map((cell) => String(cell.textContent || '').trim())).toEqual([
+      'Gate',
+      'Cross',
+      'Sharpe',
+    ])
 
     wrapper.unmount()
   })

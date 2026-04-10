@@ -117,16 +117,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current `optimization_metric_surface` structure and ownership.
-- [ ] Document how summary/detail strings are derived for history/detail surfaces.
-- [ ] Document canonical field ordering and compatibility expectations.
-- [ ] Verify the field survives artifact save, hydrate, and report generation unchanged.
-- [ ] Add or tighten one end-to-end regression that covers the full metric-surface path.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the current `optimization_metric_surface` structure and ownership.
+- [x] Document how summary/detail strings are derived for history/detail surfaces.
+- [x] Document canonical field ordering and compatibility expectations.
+- [x] Verify the field survives artifact save, hydrate, and report generation unchanged.
+- [x] Add or tighten one end-to-end regression that covers the full metric-surface path.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -144,6 +144,13 @@ Public-repo quality focus:
 - prefer one shared formatter contract over multiple drifting UI summaries
 - if the surface grows, add fields rather than redefining old ones silently
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened [validationService.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.ts) so `optimization_metric_surface` now survives the validation-service save/reapply path: it is read from the current run artifact snapshot, preserved in the rebuilt run artifact payload, reapplied into `workflowArtifactsStore`, and forwarded into report payload generation.
+- Expanded [validationService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/validationService.test.ts) so validation persistence now explicitly asserts `config_fingerprint`, `optimization_metric_surface`, and the service-built default metric-surface-aware run artifact payload.
+- Revalidated the consumer side in [workflowArtifactsStore.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/workflowArtifactsStore.test.ts) and [historyService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/historyService.test.ts), which already prove hydration and saved-run detail formatting for metric-surface metadata.
+- The final verification set for this item was `npm --prefix web run test -- src/services/validationService.test.ts src/stores/workflowArtifactsStore.test.ts src/services/historyService.test.ts`, plus `npm --prefix web run lint` and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

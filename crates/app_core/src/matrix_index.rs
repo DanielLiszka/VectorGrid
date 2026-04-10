@@ -146,4 +146,14 @@ mod tests {
         let err = DoubleMaFastLtSlowIndex::new(vec![2, 1], vec![1, 2]).unwrap_err();
         assert!(err.contains("fast_periods") && err.contains("increasing"));
     }
+
+    #[test]
+    fn double_ma_index_rejects_invalid_pairs_and_out_of_bounds_cols() {
+        let idx = DoubleMaFastLtSlowIndex::new(vec![5, 10], vec![5, 10, 20]).unwrap();
+
+        assert_eq!(idx.col_id(5, 5), None);
+        assert_eq!(idx.col_id(10, 5), None);
+        assert_eq!(idx.col_id(7, 20), None);
+        assert_eq!(idx.params_for_col(idx.cols), None);
+    }
 }

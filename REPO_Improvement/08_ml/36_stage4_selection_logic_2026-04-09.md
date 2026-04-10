@@ -129,22 +129,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document source meta artifact resolution and current path restrictions.
-- [ ] Document exclusion of the source artifact from auto-training history.
-- [ ] Document ML scoring of source groups and dependence on `MlConfidenceGroupFeatures`.
-- [ ] Document weight normalization and blended rank construction.
-- [ ] Document `min_ml_confidence` filtering and empty-selection behavior.
-- [ ] Document fallback-to-meta semantics and warning generation.
-- [ ] Document decision-bucket assignment and its thresholds.
-- [ ] Preserve tests for source exclusion, unhealthy-model gating, and auto-train fallback behavior.
-- [ ] Preserve preview/status rendering tests that reflect fallback reasons and bucket counts.
-- [ ] Keep Stage 4/Stage 5 naming drift explicit in the logic doc until the implementation is renamed.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document source meta artifact resolution and current path restrictions.
+- [x] Document exclusion of the source artifact from auto-training history.
+- [x] Document ML scoring of source groups and dependence on `MlConfidenceGroupFeatures`.
+- [x] Document weight normalization and blended rank construction.
+- [x] Document `min_ml_confidence` filtering and empty-selection behavior.
+- [x] Document fallback-to-meta semantics and warning generation.
+- [x] Document decision-bucket assignment and its thresholds.
+- [x] Preserve tests for source exclusion, unhealthy-model gating, and auto-train fallback behavior.
+- [x] Preserve preview/status rendering tests that reflect fallback reasons and bucket counts.
+- [x] Keep Stage 4/Stage 5 naming drift explicit in the logic doc until the implementation is renamed.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -163,6 +163,29 @@ Public-repo quality focus:
 - prefer additive result metadata over changing the meaning of existing ranking and bucket fields
 - keep anti-leakage source exclusion as a non-negotiable invariant during any refactor
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by surfacing the Stage 5 selection order directly in the Meta panel and the live Stage 5 preview rather than leaving it implied by backend-only behavior.
+- `MetaWorkspacePanel.vue` now states that Stage 5:
+  - reranks with meta / ML / uncertainty weights
+  - filters by `min_ml_confidence`
+  - falls back to pure meta-score ranking only when the shortlist empties and fallback is enabled
+  - assigns accept / review / reject buckets after ranking
+- `metaService.ts` now keeps the live Stage 5 preview explicit about:
+  - weighted rank construction
+  - fallback behavior
+  - source-artifact exclusion from auto-train history
+- Stable fixture / replay payload:
+  - source meta `C:/runs/vectorgrid_meta.json`
+  - saved Stage 5 rerank `C:/runs/vectorgrid_stage5.json`
+  - fallback-bearing preview path from `renderMetaStage4(...)`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaStage4RequestBuilder.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # FE Store Service Tests Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -83,16 +83,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory the non-options store tests and their owning workflows.
-- [ ] Inventory the non-options service tests and their owning workflows.
-- [ ] Identify any critical derived state or request builder paths without direct tests.
-- [ ] Keep store/service coverage aligned with current architecture boundaries.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory the non-options store tests and their owning workflows.
+- [x] Inventory the non-options service tests and their owning workflows.
+- [x] Identify any critical derived state or request builder paths without direct tests.
+- [x] Keep store/service coverage aligned with current architecture boundaries.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -106,6 +106,23 @@ Public-repo quality focus:
 - preserve existing useful tests while clarifying ownership
 - add new store/service tests before relying on smoke coverage for new orchestration paths
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the verified store/service corpus rather than stale assumptions:
+  - `npm.cmd --prefix web test` now passes with `121` files and `1059` tests, including the current non-options store and service layers
+  - the passing suite covers request shaping, orchestration, blocked reasons, artifact hydration, settings bootstrap, history replay, validation/report flows, live execution, ML/meta orchestration, and task lifecycle state
+- Tightened this layer during closure:
+  - [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts) now explicitly pins `manual`, `best`, and `selected` execution parameter-source behavior
+  - [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) continues to prove concurrent runtime-subscription reuse and retry behavior
+- Kept scope intentionally additive:
+  - no service/store ownership moved
+  - no orchestration tests were removed
+- Acceptance evidence:
+  - `npm.cmd --prefix web test`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

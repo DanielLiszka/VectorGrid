@@ -108,4 +108,62 @@ describe('StrategyWorkspacePanel', () => {
 
     wrapper.unmount()
   })
+
+  it('shows the derived cost hint in the strategy panel after preset-backed cost updates', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    const strategy = useStrategyStore(pinia)
+    workflow.selectControlsTab('strategy', { persist: false })
+    optimize.strategyKind = 'DoubleMa'
+    strategy.setSelectField('costPreset', 'stocks_liquid')
+    strategy.setInputField('spreadBps', '1.00')
+    strategy.setInputField('slippageBps', '0.50')
+
+    const wrapper = mount(StrategyWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Execution cost model')
+    expect(text).toContain('Total: 1.10 bps/side (2.20 bps round-trip)')
+
+    wrapper.unmount()
+  })
+
+  it('shows only the selected strategy family section for surfaced family-local controls', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const workflow = useWorkflowStore(pinia)
+    const optimize = useOptimizeStore(pinia)
+    workflow.selectControlsTab('strategy', { persist: false })
+
+    optimize.strategyKind = 'Vcc'
+    const vccWrapper = mount(StrategyWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueVccSqueezePeriod')).not.toBeNull()
+    expect(document.querySelector('#vueVcetVidyaShortPeriod')).toBeNull()
+
+    vccWrapper.unmount()
+    installStrategyPanelMountShell()
+
+    optimize.strategyKind = 'Vcet'
+    const vcetWrapper = mount(StrategyWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanelTimers()
+
+    expect(document.querySelector('#vueVcetVidyaShortPeriod')).not.toBeNull()
+    expect(document.querySelector('#vueVccSqueezePeriod')).toBeNull()
+
+    vcetWrapper.unmount()
+  })
 })

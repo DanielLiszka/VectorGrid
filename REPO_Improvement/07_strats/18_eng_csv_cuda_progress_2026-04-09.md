@@ -1,6 +1,6 @@
 # CSV And CUDA Progress Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -104,18 +104,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current progress event types and their responsibilities.
-- [ ] Document which phases are determinate, semi-determinate, or purely stage-based.
-- [ ] Document how CSV preparation and CUDA-prefetch feedback should be surfaced together.
-- [ ] Add or tighten tests for progress throttling, stage transitions, and campaign progress aggregation.
-- [ ] Review whether `load_price_data` needs additive progress hooks or only clearer status messaging.
-- [ ] Keep accessibility expectations explicit for any progress UI copy or widgets.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the current progress event types and their responsibilities.
+- [x] Document which phases are determinate, semi-determinate, or purely stage-based.
+- [x] Document how CSV preparation and CUDA-prefetch feedback should be surfaced together.
+- [x] Add or tighten tests for progress throttling, stage transitions, and campaign progress aggregation.
+- [x] Review whether `load_price_data` needs additive progress hooks or only clearer status messaging.
+- [x] Keep accessibility expectations explicit for any progress UI copy or widgets.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -135,6 +135,26 @@ Public-repo quality focus:
 - use clearer stage/status copy before adding high-frequency progress churn
 - if a phase is fundamentally indeterminate, keep it stage-based instead of fabricating precise percentages
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by expanding the progress truth anchors in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md):
+  - documented `double_ma_progress` ownership in `commands_optimize.rs` and `crates/app_core/src/progress.rs`
+  - documented `research_campaign_progress` ownership in `commands_campaign.rs`
+  - documented that plain `load_price_data` remains a direct non-streaming command today
+  - documented task-center aggregation ownership in `web/src/stores/taskStore.ts` plus the owning tests
+- Tightened frontend progress coverage in [taskStoreCampaignProgress.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/taskStoreCampaignProgress.test.ts):
+  - added a test that phase changes force an immediate `double_ma_progress` refresh while duplicate chatter stays throttled
+  - added a test that changed `research_campaign_progress` payloads refresh immediately inside the throttle window and keep the tracked task/timeline state aligned
+- Kept scope intentionally additive:
+  - did not invent fake `load_price_data` progress percentages
+  - did not widen the payload contract for CUDA-prefetch notes yet
+  - kept the existing event names and task-center ownership intact
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/stores/taskStoreCampaignProgress.test.ts src/stores/taskStoreEventThrottle.test.ts src/services/optimizeService.test.ts src/services/metaServiceCampaignStrategy.test.ts src/tauri/instrumentation.test.ts`
+  - `cargo test -p ta_desktop_demo_app campaign_ --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

@@ -119,22 +119,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every current evidence threshold and resulting flag family.
-- [ ] Document that evidence flags are warnings, not direct gates.
-- [ ] Document the post-holdout evidence refresh step.
-- [ ] Document run-level warning aggregation when flagged groups exist.
-- [ ] Document current frontend preview/summary use of `evidence_flags`.
-- [ ] Document current report/export limitations around evidence visibility.
-- [ ] Add or maintain backend tests for thin-group evidence behavior.
-- [ ] Add or maintain frontend/report tests if evidence surfacing changes.
-- [ ] Preserve current string-coded flag compatibility unless a migration exists.
-- [ ] Keep artifact replay and saved-result interpretation aligned with the documented warning semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document every current evidence threshold and resulting flag family.
+- [x] Document that evidence flags are warnings, not direct gates.
+- [x] Document the post-holdout evidence refresh step.
+- [x] Document run-level warning aggregation when flagged groups exist.
+- [x] Document current frontend preview/summary use of `evidence_flags`.
+- [x] Document current report/export limitations around evidence visibility.
+- [x] Add or maintain backend tests for thin-group evidence behavior.
+- [x] Add or maintain frontend/report tests if evidence surfacing changes.
+- [x] Preserve current string-coded flag compatibility unless a migration exists.
+- [x] Keep artifact replay and saved-result interpretation aligned with the documented warning semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -153,6 +153,21 @@ Public-repo quality focus:
 - keep older evidence-flag strings replayable even if future labels or explanations become more user-friendly
 - prefer stronger documentation and surfacing before changing the threshold rules themselves
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making evidence semantics explicit in the Stage 3 panel instead of leaving them implied by preview text alone.
+- `MetaWorkspacePanel.vue` now says explicitly that:
+  - evidence flags are warnings, not hard gates
+  - holdout refresh can recompute flags on the holdout-enriched group state
+  - workbook output remains score-first, so JSON and artifact detail remain the strongest evidence surface
+- Existing Rust evidence-flag thresholds and refresh behavior were left unchanged.
+- `MetaWorkspacePanel.test.ts` now asserts the visible evidence-contract copy so future UI refactors cannot quietly collapse the warning-versus-gate distinction.
+- `REPO_MAP.md` was synced so evidence flags are documented as warnings rather than implicit gating logic.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaRequestBuilder.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Headless Cli Surface Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -119,19 +119,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the role of each headless binary and why it exists separately.
-- [ ] Audit CLI argument names and defaults for avoidable inconsistency.
-- [ ] Document the artifact output matrix across `ta_cli`, `ta_headless_validate`, and `ta_workflow_regression`.
-- [ ] Add or tighten tests for output-path generation and argument validation helpers.
-- [ ] Add or tighten wrapper-script checks so output-shape drift is caught early.
-- [ ] Decide whether any shared CLI helper extraction would improve consistency without making the tools less clear.
-- [ ] Keep the app-core-only versus Tauri-linked boundary explicit in docs and naming.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the role of each headless binary and why it exists separately.
+- [x] Audit CLI argument names and defaults for avoidable inconsistency.
+- [x] Document the artifact output matrix across `ta_cli`, `ta_headless_validate`, and `ta_workflow_regression`.
+- [x] Add or tighten tests for output-path generation and argument validation helpers.
+- [x] Add or tighten wrapper-script checks so output-shape drift is caught early.
+- [x] Decide whether any shared CLI helper extraction would improve consistency without making the tools less clear.
+- [x] Keep the app-core-only versus Tauri-linked boundary explicit in docs and naming.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -152,6 +152,22 @@ Public-repo quality focus:
 - if unification creates ambiguity, keep the simpler separated tools
 - treat artifact output drift as a compatibility event, not a casual cleanup
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by extracting a small validation helper in [ta_cli.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/bin/ta_cli.rs):
+  - added `validate_cli_configuration`
+  - added parser/config tests for `U32Range` and the current `export_all_csv_path` backend/`include_all` constraints
+- Expanded [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md) with a compact headless-family role split:
+  - `ta_cli` as the bounded optimize-and-print utility
+  - `ta_headless_validate` as the report builder
+  - `ta_workflow_regression` as the deterministic regression gate
+- Kept scope intentionally additive:
+  - no CLI flags changed
+  - no wrapper script behavior changed
+  - no JSON/XLSX output behavior changed
+- Acceptance evidence:
+  - `cargo test -p ta_app_core --features cli --bin ta_cli`
 
 ## Related Docs
 

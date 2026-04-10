@@ -9,7 +9,7 @@ test.describe('browser shell ux', () => {
     const workflowTab = page.locator(workspaceTabSelector('workflow'))
     const libraryTab = page.locator(workspaceTabSelector('library'))
     const aggregateTab = page.locator(workspaceTabSelector('aggregate'))
-    const proTab = page.locator('#workspaceBar [data-workspace="pro"]')
+    const proTab = page.locator(workspaceTabSelector('pro'))
     const settingsTab = page.locator(workspaceTabSelector('settings'))
 
     await workflowTab.focus()

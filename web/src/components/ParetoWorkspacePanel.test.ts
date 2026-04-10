@@ -4,6 +4,8 @@ import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ParetoWorkspacePanel from './ParetoWorkspacePanel.vue'
+import { useAnalysisStore } from '../stores/analysisStore'
+import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 vi.mock('../services/analysisService', () => ({
@@ -26,6 +28,58 @@ describe('ParetoWorkspacePanel', () => {
   beforeEach(() => {
     installParetoPanelMountShell()
     localStorage.clear()
+  })
+
+  it('distinguishes no-data and no-run empty states before frontier data exists', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('pareto', { persist: false })
+
+    const wrapper = mount(ParetoWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    expect(document.body.textContent || '').toContain('Load data before opening the Pareto view.')
+
+    dataStore.dataId = 'dataset_1'
+    await flushPanel()
+
+    expect(document.body.textContent || '').toContain('Run an optimization to generate Pareto points.')
+    wrapper.unmount()
+  })
+
+  it('keeps visible axis and meta cues when Pareto output is ready', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('pareto', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.bestTitle = 'Rank #1 · Winner'
+    analysisStore.paretoX = 'max_dd'
+    analysisStore.paretoY = 'pnl'
+    analysisStore.paretoXOptions = [{ value: 'max_dd', label: 'MaxDD', disabled: false }]
+    analysisStore.paretoYOptions = [{ value: 'pnl', label: 'PnL', disabled: false }]
+    analysisStore.paretoMeta = '12 points • x=max_dd • y=pnl'
+
+    mount(ParetoWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('X axis')
+    expect(text).toContain('Y axis')
+    expect(text).toContain('12 points • x=max_dd • y=pnl')
+    expect(text).toContain('Use the Top results table as the keyboard-friendly way')
   })
 
   it('keeps an explicit Review Top results handoff', async () => {

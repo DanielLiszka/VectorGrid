@@ -432,4 +432,37 @@ mod tests {
         assert_eq!(out.low[0], 9.0);
         assert_eq!(out.volume[0], 3.0);
     }
+
+    #[test]
+    fn resample_preserves_missing_optional_fields_as_nan_columns() {
+        let day0_start = 9 * 3_600_000 + 30 * 60_000;
+        let candles = Candles::new_with_fields(
+            vec![day0_start, day0_start + 60_000, day0_start + 120_000],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            vec![10.0, 11.0, 12.0],
+            vec![f64::NAN, f64::NAN, f64::NAN],
+            CandleFieldFlags {
+                open: false,
+                high: false,
+                low: false,
+                close: true,
+                volume: false,
+            },
+        );
+
+        let out = resample_candles(&candles, 120_000).expect("resample should succeed");
+        assert_eq!(out.timestamp.len(), 2);
+        assert!(!out.fields.open);
+        assert!(!out.fields.high);
+        assert!(!out.fields.low);
+        assert!(out.fields.close);
+        assert!(!out.fields.volume);
+        assert!(out.open.iter().all(|value| value.is_nan()));
+        assert!(out.high.iter().all(|value| value.is_nan()));
+        assert!(out.low.iter().all(|value| value.is_nan()));
+        assert!(out.volume.iter().all(|value| value.is_nan()));
+        assert_eq!(out.close, vec![11.0, 12.0]);
+    }
 }

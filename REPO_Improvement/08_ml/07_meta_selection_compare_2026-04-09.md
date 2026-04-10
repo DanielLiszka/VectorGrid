@@ -101,17 +101,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document compare-source provenance for live and saved meta artifact families.
-- [ ] Audit compare labels and summaries for source clarity.
-- [ ] Add or tighten tests for compare selection changes and summary refresh behavior.
-- [ ] Add or tighten tests for loading saved artifact families into compare workflows.
-- [ ] Ensure compare outputs never lose the label/path/source context that produced them.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document compare-source provenance for live and saved meta artifact families.
+- [x] Audit compare labels and summaries for source clarity.
+- [x] Add or tighten tests for compare selection changes and summary refresh behavior.
+- [x] Add or tighten tests for loading saved artifact families into compare workflows.
+- [x] Ensure compare outputs never lose the label/path/source context that produced them.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -134,3 +134,21 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/09_meta_saved_artifact_families_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/17_report_meta_workbook_2026-04-09.md`
 - `REPO_Improvement/04_results/03_results_top_compare_2026-04-09.md`
+
+## Execution Notes
+
+- Closed by tightening compare provenance and summary behavior without inventing a new compare backend.
+- `analysisStore.ts` now updates `metaCompareSummary` immediately when the selected Saved Meta baseline changes, preventing stale compare text from surviving a baseline switch.
+- `MetaWorkspacePanel.vue` now shows compare-source provenance directly in the UI:
+  - Compare source = Saved Meta artifact
+  - Current candidate = active Meta Selection output
+  - Selected baseline label
+  - Baseline file basename
+- `MetaWorkspacePanel.test.ts` now proves that the compare surface preserves selected-baseline context and user-facing provenance copy.
+- `analysisStore.actions.test.ts` now proves that `metaCompareSelect` updates the compare summary placeholder in lockstep with the selected baseline path.
+- Stable fixture / replay payload:
+  - selected compare baseline `C:/runs/vectorgrid_meta_baseline.json` with compare option label `2026-04-09T10:00:00Z | CompositeMo | 1m | groups=4`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/stores/analysisStore.actions.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

@@ -64,6 +64,20 @@ async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
 }
 
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (error?: unknown) => void
+} {
+  let resolve!: (value: T) => void
+  let reject!: (error?: unknown) => void
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve
+    reject = innerReject
+  })
+  return { promise, resolve, reject }
+}
+
 describe('execution store actions', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -308,6 +322,22 @@ describe('execution store actions', () => {
     expect(store.keyStateLabel).toBe('Will update persisted')
   })
 
+  it('derives the current execution mode matrix labels conservatively', () => {
+    const store = useExecutionStore()
+
+    expect(store.submissionModeLabel).toBe('Simulation')
+
+    store.setCheckboxField('execDryRun', false)
+    expect(store.submissionModeLabel).toBe('Paper order')
+
+    store.setSelectField('execMode', 'live')
+    expect(store.brokerModeLabel).toBe('Live')
+    expect(store.submissionModeLabel).toBe('Live order')
+
+    store.setCheckboxField('execDryRun', true)
+    expect(store.submissionModeLabel).toBe('Simulation')
+  })
+
   it('reconciles runtime events into live and runner state with optimistic rows', async () => {
     const store = useExecutionStore()
 
@@ -339,6 +369,49 @@ describe('execution store actions', () => {
     expect(store.liveDelayed).toBe(true)
     expect(store.runnerActive).toBe(true)
     expect(store.orderRows[0]?.cells?.[1]).toBe('buy')
+  })
+
+  it('reuses a single runtime subscription install while concurrent callers wait', async () => {
+    const store = useExecutionStore()
+    const setup = deferred<() => void>()
+    subscribeExecutionRuntimeEventsMock.mockImplementationOnce(
+      async (handlers: ExecutionRuntimeEventHandlers) => {
+        runtimeEventHandlers = handlers
+        return await setup.promise
+      },
+    )
+
+    const first = store.ensureRuntimeSubscriptions()
+    const second = store.ensureRuntimeSubscriptions()
+    await flushMicrotasks()
+
+    expect(subscribeExecutionRuntimeEventsMock).toHaveBeenCalledTimes(1)
+
+    setup.resolve(() => {
+      runtimeEventHandlers = null
+    })
+
+    await Promise.all([first, second])
+    await store.ensureRuntimeSubscriptions()
+
+    expect(subscribeExecutionRuntimeEventsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries runtime subscription installation after an initial failure', async () => {
+    const store = useExecutionStore()
+    subscribeExecutionRuntimeEventsMock
+      .mockRejectedValueOnce(new Error('listen unavailable'))
+      .mockImplementationOnce(async (handlers: ExecutionRuntimeEventHandlers) => {
+        runtimeEventHandlers = handlers
+        return () => {
+          runtimeEventHandlers = null
+        }
+      })
+
+    await expect(store.ensureRuntimeSubscriptions()).rejects.toThrow('listen unavailable')
+    await store.ensureRuntimeSubscriptions()
+
+    expect(subscribeExecutionRuntimeEventsMock).toHaveBeenCalledTimes(2)
   })
 
   it('ignores repeated identical live status events', () => {
@@ -427,6 +500,57 @@ describe('execution store actions', () => {
     nowSpy.mockRestore()
   })
 
+  it('keeps runner active across state-neutral error events while still surfacing the error', () => {
+    const store = useExecutionStore()
+    store.applyLiveExecutionRunnerEvent({
+      status: 'started',
+      symbol: 'AAPL',
+      message: 'runner started',
+      hint: 'Auto-runner: started',
+      active: true,
+      execution: null,
+    })
+
+    store.applyLiveExecutionRunnerEvent({
+      status: 'error',
+      symbol: 'AAPL',
+      message: 'runner execution failed: timeout',
+      hint: 'Auto-runner: runner execution failed: timeout',
+      active: null,
+      execution: null,
+    })
+
+    expect(store.runnerActive).toBe(true)
+    expect(store.runnerStatusHint).toBe('Auto-runner: runner execution failed: timeout')
+    expect(store.statusLine).toBe('runner execution failed: timeout')
+  })
+
+  it('preserves active runner state when backend emits an error event without an active flag change', () => {
+    const store = useExecutionStore()
+    store.applyLiveExecutionRunnerEvent({
+      status: 'started',
+      symbol: 'AAPL',
+      message: 'runner started',
+      hint: 'Auto-runner: started',
+      active: true,
+      execution: null,
+    })
+
+    store.applyLiveExecutionRunnerEvent({
+      status: 'error',
+      symbol: 'AAPL',
+      message: 'runner execution failed: boom',
+      hint: 'Auto-runner: runner execution failed: boom',
+      active: null,
+      execution: null,
+    })
+
+    expect(store.runnerActive).toBe(true)
+    expect(store.runnerStatusHint).toBe('Auto-runner: runner execution failed: boom')
+    expect(store.statusLine).toBe('runner execution failed: boom')
+    expect(store.statusHint).toBe('runner execution failed: boom')
+  })
+
   it('keeps runtime state intact when clearing credentials', async () => {
     const store = useExecutionStore()
     store.applyPolygonLiveStatusEvent({
@@ -457,6 +581,45 @@ describe('execution store actions', () => {
     expect(store.rememberKeys).toBe(true)
     expect(store.liveActive).toBe(true)
     expect(store.runnerActive).toBe(true)
+  })
+
+  it('replaces optimistic rows with broker-confirmed review rows on refresh', async () => {
+    const store = useExecutionStore()
+    store.applyLiveExecutionRunnerEvent({
+      status: 'order_submitted',
+      symbol: 'AAPL',
+      message: 'runner submitted buy order',
+      hint: 'Auto-runner: runner submitted buy order',
+      active: true,
+      execution: {
+        order_submitted: true,
+        action: 'buy',
+        order_id: 'ord_123',
+        delta_qty: 1,
+      },
+    })
+    expect(store.orderRows[0]?.cells?.[2]).toBe('submitted*')
+
+    refreshOrdersMock.mockResolvedValueOnce({
+      statusLine: 'Loaded 1 recent order for AAPL.',
+      orderRows: [
+        {
+          cells: ['2026-04-10 14:55:00', 'buy', 'filled', '1', '1', '182.40', 'ord_123'],
+        },
+      ],
+      orderCount: 1,
+      positionMeta: 'Position: flat',
+      chartMeta: 'Execution chart sync pending. symbol=AAPL orders=1',
+      outputPreview: '{"orders":[{"id":"ord_123"}]}',
+    })
+
+    store.refreshOrders()
+    await flushMicrotasks()
+
+    expect(store.orderRows[0]?.cells?.[2]).toBe('filled')
+    expect(store.orderCount).toBe(1)
+    expect(store.positionMeta).toBe('Position: flat')
+    expect(store.chartMeta).toBe('Execution chart sync pending. symbol=AAPL orders=1')
   })
 
   it('bounds optimistic rows and dedupes by order id', () => {

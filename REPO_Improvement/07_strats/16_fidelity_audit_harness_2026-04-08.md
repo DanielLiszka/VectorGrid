@@ -1,6 +1,6 @@
 # Fidelity Audit Harness Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -90,20 +90,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the CLI contract and artifact schema for the harness.
-- [ ] Define baseline and cheaper validation presets as named, stable profiles.
-- [ ] Define decision thresholds for rank overlap, regret, and verdict agreement.
-- [ ] Add representative bounded dataset/timeframe recipes for repeatable runs.
-- [ ] Ensure the harness keeps calling authoritative optimization/validation code paths.
-- [ ] Add a review guide for interpreting holdout-winner comparisons.
-- [ ] Keep the harness opt-in and separate from normal app startup/runtime.
-- [ ] Avoid turning the harness into an unbounded benchmark runner.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the CLI contract and artifact schema for the harness.
+- [x] Define baseline and cheaper validation presets as named, stable profiles.
+- [x] Define decision thresholds for rank overlap, regret, and verdict agreement.
+- [x] Add representative bounded dataset/timeframe recipes for repeatable runs.
+- [x] Ensure the harness keeps calling authoritative optimization/validation code paths.
+- [x] Add a review guide for interpreting holdout-winner comparisons.
+- [x] Keep the harness opt-in and separate from normal app startup/runtime.
+- [x] Avoid turning the harness into an unbounded benchmark runner.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -119,6 +119,25 @@ Public-repo quality focus:
 - preserve current artifact fields unless a schema-version change is recorded
 - if thresholds are introduced, ship them as review guidance before making them enforcement gates
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the fidelity-audit harness explicit in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md): the maintained evidence role, CLI owner, and artifact-schema owners are now documented instead of being discoverable only by reading the binary.
+- Refactored the binary CLI parsing in [real_data_fidelity_audit.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/bin/real_data_fidelity_audit.rs) so the public CLI contract is testable through `parse_args_from_iter(...)` instead of only through process-global `std::env::args()`.
+- Added direct harness tests for:
+  - documented defaults
+  - holdout-fraction bounds
+  - existing validation-preset ordering and boundedness
+  - validation-row agreement metrics
+- Stable truth anchors:
+  - CLI contract in `parse_args_from_iter()` / `print_help()`
+  - artifact schema in `FidelityAuditArtifact`, `TimeframeAudit`, `CaseAudit`, `OptimizationFidelityAudit`, and `ValidationFidelityAudit`
+  - authoritative execution paths in `double_ma.rs`, `double_ma_validate.rs`, and `validation_pipeline.rs`
+- Acceptance evidence:
+  - `cargo test -p ta_app_core --bin real_data_fidelity_audit`
+  - `cargo test -p ta_app_core prescan_predictive::tests --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

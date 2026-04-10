@@ -91,18 +91,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the exported shortlist CSV columns and their meaning.
-- [ ] Document when shortlist rows versus all rows are exported.
-- [ ] Document CSV escaping behavior and JSON-field expectations.
-- [ ] Keep CSV semantics aligned with workbook shortlist semantics.
-- [ ] Add or tighten tests for escaping, column order, and shortlist fallback behavior.
-- [ ] Add or tighten tests for approval/warning/fail-reason field preservation.
-- [ ] Verify frontend status text remains aligned with backend export behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the exported shortlist CSV columns and their meaning.
+- [x] Document when shortlist rows versus all rows are exported.
+- [x] Document CSV escaping behavior and JSON-field expectations.
+- [x] Keep CSV semantics aligned with workbook shortlist semantics.
+- [x] Add or tighten tests for escaping, column order, and shortlist fallback behavior.
+- [x] Add or tighten tests for approval/warning/fail-reason field preservation.
+- [x] Verify frontend status text remains aligned with backend export behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -119,6 +119,11 @@ Public-repo quality focus:
 - keep fallback-to-all-rows behavior explicit if shortlist rows are unavailable
 - if workbook shortlist semantics change, audit CSV parity at the same time
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added direct CSV export contract tests in `commands_reports_csv.rs`. The new coverage locks RFC-style escaping for commas, quotes, and newlines, and proves that shortlist CSV export falls back to the full candidate set while preserving approval, warning, fail-reason, and `params_json` fields.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app commands_reports --lib`, `npm --prefix web run test -- src/services/validationService.test.ts`, `npm --prefix web run lint`, and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

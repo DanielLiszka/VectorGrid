@@ -1,0 +1,41 @@
+// crates/app_core/build.rs (or merge into an existing crate-local build.rs)
+// Requires build-dependency: cc = "1"
+
+fn maybe_build_tensorcore_alma() {
+    use std::env;
+    use std::path::PathBuf;
+
+    if env::var_os("VECTORGRID_ENABLE_TENSORCORE_ALMA").is_none() {
+        return;
+    }
+
+    let cuda_home = env::var("CUDA_HOME")
+        .or_else(|_| env::var("CUDA_PATH"))
+        .unwrap_or_else(|_| "/usr/local/cuda".to_string());
+
+    let include_dir = PathBuf::from(&cuda_home).join("include");
+    let lib_dir64 = PathBuf::from(&cuda_home).join("lib64");
+
+    println!("cargo:rerun-if-env-changed=VECTORGRID_ENABLE_TENSORCORE_ALMA");
+    println!("cargo:rerun-if-env-changed=CUDA_HOME");
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-changed=native/tensorcore_alma/tca_alma.cu");
+    println!("cargo:rerun-if-changed=native/tensorcore_alma/tca_alma.h");
+
+    cc::Build::new()
+        .cuda(true)
+        .cudart("shared")
+        .flag("-std=c++17")
+        .flag("-O3")
+        .include(&include_dir)
+        .file("native/tensorcore_alma/tca_alma.cu")
+        .compile("tensorcore_alma");
+
+    println!("cargo:rustc-link-search=native={}", lib_dir64.display());
+    println!("cargo:rustc-link-lib=dylib=cublasLt");
+    println!("cargo:rustc-link-lib=dylib=cublas");
+}
+
+fn main() {
+    maybe_build_tensorcore_alma();
+}

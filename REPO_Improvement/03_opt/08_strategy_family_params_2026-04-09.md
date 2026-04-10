@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every currently surfaced family section and its fields.
-- [ ] Document every staged family already present in the store.
-- [ ] Document route-family membership for each strategy family.
-- [ ] Add or tighten UI-to-request parity tests for surfaced family fields.
-- [ ] Record a policy for adding future family fields without regressions.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every currently surfaced family section and its fields.
+- [x] Document every staged family already present in the store.
+- [x] Document route-family membership for each strategy family.
+- [x] Add or tighten UI-to-request parity tests for surfaced family fields.
+- [x] Record a policy for adding future family fields without regressions.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - keep route-family truth authoritative if UI coverage lags behind store support
 - document missing panel coverage rather than pretending it does not exist
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the family-surface evidence at the panel layer rather than widening family support. `StrategyWorkspacePanel.test.ts` now proves the strategy panel renders the selected surfaced family section and hides unrelated family-local controls, using representative `Vcc` and `Vcet` selections as guardrails against family-section bleed.
+- Revalidated the existing request and store coverage instead of duplicating family-specific builder logic in the panel tests. `optimizeRequestBuilder.test.ts` continues to cover family-local request shaping across surfaced families and staged route families, while `optimizeStore.actions.test.ts` already freezes the staged family option inventory (`Kqsr`, `Carm`, `Kvdf`, `Cdmc`, `DynamicDoubleMa`) so store-backed partial support cannot silently disappear.
+- Kept the plan honest about current scope: surfaced family sections remain productized in the strategy panel, staged families remain present in store and request-builder routing, and route-family truth continues to live in the request builder plus backend route modules until broader UI surfacing is intentionally added later.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/StrategyWorkspacePanel.test.ts src/stores/optimizeStore.actions.test.ts src/services/optimizeRequestBuilder.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

@@ -1,134 +1,105 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { createPinia, setActivePinia } from 'pinia'
-import { invokeCommand } from '../tauri/invoke'
-import { resetMoSearchSpace } from '../services/advancedService'
-import { useAdvancedStore } from './advancedStore'
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { bindRuntimePinia } from "./runtimePinia";
+import { useAdvancedStore } from "./advancedStore";
+import { useOptimizeStore } from "./optimizeStore";
 
-vi.mock('../tauri/invoke', () => ({
-  invokeCommand: vi.fn(async () => undefined),
-}))
-vi.mock('../services/advancedService', () => ({
-  resetMoSearchSpace: vi.fn(async () => ({ searchSpace: { params: [] }, json: '{\n  \"params\": []\n}' })),
-}))
+const invokeCommandMock = vi.fn();
+const resetMoSearchSpaceMock = vi.fn();
 
-const invokeCommandMock = vi.mocked(invokeCommand)
-const resetMoSearchSpaceMock = vi.mocked(resetMoSearchSpace)
+vi.mock("../tauri/invoke", () => ({
+  invokeCommand: (...args: unknown[]) => invokeCommandMock(...args),
+}));
 
-interface LegacyField {
-  value: string
-  checked?: boolean
-  type?: string
-  disabled?: boolean
-  dispatchEvent: (event: Event) => boolean
-}
+vi.mock("../services/advancedService", () => ({
+  resetMoSearchSpace: (...args: unknown[]) => resetMoSearchSpaceMock(...args),
+}));
 
-interface DocumentHarness {
-  fields: Record<string, LegacyField>
-  eventsById: Record<string, string[]>
-}
-
-function installDocumentHarness(): DocumentHarness {
-  const eventsById: Record<string, string[]> = {}
-  const makeField = (id: string, value = ''): LegacyField => ({
-    value,
-    dispatchEvent: (event: Event) => {
-      if (!eventsById[id]) eventsById[id] = []
-      eventsById[id].push(String(event.type || '').trim())
-      return true
-    },
-  })
-  const makeCheckbox = (id: string, checked: boolean): LegacyField => ({
-    value: checked ? 'on' : '',
-    checked,
-    type: 'checkbox',
-    dispatchEvent: (event: Event) => {
-      if (!eventsById[id]) eventsById[id] = []
-      eventsById[id].push(String(event.type || '').trim())
-      return true
-    },
-  })
-  const fields: Record<string, LegacyField> = {
-    heatmapBins: makeField('heatmapBins', '128'),
-    mode: makeField('mode', 'Grid'),
-    includeAll: makeField('includeAll', 'false'),
-    moSampler: makeField('moSampler', 'random'),
-    exportAllCsvPath: makeField('exportAllCsvPath', ''),
-    moSearchSpace: makeField('moSearchSpace', ''),
-    vdpsDeterministic: makeCheckbox('vdpsDeterministic', true),
-    moPrescanEnable: makeCheckbox('moPrescanEnable', false),
-  }
-  vi.stubGlobal('document', {
-    getElementById: (id: string) => fields[id] ?? null,
-  })
-  return { fields, eventsById }
-}
-
-describe('advanced store actions', () => {
-  let harness: DocumentHarness
+describe("advanced store actions", () => {
+  let pinia: ReturnType<typeof createPinia>;
 
   beforeEach(() => {
-    setActivePinia(createPinia())
-    harness = installDocumentHarness()
-    invokeCommandMock.mockClear()
-    invokeCommandMock.mockResolvedValue(undefined)
-    resetMoSearchSpaceMock.mockClear()
-    resetMoSearchSpaceMock.mockResolvedValue({ searchSpace: { params: [] }, json: '{\n  \"params\": []\n}' })
-  })
+    pinia = createPinia();
+    setActivePinia(pinia);
+    bindRuntimePinia(pinia);
+    invokeCommandMock.mockReset();
+    resetMoSearchSpaceMock.mockReset();
+  });
 
-  it('updates Vue advanced state without legacy DOM mirroring', () => {
-    const store = useAdvancedStore()
-    store.setInputField('heatmapBins', '256')
-    store.setInputField('moSampler', 'tpe')
-    store.setSelectField('mode', 'Grid')
-    store.setSelectField('includeAll', 'true')
-    store.setCheckboxField('vdpsDeterministic', false)
-    store.setCheckboxField('moPrescanEnable', true)
+  it("mirrors objective and mode changes back into the optimize store summary fields", () => {
+    const advanced = useAdvancedStore(pinia);
+    const optimize = useOptimizeStore(pinia);
 
-    expect(store.heatmapBins).toBe('256')
-    expect(store.moSampler).toBe('tpe')
-    expect(store.mode).toBe('Grid')
-    expect(store.includeAll).toBe('true')
-    expect(store.vdpsDeterministic).toBe(false)
-    expect(store.moPrescanEnable).toBe(true)
-    expect(store.source).toBe('vue')
-    expect(harness.fields.heatmapBins?.value).toBe('128')
-    expect(harness.fields.moSampler?.value).toBe('random')
-    expect(harness.fields.mode?.value).toBe('Grid')
-    expect(harness.fields.includeAll?.value).toBe('false')
-    expect(harness.fields.vdpsDeterministic?.checked).toBe(true)
-    expect(harness.fields.moPrescanEnable?.checked).toBe(false)
-    expect(harness.eventsById.heatmapBins).toBeUndefined()
-    expect(harness.eventsById.moSampler).toBeUndefined()
-    expect(harness.eventsById.mode).toBeUndefined()
-    expect(harness.eventsById.includeAll).toBeUndefined()
-    expect(harness.eventsById.vdpsDeterministic).toBeUndefined()
-    expect(harness.eventsById.moPrescanEnable).toBeUndefined()
-  })
+    advanced.setSelectField("objective", "Sortino");
+    advanced.setSelectField("mode", "CoarseToFine");
 
-  it('dispatches export browse via command picker and updates Vue state', async () => {
-    invokeCommandMock.mockResolvedValue('C:/exports/all_pairs.csv')
-    const store = useAdvancedStore()
-    store.browseExportAll()
-    await Promise.resolve()
-    await Promise.resolve()
+    expect(advanced.objective).toBe("Sortino");
+    expect(advanced.mode).toBe("CoarseToFine");
+    expect(optimize.objective).toBe("Sortino");
+    expect(optimize.mode).toBe("CoarseToFine");
+  });
 
-    expect(invokeCommandMock).toHaveBeenCalledWith('pick_save_csv', { defaultName: 'all_pairs.csv' })
-    expect(store.exportAllCsvPath).toBe('C:/exports/all_pairs.csv')
-    expect(harness.fields.exportAllCsvPath?.value).toBe('')
-    expect(harness.eventsById.exportAllCsvPath).toBeUndefined()
-  })
+  it("keeps optimize store parity when hydrating an advanced snapshot", () => {
+    const advanced = useAdvancedStore(pinia);
+    const optimize = useOptimizeStore(pinia);
 
-  it('resets Composite MO search space via service and updates Vue state', async () => {
-    const store = useAdvancedStore()
-    store.canResetMoSearchSpace = true
-    store.resetMoSearchSpace()
-    await Promise.resolve()
-    await Promise.resolve()
+    advanced.applyLegacySnapshot({
+      objective: "Calmar",
+      mode: "GpuVdps",
+    });
 
-    expect(resetMoSearchSpaceMock).toHaveBeenCalled()
-    expect(store.moSearchSpace).toContain('"params"')
-    expect(harness.fields.moSearchSpace?.value).toBe('')
-    expect(harness.eventsById.moSearchSpace).toBeUndefined()
-    expect(store.statusLine).toBe('Reset Composite MO search space.')
-  })
-})
+    expect(advanced.objective).toBe("Calmar");
+    expect(advanced.mode).toBe("GpuVdps");
+    expect(optimize.objective).toBe("Calmar");
+    expect(optimize.mode).toBe("GpuVdps");
+  });
+
+  it("normalizes legacy approximate mode aliases when hydrating advanced snapshots", () => {
+    const advanced = useAdvancedStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+
+    advanced.applyLegacySnapshot({
+      mode: "GpuProgressive",
+      modeOptions: [
+        { value: "GpuProgressive", label: "GpuProgressive", disabled: false },
+        { value: "Grid", label: "Grid", disabled: false },
+      ],
+    });
+
+    expect(advanced.mode).toBe("Grid");
+    expect(advanced.modeOptions.map((option) => option.value)).toEqual(["Grid"]);
+    expect(optimize.mode).toBe("Grid");
+  });
+
+  it("browses and stores the export-all CSV path through the Vue store boundary", async () => {
+    const advanced = useAdvancedStore(pinia);
+    invokeCommandMock.mockResolvedValue("C:\\exports\\all_pairs.csv");
+
+    advanced.browseExportAll();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(invokeCommandMock).toHaveBeenCalledWith("pick_save_csv", {
+      defaultName: "all_pairs.csv",
+    });
+    expect(advanced.exportAllCsvPath).toBe("C:\\exports\\all_pairs.csv");
+    expect(advanced.source).toBe("vue");
+    expect(advanced.updatedAtUnixMs).toBeGreaterThan(0);
+  });
+
+  it("resets Composite MO search space only when the helper is enabled", async () => {
+    const advanced = useAdvancedStore(pinia);
+    advanced.canResetMoSearchSpace = true;
+    resetMoSearchSpaceMock.mockResolvedValue({ json: "{\"sampler\":\"nsga2\"}" });
+
+    advanced.resetMoSearchSpace();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(resetMoSearchSpaceMock).toHaveBeenCalledTimes(1);
+    expect(advanced.moSearchSpace).toBe("{\"sampler\":\"nsga2\"}");
+    expect(advanced.statusLine).toBe("Reset Composite MO search space.");
+    expect(advanced.source).toBe("vue");
+    expect(advanced.updatedAtUnixMs).toBeGreaterThan(0);
+  });
+});

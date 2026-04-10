@@ -117,17 +117,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document each saved-run detail action and its preconditions.
-- [ ] Audit store enablement flags against service-side reality.
-- [ ] Add or tighten tests for action sequencing from the selected-run state.
-- [ ] Add or tighten tests for destructive-action confirmation and cancellation.
-- [ ] Normalize status-line behavior so successes and failures are explainable.
-- [ ] Confirm ML-signal-specific branches do not weaken the conventional run-action path.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document each saved-run detail action and its preconditions.
+- [x] Audit store enablement flags against service-side reality.
+- [x] Add or tighten tests for action sequencing from the selected-run state.
+- [x] Add or tighten tests for destructive-action confirmation and cancellation.
+- [x] Normalize status-line behavior so successes and failures are explainable.
+- [x] Confirm ML-signal-specific branches do not weaken the conventional run-action path.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -151,3 +151,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/26_history_service_store_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/19_report_save_open_reveal_2026-04-09.md`
 - `REPO_Improvement/01_shell/21_shell_context_menus_help_2026-04-09.md`
+
+## Execution Notes
+
+- Closed as a saved-run detail action hardening slice while preserving the existing action inventory and confirmation model.
+- Added regression coverage for open-report fallback in `web/src/services/historyService.test.ts`, keeping report-open behavior explicit when filesystem opening fails and ensuring the surface falls back to reveal instead of failing silently.
+- Re-verified destructive confirmation and action dispatch in `web/src/components/HistoryWorkspacePanel.test.ts` and `web/src/stores/historyStore.actions.test.ts`, including the selected-run sequencing for load/apply/rerun/report/reveal/delete paths.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/stores/historyStore.actions.test.ts src/components/HistoryWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

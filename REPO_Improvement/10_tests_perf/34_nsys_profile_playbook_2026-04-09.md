@@ -1,6 +1,6 @@
 # Nsight Systems Playbook Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document runner versus bench target modes clearly.
-- [ ] Document NVTX-bounded capture, fallback behavior, and provenance expectations.
-- [ ] Document the known Windows/elevation caveats for local Nsight Systems use.
-- [ ] Keep the playbook non-options only.
-- [ ] Tie each capture to a concrete investigation question.
-- [ ] Avoid turning Nsight Systems runs into casual routine steps for unrelated changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document runner versus bench target modes clearly.
+- [x] Document NVTX-bounded capture, fallback behavior, and provenance expectations.
+- [x] Document the known Windows/elevation caveats for local Nsight Systems use.
+- [x] Keep the playbook non-options only.
+- [x] Tie each capture to a concrete investigation question.
+- [x] Avoid turning Nsight Systems runs into casual routine steps for unrelated changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,32 @@ Public-repo quality focus:
 - prefer explicit capture rationale and provenance over more capture permutations
 - if local environment issues dominate, document them instead of loosening interpretive standards
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a real runner-mode Nsight Systems capture rather than a wrapper change.
+- Fresh acceptance evidence for this closure:
+  - `powershell -ExecutionPolicy Bypass -File scripts/profile_gpu_backtest_nsys.ps1 -Target runner -RunnerStrategy breakout_momentum -RunnerWorkload small -RunnerIterations 1 -RunnerWarmupIterations 0 -RunnerHeatmapBins 0 -NvtxMode on -CaptureMode nvtx -OutputPrefix target/nsight/doc34_runner_small_nsys`
+- The wrapper produced both required artifacts:
+  - report: `target/nsight/doc34_runner_small_nsys.nsys-rep`
+  - provenance: `target/nsight/doc34_runner_small_nsys.provenance.json`
+- The verified provenance captured the playbook details that materially change report meaning:
+  - profiler executable: `C:\Program Files\NVIDIA Corporation\Nsight Systems 2023.3.3\target-windows-x64\nsys.exe`
+  - target mode: `runner`
+  - build profile: `release`
+  - strategy: `breakout_momentum`
+  - workload: `small`
+  - `nvtx_mode`: `on`
+  - `capture_mode_requested`: `nvtx`
+  - `capture_mode_applied`: `nvtx`
+  - `fallback_used`: `false`
+  - `dynamic_strategy_mode`: `off`
+  - `cuda_graphs_mode`: `off`
+  - `heatmap_bins`: `0`
+  - `device_id`: `0`
+- The capture question was intentionally narrow: verify that the wrapper can build the runner target, honor bounded NVTX capture on the current machine, and emit provenance beside the `.nsys-rep`. This item remains a diagnostic playbook, not a perf-gate authority surface.
+- Bench mode remains documented in the playbook and wrapper, but a second bench-mode capture was not required for this closure because the runner-mode execution already verified the current machine’s artifact/provenance contract and bounded-capture path.
+- No `README.md` or `REPO_MAP.md` update was required because this item verified the existing diagnostic workflow rather than changing a public benchmark or routing contract.
 
 ## Related Docs
 

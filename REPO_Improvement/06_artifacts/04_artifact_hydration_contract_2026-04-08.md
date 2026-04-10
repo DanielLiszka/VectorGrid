@@ -99,18 +99,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the `load_run_artifact_hydration` command contract.
-- [ ] Document the current `current_run` payload fields.
-- [ ] Document when `current_validation` is present or absent.
-- [ ] Document identity-based skip behavior in `workflowArtifactsSync`.
-- [ ] Document how hydration interacts with workflow artifact store normalization.
-- [ ] Document which fields remain detail-only and should not be assumed in hydration.
-- [ ] Add or tighten tests if hydration shape or skip logic changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the `load_run_artifact_hydration` command contract.
+- [x] Document the current `current_run` payload fields.
+- [x] Document when `current_validation` is present or absent.
+- [x] Document identity-based skip behavior in `workflowArtifactsSync`.
+- [x] Document how hydration interacts with workflow artifact store normalization.
+- [x] Document which fields remain detail-only and should not be assumed in hydration.
+- [x] Add or tighten tests if hydration shape or skip logic changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,6 +127,13 @@ Public-repo quality focus:
 - keep identity-based skip behavior conservative rather than over-eager
 - if hydration shape changes, update both builder and frontend normalization together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed as a payload-contract hardening slice. The dedicated hydration command in `src-tauri/src/commands_artifacts.rs` and builder in `src-tauri/src/run_artifacts.rs` already expose a stable `current_run` / optional `current_validation` payload that `workflowArtifactsSync` and `historyService` consume directly.
+- Added a direct Rust regression test for the no-validation case so hydration now has explicit coverage for preserving `report_xlsx_path`, normalized tags, `dataset_meta`, and `ml_signal` while omitting `current_validation` when the source artifact has no validation subtree.
+- Re-verified the frontend consumers that make hydration meaningful: `workflowArtifactsSync.test.ts` still covers identity-based skip/load behavior, and `historyService.test.ts` still proves saved-run hydration repopulates the workflow artifact store and refreshes analysis when appropriate.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app workflow_hydration_payload_preserves_report_tags_and_ml_signal_without_validation --lib`, `npm.cmd --prefix web run test -- src/stores/workflowArtifactsStore.test.ts src/services/workflowArtifactsSync.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_desktop_demo_app`.
 
 ## Related Docs
 

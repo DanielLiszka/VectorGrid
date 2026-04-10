@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document advanced-store ownership by state family.
-- [ ] Document alias normalization and legacy mode compatibility.
-- [ ] Document export-path browsing and MO search-space reset behavior.
-- [ ] Document snapshot and history replay expectations.
-- [ ] Add or tighten tests for store behavior and ownership boundaries.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document advanced-store ownership by state family.
+- [x] Document alias normalization and legacy mode compatibility.
+- [x] Document export-path browsing and MO search-space reset behavior.
+- [x] Document snapshot and history replay expectations.
+- [x] Add or tighten tests for store behavior and ownership boundaries.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,13 @@ Public-repo quality focus:
 - prefer grouping and documentation before splitting the store
 - update snapshot and history consumers together if field groups move
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the direct advanced-store regression surface so it now covers the behavior-bearing helpers the plan calls out. `advancedStore.actions.test.ts` now directly proves legacy `GpuProgressive*` snapshot normalization back to `Grid`, export-path browsing via `browseExportAll()`, and Composite MO search-space reset via `resetMoSearchSpace()`, in addition to the existing optimize-store parity checks.
+- Closed the replay-normalization gap in `historyService.ts`. Saved-run rehydration now routes `objective` and `mode` through `advancedStore.applyLegacySnapshot(...)` instead of directly mutating the store, which means legacy approximate-mode aliases are normalized during replay and parity back into `optimizeStore` remains store-owned.
+- Revalidated the replay path with the existing saved-run tests: `historyService.test.ts` now covers a saved conventional run whose stored mode is `GpuProgressive`, and the restored stores correctly normalize that back to `Grid`.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/stores/strategyStore.actions.test.ts src/stores/advancedStore.actions.test.ts src/services/dynamicIndicatorCatalogService.test.ts src/strategies/dynamicDoubleMaBuilder.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

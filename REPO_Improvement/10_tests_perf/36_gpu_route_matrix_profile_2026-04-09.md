@@ -1,6 +1,6 @@
 # GPU Route Matrix Profile Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current audited cases and their expected backend routes.
-- [ ] Document strict versus non-strict usage clearly.
-- [ ] Keep route metadata and fallback reasons central to artifact review.
-- [ ] Keep the route matrix non-options only.
-- [ ] Cross-check route-audit outputs against current profile-route policy docs.
-- [ ] Avoid marketing or release claims based on route-matrix timings alone.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the current audited cases and their expected backend routes.
+- [x] Document strict versus non-strict usage clearly.
+- [x] Keep route metadata and fallback reasons central to artifact review.
+- [x] Keep the route matrix non-options only.
+- [x] Cross-check route-audit outputs against current profile-route policy docs.
+- [x] Avoid marketing or release claims based on route-matrix timings alone.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,40 @@ Public-repo quality focus:
 - add new audited cases only when route policy expands or shifts materially
 - keep route-matrix outputs supplemental to the main perf gates
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a real strict route-matrix audit plus the bin’s inline helper tests rather than a code change.
+- Fresh acceptance evidence for this closure:
+  - `cargo run -p ta_desktop_demo_app --release --bin ta_profile_route_matrix --features cuda,cuda-backtest-kernel -- --csv data/benchmarks/AAPL.csv --strict --warmup-runs 1 --measured-runs 3 --out target/profile_route_matrix_doc36_aapl_15m.json`
+  - `cargo test -p ta_desktop_demo_app --bin ta_profile_route_matrix`
+- The strict route audit completed successfully and wrote:
+  - `target/profile_route_matrix_doc36_aapl_15m.json`
+- The verified route-matrix artifact captured the expected non-options surface:
+  - `schema_version`: `1`
+  - `build_profile`: `release`
+  - `csv_path`: `data/benchmarks/AAPL.csv`
+  - `timeframe`: `15m`
+  - `total_bars`: `205886`
+  - audited case count: `10`
+  - strict failures: `0`
+  - requested-backend mix: `5` `CpuOnly`, `2` `GpuKernel`, `3` `GpuHybridKernel`
+- All documented profile-family cases realized the expected backend route with no fallback reason recorded on the canonical measured run:
+  - `CompositeTrend` ADX-off CPU and GPU-kernel cases
+  - `CompositeTrend` ADX-on CPU and GPU-hybrid cases
+  - `BreakoutMomentum` ADX-off CPU and GPU-kernel cases
+  - `BreakoutMomentum` ADX-on CPU and GPU-hybrid cases
+  - `RegimeHybrid` CPU and GPU-hybrid cases
+- Representative canonical measured-run wall times from the artifact remained consistent with the route-audit purpose rather than perf-gate authority:
+  - `CompositeTrend/ADX off/GpuKernel`: `92 ms`
+  - `CompositeTrend/ADX on/GpuHybridKernel`: `87 ms`
+  - `BreakoutMomentum/ADX off/GpuKernel`: `106 ms`
+  - `BreakoutMomentum/ADX on/GpuHybridKernel`: `104 ms`
+  - `RegimeHybrid/GpuHybridKernel`: `104 ms`
+- The targeted test surface also passed:
+  - `tests::canonical_run_index_prefers_median_wall_run`
+  - `tests::route_ok_allows_cpu_without_route_label`
+- No `README.md` or `REPO_MAP.md` update was required because this item verified the existing route-audit workflow rather than changing route policy, product behavior, or public benchmark claims.
 
 ## Related Docs
 

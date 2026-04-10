@@ -126,22 +126,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document all current `MlConfidenceModelState` values and their meanings.
-- [ ] Document the backend fields in `MlConfidenceModelStatus`.
-- [ ] Document current stale-detection rules based on timestamps, artifact counts, and row growth.
-- [ ] Document current retrain-recommendation thresholds and cooldown behavior.
-- [ ] Document legacy-model detection and current legacy-state semantics.
-- [ ] Document the difference between missing, unreadable, stale, unhealthy, and blocked states.
-- [ ] Document which frontend actions/autopilot paths depend on the status payload.
-- [ ] Preserve tests for stale-with-new-rows, legacy-model handling, and unhealthy-model blocking.
-- [ ] Preserve frontend tests for status formatting and action gating.
-- [ ] Treat any state-model simplification as a compatibility-sensitive behavior change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document all current `MlConfidenceModelState` values and their meanings.
+- [x] Document the backend fields in `MlConfidenceModelStatus`.
+- [x] Document current stale-detection rules based on timestamps, artifact counts, and row growth.
+- [x] Document current retrain-recommendation thresholds and cooldown behavior.
+- [x] Document legacy-model detection and current legacy-state semantics.
+- [x] Document the difference between missing, unreadable, stale, unhealthy, and blocked states.
+- [x] Document which frontend actions/autopilot paths depend on the status payload.
+- [x] Preserve tests for stale-with-new-rows, legacy-model handling, and unhealthy-model blocking.
+- [x] Preserve frontend tests for status formatting and action gating.
+- [x] Treat any state-model simplification as a compatibility-sensitive behavior change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -164,6 +164,28 @@ Public-repo quality focus:
 - keep legacy-model support explicit until older saved models are deliberately migrated or retired
 - prefer richer status metadata over flattening multiple operational states into one generic warning
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by separating health/freshness semantics in the ML panel instead of leaving them implicit in a single compact status line.
+- `MetaWorkspacePanel.vue` now exposes a dedicated health summary with:
+  - backend `state`
+  - `fresh` vs `stale`
+  - `retrain recommended` posture
+  - `legacy` vs modern/missing model hints
+- The panel copy now also states that explicit unhealthy is an evidence/health-gate outcome, while stale/retrain remain freshness signals.
+- `metaService.test.ts` keeps freshness and label/status formatting pinned, while the targeted Rust ML-confidence and `commands_meta` suites continue to cover stale/retrain and unhealthy-state behavior on the backend.
+- Stable fixture / replay payload:
+  - `state=warning`
+  - `stale`
+  - `retrain recommended`
+  - optional `legacy`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

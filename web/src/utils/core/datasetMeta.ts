@@ -11,6 +11,16 @@ interface DatasetMetaState {
   currentDatasetCtx?: unknown
 }
 
+function readMetaValue(
+  row: Record<string, unknown> | null,
+  snakeKey: string,
+  camelKey: string,
+): unknown {
+  if (!row) return null
+  if (row[snakeKey] != null) return row[snakeKey]
+  return row[camelKey] ?? null
+}
+
 export function buildDatasetMetaForArtifact(csvPathValue: unknown, stateValue: DatasetMetaState): Record<string, unknown> | null {
   const path = String(csvPathValue || '').trim()
   if (!path) return null
@@ -45,13 +55,16 @@ export function buildDatasetMetaForArtifact(csvPathValue: unknown, stateValue: D
   const symbol = String(ctx.symbol || '').trim() || null
   const adjusted = ctx.adjusted === true ? true : (ctx.adjusted === false ? false : null)
 
-  const len = Number(meta?.len || 0) || null
-  const minTs = Number(meta?.min_ts || 0) || null
-  const maxTs = Number(meta?.max_ts || 0) || null
+  const len = Number(readMetaValue(meta, 'len', 'len') || 0) || null
+  const minTs = Number(readMetaValue(meta, 'min_ts', 'minTs') || 0) || null
+  const maxTs = Number(readMetaValue(meta, 'max_ts', 'maxTs') || 0) || null
 
-  const sizeRaw = meta?.source_size_bytes ?? baseMeta?.source_size_bytes
-  const mtimeRaw = meta?.source_mtime_utc_ms ?? baseMeta?.source_mtime_utc_ms
-  const fingerprintRaw = meta?.source_content_fingerprint ?? baseMeta?.source_content_fingerprint
+  const sizeRaw = readMetaValue(meta, 'source_size_bytes', 'sourceSizeBytes')
+    ?? readMetaValue(baseMeta, 'source_size_bytes', 'sourceSizeBytes')
+  const mtimeRaw = readMetaValue(meta, 'source_mtime_utc_ms', 'sourceMtimeUtcMs')
+    ?? readMetaValue(baseMeta, 'source_mtime_utc_ms', 'sourceMtimeUtcMs')
+  const fingerprintRaw = readMetaValue(meta, 'source_content_fingerprint', 'sourceContentFingerprint')
+    ?? readMetaValue(baseMeta, 'source_content_fingerprint', 'sourceContentFingerprint')
   const sourceSizeBytes = Number.isFinite(Number(sizeRaw)) ? Number(sizeRaw) : null
   const sourceMtimeUtcMs = Number.isFinite(Number(mtimeRaw)) ? Number(mtimeRaw) : null
   const sourceContentFingerprint = String(fingerprintRaw || '').trim() || null

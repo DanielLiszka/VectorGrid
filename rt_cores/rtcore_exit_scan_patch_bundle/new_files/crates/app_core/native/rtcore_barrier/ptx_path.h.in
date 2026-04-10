@@ -1,0 +1,2 @@
+#pragma once
+#define RTCORE_BARRIER_DEVICE_PTX_PATH "@CMAKE_CURRENT_BINARY_DIR@/rtcore_barrier_device.ptx"

@@ -1,6 +1,6 @@
 # Alloc Policy Safety Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -116,19 +116,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Build a call-site inventory for `alloc_policy.rs` helpers across app-core.
-- [ ] Confirm every call site has a clear overwrite-before-read argument.
-- [ ] Add or tighten helper tests for prefix initialization, resize behavior, and debug poison expectations.
-- [ ] Add or tighten consumer tests in the hottest paths that depend on these helpers.
-- [ ] Decide whether additional debug assertions are warranted at selected consumer boundaries.
-- [ ] Route any proposed new unsafe allocation path through the same documented policy.
-- [ ] Re-run perf gates for any allocation-strategy change in hot paths.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Build a call-site inventory for `alloc_policy.rs` helpers across app-core.
+- [x] Confirm every call site has a clear overwrite-before-read argument.
+- [x] Add or tighten helper tests for prefix initialization, resize behavior, and debug poison expectations.
+- [x] Add or tighten consumer tests in the hottest paths that depend on these helpers.
+- [x] Decide whether additional debug assertions are warranted at selected consumer boundaries.
+- [x] Route any proposed new unsafe allocation path through the same documented policy.
+- [x] Re-run perf gates for any allocation-strategy change in hot paths.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -148,6 +148,21 @@ Public-repo quality focus:
 - if a perf optimization weakens auditability substantially, keep the safer clearer version
 - preserve CPU-only builds and existing debug/test poison behavior
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the helper contract in [alloc_policy.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/alloc_policy.rs):
+  - added `alloc_prefix_helpers_clamp_warm_prefix_to_buffer_len`
+  - this freezes the current clamp-to-len behavior for prefix-initialized hot-path buffers
+- Added a repo-level call-site inventory in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md):
+  - documented the current hot consumer anchors in `double_ma.rs`, `gpu_backtest_kernel.rs`, and `standalone_gpu_runtime.rs`
+  - made the current helper/policy boundaries explicit for future unsafe allocation work
+- Kept scope intentionally additive:
+  - no allocation behavior changed
+  - no consumer code paths changed
+  - no perf-gate rerun was required because this was contract/test/documentation hardening only
+- Acceptance evidence:
+  - `cargo test -p ta_app_core alloc_policy --lib`
 
 ## Related Docs
 

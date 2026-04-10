@@ -2,15 +2,20 @@ import type { BrowserContext, Page } from '@playwright/test'
 
 export interface MockTauriOptions {
   holdStartupOverlay?: boolean
+  strictUnknownInvoke?: boolean
+  commandResults?: Record<string, unknown>
 }
 
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
 
 export async function installMockedTauri(context: BrowserContext, options: MockTauriOptions = {}): Promise<void> {
   const holdStartupOverlay = options.holdStartupOverlay ?? false
-  await context.addInitScript(({ hold, holdKey }) => {
+  const strictUnknownInvoke = options.strictUnknownInvoke ?? true
+  const commandResults = options.commandResults ?? {}
+  await context.addInitScript(({ hold, holdKey, strictInvoke, results }) => {
     const handlers: Record<string, Array<(event: { event: string; payload: unknown }) => void>> = {}
     const callbacks: Record<number, unknown> = {}
+    const invokeLog: string[] = []
     let nextCallbackId = 1
 
     const listen = async (event: string, cb: (payload: { event: string; payload: unknown }) => void) => {
@@ -21,7 +26,17 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
       }
     }
 
-    const invoke = async () => null
+    const invoke = async (command: string) => {
+      const key = String(command ?? '')
+      invokeLog.push(key)
+      if (Object.prototype.hasOwnProperty.call(results, key)) {
+        return (results as Record<string, unknown>)[key]
+      }
+      if (strictInvoke) {
+        throw new Error(`Unexpected mocked Tauri invoke: ${key}`)
+      }
+      return null
+    }
     const transformCallback = (cb: unknown) => {
       const id = nextCallbackId++
       callbacks[id] = cb
@@ -92,12 +107,23 @@ export async function installMockedTauri(context: BrowserContext, options: MockT
         }
       }
     }
-  }, { hold: holdStartupOverlay, holdKey: HOLD_STORAGE_KEY })
+    ;(window as typeof window & { __VTA_TEST_INVOKES?: string[] }).__VTA_TEST_INVOKES = invokeLog
+  }, {
+    hold: holdStartupOverlay,
+    holdKey: HOLD_STORAGE_KEY,
+    strictInvoke: strictUnknownInvoke,
+    results: commandResults,
+  })
 }
 
 export async function dismissStartupOverlay(page: Page): Promise<void> {
   const overlay = page.locator('#startupAnimationOverlay')
-  await overlay.waitFor({ state: 'visible', timeout: 15_000 })
+  if (await overlay.count() === 0) return
+  try {
+    await overlay.waitFor({ state: 'visible', timeout: 2_000 })
+  } catch {
+    return
+  }
   await page.waitForTimeout(460)
   const dismissButton = page.locator('.startupSkipButton')
   await dismissButton.click()

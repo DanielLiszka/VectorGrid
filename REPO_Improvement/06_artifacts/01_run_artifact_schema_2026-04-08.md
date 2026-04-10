@@ -102,20 +102,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate the required top-level run-artifact fields and their meaning.
-- [ ] Document recognized artifact kinds and legacy alias support.
-- [ ] Document the `run`, `validation`, `meta`, and `ml_signal` subtrees currently expected by consumers.
-- [ ] Document `config_fingerprint` and version behavior, including fallback computation.
-- [ ] Document normalized `dataset_meta` expectations, especially timeframe and resample identity fields.
-- [ ] Document `report_xlsx_path` semantics and its relationship to reopen flows.
-- [ ] Document summary/detail/hydration derivation rules and minimum payload guarantees.
-- [ ] Add or tighten tests for missing fields, legacy fields, and compatibility fallback behavior if the schema changes.
-- [ ] Verify saved artifacts still load, hydrate, and replay after schema hardening.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the required top-level run-artifact fields and their meaning.
+- [x] Document recognized artifact kinds and legacy alias support.
+- [x] Document the `run`, `validation`, `meta`, and `ml_signal` subtrees currently expected by consumers.
+- [x] Document `config_fingerprint` and version behavior, including fallback computation.
+- [x] Document normalized `dataset_meta` expectations, especially timeframe and resample identity fields.
+- [x] Document `report_xlsx_path` semantics and its relationship to reopen flows.
+- [x] Document summary/detail/hydration derivation rules and minimum payload guarantees.
+- [x] Add or tighten tests for missing fields, legacy fields, and compatibility fallback behavior if the schema changes.
+- [x] Verify saved artifacts still load, hydrate, and replay after schema hardening.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -133,6 +133,13 @@ Public-repo quality focus:
 - prefer additive schema expansion over breaking renames
 - if a breaking schema change is unavoidable, add a dual-read path or explicit migration before deleting compatibility code
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed as an artifact-contract hardening slice rather than a schema rewrite. The existing non-options artifact envelope in `src-tauri/src/run_artifacts.rs` already centralizes kind recognition, config-fingerprint fallback, dataset-meta normalization, report-path handling, and summary/detail/hydration derivation.
+- Added a direct Rust regression test for legacy `vectorbt_run_artifact` summaries so `build_run_artifact_summary(...)` now has explicit coverage for legacy kind acceptance, `config_fingerprint_version` backfill, dataset identity fields, resample metadata, report-path preservation, and `has_validation` detection.
+- Re-verified the downstream consumers that depend on the same schema surface: `historyService`, `workflowArtifactsSync`, `workflowArtifactsStore`, and validation artifact persistence already consume the normalized fields without additional code changes.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app run_artifact_summary_backfills_cfg1_fingerprint_version_when_field_is_absent --lib`, `cargo test -p ta_desktop_demo_app workflow_hydration_payload_preserves_report_tags_and_ml_signal_without_validation --lib`, `npm.cmd --prefix web run test -- src/stores/workflowArtifactsStore.test.ts src/services/workflowArtifactsSync.test.ts src/services/historyService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo check -p ta_desktop_demo_app`.
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # XLSX Regression Tooling Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -89,21 +89,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory current XLSX regression tests and what they actually assert.
-- [ ] Inventory the workbook-builder tests in `commands_reports_validation_xlsx.rs` and how they differ from the integration-style test file.
-- [ ] Define the representative payload set the tooling must keep, including rich, compatibility, zero-survivor, and route-detail cases.
-- [ ] Add semantic assertions where structural checks are too weak.
-- [ ] Define when manual workbook review is mandatory.
-- [ ] Define how sample workbooks are regenerated or refreshed through `ta_headless_validate`.
-- [ ] Keep path/save/open behavior in scope when reports change.
-- [ ] Tie workbook changes to explicit fixture/test/parity updates.
-- [ ] Verify sparse and zero-survivor cases remain covered.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory current XLSX regression tests and what they actually assert.
+- [x] Inventory the workbook-builder tests in `commands_reports_validation_xlsx.rs` and how they differ from the integration-style test file.
+- [x] Define the representative payload set the tooling must keep, including rich, compatibility, zero-survivor, and route-detail cases.
+- [x] Add semantic assertions where structural checks are too weak.
+- [x] Define when manual workbook review is mandatory.
+- [x] Define how sample workbooks are regenerated or refreshed through `ta_headless_validate`.
+- [x] Keep path/save/open behavior in scope when reports change.
+- [x] Tie workbook changes to explicit fixture/test/parity updates.
+- [x] Verify sparse and zero-survivor cases remain covered.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -121,6 +121,35 @@ Public-repo quality focus:
 - preserve current headless/parity tooling as supplemental verification rather than replacing targeted tests
 - prefer additive assertions over replacing current checks wholesale
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh XLSX regression-tooling verification rather than a workbook code change.
+- Fresh acceptance evidence for this closure:
+  - `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+  - `cargo test -p ta_desktop_demo_app validation_report_ --lib`
+  - `node scripts/run_output_parity_check.mjs`
+- The integration-style XLSX suite passed `15/15` tests and still covers the representative payload classes the doc calls out:
+  - rich workbook/dashboard content and chart presence
+  - legacy compatibility mode
+  - run-level rejection with zero approved rows
+  - zero-survivor fallback charts
+  - route-note, skipped-module, and disabled-module dashboard surfaces
+  - strategy-family coverage
+  - plateau-analysis output
+- The workbook-builder layer also passed when scoped correctly to the library surface:
+  - `validation_report_workbook_smoke`
+  - `validation_report_workbook_contains_expected_sheets_and_charts`
+  - `validation_report_empties_approved_sheet_when_run_verdict_rejects_final_approval`
+  - `validation_report_supports_legacy_compatibility_mode`
+- The targeted builder command for this item is the `--lib` form above. A broader `cargo test -p ta_desktop_demo_app validation_report_` sweep pulled unrelated bins into the build and is not the correct verification surface for this XLSX-tooling item.
+- The headless parity tool also passed and regenerated representative workbook artifacts through `ta_headless_validate`:
+  - `_write_test/headless_reports/AAPL_headless_current.json`
+  - `_write_test/headless_reports/AAPL_headless_current.xlsx`
+  - `_write_test/headless_reports/AAPL_headless_current.parity_manifest.json`
+  - parity status: `Output parity check passed for 2 pair(s).`
+- Manual workbook open-and-review remains mandatory after workbook contract changes, but it was not required for this closure because the current work verified existing tooling coverage rather than changing workbook semantics or layout contracts.
+- No `README.md` or `REPO_MAP.md` update was required because this item verified the current regression-tooling stack rather than changing report behavior or public documentation.
 
 ## Related Docs
 

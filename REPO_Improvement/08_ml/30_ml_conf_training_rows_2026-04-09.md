@@ -118,22 +118,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document how scoped meta artifacts become candidate training rows.
-- [ ] Document the difference between aggregate-holdout rows and per-dataset `holdout_rows`.
-- [ ] Document `target=auto` resolution order and how it changes the row family used for training.
-- [ ] Document the current minimum labeled-row threshold required to train.
-- [ ] Document how `available_labeled_rows` is computed for status surfaces.
-- [ ] Document how `trained_rows` is stored in model metadata.
-- [ ] Document the current retrain-readiness delta threshold logic.
-- [ ] Document warning/failure causes for row scarcity and invalid rows.
-- [ ] Preserve tests for dataset-row preference, aggregate fallback, and insufficient-row rejection.
-- [ ] Preserve status rendering tests that distinguish row availability from trained-model metadata.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document how scoped meta artifacts become candidate training rows.
+- [x] Document the difference between aggregate-holdout rows and per-dataset `holdout_rows`.
+- [x] Document `target=auto` resolution order and how it changes the row family used for training.
+- [x] Document the current minimum labeled-row threshold required to train.
+- [x] Document how `available_labeled_rows` is computed for status surfaces.
+- [x] Document how `trained_rows` is stored in model metadata.
+- [x] Document the current retrain-readiness delta threshold logic.
+- [x] Document warning/failure causes for row scarcity and invalid rows.
+- [x] Preserve tests for dataset-row preference, aggregate fallback, and insufficient-row rejection.
+- [x] Preserve status rendering tests that distinguish row availability from trained-model metadata.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -152,6 +152,26 @@ Public-repo quality focus:
 - if the retrain heuristic changes, document the new threshold logic alongside the status-copy changes
 - prefer extra warning detail over collapsing row-scarcity causes into a generic “not enough data” message
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by separating available rows, trained rows, and target resolution in the live ML panel instead of leaving them buried in the status string.
+- `MetaWorkspacePanel.vue` now exposes:
+  - available meta-artifact count and available labeled-row count
+  - stored `trained_rows`
+  - current target in one dedicated ML contract summary
+  - explicit copy that `Auto` target prefers per-dataset holdout rows and falls back to aggregate holdout gates
+- `metaService.test.ts` now asserts the formatted ML status preserves `target`, label-threshold provenance, freshness, and `trained_rows`, which keeps row-availability and model-metadata concepts distinct under regression coverage.
+- Stable fixture / replay payload:
+  - `available: meta=10, rows=300`
+  - `trained_rows=320`
+  - `target=holdout_dataset_pass`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

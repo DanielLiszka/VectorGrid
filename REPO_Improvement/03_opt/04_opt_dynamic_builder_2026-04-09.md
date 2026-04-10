@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document builder-state ownership and canonical IR ownership separately.
-- [ ] Document preview output fields, especially requested versus resolved backend.
-- [ ] Document supported, fallback-only, and rejected IR-shape categories.
-- [ ] Add or tighten preview-to-request parity tests.
-- [ ] Document browser-only limitations clearly.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document builder-state ownership and canonical IR ownership separately.
+- [x] Document preview output fields, especially requested versus resolved backend.
+- [x] Document supported, fallback-only, and rejected IR-shape categories.
+- [x] Add or tighten preview-to-request parity tests.
+- [x] Document browser-only limitations clearly.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,14 @@ Public-repo quality focus:
 - keep unsupported-shape failures clear and actionable
 - if schema support broadens later, update preview and run docs together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Verified that the Dynamic Double-MA surface already satisfies the intended builder contract without widening scope. `OptimizeWorkspacePanel.test.ts` proves the constrained builder shell renders inside the conventional optimize panel, persists builder-state snapshots, and keeps browser-only sessions honest about unavailable desktop preview commands.
+- Closed the remaining preview-to-request parity gap in `web/src/services/optimizeService.ts`. The dynamic run path now converts a preview-resolved CPU fallback into `CpuOnly` before calling `buildDoubleMaOptimizationRequest()`, so exact-kernel-only controls cannot silently pass after preview downgrade. `optimizeService.test.ts` now proves that a CPU-resolved preview blocks extra shortlist objectives and prevents the optimization command from being invoked.
+- Revalidated the requested-vs-resolved backend preview contract through `optimizeService.test.ts`, which exercises `preview_dynamic_double_ma_strategy_ir_json`, stores preview metadata such as `requested_backend`, `resolved_backend`, and fallback reasons on the optimize store, and proves preview happens before execution when a dynamic `strategy_ir` run is requested.
+- Revalidated backend IR and preview authority through Rust tests instead of relying on frontend prose alone. `cargo test -p ta_desktop_demo_app preview_dynamic_double_ma_strategy_ir_json --lib` covers the Tauri command surface, and `cargo test -p ta_app_core strategy_ir --lib` covers IR schema compatibility, validation, accepted dynamic indicator shapes, fallback-only shapes, and rejected shapes.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/strategies/dynamicDoubleMaBuilder.test.ts src/components/OptimizeWorkspacePanel.test.ts src/services/optimizeService.test.ts src/services/optimizeRequestBuilder.test.ts`, `cargo test -p ta_desktop_demo_app preview_dynamic_double_ma_strategy_ir_json --lib`, `cargo test -p ta_app_core strategy_ir --lib`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

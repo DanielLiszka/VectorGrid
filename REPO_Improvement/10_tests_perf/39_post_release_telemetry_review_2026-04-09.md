@@ -1,6 +1,6 @@
 # Post-Release Telemetry Review Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every upstream artifact the review expects.
-- [ ] Document the meaning and limits of each check family.
-- [ ] Keep the supplemental framing explicit in both code and docs.
-- [ ] Keep post-release review non-options only.
-- [ ] Review failures at the source-artifact level before changing thresholds.
-- [ ] Cross-link this review to the main authority gates and telemetry inputs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document every upstream artifact the review expects.
+- [x] Document the meaning and limits of each check family.
+- [x] Keep the supplemental framing explicit in both code and docs.
+- [x] Keep post-release review non-options only.
+- [x] Review failures at the source-artifact level before changing thresholds.
+- [x] Cross-link this review to the main authority gates and telemetry inputs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,36 @@ Public-repo quality focus:
 - prefer better provenance and source-artifact review over more thresholds
 - if the script becomes noisy, narrow the checks deliberately rather than pretending they are authoritative
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a fresh tracked post-release review run rather than a code change.
+- Fresh acceptance evidence for this closure:
+  - `node scripts/post_release_telemetry_review.mjs`
+- The script refreshed both tracked review outputs:
+  - `scripts/baselines/post_release/telemetry_review.json`
+  - `scripts/baselines/post_release/telemetry_review.md`
+- The refreshed outputs preserved the intended supplemental framing:
+  - status: `pass`
+  - checks passed: `17/17`
+  - Markdown banner: `Supplemental review only; this is not a perf-authority gate.`
+- The generated review continued to compose the expected upstream artifacts:
+  - `scripts/baselines/workflow_regression_baseline.json`
+  - `target/workflow_regression_summary.json`
+  - `scripts/baselines/ui_capture/perf_metrics.json`
+  - `scripts/baselines/ui_capture/optimization_memory_metrics.json`
+  - `scripts/baselines/samples/manifest.json`
+- Representative passing checks from the refreshed review:
+  - workflow runtime guard: `runtime_ms=248 baseline=229 threshold=343.5`
+  - UI cold start: `84 ms`
+  - UI time to interactive: `590 ms`
+  - optimization peak working set: `40.95 MB`
+  - optimization peak private bytes: `38.55 MB`
+  - sample-manifest presence checks: `6/6` present
+- This closure also sits on fresh upstream evidence from the current tranche:
+  - `10_tests_perf/37` refreshed `scripts/baselines/ui_capture/optimization_memory_metrics.json`
+  - the release memory-capture run refreshed `target/workflow_regression_summary.json`
+- No `README.md` or `REPO_MAP.md` update was required because this item verified and refreshed the existing supplemental-review workflow rather than changing perf-gate authority, product behavior, or telemetry scope.
 
 ## Related Docs
 

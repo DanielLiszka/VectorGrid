@@ -781,10 +781,12 @@ fn insert_hist_chart(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::{Cursor, Read};
     use ta_app_core::{
         HoldoutAggregate, HoldoutDatasetRow, HoldoutSummary, MetaCandidateAggregate,
         TrainDatasetRow,
     };
+    use zip::ZipArchive;
 
     #[test]
     fn meta_report_xlsx_smoke() {
@@ -869,5 +871,113 @@ mod tests {
         let bytes =
             build_meta_report_xlsx_bytes("2026-02-17T00:00:00Z", &meta).expect("meta report xlsx");
         assert!(bytes.len() > 1024);
+    }
+
+    #[test]
+    fn meta_report_xlsx_contains_expected_sheet_names_and_chart_parts() {
+        let params = json!({
+            "fast_ma_type": "sma",
+            "slow_ma_type": "ema",
+            "fast_len": 12,
+            "slow_len": 48
+        });
+
+        let meta = MetaSelectionResult {
+            runtime_ms: 42,
+            strategy_kind: "DoubleMa".to_string(),
+            timeframe: Some("1m".to_string()),
+            artifacts_considered: 3,
+            artifacts_used: 3,
+            candidates_considered: 12,
+            groups: vec![MetaCandidateAggregate {
+                params: params.clone(),
+                key: "k1".to_string(),
+                ma_source: "close".to_string(),
+                feature_context: None,
+                run_context: None,
+                fast_ma_params: None,
+                slow_ma_params: None,
+                representatives: vec![params],
+                samples: 3,
+                datasets_covered: 3,
+                pass_rate: 1.0,
+                robust_score_median: 0.42,
+                robust_score_p10: 0.21,
+                evidence_flags: Vec::new(),
+                tail_gap: 0.21,
+                max_dd_p90: 0.18,
+                cross_score_median: 0.17,
+                psr_median: 0.63,
+                dsr_median: 0.51,
+                meta_score: 0.33,
+                final_score: Some(0.36),
+                holdout: Some(HoldoutAggregate {
+                    datasets: 2,
+                    pass_rate: 0.5,
+                    score_median: 0.12,
+                    score_p10: -0.05,
+                    sharpe_median: 0.22,
+                    max_dd_p90: 0.30,
+                    pnl_median: 0.08,
+                }),
+                train_rows: vec![TrainDatasetRow {
+                    dataset: "AAPL".to_string(),
+                    dataset_key: "csv:aapl.csv".to_string(),
+                    robust_score: 0.42,
+                    pnl: 0.12,
+                    pnl_pct: 0.12,
+                    sharpe: 0.8,
+                    max_dd: 0.18,
+                    trades: 12.0,
+                    exposure: 0.55,
+                    cross_score: 0.17,
+                    cross_pnl_positive_frac: 0.66,
+                    psr: 0.63,
+                    dsr: 0.51,
+                    ts: Some("2026-02-17T00:00:00Z".to_string()),
+                }],
+                holdout_rows: vec![HoldoutDatasetRow {
+                    dataset: "MSFT".to_string(),
+                    score_median: 0.10,
+                    score_p10: -0.07,
+                    sharpe_median: 0.2,
+                    max_dd_worst: 0.35,
+                    pnl_median: 0.05,
+                    pass: true,
+                }],
+            }],
+            warnings: vec!["smoke".to_string()],
+            holdout: Some(HoldoutSummary {
+                datasets: 2,
+                skipped: 0,
+            }),
+        };
+
+        let bytes =
+            build_meta_report_xlsx_bytes("2026-02-17T00:00:00Z", &meta).expect("meta report xlsx");
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).expect("xlsx zip");
+
+        let mut workbook_xml = String::new();
+        archive
+            .by_name("xl/workbook.xml")
+            .expect("workbook xml")
+            .read_to_string(&mut workbook_xml)
+            .expect("read workbook xml");
+        assert!(workbook_xml.contains("Meta Analysis"));
+        assert!(workbook_xml.contains("By Asset (Train)"));
+        assert!(workbook_xml.contains("Asset Matrix"));
+        assert!(workbook_xml.contains("Holdout Rows"));
+        assert!(workbook_xml.contains("Distributions"));
+
+        let mut summary_xml = String::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .expect("summary sheet")
+            .read_to_string(&mut summary_xml)
+            .expect("read summary sheet");
+        assert!(summary_xml.contains("<dimension"));
+
+        assert!(archive.by_name("xl/charts/chart1.xml").is_ok());
+        assert!(archive.by_name("xl/charts/chart2.xml").is_ok());
     }
 }

@@ -114,20 +114,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current backend status payload fields that feed the ML status surface.
-- [ ] Document `metaMlStatus` as a formatted presentation surface, not the logic source of truth.
-- [ ] Document which buttons/actions depend on the cached ML status.
-- [ ] Document how autopilot uses status state to decide refresh/train/apply behavior.
-- [ ] Document the distinction between `metaMlStatus` and global `statusLine`.
-- [ ] Preserve tests for status formatting, button gating, and autopilot interactions.
-- [ ] Preserve backend status-classification tests.
-- [ ] Treat major formatting simplifications as behavior-sensitive changes, not just copy edits.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the current backend status payload fields that feed the ML status surface.
+- [x] Document `metaMlStatus` as a formatted presentation surface, not the logic source of truth.
+- [x] Document which buttons/actions depend on the cached ML status.
+- [x] Document how autopilot uses status state to decide refresh/train/apply behavior.
+- [x] Document the distinction between `metaMlStatus` and global `statusLine`.
+- [x] Preserve tests for status formatting, button gating, and autopilot interactions.
+- [x] Preserve backend status-classification tests.
+- [x] Treat major formatting simplifications as behavior-sensitive changes, not just copy edits.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -149,6 +149,27 @@ Public-repo quality focus:
 - prefer additive structured status fields over cramming more meaning into one string
 - keep autopilot tied to backend status data, not fragile string parsing
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the ML status surface describe its own ownership boundaries instead of leaving them implicit in `formatMlStatus()` and button gating code.
+- `MetaWorkspacePanel.vue` now states that:
+  - `metaMlStatus` is a formatted model-status surface
+  - `statusLine` is action feedback
+  - button gating depends on cached backend status and scope completeness
+  - autopilot reacts after meta runs rather than parsing UI text
+- `MetaWorkspacePanel.test.ts` and `metaService.test.ts` now pin the richer ML/status contract text so later copy cleanup cannot silently collapse stale, blocked, legacy, or replay distinctions.
+- `REPO_MAP.md` was updated to route contributors to the Stage 5 / policy-eval / ML-status contract notes quickly.
+- Stable fixture / replay payload:
+  - `Model: ml_confidence_CompositeMo_1m.json · state=warning · model_kind=logistic`
+  - `target=holdout_dataset_pass`
+  - `available: meta=10, rows=300`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaStage4RequestBuilder.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
 
 ## Related Docs
 

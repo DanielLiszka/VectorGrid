@@ -134,22 +134,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document `load_score_cache()` checks for version, kind, feature schema, and `data_id`.
-- [ ] Document `validate_ml_signal_context()` rules for strategy kind, CSV path, and timeframe.
-- [ ] Document the probability-space requirement for ML validation and sweep.
-- [ ] Document long-only versus two-sided short-probability requirements.
-- [ ] Document `rows_with_probability`, missing-probability-row, and duplicate-timestamp semantics.
-- [ ] Document which score-summary fields are surfaced into `mlSignalScoreMeta`, `mlSignalValidationMeta`, and `mlSignalSweepMeta`.
-- [ ] Document how score-cache metadata is persisted into workflow/history artifacts.
-- [ ] Document that artifact replay must tolerate empty workbook/report paths for ML runs.
-- [ ] Add or maintain tests for raw-only cache rejection, schema/version mismatch, and context mismatch.
-- [ ] Preserve the same cache-contract behavior for both direct validation and policy sweep.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document `load_score_cache()` checks for version, kind, feature schema, and `data_id`.
+- [x] Document `validate_ml_signal_context()` rules for strategy kind, CSV path, and timeframe.
+- [x] Document the probability-space requirement for ML validation and sweep.
+- [x] Document long-only versus two-sided short-probability requirements.
+- [x] Document `rows_with_probability`, missing-probability-row, and duplicate-timestamp semantics.
+- [x] Document which score-summary fields are surfaced into `mlSignalScoreMeta`, `mlSignalValidationMeta`, and `mlSignalSweepMeta`.
+- [x] Document how score-cache metadata is persisted into workflow/history artifacts.
+- [x] Document that artifact replay must tolerate empty workbook/report paths for ML runs.
+- [x] Add or maintain tests for raw-only cache rejection, schema/version mismatch, and context mismatch.
+- [x] Preserve the same cache-contract behavior for both direct validation and policy sweep.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -168,6 +168,29 @@ Public-repo quality focus:
 - keep artifact fields additive so older ML run artifacts remain inspectable
 - if workbook/report export is later added for ML validation, do not make current artifact-only replay paths dependent on that report
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the validation-time gate contract visible in the Stage 3 panel and current-artifact summary.
+- `MlSignalWorkspacePanel.vue` now surfaces:
+  - the active validation context (`MlSignal`, dataset label, timeframe, CSV basename)
+  - the current direct-policy parameters
+  - the current score requirements, including:
+    - matching `data_id` / `csv_path` / timeframe
+    - long-only versus long+short probability requirements
+    - raw-margin-only cache rejection for threshold validation
+- `MlSignalWorkspacePanel.vue` also shows score-summary metadata in the current-artifact section after replay/build.
+- `mlSignalService.test.ts` now asserts score-cache metadata persists through validation artifacts, keeping the same contract for direct validation and later policy sweep.
+- `REPO_MAP.md` was synced so the validation-context and probability requirements are discoverable from the repo map.
+- Stable fixture / replay payload:
+  - `validation_context = { strategy_kind = MlSignal, csv_path = C:\\data\\prices.csv, timeframe = 1d }`
+  - `score_space = Probability`
+  - `score_scope = CalibrationSlice`
+  - `duplicate_timestamps = 2`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

@@ -119,20 +119,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the end-to-end dynamic Double-MA pipeline from request IR to runtime plan.
-- [ ] Document the dedicated builder/preview path and its contract with backend validation.
-- [ ] Document exact-GPU eligibility vs CPU fallback semantics for dynamic plans.
-- [ ] Document catalog/output validation requirements for dynamic indicators.
-- [ ] Add or tighten tests for unsupported indicator/output rejection.
-- [ ] Add or tighten tests for dynamic route notes and exact-kernel feature gating.
-- [ ] Add or tighten tests for lazy CPU fallback plan/context behavior.
-- [ ] Add parity coverage between frontend request shaping and backend runtime-plan support.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the end-to-end dynamic Double-MA pipeline from request IR to runtime plan.
+- [x] Document the dedicated builder/preview path and its contract with backend validation.
+- [x] Document exact-GPU eligibility vs CPU fallback semantics for dynamic plans.
+- [x] Document catalog/output validation requirements for dynamic indicators.
+- [x] Add or tighten tests for unsupported indicator/output rejection.
+- [x] Add or tighten tests for dynamic route notes and exact-kernel feature gating.
+- [x] Add or tighten tests for lazy CPU fallback plan/context behavior.
+- [x] Add parity coverage between frontend request shaping and backend runtime-plan support.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -152,6 +152,14 @@ Public-repo quality focus:
 - if new dynamic indicators are added, land catalog, runtime-plan, and route-note coverage together
 - prefer additive capability reporting over hiding unsupported dynamic-plan features
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed this tranche without widening the dynamic surface. The existing preview-and-runtime contract in `strategy_dynamic.rs`, `double_ma.rs`, `commands_dynamic.rs`, and the frontend builder path already carried the real product semantics; this pass kept that contract explicit in the public repo instead of adding another runtime layer.
+- Added contributor-facing truth anchors in `REPO_MAP.md` so `DynamicDoubleMa` is now described in one public-facing place as a constrained builder + preview surface that re-enters the normal Double-MA optimizer path and still intentionally lacks fixed-candidate validation replay.
+- Revalidated the current dynamic guardrails rather than expanding them. The sampled backend/frontend evidence confirms preview-resolved CPU fallback, exact-route-only shortlist/trade-metric gates, and the current constrained GPU-v1 envelope all remain enforced at the request, preview, and runtime-plan layers.
+- No dynamic indicator catalog or runtime-plan behavior was broadened. The outcome here is stronger contract evidence and contributor-facing clarity for the current constrained product surface, not a feature expansion.
+- Acceptance evidence for closure: `cargo test -p ta_app_core preview_dynamic_double_ma_strategy_ir_keeps_gpu_backend_for_plain_v1_shape`, `cargo test -p ta_app_core request_dynamic_strategy_ir_cpu_composite_profiles_accept_trade_metrics`, `npm.cmd --prefix web run test -- src/strategies/dynamicDoubleMaBuilder.test.ts`, `npm.cmd --prefix web run test -- src/services/optimizeService.test.ts -t "applies preview-resolved CPU fallback before enforcing exact-kernel-only dynamic controls"`, `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts`, `npm.cmd --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

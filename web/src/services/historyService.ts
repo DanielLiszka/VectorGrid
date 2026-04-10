@@ -1,11 +1,13 @@
 import { invokeCommand } from "../tauri/invoke";
 import { HISTORY_KEY, SETTINGS_KEY } from "../utils/core/storageKeys";
+import { workflowStepForMlSignalStage } from "../utils/core/workflowModel";
 import { readStorageJson, writeStorageJson } from "../utils/storage";
 import {
   applyWorkflowArtifactsPayload,
   useWorkflowArtifactsStore,
 } from "../stores/workflowArtifactsStore";
 import { resolveRuntimePinia } from "../stores/runtimePinia";
+import { openPathWithRevealFallback } from "../utils/openPath";
 import { useAdvancedStore } from "../stores/advancedStore";
 import { useAnalysisStore } from "../stores/analysisStore";
 import { useDataStore } from "../stores/dataStore";
@@ -80,20 +82,66 @@ function isMlSignalStrategyKind(value: unknown): boolean {
   return normalizeText(value) === "MlSignal";
 }
 
-function shellModeForStrategyKind(value: unknown): "conventional" | "ml-signal" {
-  return isMlSignalStrategyKind(value) ? "ml-signal" : "conventional";
+function hasMlSignalDatasetExportShape(
+  req: Record<string, unknown> | null | undefined,
+): boolean {
+  return (
+    normalizeText(req?.ma_source ?? req?.maSource).length > 0 ||
+    Number.isFinite(Number(req?.horizon_bars ?? req?.horizonBars))
+  );
 }
 
-function selectShellModeForStrategyKind(value: unknown): void {
+function hasMlSignalValidationShape(
+  validationReq: Record<string, unknown> | null | undefined,
+): boolean {
+  return (
+    !!validationReq &&
+    Array.isArray(validationReq.candidates) &&
+    validationReq.candidates.length > 0
+  );
+}
+
+function hasMlSignalSweepShape(
+  validationReq: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!validationReq || Array.isArray(validationReq.candidates)) return false;
+  return (
+    validationReq.t_long != null ||
+    validationReq.t_short != null ||
+    validationReq.delta != null ||
+    validationReq.max_hold_bars != null
+  );
+}
+
+function inferMlSignalWorkflowStep(
+  req: Record<string, unknown> | null | undefined,
+  validationReq?: Record<string, unknown> | null,
+  mlSignalStage?: unknown,
+): "data" | "optimize" | "validate" | "analyze" | "finalize" {
+  const normalizedStage = normalizeText(mlSignalStage);
+  if (normalizedStage) return workflowStepForMlSignalStage(normalizedStage);
+  if (hasMlSignalDatasetExportShape(req)) return "data";
+  if (hasMlSignalValidationShape(validationReq)) return "validate";
+  if (hasMlSignalSweepShape(validationReq)) return "analyze";
+  return "optimize";
+}
+
+function selectShellStateForRunRequest(
+  req: Record<string, unknown> | null | undefined,
+  validationReq?: Record<string, unknown> | null,
+  mlSignalStage?: unknown,
+): void {
   const pinia = resolveRuntimePinia();
   if (!pinia) return;
-  useWorkflowStore(pinia).selectMode(shellModeForStrategyKind(value));
-}
-
-function selectShellModeForRunRequest(
-  req: Record<string, unknown> | null | undefined,
-): void {
-  selectShellModeForStrategyKind(req?.strategy_kind ?? req?.strategyKind);
+  const workflowStore = useWorkflowStore(pinia);
+  if (isMlSignalStrategyKind(req?.strategy_kind ?? req?.strategyKind)) {
+    workflowStore.selectMode("ml-signal");
+    workflowStore.selectWorkflowStep(
+      inferMlSignalWorkflowStep(req, validationReq, mlSignalStage),
+    );
+    return;
+  }
+  workflowStore.selectMode("conventional");
 }
 
 function updateAnalysisStatus(message: string): void {
@@ -509,29 +557,35 @@ function applyMlStrategyConfigToStores(
     config.signal_persistence_bars ?? config.signalPersistenceBars,
   );
   const epsRel = asNumber(config.eps_rel ?? config.epsRel);
-  if (longOnly != null) strategyStore.longOnly = longOnly;
-  if (allowFlip != null) strategyStore.allowFlip = allowFlip;
-  if (tradeOnNext != null) strategyStore.tradeOnNext = tradeOnNext;
-  if (costPreset) strategyStore.costPreset = costPreset;
-  if (Number.isFinite(feeBps)) strategyStore.feeBps = String(feeBps);
-  if (Number.isFinite(spreadBps)) strategyStore.spreadBps = String(spreadBps);
-  if (Number.isFinite(slippageBps))
-    strategyStore.slippageBps = String(slippageBps);
+  if (costPreset) strategyStore.setSelectField("costPreset", costPreset);
+  if (Number.isFinite(feeBps)) strategyStore.setInputField("feeBps", String(feeBps));
+  if (Number.isFinite(spreadBps)) {
+    strategyStore.setInputField("spreadBps", String(spreadBps));
+  }
+  if (Number.isFinite(slippageBps)) {
+    strategyStore.setInputField("slippageBps", String(slippageBps));
+  }
   if (Number.isFinite(stopLossPct)) {
-    strategyStore.stopLossPct = String(stopLossPct);
+    strategyStore.setInputField("stopLossPct", String(stopLossPct));
   }
   if (Number.isFinite(takeProfitPct)) {
-    strategyStore.takeProfitPct = String(takeProfitPct);
+    strategyStore.setInputField("takeProfitPct", String(takeProfitPct));
   }
   if (Number.isFinite(cooldownBars)) {
-    strategyStore.cooldownBars = String(Math.floor(cooldownBars));
+    strategyStore.setInputField("cooldownBars", String(Math.floor(cooldownBars)));
   }
   if (Number.isFinite(persistenceBars)) {
-    strategyStore.signalPersistenceBars = String(
-      Math.max(1, Math.floor(persistenceBars)),
+    strategyStore.setInputField(
+      "signalPersistenceBars",
+      String(Math.max(1, Math.floor(persistenceBars))),
     );
   }
-  if (Number.isFinite(epsRel)) strategyStore.epsRel = String(epsRel);
+  if (Number.isFinite(epsRel)) strategyStore.setInputField("epsRel", String(epsRel));
+  if (longOnly != null) strategyStore.setCheckboxField("longOnly", longOnly);
+  if (allowFlip != null) strategyStore.setCheckboxField("allowFlip", allowFlip);
+  if (tradeOnNext != null) {
+    strategyStore.setCheckboxField("tradeOnNext", tradeOnNext);
+  }
   if (settingsStore) {
     settingsStore.source = "vue";
     settingsStore.updatedAtUnixMs = Date.now();
@@ -565,6 +619,41 @@ function updateStoresFromRunRequest(
   const objective = normalizeText(req.objective);
   const mode = normalizeText(req.mode);
   const maSource = normalizeText(req.ma_source ?? req.maSource);
+  const scoreMode = normalizeText(req.score_mode ?? req.scoreMode);
+  const hurdleTau = normalizeText(req.hurdle_tau ?? req.hurdleTau);
+  const metricContract =
+    normalizeText(req.metric_contract ?? req.metricContract) || "auto";
+  const includeTradeMetrics =
+    parseBooleanLike(req.include_trade_metrics ?? req.includeTradeMetrics) ??
+    false;
+  const extraShortlistObjectives = normalizeStringList(
+    req.extra_shortlist_objectives ?? req.extraShortlistObjectives,
+  ).join(", ");
+  const shortlistConfidenceMode = normalizeText(
+    req.shortlist_confidence_mode ?? req.shortlistConfidenceMode,
+  );
+  const shortlistUnionMode = normalizeText(
+    req.shortlist_union_mode ?? req.shortlistUnionMode,
+  );
+  const shortlistSliceMode = normalizeText(
+    req.shortlist_slice_mode ?? req.shortlistSliceMode,
+  );
+  const shortlistSliceBenchmark = normalizeText(
+    req.shortlist_slice_benchmark ?? req.shortlistSliceBenchmark,
+  );
+  const shortlistNeighborhoodRadiusValue = asNumber(
+    req.shortlist_neighborhood_radius ?? req.shortlistNeighborhoodRadius,
+  );
+  const shortlistNeighborhoodStepValue = asNumber(
+    req.shortlist_neighborhood_step ?? req.shortlistNeighborhoodStep,
+  );
+  const topKValue = asNumber(req.top_k ?? req.topK);
+  const includeAll =
+    parseBooleanLike(req.include_all ?? req.includeAll) ?? false;
+  const heatmapBinsValue = asNumber(req.heatmap_bins ?? req.heatmapBins);
+  const exportAllCsvPath = normalizeText(
+    req.export_all_csv_path ?? req.exportAllCsvPath,
+  );
   const backendRaw = asRecord(req.backend);
   const backend = normalizeText(backendRaw?.backend ?? req.backend);
   const fastRange = asRecord(req.fast_range);
@@ -573,7 +662,11 @@ function updateStoresFromRunRequest(
   const slowTypes = normalizeStringList(req.slow_ma_types);
 
   const mlSignalStrategy = strategyKind === "MlSignal";
-  if (strategyKind && !mlSignalStrategy) optimizeStore.strategyKind = strategyKind;
+  if (strategyKind && !mlSignalStrategy) {
+    optimizeStore.applyLegacySnapshot({
+      strategyKind,
+    });
+  }
   if (mlSignalStrategy) {
     const outputPath = normalizeText(req.output_path ?? req.outputPath);
     const inputPath = normalizeText(req.input_path ?? req.inputPath);
@@ -733,16 +826,36 @@ function updateStoresFromRunRequest(
     dataStore.updatedAtUnixMs = Date.now();
     return;
   }
-  if (objective) {
-    optimizeStore.objective = objective;
-    advancedStore.objective = objective;
-  }
-  if (mode) {
-    optimizeStore.mode = mode;
-    advancedStore.mode = mode;
-  }
-  if (backend) optimizeStore.backend = backend;
-  if (maSource) advancedStore.maSource = maSource;
+  advancedStore.applyLegacySnapshot({
+    objective,
+    mode,
+    maSource: maSource || advancedStore.maSource || "close",
+    scoreMode,
+    hurdleTau,
+    metricContract,
+    includeTradeMetrics,
+    extraShortlistObjectives,
+    shortlistConfidenceMode,
+    shortlistUnionMode,
+    shortlistSliceMode,
+    shortlistSliceBenchmark,
+    shortlistNeighborhoodRadius: Number.isFinite(shortlistNeighborhoodRadiusValue)
+      ? String(Math.floor(shortlistNeighborhoodRadiusValue))
+      : "",
+    shortlistNeighborhoodStep: Number.isFinite(shortlistNeighborhoodStepValue)
+      ? String(Math.floor(shortlistNeighborhoodStepValue))
+      : "",
+    topK:
+      Number.isFinite(topKValue) && topKValue >= 0
+        ? String(Math.floor(topKValue))
+        : "20",
+    includeAll: includeAll ? "true" : "false",
+    heatmapBins:
+      Number.isFinite(heatmapBinsValue) && heatmapBinsValue >= 0
+        ? String(Math.floor(heatmapBinsValue))
+        : "128",
+    exportAllCsvPath,
+  } as never);
 
   const fastStart = asNumber(fastRange?.start);
   const fastEnd = asNumber(fastRange?.end);
@@ -750,23 +863,33 @@ function updateStoresFromRunRequest(
   const slowStart = asNumber(slowRange?.start);
   const slowEnd = asNumber(slowRange?.end);
   const slowStep = asNumber(slowRange?.step);
-
-  if (Number.isFinite(fastStart))
-    optimizeStore.fastStart = String(Math.floor(fastStart));
-  if (Number.isFinite(fastEnd))
-    optimizeStore.fastEnd = String(Math.floor(fastEnd));
-  if (Number.isFinite(fastStep) && fastStep > 0)
-    optimizeStore.fastStep = String(Math.floor(fastStep));
-  if (Number.isFinite(slowStart))
-    optimizeStore.slowStart = String(Math.floor(slowStart));
-  if (Number.isFinite(slowEnd))
-    optimizeStore.slowEnd = String(Math.floor(slowEnd));
-  if (Number.isFinite(slowStep) && slowStep > 0)
-    optimizeStore.slowStep = String(Math.floor(slowStep));
   const fastMaType = fastTypes[0];
   const slowMaType = slowTypes[0];
-  if (fastMaType) optimizeStore.fastMaType = fastMaType;
-  if (slowMaType) optimizeStore.slowMaType = slowMaType;
+  optimizeStore.applyLegacySnapshot({
+    backend,
+    fastStart: Number.isFinite(fastStart)
+      ? String(Math.floor(fastStart))
+      : optimizeStore.fastStart,
+    fastEnd: Number.isFinite(fastEnd)
+      ? String(Math.floor(fastEnd))
+      : optimizeStore.fastEnd,
+    fastStep:
+      Number.isFinite(fastStep) && fastStep > 0
+        ? String(Math.floor(fastStep))
+        : optimizeStore.fastStep,
+    slowStart: Number.isFinite(slowStart)
+      ? String(Math.floor(slowStart))
+      : optimizeStore.slowStart,
+    slowEnd: Number.isFinite(slowEnd)
+      ? String(Math.floor(slowEnd))
+      : optimizeStore.slowEnd,
+    slowStep:
+      Number.isFinite(slowStep) && slowStep > 0
+        ? String(Math.floor(slowStep))
+        : optimizeStore.slowStep,
+    fastMaType: fastMaType || optimizeStore.fastMaType,
+    slowMaType: slowMaType || optimizeStore.slowMaType,
+  });
 
   if (csvPath) dataStore.csvPath = csvPath;
   dataStore.dataTimeframe = timeframe;
@@ -865,9 +988,7 @@ export async function applySession(ts: string): Promise<void> {
     },
     "vue",
   );
-  selectShellModeForStrategyKind(
-    (entry.req as Record<string, unknown> | null)?.strategy_kind,
-  );
+  selectShellStateForRunRequest(entry.req as Record<string, unknown> | null);
   if (
     isMlSignalStrategyKind(
       (entry.req as Record<string, unknown> | null)?.strategy_kind,
@@ -980,7 +1101,15 @@ export async function loadSavedRun(path: string): Promise<void> {
     currentRun && currentRun.req && typeof currentRun.req === "object"
       ? (currentRun.req as Record<string, unknown>)
       : null;
-  selectShellModeForRunRequest(runReq);
+  selectShellStateForRunRequest(
+    runReq,
+    payload.currentValidation && typeof payload.currentValidation === "object"
+      ? asRecord(
+          (payload.currentValidation as Record<string, unknown>).req,
+        )
+      : null,
+    currentRun?.mlSignal?.stage,
+  );
   if (
     isMlSignalStrategyKind(
       (runReq as Record<string, unknown> | null)?.strategy_kind,
@@ -1003,7 +1132,7 @@ export async function applySavedRun(path: string): Promise<void> {
   if (!req) throw new Error("Saved run artifact is missing run.req.");
   const csvPath = normalizeText(detail.csvPath);
   const timeframe = normalizeText(detail.timeframe);
-  selectShellModeForRunRequest(req);
+  selectShellStateForRunRequest(req, validationReq, detail.mlSignalStage);
   updateStoresFromRunRequest(req, csvPath, timeframe, validationReq);
 }
 
@@ -1040,7 +1169,7 @@ export async function rerunSavedRun(path: string): Promise<void> {
     request.data_id = currentDataId;
     request.dataId = currentDataId;
   }
-  selectShellModeForRunRequest(req);
+  selectShellStateForRunRequest(req, validationReq, detail.mlSignalStage);
   if (isMlSignalStrategyKind(req.strategy_kind ?? req.strategyKind)) {
     const {
       exportMlSignalDataset,
@@ -1114,11 +1243,7 @@ export async function openSavedRunReport(path: string): Promise<void> {
     throw new Error(
       "No report path for this saved run yet (run validation + export XLSX).",
     );
-  try {
-    await invokeCommand("open_path", { path: reportPath });
-  } catch {
-    await invokeCommand("reveal_path", { path: reportPath });
-  }
+  await openPathWithRevealFallback(reportPath);
 }
 
 export async function revealSavedRun(path: string): Promise<void> {

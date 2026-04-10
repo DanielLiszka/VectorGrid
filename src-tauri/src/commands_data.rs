@@ -2,6 +2,7 @@ use crate::ma_registry::MaInfo;
 use crate::polygon;
 use crate::settings;
 use crate::state::AppState;
+use crate::state::BackgroundTaskState;
 use crate::state::LiveCandleStreamTask;
 use crate::state::LoadPriceDataResponse;
 use futures_util::{SinkExt, StreamExt};
@@ -445,6 +446,10 @@ pub struct MarketDataDirInfo {
 
 fn market_data_dir_info(app: &tauri::AppHandle) -> Result<MarketDataDirInfo, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    market_data_dir_info_for_base(&base)
+}
+
+fn market_data_dir_info_for_base(base: &Path) -> Result<MarketDataDirInfo, String> {
     let configured = settings::configured_market_data_root_dir(&base)?;
     let effective = settings::resolve_market_data_root_dir(&base)?;
     Ok(MarketDataDirInfo {
@@ -465,18 +470,19 @@ pub fn get_market_data_dir_info(app: tauri::AppHandle) -> Result<MarketDataDirIn
 #[tauri::command]
 pub fn clear_market_data_dir(app: tauri::AppHandle) -> Result<MarketDataDirInfo, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
-    settings::set_market_data_root_dir(&base, None)?;
-    market_data_dir_info(&app)
+    clear_market_data_dir_for_base(&base)
 }
 
-#[tauri::command]
-pub fn set_market_data_dir(
-    dir: String,
-    move_existing: Option<bool>,
-    app: tauri::AppHandle,
-) -> Result<MarketDataDirInfo, String> {
-    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+fn clear_market_data_dir_for_base(base: &Path) -> Result<MarketDataDirInfo, String> {
+    settings::set_market_data_root_dir(base, None)?;
+    market_data_dir_info_for_base(base)
+}
 
+fn set_market_data_dir_for_base(
+    base: &Path,
+    dir: &str,
+    move_existing: bool,
+) -> Result<MarketDataDirInfo, String> {
     let raw = dir.trim();
     if raw.is_empty() {
         return Err("market data directory is empty".to_string());
@@ -500,7 +506,7 @@ pub fn set_market_data_dir(
     let _ = std::fs::remove_file(&probe);
 
     let old_root = settings::resolve_market_data_root_dir(&base)?;
-    if move_existing.unwrap_or(false) && old_root != new_root {
+    if move_existing && old_root != new_root {
         let old_cache = polygon::polygon_cache_dir(&old_root);
         let new_cache = polygon::polygon_cache_dir(&new_root);
         if new_cache.starts_with(&old_cache) || old_cache.starts_with(&new_cache) {
@@ -521,8 +527,18 @@ pub fn set_market_data_dir(
         }
     }
 
-    settings::set_market_data_root_dir(&base, Some(&new_root))?;
-    market_data_dir_info(&app)
+    settings::set_market_data_root_dir(base, Some(&new_root))?;
+    market_data_dir_info_for_base(base)
+}
+
+#[tauri::command]
+pub fn set_market_data_dir(
+    dir: String,
+    move_existing: Option<bool>,
+    app: tauri::AppHandle,
+) -> Result<MarketDataDirInfo, String> {
+    let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    set_market_data_dir_for_base(&base, &dir, move_existing.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -1102,12 +1118,28 @@ pub struct PolygonTopOffRequest {
     pub timeframe: Option<String>,
 }
 
+fn begin_background_download(
+    bg: &BackgroundTaskState,
+) -> Result<
+    (
+        crate::state::BackgroundTaskGuard,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ),
+    String,
+> {
+    let guard = bg.try_begin()?;
+    let cancel = bg.cancel_token();
+    Ok((guard, cancel))
+}
+
 #[tauri::command]
 pub async fn polygon_download_1m_and_load(
     req: polygon::PolygonDownloadRequest,
     state: tauri::State<'_, AppState>,
+    bg: tauri::State<'_, BackgroundTaskState>,
     app: tauri::AppHandle,
 ) -> Result<PolygonDownloadAndLoadResponse, String> {
+    let (_bg_guard, cancel) = begin_background_download(bg.inner())?;
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let root = settings::resolve_market_data_root_dir(&base)?;
     let dir = polygon::polygon_cache_dir(&root);
@@ -1126,11 +1158,16 @@ pub async fn polygon_download_1m_and_load(
     let mut req2 = req.clone();
     req2.timeframe = Some("1m".to_string());
 
+    let cancel2 = cancel.clone();
     let dl = tauri::async_runtime::spawn_blocking(move || {
-        polygon::download_1m_to_cache(&app_identifier, &dir, &req2)
+        polygon::download_1m_to_cache(&app_identifier, &dir, &req2, Some(cancel2.as_ref()))
     })
     .await
     .map_err(|e| e.to_string())??;
+
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
 
     let csv_path = dl.csv_path.to_string_lossy().to_string();
     let base_load = state.load_price_data(&csv_path, &cache_dir)?;
@@ -1152,8 +1189,10 @@ pub async fn polygon_download_1m_and_load(
 pub async fn polygon_top_off_dataset(
     req: PolygonTopOffRequest,
     state: tauri::State<'_, AppState>,
+    bg: tauri::State<'_, BackgroundTaskState>,
     app: tauri::AppHandle,
 ) -> Result<PolygonDownloadAndLoadResponse, String> {
+    let (_bg_guard, cancel) = begin_background_download(bg.inner())?;
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let root = settings::resolve_market_data_root_dir(&base)?;
     let dir = polygon::polygon_cache_dir(&root);
@@ -1172,11 +1211,16 @@ pub async fn polygon_top_off_dataset(
         .unwrap_or("1m")
         .to_string();
     let csv_path2 = csv_path.clone();
+    let cancel2 = cancel.clone();
     let dl = tauri::async_runtime::spawn_blocking(move || {
-        polygon::top_off_cached_dataset(&app_identifier, &dir, &csv_path2)
+        polygon::top_off_cached_dataset(&app_identifier, &dir, &csv_path2, Some(cancel2.as_ref()))
     })
     .await
     .map_err(|e| e.to_string())??;
+
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("cancelled".to_string());
+    }
 
     let base_load = state.load_price_data(&csv_path, &cache_dir)?;
     let load = if requested_tf.eq_ignore_ascii_case("1m") {
@@ -1347,12 +1391,18 @@ pub fn pick_folder() -> Result<Option<String>, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::begin_background_download;
     use super::build_repo_data_csv_list;
     use super::clear_loaded_data_impl;
+    use super::clear_market_data_dir_for_base;
     use super::find_repo_data_dir_from;
     use super::list_csvs_in_dir;
+    use super::load_gpu_speedups_csv;
+    use super::market_data_dir_info_for_base;
     use super::normalize_polygon_live_bar;
+    use super::parse_csv_fields;
     use super::sample_csvs_from_root;
+    use super::set_market_data_dir_for_base;
     use crate::state::AppState;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -1368,6 +1418,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("create temp dir");
         p
+    }
+
+    #[test]
+    fn background_download_slot_rejects_reentry() {
+        let bg = crate::state::BackgroundTaskState::default();
+        let (_guard, cancel) =
+            begin_background_download(&bg).expect("background download slot should acquire");
+        assert!(
+            !cancel.load(std::sync::atomic::Ordering::SeqCst),
+            "background download slot should clear prior cancel intent"
+        );
+        let err = match begin_background_download(&bg) {
+            Ok(_) => panic!("second background download slot acquisition should fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("background task"));
     }
 
     fn make_candles(len: usize) -> Candles {
@@ -1442,6 +1508,130 @@ mod tests {
         assert!(cleared.removed_ids.contains(&derived.id));
         assert!(state.get_candles(&base.id).is_err());
         assert!(state.get_candles(&derived.id).is_err());
+    }
+
+    #[test]
+    fn market_data_dir_helpers_report_default_set_and_clear_state() {
+        let base = make_temp_dir("commands_data_market_data_info");
+        let custom_root = make_temp_dir("commands_data_market_data_custom");
+
+        let default_info = market_data_dir_info_for_base(&base).expect("default market data info");
+        assert_eq!(
+            default_info.default_root_dir,
+            base.to_string_lossy().to_string()
+        );
+        assert_eq!(default_info.configured_root_dir, None);
+        assert_eq!(
+            default_info.effective_root_dir,
+            base.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            default_info.polygon_cache_dir,
+            crate::polygon::polygon_cache_dir(&base)
+                .to_string_lossy()
+                .to_string()
+        );
+
+        let set_info = set_market_data_dir_for_base(
+            &base,
+            custom_root.to_str().expect("custom root path"),
+            false,
+        )
+        .expect("set market data dir");
+        assert_eq!(
+            set_info.configured_root_dir,
+            Some(custom_root.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            set_info.effective_root_dir,
+            custom_root.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            set_info.polygon_cache_dir,
+            crate::polygon::polygon_cache_dir(&custom_root)
+                .to_string_lossy()
+                .to_string()
+        );
+
+        let cleared = clear_market_data_dir_for_base(&base).expect("clear market data dir");
+        assert_eq!(cleared.configured_root_dir, None);
+        assert_eq!(
+            cleared.effective_root_dir,
+            base.to_string_lossy().to_string()
+        );
+    }
+
+    #[test]
+    fn set_market_data_dir_for_base_rejects_empty_and_relative_roots() {
+        let base = make_temp_dir("commands_data_market_data_invalid");
+
+        let empty_err = set_market_data_dir_for_base(&base, "   ", false)
+            .expect_err("empty market data dir should fail");
+        assert!(empty_err.contains("market data directory is empty"));
+
+        let relative_err = set_market_data_dir_for_base(&base, "relative\\path", false)
+            .expect_err("relative market data dir should fail");
+        assert!(relative_err.contains("must be an absolute path"));
+    }
+
+    #[test]
+    fn set_market_data_dir_for_base_moves_polygon_cache_when_requested() {
+        let base = make_temp_dir("commands_data_market_data_move");
+        let new_root = make_temp_dir("commands_data_market_data_move_target");
+        let old_cache = crate::polygon::polygon_cache_dir(&base);
+        let old_file = old_cache.join("bars").join("manifest.json");
+
+        std::fs::create_dir_all(old_file.parent().expect("old cache parent"))
+            .expect("create old cache parent");
+        std::fs::write(&old_file, br#"{"dataset":"cached"}"#).expect("write old cache file");
+
+        let info =
+            set_market_data_dir_for_base(&base, new_root.to_str().expect("new root path"), true)
+                .expect("move polygon cache to new root");
+        let new_cache = crate::polygon::polygon_cache_dir(&new_root);
+        let new_file = new_cache.join("bars").join("manifest.json");
+
+        assert_eq!(
+            info.effective_root_dir,
+            new_root.to_string_lossy().to_string()
+        );
+        assert!(
+            !old_cache.exists(),
+            "old polygon cache should be moved away"
+        );
+        assert_eq!(
+            std::fs::read(&new_file).expect("read moved cache file"),
+            br#"{"dataset":"cached"}"#
+        );
+    }
+
+    #[test]
+    fn set_market_data_dir_for_base_rejects_nonempty_destination_cache_on_move() {
+        let base = make_temp_dir("commands_data_market_data_move_conflict");
+        let new_root = make_temp_dir("commands_data_market_data_move_conflict_target");
+        let old_cache = crate::polygon::polygon_cache_dir(&base);
+        let new_cache = crate::polygon::polygon_cache_dir(&new_root);
+
+        std::fs::create_dir_all(&old_cache).expect("create old cache dir");
+        std::fs::write(old_cache.join("cache.json"), br#"{"old":true}"#)
+            .expect("write old cache file");
+        std::fs::create_dir_all(&new_cache).expect("create new cache dir");
+        std::fs::write(new_cache.join("cache.json"), br#"{"new":true}"#)
+            .expect("write new cache file");
+
+        let err =
+            set_market_data_dir_for_base(&base, new_root.to_str().expect("new root path"), true)
+                .expect_err("nonempty destination cache should fail");
+
+        assert!(err.contains("destination already exists and is not empty"));
+        assert!(
+            old_cache.exists(),
+            "old polygon cache should remain in place"
+        );
+        assert!(
+            new_cache.join("cache.json").exists(),
+            "destination cache should remain untouched",
+        );
     }
 
     #[test]
@@ -1564,6 +1754,78 @@ mod tests {
         assert!(with_identity.csv_entries[0].source_size_bytes.is_some());
         assert!(with_identity.csv_entries[0].source_mtime_utc_ms.is_some());
         assert_eq!(with_identity.dir, Some(temp.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn parse_csv_fields_handles_quoted_commas_and_escaped_quotes() {
+        let fields = parse_csv_fields(
+            "alma,\"ALMA, fast\",\"42.9\",\"158.25\",\"3.68\",\"quoted \"\"note\"\"\"",
+        );
+        assert_eq!(
+            fields,
+            vec![
+                "alma".to_string(),
+                "ALMA, fast".to_string(),
+                "42.9".to_string(),
+                "158.25".to_string(),
+                "3.68".to_string(),
+                "quoted \"note\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn load_gpu_speedups_csv_reads_workspace_speedup_table() {
+        let rows = load_gpu_speedups_csv().expect("load gpu speedups csv");
+        assert!(
+            !rows.is_empty(),
+            "expected at least one GPU speedup row in the workspace csv"
+        );
+        for row in rows {
+            assert!(
+                !row.indicator_id.trim().is_empty(),
+                "indicator id should not be blank"
+            );
+            assert!(row.speedup.is_finite(), "speedup should stay finite");
+            assert!(row.cpu_ms.is_finite(), "cpu_ms should stay finite");
+            assert!(row.cuda_ms.is_finite(), "cuda_ms should stay finite");
+        }
+    }
+
+    #[test]
+    fn list_moving_averages_returns_nonempty_unique_ids() {
+        let rows = super::list_moving_averages();
+        assert!(!rows.is_empty(), "expected at least one moving average");
+
+        let mut ids = std::collections::HashSet::new();
+        for row in rows {
+            let id = row.id.trim();
+            assert!(!id.is_empty(), "moving average id should not be blank");
+            assert!(
+                ids.insert(id.to_string()),
+                "moving average ids should be unique"
+            );
+        }
+    }
+
+    #[test]
+    fn list_dynamic_indicators_returns_only_dynamic_strategy_eligible_descriptors() {
+        let rows = super::list_dynamic_indicators();
+        assert!(!rows.is_empty(), "expected at least one dynamic indicator");
+
+        let expected = ta_app_core::list_dynamic_indicator_descriptors_cached();
+        assert_eq!(rows.len(), expected.len());
+
+        let mut ids = std::collections::HashSet::new();
+        for row in rows {
+            let id = row.id.trim();
+            assert!(!id.is_empty(), "indicator id should not be blank");
+            assert!(
+                row.dynamic_strategy_eligible,
+                "exported dynamic indicator should be eligible"
+            );
+            assert!(ids.insert(id.to_string()), "indicator ids should be unique");
+        }
     }
 
     #[test]

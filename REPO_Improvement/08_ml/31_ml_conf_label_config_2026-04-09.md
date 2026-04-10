@@ -108,22 +108,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every field in `MlConfidenceLabelConfig` and its current default value.
-- [ ] Document aggregate-holdout label semantics for pass rate, score threshold, dataset count, and optional drawdown cap.
-- [ ] Document per-dataset-row label semantics and how they differ from aggregate-holdout labels.
-- [ ] Document how label config is surfaced in status text and saved model summaries.
-- [ ] Document current policy-eval override behavior and where it enters the backend.
-- [ ] Document that tests often use looser thresholds than production defaults.
-- [ ] Preserve tests for aggregate-label behavior, dataset-row label behavior, and label-threshold status rendering.
-- [ ] Preserve saved-model metadata carrying the effective label config.
-- [ ] Treat any default-threshold change as a compatibility-sensitive model-behavior change.
-- [ ] Keep docs explicit that threshold semantics are part of target definition, not mere cosmetic tuning.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document every field in `MlConfidenceLabelConfig` and its current default value.
+- [x] Document aggregate-holdout label semantics for pass rate, score threshold, dataset count, and optional drawdown cap.
+- [x] Document per-dataset-row label semantics and how they differ from aggregate-holdout labels.
+- [x] Document how label config is surfaced in status text and saved model summaries.
+- [x] Document current policy-eval override behavior and where it enters the backend.
+- [x] Document that tests often use looser thresholds than production defaults.
+- [x] Preserve tests for aggregate-label behavior, dataset-row label behavior, and label-threshold status rendering.
+- [x] Preserve saved-model metadata carrying the effective label config.
+- [x] Treat any default-threshold change as a compatibility-sensitive model-behavior change.
+- [x] Keep docs explicit that threshold semantics are part of target definition, not mere cosmetic tuning.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -142,6 +142,23 @@ Public-repo quality focus:
 - prefer additive override/report fields over redefining current threshold semantics
 - if aggregate and dataset-row label paths diverge further, make that divergence more visible rather than hiding it behind one compact status string
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making label-threshold provenance visible in the ML contract surface and in the formatted status regression tests.
+- The ML panel now shows the current label summary directly, while `metaService.test.ts` keeps the formatted status pinned to the effective threshold values returned by the backend.
+- Current UI behavior remains honest about provenance:
+  - label thresholds come from saved model metadata/status output
+  - they are not yet a large interactive editor surface
+  - they remain part of target definition, not cosmetic tuning
+- Stable fixture / replay payload:
+  - `label: pass>=0.60, p10>=0.100, datasets>=5`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

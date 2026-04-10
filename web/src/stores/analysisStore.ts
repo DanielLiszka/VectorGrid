@@ -478,6 +478,12 @@ function applyVueMetaCheckboxFieldUpdate(state: AnalysisState, field: string, ch
   }
 }
 
+function formatMetaCompareSummaryForSelection(value: string): string {
+  const next = String(value || '').trim()
+  if (!next) return '-'
+  return `Saved Meta baseline selected: ${next}`
+}
+
 export const useAnalysisStore = defineStore('analysis', {
   state: (): AnalysisState => ({
     activeResultsTab: 'overview',
@@ -986,6 +992,9 @@ export const useAnalysisStore = defineStore('analysis', {
       const key = String(field || '').trim()
       const next = String(value || '')
       if (applyVueMetaTextFieldUpdate(this, key, next)) {
+        if (key === 'metaCompareSelect') {
+          this.metaCompareSummary = formatMetaCompareSummaryForSelection(next)
+        }
         this.source = 'vue'
         this.updatedAtUnixMs = Date.now()
       }

@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the shared empty-state vocabulary used across result tabs.
-- [ ] Document panel-specific prerequisite states for Overview, Top, Pareto, Drilldown, and Heatmap.
-- [ ] Document when a state should include an explicit next action.
-- [ ] Document where live status text should remain attached to dynamic empty-state changes.
-- [ ] Add or tighten tests for distinct empty-state transitions across the result tabs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the shared empty-state vocabulary used across result tabs.
+- [x] Document panel-specific prerequisite states for Overview, Top, Pareto, Drilldown, and Heatmap.
+- [x] Document when a state should include an explicit next action.
+- [x] Document where live status text should remain attached to dynamic empty-state changes.
+- [x] Add or tighten tests for distinct empty-state transitions across the result tabs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,6 +127,12 @@ Public-repo quality focus:
 - keep status-line and empty-state language synchronized so one does not contradict the other
 - prefer additive clarification over removing existing actionable hints
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Expanded [OverviewWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OverviewWorkspacePanel.test.ts) to pin the explicit empty-state actions and the pending “data loaded but no analyzed winner yet” state.
+- Expanded [TopWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/TopWorkspacePanel.test.ts) to pin two high-risk shortlist-empty distinctions: the winner-only `top_k=0` state and the filter-empty recovery path with its clear-filters affordance.
+- Revalidated the existing drill, heatmap, and Pareto panel tests so the results tabs keep panel-specific next-action language instead of collapsing back to generic messaging.
 
 ## Related Docs
 

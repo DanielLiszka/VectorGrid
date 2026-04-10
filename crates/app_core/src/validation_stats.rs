@@ -77,4 +77,20 @@ mod tests {
             Some(0.6)
         ));
     }
+
+    #[test]
+    fn compute_psr_dsr_returns_bounded_optional_outputs_for_typical_inputs() {
+        let (psr, dsr) = compute_psr_dsr(1.25, 128, 12, 0.4, 0.2);
+        assert!(psr.is_some());
+        assert!(dsr.is_some());
+        assert!((0.0..=1.0).contains(&psr.expect("psr")));
+        assert!((0.0..=1.0).contains(&dsr.expect("dsr")));
+    }
+
+    #[test]
+    fn probability_gates_treat_missing_stats_as_failures_when_thresholds_are_present() {
+        assert!(!passes_probability_gates(None, Some(0.8), Some(0.7), None));
+        assert!(!passes_probability_gates(Some(0.8), None, None, Some(0.7)));
+        assert!(passes_probability_gates(None, None, None, None));
+    }
 }

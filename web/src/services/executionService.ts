@@ -142,6 +142,19 @@ interface LiveExecutionRunnerEventPayload {
   execution?: unknown
 }
 
+const RUNNER_ACTIVE_EVENT_STATUSES = new Set([
+  'started',
+  'triggered',
+  'queued_latest',
+  'signal_processed',
+  'order_submitted',
+])
+
+const RUNNER_INACTIVE_EVENT_STATUSES = new Set([
+  'stopped',
+  'cancelled',
+])
+
 export interface ExecutionOrderRow {
   cells: string[]
 }
@@ -357,7 +370,7 @@ function summarizeRunnerStatus(raw: unknown): { text: string; active: boolean } 
   if (!active || !cfg) return { text: 'Auto-runner: off', active: false }
   const mode = text(cfg.mode).toLowerCase() || 'paper'
   const dry = !!cfg.dry_run ? 'dry-run' : 'broker'
-  const sym = text(cfg.symbol) || '-'
+  const sym = canonicalSymbol(cfg.symbol) || text(cfg.symbol) || '-'
   const runs = Math.max(0, Math.floor(Number(status.run_count || 0)))
   const errs = Math.max(0, Math.floor(Number(status.error_count || 0)))
   const skips = Math.max(0, Math.floor(Number(status.skip_count || 0)))
@@ -452,15 +465,10 @@ export function parseRunnerEvent(raw: unknown): ParsedRunnerEvent {
   const symbol = canonicalSymbol(row.symbol)
   const message = text(row.message)
   let active: boolean | null = null
-  if (status === 'stopped') active = false
-  if (status === 'cancelled') active = false
-  if (
-    status === 'started' ||
-    status === 'triggered' ||
-    status === 'queued_latest' ||
-    status === 'signal_processed' ||
-    status === 'order_submitted'
-  ) {
+  if (RUNNER_INACTIVE_EVENT_STATUSES.has(status)) {
+    active = false
+  }
+  if (RUNNER_ACTIVE_EVENT_STATUSES.has(status)) {
     active = true
   }
   return {
@@ -773,7 +781,7 @@ export async function startRunner(options: ExecutionActionOptions): Promise<Exec
   }
   const requestedSymbol = canonicalSymbol(req.symbol)
   if (live.symbol && live.symbol !== requestedSymbol) {
-    throw new Error(`Live candles are currently running for ${live.symbol}. Stop them or switch the execution symbol first.`)
+    throw new Error(`Live candles are active for ${live.symbol}, not ${requestedSymbol}.`)
   }
 
   const statusRaw = await invokeCommand('start_live_execution_runner', { req })

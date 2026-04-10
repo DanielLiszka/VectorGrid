@@ -112,19 +112,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the major Meta workspace state families in `analysisStore`.
-- [ ] Document Stage 4 compatibility naming that still backs Stage 5 state.
-- [ ] Document which store actions only queue `metaService` calls.
-- [ ] Document the distinction between persistent-ish workflow state and ephemeral status strings.
-- [ ] Preserve tests for store actions, defaults, and domain-store wiring.
-- [ ] Preserve panel tests that depend on store field naming and availability flags.
-- [ ] Treat store field renames as compatibility-sensitive across UI, service, and persisted snapshots.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the major Meta workspace state families in `analysisStore`.
+- [x] Document Stage 4 compatibility naming that still backs Stage 5 state.
+- [x] Document which store actions only queue `metaService` calls.
+- [x] Document the distinction between persistent-ish workflow state and ephemeral status strings.
+- [x] Preserve tests for store actions, defaults, and domain-store wiring.
+- [x] Preserve panel tests that depend on store field naming and availability flags.
+- [x] Treat store field renames as compatibility-sensitive across UI, service, and persisted snapshots.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -142,6 +142,23 @@ Public-repo quality focus:
 - if status fields are later separated from more durable workflow state, do so additively first
 - prefer explicit migration notes over silent state-key renames
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by expanding store-to-service delegation coverage in `analysisStore.actions.test.ts`. The store test now covers the full saved policy-evaluation family in addition to the existing Stage 5 compatibility aliases, which makes the state-family boundaries harder to regress silently.
+- The current compatibility posture remains explicit:
+  - Stage 5 saved-family state still lives in `stage4Saved*` and `metaStage4*` keys
+  - those store actions intentionally queue Stage 5 service functions rather than owning orchestration themselves
+  - saved policy-eval state is a separate family and now has direct action-delegation coverage
+- `REPO_MAP.md` now calls out `analysisStore.ts` as the canonical Meta workspace state surface and explicitly notes the Stage 4 compatibility naming that still backs the Stage 5 UI.
+- Stable fixture / replay payload:
+  - `stage4SavedSelected=C:/runs/vectorgrid_stage5.json`
+  - `policyEvalSavedSelected=C:/runs/vectorgrid_ml_policy_eval.json`
+  - `metaMlStatus=healthy model`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/stores/analysisStore.actions.test.ts src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

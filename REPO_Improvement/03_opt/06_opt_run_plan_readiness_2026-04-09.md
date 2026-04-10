@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which status fields are live, derived, or snapshot-only today.
-- [ ] Document the difference between readiness and progress.
-- [ ] Decide whether legacy readiness fields should be computed, demoted, or removed from authority.
-- [ ] Add or tighten tests for common readiness states.
-- [ ] Align footer copy and panel copy to the same semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document which status fields are live, derived, or snapshot-only today.
+- [x] Document the difference between readiness and progress.
+- [x] Decide whether legacy readiness fields should be computed, demoted, or removed from authority.
+- [x] Add or tighten tests for common readiness states.
+- [x] Align footer copy and panel copy to the same semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,6 +122,13 @@ Public-repo quality focus:
 - keep snapshot compatibility until a deliberate migration removes or recalculates old readiness fields
 - if readiness becomes live-computed later, update all shell consumers together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Tightened the footer evidence instead of widening the status model. `RunFooterPanel.test.ts` now proves the compact summary pill prefers live `progressMeta` over stale `runReadinessHint` or badges during active work, and falls back to readiness badges only when no run activity is present.
+- Revalidated the rest of the readiness contract without changing production behavior. `RunFooterPanel.vue` continues to keep `progressMeta` and `statusLine` as the live in-run truth, while `runPlanMeta`, `runReadinessHint`, and `runReadinessBadges` remain display-oriented snapshot fields that are shown separately in the detailed footer rather than promoted over live progress.
+- Reused the existing service and store tests for run/busy semantics. `optimizeService.test.ts`, `domainStores.test.ts`, and `optimizeStore.actions.test.ts` continue to cover command-boundary completion wording, busy/idle transitions, snapshot hydration of legacy readiness fields, and run/validate disable semantics.
+- Acceptance evidence captured during execution: `npm.cmd --prefix web run test -- src/components/RunFooterPanel.test.ts src/stores/domainStores.test.ts src/stores/optimizeStore.actions.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

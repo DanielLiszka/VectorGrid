@@ -94,20 +94,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document CompositeTrend route behavior for ADX off, ADX on, and CPU fallback.
-- [ ] Ensure UI copy explains route and feature changes when ADX is toggled.
-- [ ] Keep `compositeProfileGpuPolicy.ts` aligned with `composite_profile_route.rs`.
-- [ ] Add or maintain route-matrix verification for CompositeTrend cases.
-- [ ] Verify capability and advanced-controls surfaces update correctly with route changes.
-- [ ] Keep validation and artifact/report behavior aligned with the route actually used.
-- [ ] Avoid scattering more CompositeTrend policy into generic layers.
-- [ ] Preserve strategy-local discoverability for future improvements.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document CompositeTrend route behavior for ADX off, ADX on, and CPU fallback.
+- [x] Ensure UI copy explains route and feature changes when ADX is toggled.
+- [x] Keep `compositeProfileGpuPolicy.ts` aligned with `composite_profile_route.rs`.
+- [x] Add or maintain route-matrix verification for CompositeTrend cases.
+- [x] Verify capability and advanced-controls surfaces update correctly with route changes.
+- [x] Keep validation and artifact/report behavior aligned with the route actually used.
+- [x] Avoid scattering more CompositeTrend policy into generic layers.
+- [x] Preserve strategy-local discoverability for future improvements.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -126,6 +126,14 @@ Public-repo quality focus:
 - if route visibility is improved in the UI, do not change actual backend route semantics silently
 - keep CPU fallback intact even if GPU messaging gets clearer
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed this item as a route-parity hardening pass rather than a UI rewrite. The current user-facing copy for CompositeTrend already lives in capability summaries, route previews, and validation summaries; this tranche locked that copy to the actual ADX-off kernel, ADX-on hybrid, and CpuOnly fallback contract.
+- Revalidated the existing prerequisite enforcement rather than rewriting it. `optimizeRequestBuilder.test.ts` already proves CompositeTrend still requires `high`/`low` when ADX-bearing shapes need them, while this pass focused on the remaining wording and UI-parity gaps.
+- Added direct route-preview and advanced-panel coverage so ADX toggles remain obvious in the product shell. `OptimizeWorkspacePanel.test.ts` and `AdvancedWorkspacePanel.test.ts` now keep the ADX-off kernel path and ADX-on hybrid path visibly distinct.
+- Tightened validation-summary wording for routed composites so CompositeTrend’s fixed-candidate validation copy now stays specific about kernel, hybrid, and CPU fallback expectations instead of collapsing those cases into a generic GPU-main phrase.
+- Acceptance evidence for closure: `cargo test -p ta_app_core composite_profile_route --lib`, `cargo test -p ta_app_core double_ma_validation_gpu_kernel_matches_cpu_metrics_trend_quality_adx_off --quiet`, `cargo test -p ta_app_core double_ma_validation_gpu_hybrid_matches_cpu_metrics_trend_quality_adx_on --quiet`, `npm.cmd --prefix web run test -- src/strategies/compositeProfileGpuPolicy.test.ts src/components/OptimizeWorkspacePanel.test.ts src/components/AdvancedWorkspacePanel.test.ts src/services/validationRequestBuilder.test.ts`, `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

@@ -17,6 +17,7 @@ const DATASET_META_SCHEMA_VERSION: u64 = 2;
 const CONFIG_FINGERPRINT_SCHEMA_VERSION: u64 = 1;
 const RESAMPLE_RULE_SESSION_RELATIVE_OHLCV: &str = "session_relative_ohlcv";
 const RESAMPLE_ANCHOR_DAY_FIRST_TIMESTAMP: &str = "day_first_timestamp";
+const ARTIFACT_PATH_SUFFIX_LIMIT: u32 = 999;
 
 fn is_run_artifact_kind(kind: &str) -> bool {
     matches!(
@@ -281,7 +282,7 @@ pub struct MlPolicyEvalArtifactReplayResponse {
     pub result: Value,
 }
 
-pub(super) fn runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(super) fn runs_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     let base = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     let dir = base.join("runs");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -290,35 +291,35 @@ pub(super) fn runs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 pub(super) fn suggest_meta_artifact_path(
     ts: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_meta", ts, "json")
 }
 
 pub(super) fn suggest_stage5_artifact_path(
     ts: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_stage5", ts, "json")
 }
 
 pub(super) fn suggest_ml_policy_eval_artifact_path(
     ts: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_ml_confidence_eval", ts, "json")
 }
 
 pub(super) fn suggest_batch_summary_path(
     ts: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_batch", ts, "json")
 }
 
 pub(super) fn suggest_campaign_summary_path(
     ts: &str,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<PathBuf, String> {
     suggest_ts_file_path(runs_dir(app)?, "vectorgrid_campaign_summary", ts, "json")
 }
@@ -329,34 +330,55 @@ fn suggest_ts_file_path(
     ts: &str,
     ext: &str,
 ) -> Result<PathBuf, String> {
+    suggest_ts_file_path_with_limit(dir, prefix, ts, ext, ARTIFACT_PATH_SUFFIX_LIMIT)
+}
+
+fn suggest_ts_file_path_with_limit(
+    dir: PathBuf,
+    prefix: &str,
+    ts: &str,
+    ext: &str,
+    max_suffix: u32,
+) -> Result<PathBuf, String> {
     let safe_ts = sanitize_filename_component(ts);
     let base_name = format!("{prefix}_{safe_ts}");
-    let mut path = dir.join(format!("{base_name}.{ext}"));
+    let path = dir.join(format!("{base_name}.{ext}"));
     if !path.exists() {
         return Ok(path);
     }
-    for i in 2..=999u32 {
-        let p = dir.join(format!("{base_name}_{i}.{ext}"));
-        if !p.exists() {
-            path = p;
-            break;
+
+    for i in 2..=max_suffix {
+        let candidate = dir.join(format!("{base_name}_{i}.{ext}"));
+        if !candidate.exists() {
+            return Ok(candidate);
         }
     }
-    Ok(path)
+
+    Err(format!(
+        "no available artifact filename slots for {}",
+        dir.join(format!("{base_name}.{ext}")).to_string_lossy()
+    ))
 }
 
-fn run_artifact_path(artifact: &Value, app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = runs_dir(app)?;
-
+fn run_artifact_path<R: tauri::Runtime>(
+    artifact: &Value,
+    app: &tauri::AppHandle<R>,
+) -> Result<PathBuf, String> {
     let ts = artifact
         .get("ts")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    let safe_ts = sanitize_filename_component(ts);
-    Ok(dir.join(format!("vectorgrid_run_{safe_ts}.json")))
+    suggest_ts_file_path(runs_dir(app)?, "vectorgrid_run", ts, "json")
 }
 
 fn ensure_path_is_within_dir(path: &Path, dir: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!(
+            "artifact path does not exist: {}",
+            path.to_string_lossy()
+        ));
+    }
+
     let dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
     let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
     if !path.starts_with(&dir) {
@@ -464,9 +486,9 @@ fn normalize_dataset_meta(ds: &mut serde_json::Map<String, Value>, csv_path: &st
     }
 }
 
-pub(super) fn save_run_artifact_blocking(
+pub(super) fn save_run_artifact_blocking<R: tauri::Runtime>(
     mut artifact: Value,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<SaveRunArtifactResponse, String> {
     let path = run_artifact_path(&artifact, &app)?;
 
@@ -605,7 +627,11 @@ pub(super) fn save_batch_summary_blocking(
     })
 }
 
-fn prune_old_artifacts_by_prefix(app: &tauri::AppHandle, keep_newest: usize, prefix: &str) {
+fn prune_old_artifacts_by_prefix<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+    prefix: &str,
+) {
     let Ok(dir) = runs_dir(app) else { return };
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
@@ -661,17 +687,26 @@ fn prune_old_artifacts_by_prefix(app: &tauri::AppHandle, keep_newest: usize, pre
     }
 }
 
-fn prune_old_run_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
+fn prune_old_run_artifacts_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+) {
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_run_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_run_");
 }
 
-pub(super) fn prune_old_meta_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
+pub(super) fn prune_old_meta_artifacts_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+) {
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorbt_meta_");
 }
 
-pub(super) fn prune_old_stage4_artifacts_blocking(app: &tauri::AppHandle, keep_newest: usize) {
+pub(super) fn prune_old_stage4_artifacts_blocking<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    keep_newest: usize,
+) {
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_stage4_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_meta_stage4_");
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_stage5_");
@@ -683,7 +718,7 @@ pub(super) fn prune_old_stage4_artifacts_blocking(app: &tauri::AppHandle, keep_n
 }
 
 pub(super) fn prune_old_ml_policy_eval_artifacts_blocking(
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<impl tauri::Runtime>,
     keep_newest: usize,
 ) {
     prune_old_artifacts_by_prefix(app, keep_newest, "vectorgrid_ml_confidence_eval_");
@@ -749,7 +784,7 @@ fn scan_artifact_library(app: &tauri::AppHandle) -> Result<Vec<ArtifactScanEntry
 
 fn load_artifact_entry_checked(
     path: String,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<ArtifactScanEntry, String> {
     let dir = runs_dir(&app)?;
     let path = PathBuf::from(path.trim());
@@ -1594,14 +1629,14 @@ pub(super) fn load_meta_artifacts_blocking(app: &tauri::AppHandle) -> Result<Vec
 
 pub(super) fn load_artifact_value_checked_blocking(
     path: String,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<Value, String> {
     Ok(load_artifact_entry_checked(path, app)?.value)
 }
 
-pub(super) fn load_run_artifact_hydration_blocking(
+pub(super) fn load_run_artifact_hydration_blocking<R: tauri::Runtime>(
     path: String,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<WorkflowArtifactsHydrationPayload, String> {
     let entry = load_artifact_entry_checked(path, app)?;
     let kind = entry
@@ -1615,9 +1650,9 @@ pub(super) fn load_run_artifact_hydration_blocking(
     build_workflow_artifacts_hydration_payload(entry.path.to_string_lossy().as_ref(), &entry.value)
 }
 
-pub(super) fn load_run_artifact_detail_blocking(
+pub(super) fn load_run_artifact_detail_blocking<R: tauri::Runtime>(
     path: String,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<RunArtifactDetailResponse, String> {
     let entry = load_artifact_entry_checked(path, app)?;
     let kind = entry
@@ -1699,10 +1734,23 @@ pub(super) fn load_ml_policy_eval_artifact_replay_blocking(
     })
 }
 
-pub(super) fn open_runs_dir_blocking(app: tauri::AppHandle) -> Result<String, String> {
+fn open_runs_dir_blocking_with_revealer<R: tauri::Runtime, F>(
+    app: tauri::AppHandle<R>,
+    reveal: F,
+) -> Result<String, String>
+where
+    F: FnOnce(String) -> Result<(), String>,
+{
     let dir = runs_dir(&app)?;
-    reveal_path_blocking(dir.to_string_lossy().to_string())?;
-    Ok(dir.to_string_lossy().to_string())
+    let dir_string = dir.to_string_lossy().to_string();
+    reveal(dir_string.clone())?;
+    Ok(dir_string)
+}
+
+pub(super) fn open_runs_dir_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<String, String> {
+    open_runs_dir_blocking_with_revealer(app, reveal_path_blocking)
 }
 
 fn canonical_json(v: &Value) -> String {
@@ -1846,9 +1894,9 @@ pub(super) fn load_run_artifact_blocking(
     load_artifact_value_checked_blocking(path, app)
 }
 
-pub(super) fn delete_run_artifact_blocking(
+pub(super) fn delete_run_artifact_blocking<R: tauri::Runtime>(
     path: String,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
     let dir = runs_dir(&app)?;
     let path = PathBuf::from(path);
@@ -1859,7 +1907,7 @@ pub(super) fn delete_run_artifact_blocking(
 pub(super) fn update_artifact_tags_blocking(
     path: String,
     tags: Vec<String>,
-    app: tauri::AppHandle,
+    app: tauri::AppHandle<impl tauri::Runtime>,
 ) -> Result<(), String> {
     let dir = runs_dir(&app)?;
     let path = PathBuf::from(path);
@@ -1905,13 +1953,69 @@ pub(super) fn update_artifact_tags_blocking(
 mod tests {
     use super::super::metric_surface::build_optimization_metric_surface_artifact_value;
     use super::{
-        build_run_artifact_detail_response, build_workflow_artifacts_hydration_payload,
-        canonical_json, compute_config_fingerprint_from_artifact, is_meta_artifact_file_name,
-        is_meta_stage_artifact_file_name, is_options_expression_artifact_kind,
-        is_run_artifact_kind, normalize_dataset_meta, resolve_run_artifact_csv_path,
-        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe,
+        build_ml_policy_eval_summary, build_run_artifact_detail_response,
+        build_run_artifact_summary, build_stage5_artifact_summary,
+        build_workflow_artifacts_hydration_payload, canonical_json,
+        compute_config_fingerprint_from_artifact, delete_run_artifact_blocking,
+        ensure_path_is_within_dir, is_meta_artifact_file_name, is_meta_stage_artifact_file_name,
+        is_options_expression_artifact_kind, is_run_artifact_kind,
+        load_run_artifact_detail_blocking, normalize_dataset_meta,
+        open_runs_dir_blocking_with_revealer, prune_old_meta_artifacts_blocking,
+        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
+        resolve_run_artifact_timeframe, runs_dir, save_run_artifact_blocking,
+        suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
     };
-    use serde_json::json;
+    use crate::state::{AppState, BackgroundTaskState};
+    use serde_json::{json, Value};
+    use std::path::{Path, PathBuf};
+
+    fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        tauri::test::mock_builder()
+            .manage(AppState::default())
+            .manage(BackgroundTaskState::default())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("failed to build tauri mock app")
+    }
+
+    fn make_temp_dir(prefix: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        path.push(format!("{prefix}_{}_{}", std::process::id(), unique));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    fn minimal_run_artifact(ts: &str) -> Value {
+        json!({
+            "kind": "vectorgrid_run_artifact",
+            "ts": ts,
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m"
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            },
+            "validation": {
+                "req": { "candidates": [] },
+                "res": { "candidates": [] }
+            }
+        })
+    }
+
+    fn unique_token(prefix: &str) -> String {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{prefix}_{unique}")
+    }
 
     #[test]
     fn canonical_json_is_order_invariant_for_objects() {
@@ -2358,6 +2462,111 @@ mod tests {
     }
 
     #[test]
+    fn workflow_hydration_payload_preserves_report_tags_and_ml_signal_without_validation() {
+        let artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "1d",
+                "label": "SPY"
+            },
+            "ml_signal": {
+                "stage": "validation",
+                "bundle_id": "bundle-a",
+                "score_cache_path": "C:/runs/score_cache.json"
+            },
+            "tags": [" holdout ", "alpha"],
+            "run": {
+                "req": { "strategy_kind": "MlSignal" },
+                "res": { "matched_rows": 123 }
+            }
+        });
+
+        let payload = build_workflow_artifacts_hydration_payload(
+            "C:/runs/vectorgrid_run_test.json",
+            &artifact,
+        )
+        .expect("hydration payload");
+        let encoded = serde_json::to_value(payload).expect("serialize");
+
+        assert_eq!(
+            encoded
+                .pointer("/currentRun/report_xlsx_path")
+                .and_then(|value| value.as_str()),
+            Some("C:/runs/report.xlsx")
+        );
+        assert_eq!(
+            encoded
+                .pointer("/currentRun/tags")
+                .and_then(|value| value.as_array())
+                .map(|items| items
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()),
+            Some(vec!["holdout", "alpha"])
+        );
+        assert_eq!(
+            encoded
+                .pointer("/currentRun/ml_signal/bundle_id")
+                .and_then(|value| value.as_str()),
+            Some("bundle-a")
+        );
+        assert!(encoded.pointer("/currentValidation").is_none());
+    }
+
+    #[test]
+    fn run_artifact_summary_backfills_fingerprint_version_and_dataset_identity_for_legacy_kind() {
+        let artifact = json!({
+            "kind": "vectorbt_run_artifact",
+            "ts": "2026-04-02T12:00:00Z",
+            "config_fingerprint": "cfg1-fnv1a64-0011223344556677",
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/SPY.csv",
+                "timeframe": "15m",
+                "base_timeframe": "1m",
+                "derived_timeframe": "15m",
+                "resample_applied": true,
+                "resample_rule": "session_relative_ohlcv",
+                "resample_anchor": "day_first_timestamp",
+                "source_content_fingerprint": "fnv1a64-full-beadbeadbeadbead"
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            },
+            "validation": {
+                "res": { "candidates": [] }
+            },
+            "tags": ["legacy", "resampled"]
+        });
+
+        let summary = build_run_artifact_summary(
+            std::path::Path::new("C:/runs/vectorbt_run_test.json"),
+            4096,
+            &artifact,
+        )
+        .expect("summary");
+
+        assert_eq!(summary.kind, "vectorbt_run_artifact");
+        assert_eq!(summary.config_fingerprint_version, Some(1));
+        assert_eq!(summary.report_xlsx_path, "C:/runs/report.xlsx");
+        assert_eq!(summary.csv_path, "C:/data/SPY.csv");
+        assert_eq!(summary.timeframe, "15m");
+        assert_eq!(summary.base_timeframe, "1m");
+        assert_eq!(summary.derived_timeframe, "15m");
+        assert_eq!(summary.resample_applied, Some(true));
+        assert_eq!(summary.resample_rule, "session_relative_ohlcv");
+        assert_eq!(summary.resample_anchor, "day_first_timestamp");
+        assert_eq!(
+            summary.source_content_fingerprint.as_deref(),
+            Some("fnv1a64-full-beadbeadbeadbead")
+        );
+        assert!(summary.has_validation);
+    }
+
+    #[test]
     fn run_artifact_detail_response_formats_ml_summaries() {
         let artifact = json!({
             "ts": "2026-04-02T12:00:00Z",
@@ -2552,6 +2761,44 @@ mod tests {
     }
 
     #[test]
+    fn run_artifact_summary_backfills_cfg1_fingerprint_version_when_field_is_absent() {
+        let artifact = json!({
+            "ts": "2026-04-02T12:00:00Z",
+            "kind": "vectorgrid_run_artifact",
+            "config_fingerprint": "cfg1-fnv1a64-0011223344556677",
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m",
+                "base_timeframe": "1m",
+                "derived_timeframe": "15m",
+                "resample_applied": true
+            },
+            "run": {
+                "req": { "strategy_kind": "DoubleMa" },
+                "res": { "top": [] }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_test.json"),
+            512,
+            &artifact,
+        )
+        .expect("summary");
+
+        assert_eq!(summary.kind, "vectorgrid_run_artifact");
+        assert_eq!(summary.config_fingerprint, "cfg1-fnv1a64-0011223344556677");
+        assert_eq!(summary.config_fingerprint_version, Some(1));
+        assert_eq!(summary.csv_path, "C:/data/AAPL.csv");
+        assert_eq!(summary.timeframe, "15m");
+        assert_eq!(summary.base_timeframe, "1m");
+        assert_eq!(summary.derived_timeframe, "15m");
+        assert_eq!(summary.resample_applied, Some(true));
+        assert_eq!(summary.report_xlsx_path, "C:/runs/report.xlsx");
+    }
+
+    #[test]
     fn run_artifact_detail_response_includes_metric_surface_metadata() {
         let mut artifact = json!({
             "ts": "2026-04-02T12:00:00Z",
@@ -2682,5 +2929,360 @@ mod tests {
                 .map(|items| items.len()),
             Some(22)
         );
+    }
+
+    #[test]
+    fn run_artifact_summary_preserves_schema_identity_and_resample_fields() {
+        let artifact = json!({
+            "kind": "vectorbt_run_artifact",
+            "ts": "2026-04-09T12:30:00Z",
+            "config_fingerprint": "cfg1-fnv1a64-aabbccdd00112233",
+            "report_xlsx_path": "C:/runs/report.xlsx",
+            "dataset_meta": {
+                "csv_path": "C:/data/AAPL.csv",
+                "timeframe": "15m",
+                "base_timeframe": "1m",
+                "derived_timeframe": "15m",
+                "resample_applied": true,
+                "resample_rule": "session_relative_ohlcv",
+                "resample_anchor": "day_first_timestamp",
+                "source_size_bytes": 2048,
+                "source_mtime_utc_ms": 1712000000000i64,
+                "source_content_fingerprint": "sha256:test"
+            },
+            "tags": ["alpha", "beta"],
+            "run": {
+                "req": { "strategy_kind": "CompositeTrend" },
+                "res": { "top": [] }
+            },
+            "validation": {
+                "res": { "rows": [] }
+            }
+        });
+
+        let summary = build_run_artifact_summary(
+            Path::new("C:/runs/vectorgrid_run_test.json"),
+            512,
+            &artifact,
+        )
+        .expect("summary");
+
+        assert_eq!(summary.kind, "vectorbt_run_artifact");
+        assert_eq!(summary.strategy_kind, "CompositeTrend");
+        assert_eq!(summary.config_fingerprint, "cfg1-fnv1a64-aabbccdd00112233");
+        assert_eq!(summary.config_fingerprint_version, Some(1));
+        assert_eq!(summary.report_xlsx_path, "C:/runs/report.xlsx");
+        assert_eq!(summary.csv_path, "C:/data/AAPL.csv");
+        assert_eq!(summary.timeframe, "15m");
+        assert_eq!(summary.base_timeframe, "1m");
+        assert_eq!(summary.derived_timeframe, "15m");
+        assert_eq!(summary.resample_applied, Some(true));
+        assert_eq!(summary.resample_rule, "session_relative_ohlcv");
+        assert_eq!(summary.resample_anchor, "day_first_timestamp");
+        assert_eq!(summary.source_size_bytes, Some(2048));
+        assert_eq!(summary.source_mtime_utc_ms, Some(1712000000000));
+        assert_eq!(
+            summary.source_content_fingerprint.as_deref(),
+            Some("sha256:test")
+        );
+        assert!(summary.has_validation);
+        assert_eq!(summary.tags, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn save_run_artifact_blocking_uses_suffixes_for_same_timestamp_collisions() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let ts = unique_token("same_ts_save");
+
+        let first = save_run_artifact_blocking(minimal_run_artifact(&ts), handle.clone())
+            .expect("first save");
+        let second = save_run_artifact_blocking(minimal_run_artifact(&ts), handle.clone())
+            .expect("second save");
+
+        assert_ne!(first.path, second.path);
+        assert!(first.path.ends_with(&format!("vectorgrid_run_{ts}.json")));
+        assert!(second
+            .path
+            .ends_with(&format!("vectorgrid_run_{ts}_2.json")));
+        assert!(Path::new(&first.path).is_file());
+        assert!(Path::new(&second.path).is_file());
+    }
+
+    #[test]
+    fn load_run_artifact_detail_blocking_reports_missing_paths_inside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let missing = runs_dir(&handle)
+            .expect("runs dir")
+            .join(format!("{}_missing.json", unique_token("run_artifact")));
+
+        let err = load_run_artifact_detail_blocking(missing.to_string_lossy().to_string(), handle)
+            .expect_err("missing path should fail");
+
+        assert!(err.contains("artifact path does not exist"));
+        assert!(err.contains("missing.json"));
+    }
+
+    #[test]
+    fn load_run_artifact_detail_blocking_rejects_paths_outside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let outside_dir = make_temp_dir("run_artifact_outside_load");
+        let outside_path = outside_dir.join("outside.json");
+        std::fs::write(
+            &outside_path,
+            serde_json::to_vec_pretty(&minimal_run_artifact("2026-04-10T12:00:00Z"))
+                .expect("artifact json"),
+        )
+        .expect("write outside artifact");
+
+        let err =
+            load_run_artifact_detail_blocking(outside_path.to_string_lossy().to_string(), handle)
+                .expect_err("outside path should fail");
+
+        assert_eq!(err, "path is outside app runs dir");
+    }
+
+    #[test]
+    fn delete_run_artifact_blocking_rejects_paths_outside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let outside_dir = make_temp_dir("run_artifact_outside_delete");
+        let outside_path = outside_dir.join("outside.json");
+        std::fs::write(&outside_path, b"{}").expect("write outside artifact");
+
+        let err = delete_run_artifact_blocking(outside_path.to_string_lossy().to_string(), handle)
+            .expect_err("outside delete should fail");
+
+        assert_eq!(err, "path is outside app runs dir");
+    }
+
+    #[test]
+    fn update_artifact_tags_blocking_rejects_paths_outside_runs_dir() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let outside_dir = make_temp_dir("run_artifact_outside_tags");
+        let outside_path = outside_dir.join("outside.json");
+        std::fs::write(
+            &outside_path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_run_artifact",
+                "ts": "2026-04-10T12:00:00Z",
+                "tags": ["old"]
+            }))
+            .expect("artifact json"),
+        )
+        .expect("write outside artifact");
+
+        let err = update_artifact_tags_blocking(
+            outside_path.to_string_lossy().to_string(),
+            vec!["new".to_string()],
+            handle,
+        )
+        .expect_err("outside tag update should fail");
+
+        assert_eq!(err, "path is outside app runs dir");
+    }
+
+    #[test]
+    fn open_runs_dir_blocking_with_revealer_creates_runs_dir_and_returns_it() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let mut revealed = None;
+
+        let opened = open_runs_dir_blocking_with_revealer(handle.clone(), |path| {
+            revealed = Some(path);
+            Ok(())
+        })
+        .expect("open runs dir");
+
+        assert_eq!(revealed, Some(opened.clone()));
+        assert!(Path::new(&opened).is_dir());
+        assert_eq!(
+            Path::new(&opened),
+            runs_dir(&handle).expect("runs dir").as_path()
+        );
+    }
+
+    #[test]
+    fn update_artifact_tags_trims_and_dedupes_case_insensitively() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let path =
+            suggest_meta_artifact_path("2026-04-09T12-00-00Z", &handle).expect("artifact path");
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_meta_selection",
+                "ts": "2026-04-09T12:00:00Z",
+                "tags": ["old"]
+            }))
+            .expect("json"),
+        )
+        .expect("write artifact");
+
+        update_artifact_tags_blocking(
+            path.to_string_lossy().to_string(),
+            vec![
+                " Holdout ".to_string(),
+                "holdout".to_string(),
+                "".to_string(),
+                "Review".to_string(),
+                "review".to_string(),
+            ],
+            handle,
+        )
+        .expect("update tags");
+
+        let updated: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
+            .expect("artifact json");
+        assert_eq!(updated.get("tags"), Some(&json!(["Holdout", "Review"])));
+    }
+
+    #[test]
+    fn build_stage5_artifact_summary_preserves_stage4_stage5_alias_contract() {
+        let path = Path::new("C:/runs/vectorgrid_stage5_2026-04-09T12-30-00Z.json");
+        let artifact = json!({
+            "kind": "vectorgrid_meta_stage5_ml_confidence",
+            "ts": "2026-04-09T12:30:00Z",
+            "req": {
+                "strategy_kind": "CompositeMo",
+                "timeframe": "1m",
+                "source_meta_path": "C:/runs/vectorgrid_meta_source.json",
+                "top_k": 10,
+                "min_ml_confidence": 0.55
+            },
+            "res": {
+                "strategy_kind": "CompositeMo",
+                "timeframe": "1m",
+                "source_meta_json_path": "C:/runs/vectorgrid_meta_source.json",
+                "groups_selected": 2,
+                "groups_scored": 4,
+                "groups_considered": 6,
+                "top_k": 10,
+                "min_ml_confidence": 0.55,
+                "model_healthy": true
+            },
+            "tags": ["stage5", "final"]
+        });
+
+        let summary = build_stage5_artifact_summary(path, 256, &artifact).expect("summary");
+        assert_eq!(summary.path, path.to_string_lossy().to_string());
+        assert_eq!(summary.strategy_kind, "CompositeMo");
+        assert_eq!(summary.timeframe, "1m");
+        assert_eq!(
+            summary.source_meta_json_path,
+            "C:/runs/vectorgrid_meta_source.json"
+        );
+        assert_eq!(summary.groups_selected, 2);
+        assert_eq!(summary.groups_scored, 4);
+        assert_eq!(summary.groups_considered, 6);
+        assert_eq!(summary.top_k, 10);
+        assert!((summary.min_ml_confidence - 0.55).abs() < f64::EPSILON);
+        assert!(summary.model_healthy);
+        assert_eq!(
+            summary.tags,
+            vec!["stage5".to_string(), "final".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_ml_policy_eval_summary_preserves_saved_eval_contract_fields() {
+        let path = Path::new("C:/runs/vectorgrid_ml_confidence_eval_2026-04-09T12-45-00Z.json");
+        let artifact = json!({
+            "kind": "vectorgrid_ml_confidence_policy_evaluation",
+            "ts": "2026-04-09T12:45:00Z",
+            "res": {
+                "strategy_kind": "CompositeMo",
+                "timeframe": "1m",
+                "artifacts_evaluated": 3,
+                "artifacts_considered": 4,
+                "best_policy": "stage5_blended",
+                "stage5_blended": {
+                    "precision_at_k": 1.0
+                },
+                "stage5_vs_meta_precision_delta": 0.10,
+                "stage5_vs_ml_precision_delta": 0.20
+            },
+            "tags": ["policy", "offline"]
+        });
+
+        let summary = build_ml_policy_eval_summary(path, 320, &artifact).expect("summary");
+        assert_eq!(summary.path, path.to_string_lossy().to_string());
+        assert_eq!(summary.strategy_kind, "CompositeMo");
+        assert_eq!(summary.timeframe, "1m");
+        assert_eq!(summary.artifacts_evaluated, 3);
+        assert_eq!(summary.artifacts_considered, 4);
+        assert_eq!(summary.best_policy, "stage5_blended");
+        assert!((summary.stage5_precision_at_k - 1.0).abs() < f64::EPSILON);
+        assert!((summary.stage5_vs_meta_precision_delta - 0.10).abs() < f64::EPSILON);
+        assert!((summary.stage5_vs_ml_precision_delta - 0.20).abs() < f64::EPSILON);
+        assert_eq!(
+            summary.tags,
+            vec!["policy".to_string(), "offline".to_string()]
+        );
+    }
+
+    #[test]
+    fn prune_old_meta_artifacts_preserves_tagged_older_entries() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let older_kept =
+            suggest_meta_artifact_path("2026-04-09T10-00-00Z", &handle).expect("older");
+        let older_pruned =
+            suggest_meta_artifact_path("2026-04-09T11-00-00Z", &handle).expect("middle");
+        let newest = suggest_meta_artifact_path("2026-04-09T12-00-00Z", &handle).expect("newest");
+
+        for (path, tags) in [
+            (&older_kept, json!(["holdout"])),
+            (&older_pruned, json!([])),
+            (&newest, json!([])),
+        ] {
+            std::fs::write(
+                path,
+                serde_json::to_vec_pretty(&json!({
+                    "kind": "vectorgrid_meta_selection",
+                    "ts": path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default(),
+                    "tags": tags,
+                }))
+                .expect("json"),
+            )
+            .expect("write artifact");
+        }
+
+        prune_old_meta_artifacts_blocking(&handle, 1);
+
+        assert!(older_kept.exists(), "tagged artifact should be preserved");
+        assert!(
+            !older_pruned.exists(),
+            "untagged older artifact should be pruned"
+        );
+        assert!(newest.exists(), "newest artifact should be retained");
+    }
+
+    #[test]
+    fn suggest_ts_file_path_errors_when_suffix_slots_are_exhausted() {
+        let dir = make_temp_dir("suggest_ts_file_path_exhausted");
+        std::fs::write(dir.join("vectorgrid_run_2026-04-10.json"), b"taken").expect("seed base");
+        std::fs::write(dir.join("vectorgrid_run_2026-04-10_2.json"), b"taken")
+            .expect("seed slot 2");
+        std::fs::write(dir.join("vectorgrid_run_2026-04-10_3.json"), b"taken")
+            .expect("seed slot 3");
+
+        let err = suggest_ts_file_path_with_limit(dir, "vectorgrid_run", "2026-04-10", "json", 3)
+            .expect_err("slots should exhaust");
+        assert!(err.contains("no available artifact filename slots"));
+        assert!(err.contains("vectorgrid_run_2026-04-10.json"));
+    }
+
+    #[test]
+    fn ensure_path_is_within_dir_rejects_missing_paths_with_explicit_message() {
+        let dir = make_temp_dir("ensure_path_within_dir");
+        let missing = dir.join("missing.json");
+
+        let err = ensure_path_is_within_dir(&missing, &dir).expect_err("missing path");
+        assert!(err.contains("artifact path does not exist"));
+        assert!(err.contains("missing.json"));
     }
 }

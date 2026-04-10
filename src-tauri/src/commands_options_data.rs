@@ -841,6 +841,7 @@ fn download_polygon_options_dataset_into_store(
             adjusted: Some(false),
             timeframe: Some("1m".to_string()),
         },
+        None,
     )?;
     let underlying_csv_path = underlying_download.csv_path.clone();
     let underlying_by_timestamp = read_underlying_close_map(&underlying_csv_path)?;

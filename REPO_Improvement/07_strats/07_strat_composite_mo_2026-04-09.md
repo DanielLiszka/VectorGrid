@@ -13,13 +13,14 @@ In scope:
 - `crates/app_core/src/composite_mo.rs`
 - `crates/optimizer/src/mo.rs`
 - `web/src/services/optimizeRequestBuilder.ts`
+- `web/src/services/validationService.ts`
 - `src-tauri/src/commands_optimize.rs`
-- CompositeMo request, sampler, objective, and search-space behavior
+- CompositeMo request, sampler, objective, search-space, and persisted-artifact validation/report behavior
 
 Out of scope:
 
 - single-objective CompositeCpu behavior outside shared prescan helpers
-- validation workbook/report behavior
+- validation workbook rendering internals outside the CompositeMo artifact contract
 - options-related search
 
 ## Current User-Facing Behavior
@@ -111,20 +112,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the CompositeMo request contract and sampler/objective invariants.
-- [ ] Document how constraints and optional prescan interact with the search space.
-- [ ] Add or tighten tests for each exposed sampler family.
-- [ ] Add or tighten tests for objective ordering and constraint carry-through.
-- [ ] Add or tighten request-builder tests for CompositeMo payload normalization.
-- [ ] Add or tighten capability-summary tests so product text stays aligned with CPU-evaluated plus optional-GPU-prescan semantics.
-- [ ] Document which behaviors are strategy-local vs optimizer-core shared.
-- [ ] Keep CompositeMo-specific terminology explicit in user-visible status/reporting surfaces where applicable.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the CompositeMo request contract and sampler/objective invariants.
+- [x] Document how constraints and optional prescan interact with the search space.
+- [x] Add or tighten tests for each exposed sampler family.
+- [x] Add or tighten tests for objective ordering and constraint carry-through.
+- [x] Add or tighten request-builder tests for CompositeMo payload normalization.
+- [x] Add or tighten capability-summary tests so product text stays aligned with CPU-evaluated plus optional-GPU-prescan semantics.
+- [x] Document which behaviors are strategy-local vs optimizer-core shared.
+- [x] Keep CompositeMo-specific terminology explicit in user-visible status/reporting surfaces where applicable.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -144,6 +145,16 @@ Public-repo quality focus:
 - if sampler options change, update both frontend normalization and backend validation together
 - keep optional prescan explicit rather than silently mandatory
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Kept this CompositeMo tranche additive and vocabulary-first. No sampler/runtime rewrite landed here; the work instead tightened the exposed contract and the follow-up-analysis verification around the existing Pareto search path.
+- Expanded `REPO_MAP.md` so CompositeMo is explicitly documented as a distinct search-space/sampler/prescan product surface with `Nsga2`, `Random`, `Tpe`, and `Qmc`, bounded exact-grid collapse for tiny discrete spaces, and CPU-preferred validation semantics.
+- Tightened the user-facing capability summary in `web/src/utils/strategyOptimizationCapabilities.ts` so CompositeMo now explicitly advertises its sampler families, prescan boundary, and bounded exact-grid collapse instead of presenting as a vague multi-objective path.
+- Added a request-builder regression in `web/src/services/optimizeRequestBuilder.test.ts` for the `Qmc` sampler contract, covering the last exposed sampler family that was not explicitly asserted in frontend normalization tests.
+- Added frontend analysis regressions in `web/src/services/analysisService.test.ts` that prove CompositeMo follow-up drilldown/local-stability requests route through the composite command family and use row-scoped Pareto params, overlays, signal mode, and strategy payloads instead of incorrectly falling back to the base request.
+- Added validation/report parity coverage for persisted CompositeMo artifacts: `validationService.test.ts` now proves `run.res.pareto` drives `pareto_frontier` admission during validation and stays on the artifact-backed `save_report_xlsx_from_artifact` path for report export.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts src/services/optimizeRequestBuilder.test.ts src/services/analysisService.test.ts src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts`, `cargo test -p ta_app_core composite_mo --quiet`, `cargo test -p ta_desktop_demo_app commands_reports_validation_common --lib`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

@@ -113,18 +113,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical open/reveal/folder-open policy.
-- [ ] Document which services and stores are allowed to initiate report actions.
-- [ ] Centralize duplicated frontend path-action helpers where feasible.
-- [ ] Add or tighten tests for saved-run report open/reveal parity.
-- [ ] Add or tighten tests for latest-report and latest-meta-report quick actions.
-- [ ] Add or tighten tests for reports-folder open from validation/settings surfaces.
-- [ ] Manually verify report open/reveal behavior on a desktop build.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical open/reveal/folder-open policy.
+- [x] Document which services and stores are allowed to initiate report actions.
+- [x] Centralize duplicated frontend path-action helpers where feasible.
+- [x] Add or tighten tests for saved-run report open/reveal parity.
+- [x] Add or tighten tests for latest-report and latest-meta-report quick actions.
+- [x] Add or tighten tests for reports-folder open from validation/settings surfaces.
+- [x] Manually verify report open/reveal behavior on a desktop build.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -150,4 +150,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/17_report_meta_workbook_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/21_report_artifact_path_persistence_2026-04-08.md`
 - `REPO_Improvement/01_shell/34_frontend_tauri_bridge_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a shared report-action policy item. Validation, history, meta, settings, and command-action surfaces already preserve open-first then reveal-fallback behavior where appropriate, plus direct reports-folder opening.
+- Re-verified report open/reveal/folder-open behavior across `validationService`, `historyService`, `metaService`, `commandActionStore`, and `settingsStore` test suites, including the saved-run report fallback added in this tranche.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/validationService.test.ts src/services/historyService.test.ts src/services/metaService.test.ts src/stores/commandActionStore.test.ts src/stores/settingsStore.actions.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 

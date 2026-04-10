@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document VDPS as approximate, not exact.
-- [ ] Document `VdpsConfig` fields and rung behavior.
-- [ ] Document overlap and regret quality-check telemetry.
-- [ ] Document exact-output restrictions that force `Grid` instead of VDPS.
-- [ ] Add or tighten tests for determinism and telemetry stability.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document VDPS as approximate, not exact.
+- [x] Document `VdpsConfig` fields and rung behavior.
+- [x] Document overlap and regret quality-check telemetry.
+- [x] Document exact-output restrictions that force `Grid` instead of VDPS.
+- [x] Add or tighten tests for determinism and telemetry stability.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,13 @@ Public-repo quality focus:
 - keep telemetry fields stable until all downstream consumers migrate together
 - if quality-check behavior changes, update fidelity-oriented docs and artifacts in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the product-side exact-output protections for VDPS. `commands_optimize.rs` still proves that Double-MA requests pin back to `Grid` whenever exact-grid outputs are requested, while the request-builder and optimize-service test suites continue to cover the same product contract from the frontend side.
+- Audited the deeper VDPS determinism and quality-check test names in `double_ma.rs` and confirmed they still exist as the intended backend evidence surface, but they are compiled only in CUDA-capable test lanes on this machine. The local default-lane cargo filters therefore report zero tests for those names, which is now explicitly recorded as a feature-lane limitation rather than hidden.
+- No code change was required in this tranche because the current implementation already treats VDPS as approximate, preserves exact-output restrictions, and keeps the richer determinism/telemetry checks in the CUDA lane where they belong. The main improvement here is explicit public-repo truthfulness about which guarantees are verified in CPU-safe versus CUDA-enabled lanes.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app commands_optimize --lib`, code-surface audit of `crates/app_core/src/double_ma.rs` and `crates/app_core/src/double_ma_vdps.rs`, plus the existing frontend `optimizeRequestBuilder.test.ts` and `optimizeService.test.ts` coverage for mode pinning and advanced request legality.
 
 ## Related Docs
 

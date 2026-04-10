@@ -92,18 +92,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the route/fallback fields that must survive artifact-backed export.
-- [ ] Document parity expectations between direct export and artifact-backed export.
-- [ ] Add or tighten tests for artifact-backed export route/fallback preservation.
-- [ ] Add or tighten tests for zero-survivor and degraded-route artifact-backed exports.
-- [ ] Confirm route-note and expected-execution sections read from reconstructed report fields only.
-- [ ] Confirm frontend artifact-backed export preference remains intact.
-- [ ] Document fallback behavior when validation data is absent and Stage 3 meta export is used instead.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the route/fallback fields that must survive artifact-backed export.
+- [x] Document parity expectations between direct export and artifact-backed export.
+- [x] Add or tighten tests for artifact-backed export route/fallback preservation.
+- [x] Add or tighten tests for zero-survivor and degraded-route artifact-backed exports.
+- [x] Confirm route-note and expected-execution sections read from reconstructed report fields only.
+- [x] Confirm frontend artifact-backed export preference remains intact.
+- [x] Document fallback behavior when validation data is absent and Stage 3 meta export is used instead.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -128,4 +128,10 @@ Public-repo quality focus:
 - `REPO_Improvement/05_validation/17_xlsx_open_reveal_flows_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/19_report_save_open_reveal_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/20_report_json_contract_2026-04-09.md`
+
+## Execution Notes
+
+- Closed as a route/fallback persistence item. The current artifact-backed and workbook-rendered validation report flow already preserves backend route, fallback reason, route notes, expected execution, and degraded/zero-survivor dashboard behavior.
+- Re-verified route/fallback evidence through `validation_xlsx_report_tests.rs`, existing artifact-backed report reconstruction tests in `commands_reports.rs`, and the current validation frontend export/reopen tests in `web/src/services/validationService.test.ts`.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`, `cargo test -p ta_desktop_demo_app artifact_report_builder_uses_persisted_dataset_meta --lib`, and `npm.cmd --prefix web run test -- src/services/validationService.test.ts`.
 

@@ -14,12 +14,19 @@ import {
   mlApply,
   mlRefresh,
   mlTrain,
+  openMetaReport,
+  openSavedReport,
   refreshPolicyEvalSaved,
   refreshSaved,
   refreshStage5Saved,
+  revealPolicyEvalSaved,
+  revealStage5Saved,
   runBatch,
   runMlPolicyEvaluation,
   runMeta,
+  savePolicyEvalSavedTags,
+  saveSavedTags,
+  saveStage5SavedTags,
   runStage5,
   toggleBatchDataset,
 } from './metaService'
@@ -197,6 +204,7 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
       state: 'healthy',
       model_healthy: true,
       model_summary: {
+        model_kind: 'logistic',
         label: {
           min_holdout_pass_rate: 0.6,
           min_holdout_score_p10: 0.1,
@@ -253,6 +261,7 @@ async function invokeDefaultMock(command: string): Promise<unknown> {
         state: 'healthy',
         model_healthy: true,
         model_summary: {
+          model_kind: 'logistic',
           label: {
             min_holdout_pass_rate: 0.6,
             min_holdout_score_p10: 0.1,
@@ -475,6 +484,17 @@ describe('meta service', () => {
     expect((call?.[1] as { req?: { strategy_kind?: string; top_k?: number } }).req?.top_k).toBe(15)
     expect((call?.[1] as { req?: { source_meta_path?: string | null } }).req?.source_meta_path).toBe('C:/runs/vectorgrid_meta.json')
     expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_artifact_library')).toBe(true)
+    expect(analysisStore.metaStage4Status).toContain('file=vectorgrid_stage5.json')
+    expect(analysisStore.metaStage4OutputPreview).toContain('source_meta=vectorgrid_meta.json')
+    expect(analysisStore.metaStage4OutputPreview).toContain('model=meta_model.json')
+    expect(analysisStore.metaStage4OutputPreview).toContain('state=healthy')
+    expect(analysisStore.metaStage4OutputPreview).toContain('healthy=yes')
+    expect(analysisStore.metaStage4OutputPreview).toContain('execution=run_meta_stage5_ml_confidence artifact=json replay only stage4/stage5_alias=same_path')
+    expect(analysisStore.metaStage4OutputPreview).toContain('selection=weighted rank -> min_ml filter -> optional meta fallback -> decision buckets')
+    expect(analysisStore.metaStage4OutputPreview).toContain('auto_train excludes the active source meta artifact from history to avoid train/score leakage')
+    expect(analysisStore.stage4SavedMeta).toContain('alias=stage4Saved*')
+    expect(analysisStore.stage4SavedMeta).toContain('replay=json')
+    expect(analysisStore.stage4SavedMeta).toContain('path_alias=stage4/stage5')
   })
 
   it('runs ML policy evaluation with auto-built request without waiting on saved refresh', async () => {
@@ -547,7 +567,14 @@ describe('meta service', () => {
     expect(invokeCommandMock.mock.calls.some(([command]) => command === 'list_artifact_library')).toBe(true)
 
     expect(analysisStore.metaPolicyEvalStatus).toContain('Policy evaluation complete')
+    expect(analysisStore.metaPolicyEvalStatus).toContain('file=vectorgrid_ml_policy_eval.json')
     expect(analysisStore.metaPolicyEvalOutputPreview).toContain('stage5_blended')
+    expect(analysisStore.metaPolicyEvalOutputPreview).toContain('skipped(no_history/train_fail/unhealthy/no_labels)=1/0/0/0')
+    expect(analysisStore.metaPolicyEvalOutputPreview).toContain('contract=offline scoped history over saved Meta artifacts')
+    expect(analysisStore.metaPolicyEvalOutputPreview).toContain('request reuses current Stage 5 thresholds/weights')
+    expect(analysisStore.metaPolicyEvalOutputPreview).toContain('arms=meta_only / ml_only / stage5_blended')
+    expect(analysisStore.policyEvalSavedMeta).toContain('arms=meta/ml/stage5')
+    expect(analysisStore.policyEvalSavedMeta).toContain('replay=json')
   })
 
   it('preserves Asr strategy kind for meta selection request', async () => {
@@ -585,12 +612,18 @@ describe('meta service', () => {
     await runMeta()
     await mlRefresh()
     expect(analysisStore.metaMlStatus).toContain('cv_auc=0.710')
+    expect(analysisStore.metaMlStatus).toContain('model_kind=logistic')
+    expect(analysisStore.metaMlStatus).toContain('target=holdout_dataset_pass')
+    expect(analysisStore.metaMlStatus).toContain('label: pass>=0.60, p10>=0.100, datasets>=5')
+    expect(analysisStore.metaMlStatus).toContain('fresh')
 
     invokeCommandMock.mockClear()
     await mlTrain()
 
     expect(invokeCommandMock.mock.calls.filter(([command]) => command === 'ml_confidence_model_status')).toHaveLength(0)
+    expect(analysisStore.metaMlStatus).toContain('model_kind=logistic')
     expect(analysisStore.metaMlStatus).toContain('trained_rows=320')
+    expect(analysisStore.metaMlStatus).toContain('target=holdout_dataset_pass')
     expect(invokeCommandMock).toHaveBeenCalledWith('train_ml_confidence_model', {
       scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
       cfg: null,
@@ -666,6 +699,79 @@ describe('meta service', () => {
         meta_score: 0.8,
       }],
     })
+  })
+
+  it('falls back to the latest meta result scope for ML actions and stage5 when draft timeframe is blank', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: '',
+      metaTimeframe: '',
+      metaStage4TopK: '12',
+    })
+
+    await runMeta()
+    analysisStore.metaStrategyKind = ''
+    analysisStore.metaTimeframe = ''
+    invokeCommandMock.mockClear()
+
+    await mlRefresh()
+    await mlTrain()
+    await runStage5()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('ml_confidence_model_status', {
+      scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('train_ml_confidence_model', {
+      scope: { strategy_kind: 'CompositeMo', timeframe: '1m' },
+      cfg: null,
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('run_meta_stage5_ml_confidence', {
+      req: expect.objectContaining({
+        strategy_kind: 'CompositeMo',
+        timeframe: '1m',
+        source_meta_path: 'C:/runs/vectorgrid_meta.json',
+        top_k: 12,
+      }),
+    })
+  })
+
+  it('blocks ML refresh, train, and apply when timeframe is missing from both drafts and the latest meta result', async () => {
+    vi.resetModules()
+
+    const { bindRuntimePinia } = await import('../stores/runtimePinia')
+    const { useAnalysisStore } = await import('../stores/analysisStore')
+    const { invokeCommand } = await import('../tauri/invoke')
+    const freshInvokeCommandMock = vi.mocked(invokeCommand)
+    freshInvokeCommandMock.mockReset()
+    freshInvokeCommandMock.mockImplementation(invokeDefaultMock)
+
+    const freshPinia = createPinia()
+    setActivePinia(freshPinia)
+    bindRuntimePinia(freshPinia)
+
+    const analysisStore = useAnalysisStore(freshPinia)
+    analysisStore.applyLegacySnapshot({
+      metaStrategyKind: 'CompositeMo',
+      metaTimeframe: '',
+    })
+
+    const {
+      mlRefresh: freshMlRefresh,
+      mlTrain: freshMlTrain,
+      mlApply: freshMlApply,
+    } = await import('./metaService')
+
+    await freshMlRefresh()
+    expect(analysisStore.metaMlStatus).toBe('Timeframe required (set Meta timeframe filter or run meta once).')
+    expect(freshInvokeCommandMock).not.toHaveBeenCalled()
+
+    await freshMlTrain()
+    expect(analysisStore.statusLine).toBe('Timeframe required for ML model training.')
+    expect(freshInvokeCommandMock).not.toHaveBeenCalled()
+
+    await freshMlApply()
+    expect(analysisStore.statusLine).toBe('Timeframe required for ML apply.')
+    expect(freshInvokeCommandMock).not.toHaveBeenCalled()
   })
 
   it('refreshes ML status after stage5 auto-trains a model', async () => {
@@ -784,6 +890,86 @@ describe('meta service', () => {
     ).toHaveLength(3)
   })
 
+  it('rebuilds compare baseline options from saved meta artifacts and clears stale selections', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.metaCompareSelected = 'C:/runs/stale_meta.json'
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [{
+            path: 'C:/runs/meta_saved.json',
+            ts: '2026-02-26T10:00:00Z',
+            strategy_kind: 'CompositeMo',
+            timeframe: '1m',
+            groups: 3,
+            artifacts_used: 2,
+          }],
+          stage5: [],
+          policyEvals: [],
+        }
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshSaved()
+
+    expect(analysisStore.metaCompareSelected).toBe('')
+    expect(analysisStore.metaCompareOptions).toEqual([
+      { value: '', label: 'Compare against saved meta...', disabled: false },
+      {
+        value: 'C:/runs/meta_saved.json',
+        label: '2026-02-26T10:00:00Z | CompositeMo | 1m | groups=3 | arts=2',
+        disabled: false,
+      },
+    ])
+  })
+
+  it('normalizes snake_case aggregate artifact library fields without losing saved selections', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.stage4SavedSelected = 'C:/runs/stage5_saved.json'
+    analysisStore.policyEvalSavedSelected = 'C:/runs/policy_saved.json'
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [],
+          stage_5: [{ path: 'C:/runs/stage5_saved.json', ts: '2026-02-26T10:02:00Z' }],
+          policy_evals: [{ path: 'C:/runs/policy_saved.json', ts: '2026-02-26T10:03:00Z' }],
+        }
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshStage5Saved()
+    await refreshPolicyEvalSaved()
+
+    expect(analysisStore.stage4SavedSelected).toBe('C:/runs/stage5_saved.json')
+    expect(analysisStore.policyEvalSavedSelected).toBe('C:/runs/policy_saved.json')
+  })
+
+  it('normalizes snake_case policy_evals from artifact library snapshots', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.policyEvalSavedSelected = 'C:/runs/policy_saved.json'
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [],
+          stage5: [],
+          policy_evals: [{ path: 'C:/runs/policy_saved.json', ts: '2026-02-26T10:03:00Z' }],
+        }
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshPolicyEvalSaved()
+
+    expect(analysisStore.policyEvalSavedSelected).toBe('C:/runs/policy_saved.json')
+    expect(analysisStore.policyEvalSavedOptions).toEqual([
+      { value: '', label: 'Select a saved policy evaluation...', disabled: false },
+      expect.objectContaining({ value: 'C:/runs/policy_saved.json' }),
+    ])
+    expect(analysisStore.policyEvalSavedMeta).toContain('ts=2026-02-26T10:03:00Z')
+  })
+
   it('loads saved meta/stage5/policy-eval replays through typed artifact commands', async () => {
     const analysisStore = useAnalysisStore(pinia)
     analysisStore.metaSavedSelected = 'C:/runs/meta_saved.json'
@@ -845,6 +1031,10 @@ describe('meta service', () => {
     await refreshPolicyEvalSaved()
     await loadPolicyEvalSaved()
 
+    if (typeof document !== 'undefined') {
+      expect(document.documentElement.dataset.latestMetaReportPath).toBe('C:/reports/meta_saved.xlsx')
+    }
+
     expect(invokeCommandMock).toHaveBeenCalledWith('load_meta_artifact_replay', {
       path: 'C:/runs/meta_saved.json',
     })
@@ -855,6 +1045,198 @@ describe('meta service', () => {
       path: 'C:/runs/policy_saved.json',
     })
     expect(analysisStore.statusLine).toContain('Loaded policy evaluation')
+  })
+
+  it('reveals saved Stage 5 and policy-evaluation artifacts through typed artifact selections', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.stage4SavedSelected = 'C:/runs/stage5_saved.json'
+    analysisStore.policyEvalSavedSelected = 'C:/runs/policy_saved.json'
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [],
+          stage5: [{ path: 'C:/runs/stage5_saved.json', ts: '2026-02-26T10:02:00Z' }],
+          policyEvals: [{ path: 'C:/runs/policy_saved.json', ts: '2026-02-26T10:03:00Z' }],
+        }
+      }
+      if (command === 'reveal_path') return true
+      return invokeDefaultMock(command)
+    })
+
+    await refreshStage5Saved()
+    await revealStage5Saved()
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
+      path: 'C:/runs/stage5_saved.json',
+    })
+    expect(analysisStore.statusLine).toBe('Revealed Stage 5 run.')
+
+    await refreshPolicyEvalSaved()
+    await revealPolicyEvalSaved()
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
+      path: 'C:/runs/policy_saved.json',
+    })
+    expect(analysisStore.statusLine).toBe('Revealed policy evaluation.')
+  })
+
+  it('reports when saved meta replay returns an empty payload instead of typed replay data', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.metaSavedSelected = 'C:/runs/meta_saved.json'
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [{
+            path: 'C:/runs/meta_saved.json',
+            ts: '2026-02-26T10:00:00Z',
+            report_xlsx_path: 'C:/reports/meta_saved.xlsx',
+          }],
+          stage5: [],
+          policyEvals: [],
+        }
+      }
+      if (command === 'load_meta_artifact_replay') {
+        return null
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshSaved()
+    await loadSaved()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_meta_artifact_replay', {
+      path: 'C:/runs/meta_saved.json',
+    })
+    expect(analysisStore.statusLine).toBe('Saved meta artifact payload was empty.')
+  })
+
+  it('opens saved meta reports through open_path and falls back to reveal_path', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.metaSavedSelected = 'C:/runs/meta_saved.json'
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [{
+            path: 'C:/runs/meta_saved.json',
+            ts: '2026-02-26T10:00:00Z',
+            report_xlsx_path: 'C:/reports/meta_saved.xlsx',
+          }],
+          stage5: [],
+          policyEvals: [],
+        }
+      }
+      if (command === 'open_path') {
+        throw new Error('blocked')
+      }
+      if (command === 'reveal_path') {
+        return true
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshSaved()
+    await openSavedReport()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
+      path: 'C:/reports/meta_saved.xlsx',
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
+      path: 'C:/reports/meta_saved.xlsx',
+    })
+    expect(analysisStore.statusLine).toBe('Revealed report.')
+  })
+
+  it('opens the latest meta report through open_path and falls back to reveal_path', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'open_path') {
+        throw new Error('blocked')
+      }
+      if (command === 'reveal_path') {
+        return true
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await runMeta()
+    await openMetaReport()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('open_path', {
+      path: 'C:/reports/meta.xlsx',
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('reveal_path', {
+      path: 'C:/reports/meta.xlsx',
+    })
+    expect(analysisStore.statusLine).toBe('Revealed meta report.')
+  })
+
+  it('saves normalized tags consistently across meta, stage5, and policy-eval artifact families', async () => {
+    const analysisStore = useAnalysisStore(pinia)
+    analysisStore.metaSavedSelected = 'C:/runs/meta_saved.json'
+    analysisStore.metaSavedOptions = [
+      { value: '', label: 'Select a saved meta run...', disabled: false },
+      { value: 'C:/runs/meta_saved.json', label: 'meta', disabled: false },
+    ]
+    analysisStore.metaSavedTagsDraft = 'Holdout, holdout, review,  '
+    analysisStore.stage4SavedSelected = 'C:/runs/stage5_saved.json'
+    analysisStore.stage4SavedOptions = [
+      { value: '', label: 'Select a saved Stage 5 run...', disabled: false },
+      { value: 'C:/runs/stage5_saved.json', label: 'stage5', disabled: false },
+    ]
+    analysisStore.stage4SavedTagsDraft = 'Stage5,  tagged, stage5'
+    analysisStore.policyEvalSavedSelected = 'C:/runs/policy_saved.json'
+    analysisStore.policyEvalSavedOptions = [
+      { value: '', label: 'Select a saved policy evaluation...', disabled: false },
+      { value: 'C:/runs/policy_saved.json', label: 'policy', disabled: false },
+    ]
+    analysisStore.policyEvalSavedTagsDraft = 'Policy, review, policy'
+
+    invokeCommandMock.mockImplementation(async (command: string) => {
+      if (command === 'update_artifact_tags') return undefined
+      if (command === 'list_artifact_library') {
+        return {
+          meta: [{
+            path: 'C:/runs/meta_saved.json',
+            ts: '2026-02-26T10:00:00Z',
+            tags: ['Holdout', 'review'],
+          }],
+          stage5: [{
+            path: 'C:/runs/stage5_saved.json',
+            ts: '2026-02-26T10:02:00Z',
+            tags: ['Stage5', 'tagged'],
+          }],
+          policyEvals: [{
+            path: 'C:/runs/policy_saved.json',
+            ts: '2026-02-26T10:03:00Z',
+            tags: ['Policy', 'review'],
+          }],
+        }
+      }
+      return invokeDefaultMock(command)
+    })
+
+    await refreshSaved()
+    await refreshStage5Saved()
+    await refreshPolicyEvalSaved()
+    await saveSavedTags()
+    await saveStage5SavedTags()
+    await savePolicyEvalSavedTags()
+
+    expect(invokeCommandMock).toHaveBeenCalledWith('update_artifact_tags', {
+      path: 'C:/runs/meta_saved.json',
+      tags: ['Holdout', 'review'],
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('update_artifact_tags', {
+      path: 'C:/runs/stage5_saved.json',
+      tags: ['Stage5', 'tagged'],
+    })
+    expect(invokeCommandMock).toHaveBeenCalledWith('update_artifact_tags', {
+      path: 'C:/runs/policy_saved.json',
+      tags: ['Policy', 'review'],
+    })
+    expect(analysisStore.metaSavedTagsDraft).toBe('Holdout, review')
+    expect(analysisStore.stage4SavedTagsDraft).toBe('Stage5, tagged')
+    expect(analysisStore.policyEvalSavedTagsDraft).toBe('Policy, review')
+    expect(analysisStore.statusLine).toBe('Saved policy evaluation tags.')
   })
 
   it('runs batch via vue-owned orchestration path and saves summary', async () => {
@@ -957,6 +1339,14 @@ describe('meta service', () => {
     await batchRefresh()
     let analysisStore = useAnalysisStore(pinia)
     expect(analysisStore.batchTotalCount).toBeGreaterThan(0)
+    expect(analysisStore.batchDatasets.map((row) => row.path).sort()).toEqual([
+      'C:/a.csv',
+      'C:/b.csv',
+    ])
+    const polygonRow = analysisStore.batchDatasets.find((row) => row.path === 'C:/a.csv')
+    const repoRow = analysisStore.batchDatasets.find((row) => row.path === 'C:/b.csv')
+    expect(polygonRow?.meta).toContain('stocks (adj)')
+    expect(repoRow?.meta).toContain('local')
 
     await batchSelectAll()
     analysisStore = useAnalysisStore(pinia)

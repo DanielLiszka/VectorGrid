@@ -114,20 +114,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current frontend campaign orchestration responsibilities in `metaService.ts`.
-- [ ] Document dataset compatibility and unsupported-strategy checks.
-- [ ] Document progress-listener and task-store interaction.
-- [ ] Document current summary persistence and last-summary ownership.
-- [ ] Document retry/resume hooks and their dependence on the saved summary.
-- [ ] Preserve tests for campaign strategy filtering, resume/retry, and progress behavior.
-- [ ] Preserve backend campaign tests in `commands_campaign.rs`.
-- [ ] Treat major campaign-service refactors as compatibility-sensitive because they affect UI, tasking, and recovery at once.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the current frontend campaign orchestration responsibilities in `metaService.ts`.
+- [x] Document dataset compatibility and unsupported-strategy checks.
+- [x] Document progress-listener and task-store interaction.
+- [x] Document current summary persistence and last-summary ownership.
+- [x] Document retry/resume hooks and their dependence on the saved summary.
+- [x] Preserve tests for campaign strategy filtering, resume/retry, and progress behavior.
+- [x] Preserve backend campaign tests in `commands_campaign.rs`.
+- [x] Treat major campaign-service refactors as compatibility-sensitive because they affect UI, tasking, and recovery at once.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -146,6 +146,20 @@ Public-repo quality focus:
 - if the repo later gains richer summary browsing, add it without breaking current last-summary recovery flows
 - keep unsupported-strategy exclusions explicit until there is deliberate campaign support for those families
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by pinning the campaign service’s recovery contract to real storage-backed behavior instead of only in-memory state. `metaServiceCampaignResume.test.ts` now verifies that `batchRevealSummary()` hydrates the last summary path from `LAST_BATCH_SUMMARY_KEY`, reloads the saved summary artifact, and reveals that same persisted path.
+- The existing campaign strategy/resume suites already cover unsupported strategy filtering, execution-mode semantics, skip-done behavior, and resumable request reuse. This pass filled the missing summary-ownership gap rather than refactoring the service.
+- `REPO_MAP.md` now makes it easier to find the batch/campaign orchestration notes alongside the Meta service ownership description.
+- Stable fixture / replay payload:
+  - `LAST_BATCH_SUMMARY_KEY -> C:/runs/completed_campaign.json`
+  - `kind=vectorgrid_campaign_summary`
+  - `strategy_kind=DoubleMa`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/metaServiceCampaignStrategy.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

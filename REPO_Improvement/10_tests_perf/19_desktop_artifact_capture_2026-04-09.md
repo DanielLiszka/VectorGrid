@@ -1,6 +1,6 @@
 # Desktop Artifact Capture Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the required artifact files and folders for each desktop smoke run.
-- [ ] Document how contributors should read driver, preview, and environment logs.
-- [ ] Keep failure screenshots targeted and per-run rather than building a large always-on image corpus.
-- [ ] Avoid promoting desktop screenshots into visual baseline authority.
-- [ ] Keep desktop artifact capture non-options only.
-- [ ] Review whether any repeated blind spots justify additive capture changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the required artifact files and folders for each desktop smoke run.
+- [x] Document how contributors should read driver, preview, and environment logs.
+- [x] Keep failure screenshots targeted and per-run rather than building a large always-on image corpus.
+- [x] Avoid promoting desktop screenshots into visual baseline authority.
+- [x] Keep desktop artifact capture non-options only.
+- [x] Review whether any repeated blind spots justify additive capture changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,37 @@ Public-repo quality focus:
 - prefer improving naming and structure before adding more artifact types
 - if future reporters are considered, require evidence that the existing capture path is insufficient
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the current desktop harness artifact contract; no additional capture mechanism was required for this item.
+- The per-run desktop artifact shape is now concretely evidenced by fresh geometry and stable smoke runs:
+  - `output/wdio/desktop-smoke/<runId>/logs/`
+  - `output/wdio/desktop-smoke/<runId>/screenshots/`
+  - `logs/environment.txt`
+  - `logs/preview-server.log`
+  - `logs/tauri-driver.log`
+  - `logs/wdio/*.log`
+- Failure screenshots remain targeted and failure-only:
+  - the harness always creates a per-run `screenshots/` folder
+  - `browser.saveScreenshot(...)` is only invoked from `afterTest` when a WDIO test fails
+  - passing runs therefore keep screenshot storage lightweight instead of becoming an always-on image corpus
+- Artifact review expectations are now explicit:
+  - `environment.txt` for toolchain and resolved prerequisite context
+  - `preview-server.log` for managed host/bootstrap issues
+  - `tauri-driver.log` for driver/session failures
+  - `logs/wdio/*.log` for per-spec smoke details
+  - `screenshots/` for failure-state UI evidence only
+- No further reporter stack was justified by the current evidence. The existing repo-local capture layer already covers the main harness, launch, and per-spec failure surfaces without introducing heavier visual-baseline tooling.
+- No `README.md` or `REPO_MAP.md` update was required because the current desktop README already describes the artifact root and troubleshooting flow, and the harness output shape still matches that documentation.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck:desktop`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+  - `npm.cmd --prefix web run test:desktop:geometry`
+- Raw evidence paths refreshed in this session:
+  - stable desktop smoke: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
+  - opt-in geometry run: `output/wdio/desktop-smoke/2026-04-10T17-44-33-069Z/`
 
 ## Related Docs
 

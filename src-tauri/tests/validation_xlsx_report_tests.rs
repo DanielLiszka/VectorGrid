@@ -551,7 +551,7 @@ fn workbook_supports_legacy_compatibility_mode() {
 #[test]
 fn workbook_supports_all_profile_families_in_strategy_agnostic_mode() {
     let profiles = [
-        "asr", "vcc", "vemr", "rocb", "mkcs", "kqsr", "carm", "kvdf", "cdmc",
+        "asr", "vcc", "vemr", "rocb", "vcet", "mkcs", "kqsr", "carm", "kvdf", "cdmc",
     ];
 
     for profile in profiles {
@@ -869,6 +869,46 @@ fn workbook_surfaces_cdmc_gpu_route_detail_and_composite_robustness_blocks() {
     assert!(xml.contains("Bootstrap Compare"));
     assert!(xml.contains("Regime Flag"));
     assert!(xml.contains("Friction Stability"));
+}
+
+#[test]
+fn workbook_surfaces_composite_mo_cpu_route_detail_note_in_expected_execution() {
+    let mut report = baseline_report();
+    report["run"]["req"]["strategy_kind"] = json!("CompositeMo");
+    report["validation"]["req"]["backend"] = json!({ "backend": "GpuKernel", "device_id": 0 });
+    report["validation"]["res"]["backend_used"] = json!("Cpu");
+    report["validation"]["res"]["backend_route"] = json!("CpuOnly");
+    report["validation"]["res"]["backend_fallback_reason"] = json!(
+        "CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+    );
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Expected Execution"));
+    assert!(xml.contains("Expected Categories"));
+    assert!(xml.contains("Expected Notes"));
+    assert!(xml.contains(
+        "CompositeMo uses the CPU validation route; GPU fixed-candidate validation currently supports plain CompositeCpu HardGate candidates only."
+    ));
+}
+
+#[test]
+fn workbook_surfaces_plain_composite_cpu_gpu_route_detail_note_in_expected_execution() {
+    let mut report = baseline_report();
+    report["run"]["req"]["strategy_kind"] = json!("CompositeCpu");
+    report["validation"]["req"]["backend"] = json!({ "backend": "GpuKernel", "device_id": 0 });
+    report["validation"]["res"]["backend_used"] = json!("Gpu");
+    report["validation"]["res"]["backend_route"] = json!("GpuKernel");
+    report["validation"]["res"]["backend_fallback_reason"] = serde_json::Value::Null;
+
+    let bytes = build_report_xlsx_bytes_headless(&report, Some(10)).expect("xlsx");
+    let xml = all_xml(&bytes);
+    assert!(xml.contains("Expected Execution"));
+    assert!(xml.contains("Expected Categories"));
+    assert!(xml.contains("Expected Notes"));
+    assert!(xml.contains(
+        "Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU."
+    ));
 }
 
 #[test]

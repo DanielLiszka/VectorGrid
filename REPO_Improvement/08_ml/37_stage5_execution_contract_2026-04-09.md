@@ -122,22 +122,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current public Stage 5 command and its frontend invocation path.
-- [ ] Document that `runStage4()` currently delegates to `runStage5()`.
-- [ ] Document the Stage 5 artifact payload kind and current response fields.
-- [ ] Document the current `stage4_json_path` / `stage5_json_path` compatibility alias behavior.
-- [ ] Document saved Stage 5 list/load/reveal/delete behavior and its current store ownership.
-- [ ] Document the lack of workbook/report output for Stage 5.
-- [ ] Document model-status refresh coupling after Stage 5 completion.
-- [ ] Preserve tests for Stage 5 run, saved-entry update, replay, and artifact summary extraction.
-- [ ] Keep Stage 5 docs aligned with artifact-library behavior in `run_artifacts.rs`.
-- [ ] Treat Stage 4/Stage 5 renaming work as compatibility-sensitive.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the current public Stage 5 command and its frontend invocation path.
+- [x] Document that `runStage4()` currently delegates to `runStage5()`.
+- [x] Document the Stage 5 artifact payload kind and current response fields.
+- [x] Document the current `stage4_json_path` / `stage5_json_path` compatibility alias behavior.
+- [x] Document saved Stage 5 list/load/reveal/delete behavior and its current store ownership.
+- [x] Document the lack of workbook/report output for Stage 5.
+- [x] Document model-status refresh coupling after Stage 5 completion.
+- [x] Preserve tests for Stage 5 run, saved-entry update, replay, and artifact summary extraction.
+- [x] Keep Stage 5 docs aligned with artifact-library behavior in `run_artifacts.rs`.
+- [x] Treat Stage 4/Stage 5 renaming work as compatibility-sensitive.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -157,6 +157,27 @@ Public-repo quality focus:
 - keep replay/list/delete flows working through any naming cleanup by preserving path alias handling
 - prefer additive metadata over semantic changes to existing saved Stage 5 artifacts
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the Stage 5 execution alias explicit in both the panel copy and the live Stage 5 preview.
+- `MetaWorkspacePanel.vue` now states that:
+  - `run_meta_stage5_ml_confidence` is the authoritative Stage 5 command
+  - `runStage4()` remains a compatibility alias
+  - `stage4_json_path` and `stage5_json_path` currently resolve to the same JSON artifact
+  - Stage 5 remains JSON-artifact-only today and still has no workbook/report sibling
+- `metaService.ts` now renders the Stage 5 preview with an explicit execution line covering the shared Stage 4 / Stage 5 path alias.
+- `run_artifacts.rs` now has a focused summary-level test covering the Stage 5 saved-artifact alias contract without depending on the broader artifact-tagging test lane.
+- Stable fixture / replay payload:
+  - Stage 5 artifact `C:/runs/vectorgrid_stage5_2026-04-09T12-30-00Z.json`
+  - source meta `C:/runs/vectorgrid_meta_source.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaStage4RequestBuilder.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_desktop_demo_app build_stage5_artifact_summary_preserves_stage4_stage5_alias_contract --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
 
 ## Related Docs
 

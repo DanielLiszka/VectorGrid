@@ -1,6 +1,6 @@
 # Live Candle Stream Data Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -129,21 +129,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current start/stop/status command payloads and responses.
-- [ ] Document the single live-stream slot and replacement semantics.
-- [ ] Document symbol normalization and punctuation-preserving matching.
-- [ ] Document the current delayed default and websocket URL selection.
-- [ ] Document Polygon API key source order and current failure messages.
-- [ ] Document the `polygon_live_status` status vocabulary and `polygon_live_bar` payload role.
-- [ ] Document that only `AM` minute aggregates currently feed the live-bar path.
-- [ ] Document when stream changes stop the runner.
-- [ ] Add or tighten tests if live status/event parsing changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the current start/stop/status command payloads and responses.
+- [x] Document the single live-stream slot and replacement semantics.
+- [x] Document symbol normalization and punctuation-preserving matching.
+- [x] Document the current delayed default and websocket URL selection.
+- [x] Document Polygon API key source order and current failure messages.
+- [x] Document the `polygon_live_status` status vocabulary and `polygon_live_bar` payload role.
+- [x] Document that only `AM` minute aggregates currently feed the live-bar path.
+- [x] Document when stream changes stop the runner.
+- [x] Add or tighten tests if live status/event parsing changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -162,6 +162,21 @@ Public-repo quality focus:
 - preserve delayed-default behavior unless both frontend copy and backend defaults are updated together
 - if future work broadens the websocket payload types, update normalization docs and tests in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the live-stream truth anchors across backend state and frontend parsing:
+  - [state.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/state.rs) now has direct tests for live-stream slot replacement, stop behavior, and lazy cleanup of finished websocket tasks
+  - [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts) now locks the shipped `polygon_live_status` vocabulary for `connecting`, `subscribed`, `closed`, `error`, and `stopped`
+- Existing coverage continues to anchor the rest of the contract:
+  - punctuation-preserving live-bar symbol matching in [commands_data.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_data.rs)
+  - live-status and runner-state reconciliation in [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts)
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app state_live_stream_tests --lib`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo check -p ta_desktop_demo_app`
 
 ## Related Docs
 

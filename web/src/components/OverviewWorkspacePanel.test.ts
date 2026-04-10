@@ -2,11 +2,12 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import OverviewWorkspacePanel from './OverviewWorkspacePanel.vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useDataStore } from '../stores/dataStore'
 import { useHistoryStore } from '../stores/historyStore'
+import { useWorkflowArtifactsStore } from '../stores/workflowArtifactsStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 
 function installOverviewPanelMountShell(): void {
@@ -25,6 +26,68 @@ describe('OverviewWorkspacePanel', () => {
   beforeEach(() => {
     installOverviewPanelMountShell()
     localStorage.clear()
+  })
+
+  it('keeps the explicit empty-state actions wired through the analysis store', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('overview', { persist: false })
+    analysisStore.overviewEmptyVisible = true
+    analysisStore.overviewEmptyTitle = 'Load data to begin'
+    analysisStore.overviewEmptyBody = 'Load a CSV dataset or download candles from Polygon.'
+    analysisStore.overviewEmptyHint = 'Start with a smaller dataset.'
+    analysisStore.overviewPrimaryLabel = 'Browse CSV…'
+    analysisStore.overviewSecondaryVisible = true
+    analysisStore.overviewSecondaryLabel = 'Polygon…'
+    const primarySpy = vi.spyOn(analysisStore, 'overviewEmptyPrimary').mockImplementation(() => undefined)
+    const secondarySpy = vi.spyOn(analysisStore, 'overviewEmptySecondary').mockImplementation(() => undefined)
+
+    mount(OverviewWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Load data to begin')
+    expect(text).toContain('Browse CSV…')
+    expect(text).toContain('Polygon…')
+
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+    buttons.find((button) => String(button.textContent || '').includes('Browse CSV'))?.click()
+    buttons.find((button) => String(button.textContent || '').includes('Polygon'))?.click()
+    await flushPanel()
+
+    expect(primarySpy).toHaveBeenCalledTimes(1)
+    expect(secondarySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the pending overview state when data is loaded but no analyzed winner exists yet', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('overview', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    dataStore.datasetLabel = 'AAPL'
+    analysisStore.overviewEmptyVisible = false
+    analysisStore.statusLine = 'Ready to review once results exist.'
+
+    mount(OverviewWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('No analyzed winner yet.')
+    expect(text).toContain('Results will appear here after an optimization run is scored')
+    expect(text).toContain('Ready to review once results exist.')
   })
 
   it('keeps winner framing and baseline review while providing an explicit Top handoff', async () => {
@@ -73,5 +136,50 @@ describe('OverviewWorkspacePanel', () => {
     await flushPanel()
 
     expect(workflowStore.resultsTab).toBe('top')
+  })
+
+  it('surfaces execution-risk review when the current run enables short same-bar execution', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowArtifactsStore = useWorkflowArtifactsStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectWorkflow('analyze', { persist: false })
+    workflowStore.selectResultsTab('overview', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.bestKicker = 'Winner ready'
+    analysisStore.bestTitle = 'Rank #1 · SMA 10 / EMA 40'
+    analysisStore.bestMeta = 'Strategy DoubleMa · Objective Sharpe'
+    workflowArtifactsStore.applyVueRuntimePayload({
+      currentRun: {
+        ts: '2026-04-09T12:00:00Z',
+        req: {
+          strategy: {
+            long_only: false,
+            trade_on_next_bar: false,
+          },
+        },
+        res: { top: [] },
+      },
+    })
+
+    mount(OverviewWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+    await flushPanel()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('Optimistic execution mode')
+    expect(text).toContain('Same-bar execution')
+
+    const reviewExecutionButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Review execution settings'),
+    )
+    reviewExecutionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPanel()
+
+    expect(workflowStore.workspace).toBe('settings')
   })
 })

@@ -106,3 +106,144 @@ pub fn double_like_kernel_strategy_cases() -> Vec<(&'static str, StrategyConfig)
         ("orc", orc_strategy_for_kernel()),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::strategy_dynamic::compile_dynamic_plan_for_double_ma_config;
+    use crate::strategy_ir::{
+        build_static_strategy_ir, IndicatorKind, StaticStrategyIrInput, StrategyProfileKind,
+    };
+    use crate::strategy_plan::{compile_strategy_plan, IndicatorRouteKind, StrategyPlanBackend};
+    use std::collections::HashSet;
+
+    #[test]
+    fn double_like_kernel_strategy_cases_have_unique_non_empty_labels() {
+        let cases = double_like_kernel_strategy_cases();
+        let mut seen = HashSet::new();
+
+        assert!(!cases.is_empty());
+        for (label, _) in cases {
+            assert!(!label.trim().is_empty());
+            assert!(
+                seen.insert(label),
+                "duplicate preset label found in double-like kernel cases: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn double_like_kernel_strategy_cases_compile_with_gpu_kernel_ma_routes() {
+        for (label, strategy) in double_like_kernel_strategy_cases() {
+            let plan = compile_dynamic_plan_for_double_ma_config(
+                "close",
+                "sma",
+                "alma",
+                None,
+                None,
+                &strategy,
+                None,
+                StrategyPlanBackend::GpuUnified,
+            )
+            .unwrap_or_else(|err| panic!("preset '{label}' failed to compile: {err}"));
+
+            assert_eq!(
+                plan.backend,
+                StrategyPlanBackend::GpuUnified,
+                "preset '{label}' should keep the requested GPU backend"
+            );
+            assert!(
+                plan.signals.long_entry_group.is_some() || plan.signals.short_entry_group.is_some(),
+                "preset '{label}' should expose at least one entry binding"
+            );
+
+            let fast_ma = plan
+                .indicator_plan
+                .iter()
+                .find(|indicator| indicator.indicator_id == "fast_ma")
+                .unwrap_or_else(|| panic!("preset '{label}' missing fast_ma slot"));
+            let slow_ma = plan
+                .indicator_plan
+                .iter()
+                .find(|indicator| indicator.indicator_id == "slow_ma")
+                .unwrap_or_else(|| panic!("preset '{label}' missing slow_ma slot"));
+
+            assert_eq!(
+                fast_ma.route,
+                IndicatorRouteKind::GpuKernel,
+                "preset '{label}' should keep fast_ma on the kernel route"
+            );
+            assert_eq!(
+                slow_ma.route,
+                IndicatorRouteKind::GpuKernel,
+                "preset '{label}' should keep slow_ma on the kernel route"
+            );
+        }
+    }
+
+    #[test]
+    fn representative_composite_presets_compile_to_expected_gpu_indicator_routes() {
+        let cases = [
+            (
+                "composite_trend",
+                StrategyProfileKind::CompositeTrend,
+                trend_quality_strategy_for_kernel(),
+                IndicatorKind::TrendQualityRegime,
+            ),
+            (
+                "regime_hybrid",
+                StrategyProfileKind::RegimeHybrid,
+                regime_hybrid_strategy_for_kernel(),
+                IndicatorKind::TrendQualityRegime,
+            ),
+            (
+                "breakout_momentum",
+                StrategyProfileKind::BreakoutMomentum,
+                breakout_strategy_for_kernel(),
+                IndicatorKind::BreakoutRegime,
+            ),
+        ];
+
+        for (label, profile, strategy, regime_kind) in cases {
+            let ir = build_static_strategy_ir(
+                profile,
+                StaticStrategyIrInput {
+                    ma_source: "close".to_string(),
+                    fast_ma_type: "sma".to_string(),
+                    slow_ma_type: "alma".to_string(),
+                    fast_ma_params: None,
+                    slow_ma_params: None,
+                    strategy,
+                    halftrend_filter: None,
+                    halftrend: None,
+                    macz: None,
+                    ott: None,
+                    signal_mode: None,
+                },
+            )
+            .unwrap_or_else(|err| panic!("failed to build preset ir for '{label}': {err}"));
+            let plan = compile_strategy_plan(&ir, StrategyPlanBackend::GpuUnified, None)
+                .unwrap_or_else(|err| panic!("failed to compile preset plan for '{label}': {err}"));
+
+            let fast_ma = plan
+                .indicator_plan
+                .iter()
+                .find(|indicator| indicator.indicator_kind == Some(IndicatorKind::FastMa))
+                .unwrap_or_else(|| panic!("preset '{label}' missing FastMa route"));
+            let slow_ma = plan
+                .indicator_plan
+                .iter()
+                .find(|indicator| indicator.indicator_kind == Some(IndicatorKind::SlowMa))
+                .unwrap_or_else(|| panic!("preset '{label}' missing SlowMa route"));
+            let regime = plan
+                .indicator_plan
+                .iter()
+                .find(|indicator| indicator.indicator_kind == Some(regime_kind))
+                .unwrap_or_else(|| panic!("preset '{label}' missing regime route"));
+
+            assert_eq!(fast_ma.route, IndicatorRouteKind::GpuKernel);
+            assert_eq!(slow_ma.route, IndicatorRouteKind::GpuKernel);
+            assert_eq!(regime.route, IndicatorRouteKind::GpuKernel);
+        }
+    }
+}

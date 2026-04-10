@@ -1,6 +1,6 @@
 # Optimizer Grid Stream Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -113,19 +113,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the shared ranking and aggregation semantics.
-- [ ] Document how custom score hooks override default objective scoring.
-- [ ] Add or tighten tests comparing grid and stream best/top-k behavior.
-- [ ] Add or tighten tests for non-finite score handling.
-- [ ] Add or tighten tests for heatmap max/mean/sample-count aggregation.
-- [ ] Add or tighten strategy-local integration tests that consume these primitives.
-- [ ] Consider benchmark-backed checks for hot-path aggregation behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the shared ranking and aggregation semantics.
+- [x] Document how custom score hooks override default objective scoring.
+- [x] Add or tighten tests comparing grid and stream best/top-k behavior.
+- [x] Add or tighten tests for non-finite score handling.
+- [x] Add or tighten tests for heatmap max/mean/sample-count aggregation.
+- [x] Add or tighten strategy-local integration tests that consume these primitives.
+- [x] Consider benchmark-backed checks for hot-path aggregation behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -145,6 +145,28 @@ Public-repo quality focus:
 - keep custom scoring explicit and documented
 - prefer additive benchmark/test hardening over rewriting shared primitives casually
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the shared optimizer proofs instead of widening the runtime surface:
+  - [grid.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/optimizer/src/grid.rs) now clamps non-finite scores to `NEG_INFINITY`, matching the stream aggregator
+  - `grid.rs` also now has direct parity tests for best/top-k behavior against `StreamAggregator`
+  - [stream.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/optimizer/src/stream.rs) now has direct tests for:
+    - custom `with_score_fn` ranking overriding the default objective
+    - param-aware `with_pair_score_fn` ranking with non-finite clamping
+    - include-all push-order preservation while Top-K remains score-sorted
+- Expanded the optimizer truth anchors in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md) so contributors can find the shared grid/stream contract faster.
+- Kept scope intentionally additive:
+  - no strategy-local optimizer requests or outputs were rewritten
+  - no benchmark contract was widened
+  - `all_scores` remains strategy-local where it already was
+- Acceptance evidence:
+  - `cargo test -p ta_optimizer --lib`
+  - `cargo test -p ta_optimizer grid_search_ --lib`
+  - `cargo test -p ta_desktop_demo_app campaign_ --lib`
+- Static-analysis note:
+  - the touched Rust files were formatted with `rustfmt --edition 2021`
+  - repo-wide `cargo fmt --all --check` still reports unrelated pre-existing formatting drift outside this tranche, so no broad workspace formatting sweep was applied here
 
 ## Related Docs
 

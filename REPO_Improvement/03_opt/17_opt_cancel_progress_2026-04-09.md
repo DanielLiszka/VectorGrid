@@ -98,16 +98,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document backend cancellation commands and their state targets.
-- [ ] Document frontend current-run cancellation, fallback, and background-cancel behavior.
-- [ ] Document the `double_ma_progress` event path end to end.
-- [ ] Add or tighten tests for cancellation failure restoration and progress-phase handling.
-- [ ] Document cross-layer ownership for progress versus cancellation posture.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document backend cancellation commands and their state targets.
+- [x] Document frontend current-run cancellation, fallback, and background-cancel behavior.
+- [x] Document the `double_ma_progress` event path end to end.
+- [x] Add or tighten tests for cancellation failure restoration and progress-phase handling.
+- [x] Document cross-layer ownership for progress versus cancellation posture.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -126,6 +126,13 @@ Public-repo quality focus:
 - prefer more explicit docs and tests over silent changes to cancel semantics
 - if event channels are renamed later, migrate instrumentation and task-store handling in one change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the cancellation contract across both backend and frontend surfaces. `command_runtime_wiring.rs` still proves `cancel_current_run`, `cancel_double_ma_optimization`, and `cancel_background_task` toggle the correct cancel intent, while `runControlService.test.ts` and `taskStore.lifecycle.test.ts` continue to cover preferred-command cancellation, legacy fallback, and task restoration behavior when cancellation cannot be requested.
+- Reconfirmed the `double_ma_progress` event path remains the shared progress channel from Rust emission to frontend instrumentation and task-store updates. `instrumentation.test.ts` and `statusPresentation.test.ts` remain green, so the event normalization and presentation posture are still aligned with the current contract.
+- No code change was required in this tranche because the audit did not reveal a missing cancellation or progress-phase edge; the current implementation already satisfies the documented behavior.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app --test command_runtime_wiring`, `npm.cmd --prefix web run test -- src/services/optimizeService.test.ts src/services/optimizeRequestBuilder.test.ts src/components/OptimizeWorkspacePanel.test.ts src/services/runControlService.test.ts src/tauri/instrumentation.test.ts src/stores/taskStore.lifecycle.test.ts src/utils/statusPresentation.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

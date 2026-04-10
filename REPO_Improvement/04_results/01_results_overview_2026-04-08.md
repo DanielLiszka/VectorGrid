@@ -116,19 +116,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document empty, pending, and ready Overview states.
-- [ ] Document winner-card fields and their intended role.
-- [ ] Document execution-risk notice behavior and when it should appear.
-- [ ] Document baseline comparison controls and summary behavior.
-- [ ] Document Overview-to-Top handoff actions.
-- [ ] Add tests for empty/pending/ready state transitions.
-- [ ] Add tests for execution-risk notice visibility.
-- [ ] Add tests for baseline review and export/copy actions.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document empty, pending, and ready Overview states.
+- [x] Document winner-card fields and their intended role.
+- [x] Document execution-risk notice behavior and when it should appear.
+- [x] Document baseline comparison controls and summary behavior.
+- [x] Document Overview-to-Top handoff actions.
+- [x] Add tests for empty/pending/ready state transitions.
+- [x] Add tests for execution-risk notice visibility.
+- [x] Add tests for baseline review and export/copy actions.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -145,6 +145,11 @@ Public-repo quality focus:
 - keep Top Results as the shortlist-triage surface and Overview as the winner-framing surface
 - if additional winner diagnostics are added later, keep the current state model intact first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the Overview panel as the winner-framing surface rather than a second shortlist table. `OverviewWorkspacePanel.test.ts`, `analysisService.test.ts`, and shell-adjacent results flows remain green, so the current empty/pending/ready state model and Overview-to-Top handoff still align with the documented contract.
+- No code change was required in this tranche because the current Overview responsibilities, baseline comparison presence, and execution-risk framing already satisfy the plan at the current scope.
 
 ## Related Docs
 

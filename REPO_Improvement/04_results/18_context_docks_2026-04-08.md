@@ -126,17 +126,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the visibility gates for each current dock.
-- [ ] Document the summary/action responsibilities for each dock separately.
-- [ ] Document analysis-dock persistence and collapsibility behavior.
-- [ ] Document validation-dock compactness and quick-action posture.
-- [ ] Add direct component tests for optimize, validation, and history docks.
-- [ ] Preserve the “context surface, not duplicate workspace” boundary in future changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the visibility gates for each current dock.
+- [x] Document the summary/action responsibilities for each dock separately.
+- [x] Document analysis-dock persistence and collapsibility behavior.
+- [x] Document validation-dock compactness and quick-action posture.
+- [x] Add direct component tests for optimize, validation, and history docks.
+- [x] Preserve the “context surface, not duplicate workspace” boundary in future changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -154,6 +154,11 @@ Public-repo quality focus:
 - if shared dock primitives are introduced later, keep existing dock actions stable until parity is proven
 - do not merge docks into one generic component unless the role differences are still expressible clearly
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the dock family with [AnalysisContextDock.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/AnalysisContextDock.test.ts), [OptimizeContextDock.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/OptimizeContextDock.test.ts), [ValidationContextDock.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ValidationContextDock.test.ts), [HistoryContextDock.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/HistoryContextDock.test.ts), [shellDockContract.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/utils/shellDockContract.test.ts), and [App.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/App.test.ts).
+- No production code change was required in this tranche because the current summary-first dock posture, visibility gating, and analysis-dock persistence behavior are already pinned by direct tests.
 
 ## Related Docs
 

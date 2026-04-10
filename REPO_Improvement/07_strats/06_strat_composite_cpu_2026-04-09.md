@@ -4,7 +4,7 @@ Last updated: 2026-04-09
 
 ## Purpose
 
-Define the improvement plan for `CompositeCpu` as the broad composite strategy surface that still owns many signal families, route diagnostics, drilldowns, and local-stability behaviors.
+Define the improvement plan for `CompositeCpu` as the broad composite strategy surface that still owns many signal families, route diagnostics, and the currently implemented composite drilldown/local-stability follow-up behaviors.
 
 ## Scope Boundaries
 
@@ -31,7 +31,7 @@ Out of scope:
 - per-family signal resolution and validation
 - route diagnostics for several profile families
 - optional GPU prescan inputs
-- drilldown and local-stability flows
+- drilldown and local-stability flows for the currently implemented family subset, with some family-specific followups still intentionally unavailable
 - shortlist slice diagnostics and route-note carry-through
 
 Even where some product-facing strategies now route through other visible strategy kinds, `CompositeCpu` still carries substantial strategy-local execution ownership.
@@ -112,20 +112,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the CompositeCpu request/result responsibilities by sub-surface.
-- [ ] Document which non-options families still depend on CompositeCpu behavior directly.
-- [ ] Document route-diagnostic and shortlist-slice diagnostic expectations.
-- [ ] Add or tighten tests for drilldown and local-stability parity.
-- [ ] Add or tighten tests for family-specific route diagnostics.
-- [ ] Add or tighten request-builder tests where CompositeCpu-specific shaping is still user-visible.
-- [ ] Add or tighten capability-summary tests wherever frontend text intentionally simplifies backend behavior.
-- [ ] Keep CPU fallback and GPU-aware prescan behavior both explicit in the contract.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the CompositeCpu request/result responsibilities by sub-surface.
+- [x] Document which non-options families still depend on CompositeCpu behavior directly.
+- [x] Document route-diagnostic and shortlist-slice diagnostic expectations.
+- [x] Add or tighten tests for drilldown and local-stability parity.
+- [x] Add or tighten tests for family-specific route diagnostics.
+- [x] Add or tighten request-builder tests where CompositeCpu-specific shaping is still user-visible.
+- [x] Add or tighten capability-summary tests wherever frontend text intentionally simplifies backend behavior.
+- [x] Keep CPU fallback and GPU-aware prescan behavior both explicit in the contract.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -145,6 +145,15 @@ Public-repo quality focus:
 - if a family migrates away from CompositeCpu, update request shaping, route diagnostics, and docs together
 - keep CPU fallback behavior visible and stable
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Kept this CompositeCpu tranche additive and contract-first. No strategy/runtime refactor landed here; the work instead tightened the user-facing contract and analysis-path verification around the existing strategy-local surface.
+- Expanded the contributor-facing truth anchors in `REPO_MAP.md` so CompositeCpu is explicitly documented as the owner of its request/result family, route diagnostics, and drilldown/local-stability follow-up path rather than being conflated with routed Double-MA profiles.
+- Tightened the user-visible capability surface in `web/src/utils/strategyOptimizationCapabilities.ts` so CompositeCpu now advertises its route-diagnostic-aware drilldown and local-stability follow-ups instead of looking like a generic fixed path.
+- Added frontend analysis regressions in `web/src/services/analysisService.test.ts` that prove CompositeCpu top-row selection routes through `compute_composite_cpu_drilldown` and `compute_composite_cpu_local_stability`, while preserving HalfTrend, MACZ, OTT, ASR, signal-mode, and backend-hint/backend contract fields.
+- Added validation/report parity coverage for the plain CompositeCpu surface: `validationRequestBuilder.test.ts`, `validationService.test.ts`, and `commands_reports_validation_common.rs` now pin the product-default `CpuOnly` preview copy plus the GPU-route note that warns about HalfTrend-uniformity limits across finalists.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts src/services/optimizeRequestBuilder.test.ts src/services/analysisService.test.ts src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts`, `cargo test -p ta_app_core composite_cpu --quiet`, `cargo test -p ta_desktop_demo_app commands_reports_validation_common --lib`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

@@ -114,6 +114,46 @@ export const ML_SIGNAL_WORKFLOW_STEP_SUBTITLES = {
   finalize: 'Stage 5: inspect the current ML artifact, bundle, sweep, and verdict outputs.',
 } as const
 
+export interface MlSignalPrimaryActionDescriptor {
+  kind: 'dataset_export' | 'score_cache' | 'validation' | 'policy_sweep' | 'artifacts'
+  label: string
+  shortLabel: string
+  actionable: boolean
+}
+
+export const ML_SIGNAL_PRIMARY_ACTIONS: Record<WorkflowStep, MlSignalPrimaryActionDescriptor> = {
+  data: {
+    kind: 'dataset_export',
+    label: 'Export dataset',
+    shortLabel: 'Export',
+    actionable: true,
+  },
+  optimize: {
+    kind: 'score_cache',
+    label: 'Build score cache',
+    shortLabel: 'Build',
+    actionable: true,
+  },
+  validate: {
+    kind: 'validation',
+    label: 'Run ML validation',
+    shortLabel: 'Validate',
+    actionable: true,
+  },
+  analyze: {
+    kind: 'policy_sweep',
+    label: 'Run ML policy sweep',
+    shortLabel: 'Sweep',
+    actionable: true,
+  },
+  finalize: {
+    kind: 'artifacts',
+    label: 'Artifacts ready',
+    shortLabel: 'Artifacts',
+    actionable: false,
+  },
+}
+
 export const WORKSPACE_SUBTITLES = {
   workflow: 'Guided pipeline for data -> optimize -> validate -> summary -> finalizer.',
   library: 'Browse, compare, and rerun saved optimization artifacts.',
@@ -216,4 +256,25 @@ export function workflowStepSubtitleForMode(step: unknown, mode: unknown): strin
     return ML_SIGNAL_WORKFLOW_STEP_SUBTITLES[normalizedStep]
   }
   return WORKFLOW_STEP_SUBTITLES[normalizedStep]
+}
+
+export function mlSignalPrimaryActionForStep(step: unknown): MlSignalPrimaryActionDescriptor {
+  const normalizedStep = normalizeWorkflowStep(step) || 'data'
+  return ML_SIGNAL_PRIMARY_ACTIONS[normalizedStep]
+}
+
+export function workflowStepForMlSignalStage(stage: unknown): WorkflowStep {
+  const normalizedStage = String(stage || '').trim().toLowerCase()
+  switch (normalizedStage) {
+    case 'dataset_export':
+      return 'data'
+    case 'validation':
+      return 'validate'
+    case 'policy_sweep':
+      return 'analyze'
+    case 'score_cache':
+      return 'optimize'
+    default:
+      return 'finalize'
+  }
 }

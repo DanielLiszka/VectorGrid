@@ -1,6 +1,6 @@
 # Execution Command Surface Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -31,7 +31,7 @@ The execution workspace supports broker connectivity checks, one-shot signal sub
 - one-shot execution versus long-lived runner automation
 - live-feed state versus runner state
 
-The frontend already blocks a number of unsafe starts before invoking Rust, but Rust remains authoritative for execution validation and order submission behavior.
+The frontend already blocks a number of unsafe starts before invoking Rust, and Rust now also rejects auto-runner starts unless an active same-symbol live candle stream exists on the backend runtime side.
 
 ## Current Code Surface
 
@@ -104,20 +104,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document each execution-related command and its current purpose.
-- [ ] Document request fields and required preconditions for one-shot execution.
-- [ ] Document paper, live, and dry-run semantics separately.
-- [ ] Document connectivity and broker snapshot commands and their expected outputs.
-- [ ] Document live-feed and runner control commands as dependencies, not interchangeable actions.
-- [ ] Document which failures are local validation failures, backend failures, or broker/API failures.
-- [ ] Add or tighten tests if command payloads or result fields change.
-- [ ] Manually verify paper-mode and dry-run flows before changing live-mode behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document each execution-related command and its current purpose.
+- [x] Document request fields and required preconditions for one-shot execution.
+- [x] Document paper, live, and dry-run semantics separately.
+- [x] Document connectivity and broker snapshot commands and their expected outputs.
+- [x] Document live-feed and runner control commands as dependencies, not interchangeable actions.
+- [x] Document which failures are local validation failures, backend failures, or broker/API failures.
+- [x] Add or tighten tests if command payloads or result fields change.
+- [x] Manually verify paper-mode and dry-run flows before changing live-mode behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -136,6 +136,25 @@ Public-repo quality focus:
 - keep any clarification work additive; do not remove existing safety prompts or blocked reasons as part of a docs-driven cleanup
 - if credential handling or execution modes change later, keep explicit backward-compatible copy until the migration is complete
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the execution command contract in [commands_execution.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_execution.rs):
+  - added backend-authoritative auto-runner start preflight against the active live candle stream slot
+  - reject runner starts when no live feed is active or when the feed symbol does not match the requested execution symbol
+- Added direct command-surface regression coverage in [commands_execution.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_execution.rs):
+  - `normalize_execute_request_rejects_missing_symbol_and_invalid_qty`
+  - `runner_status_from_runtime_reports_config_and_counters`
+  - `runner_status_from_runtime_none_is_inactive_and_zeroed`
+- Kept the frontend and backend command vocabulary aligned in [executionService.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.ts):
+  - centralized the current runner-event active/inactive status vocabulary so parser intent stays explicit for contributors
+  - added service coverage for degraded status refresh and successful runner-start summary parsing
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app commands_execution --lib`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo check -p ta_desktop_demo_app`
 
 ## Related Docs
 

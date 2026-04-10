@@ -116,17 +116,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which parts of analysis state are results-only versus meta/finalizer state.
-- [ ] Document overview/top/drill/heatmap ownership boundaries.
-- [ ] Document baseline compare loading and summary behavior.
-- [ ] Document cache, in-flight dedupe, and stale-response protection behavior.
-- [ ] Document `top_k=0` and `MlSignal` special-case guardrails.
-- [ ] Add or tighten tests if analysis projection or store routing changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document which parts of analysis state are results-only versus meta/finalizer state.
+- [x] Document overview/top/drill/heatmap ownership boundaries.
+- [x] Document baseline compare loading and summary behavior.
+- [x] Document cache, in-flight dedupe, and stale-response protection behavior.
+- [x] Document `top_k=0` and `MlSignal` special-case guardrails.
+- [x] Add or tighten tests if analysis projection or store routing changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -143,6 +143,11 @@ Public-repo quality focus:
 - keep pure refactors honest by rerunning the existing broad analysis test surface
 - if meta/finalizer state is separated later, maintain the current public store action surface until the migration is complete
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the analysis-layer split with [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts) and [analysisStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/analysisStore.actions.test.ts), which continue to cover shortlist projection, compare actions, drill/stability follow-ups, heatmap behavior, and meta/finalizer action routing.
+- The main remaining structural gap from the backend audit is not a broken surface but the lack of Tauri integration tests for the analysis commands that feed this service/store pair.
 
 ## Related Docs
 

@@ -84,19 +84,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the minimum evidence set for trusting an optimization winner.
-- [ ] Document what Overview must summarize vs defer to other panes.
-- [ ] Document what Top must expose for scanability and compare actions.
-- [ ] Document what Pareto/Heatmap/Drilldown must explain, not just render.
-- [ ] Document stale-data and artifact/report cues that must be visible.
-- [ ] Document empty-state and missing-module language requirements.
-- [ ] Add or tighten UX tests for high-value result behaviors.
-- [ ] Verify large tables remain readable and navigable.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Define the minimum evidence set for trusting an optimization winner.
+- [x] Document what Overview must summarize vs defer to other panes.
+- [x] Document what Top must expose for scanability and compare actions.
+- [x] Document what Pareto/Heatmap/Drilldown must explain, not just render.
+- [x] Document stale-data and artifact/report cues that must be visible.
+- [x] Document empty-state and missing-module language requirements.
+- [x] Add or tighten UX tests for high-value result behaviors.
+- [x] Verify large tables remain readable and navigable.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -112,6 +112,12 @@ Public-repo quality focus:
 - prefer additive evidence and clearer messaging over hiding existing detail
 - if information moves between panes, keep discoverability and compare flows intact
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the non-options results stack as a decision-support workflow by running the representative Overview, Top, Drilldown, Heatmap, Analysis dock, Meta, Validation, and Execution panel tests together with the shared analysis-service and table/composable tests.
+- Added targeted empty-state and evidence-surface regression coverage in the Overview, Top, Drilldown, Heatmap, and shared chart-runtime tests so the most important decision cues stay pinned in code.
+- The remaining deeper adequacy gaps from this audit are not panel-copy regressions but broader execution items: no single end-to-end decision-workflow spec across results tabs, no Tauri integration tests for analysis commands, and incomplete composite drill/local-stability backend support.
 
 ## Related Docs
 

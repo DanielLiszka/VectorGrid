@@ -1,6 +1,6 @@
 # CompositeMo Prescan Search Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -106,20 +106,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the prescan request contract and default semantics.
-- [ ] Document how predictive rescue interacts with objective-only prescan behavior.
-- [ ] Document inherited backend and explicit backend behavior for prescan.
-- [ ] Add or tighten tests for predictive seed-pair generation.
-- [ ] Add or tighten tests for domain narrowing and top-k/window behavior.
-- [ ] Add or tighten frontend tests for CompositeMo prescan request shaping.
-- [ ] Add or tighten capability-summary tests for prescan-related product messaging.
-- [ ] Keep route-note or diagnostics coverage aligned with real prescan behavior.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the prescan request contract and default semantics.
+- [x] Document how predictive rescue interacts with objective-only prescan behavior.
+- [x] Document inherited backend and explicit backend behavior for prescan.
+- [x] Add or tighten tests for predictive seed-pair generation.
+- [x] Add or tighten tests for domain narrowing and top-k/window behavior.
+- [x] Add or tighten frontend tests for CompositeMo prescan request shaping.
+- [x] Add or tighten capability-summary tests for prescan-related product messaging.
+- [x] Keep route-note or diagnostics coverage aligned with real prescan behavior.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -139,6 +139,31 @@ Public-repo quality focus:
 - keep inherited backend behavior stable unless a product decision changes it
 - if predictive rescue expands, land verification before changing defaults
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the explicit CompositeMo prescan contract visible in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md): `top_k`, `window`, `predictive_top_k`, `predictive_stride`, `device_id`, `require_gpu`, `objectives`, `mode`, and `ma_pairs` are now called out as the stage-0 prescan truth surface.
+- Tightened frontend request-shaping evidence in [optimizeRequestBuilder.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/optimizeRequestBuilder.test.ts) with an explicit prescan-contract test covering:
+  - predictive rescue controls
+  - explicit `device_id`
+  - `require_gpu`
+  - stage-0 objectives/mode
+  - explicit MA-pair parsing
+- Added direct backend unit tests in [prescan_predictive.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/prescan_predictive.rs) for:
+  - stride-based period sampling
+  - even capping across candidate periods
+  - deterministic long-only predictive seed-pair generation
+- Existing end-to-end prescan coverage in `crates/app_core/src/composite_mo.rs` remains the higher-level truth anchor for large-range narrowing, bounded exact-grid collapse, and multi-pair telemetry.
+- Stable truth anchors:
+  - frontend request shaping in `web/src/services/optimizeRequestBuilder.ts`
+  - helper/runtime logic in `crates/app_core/src/prescan_predictive.rs`
+  - prescan telemetry and end-to-end search behavior in `crates/app_core/src/composite_mo.rs`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/utils/strategyOptimizationCapabilities.test.ts`
+  - `cargo test -p ta_app_core prescan_predictive::tests --lib`
+  - `cargo test -p ta_app_core composite_mo_gpu_prescan --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

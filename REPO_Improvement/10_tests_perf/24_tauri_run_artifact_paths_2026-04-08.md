@@ -1,6 +1,6 @@
 # Tauri Run Artifact Paths Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -115,20 +115,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current app-local runs directory contract.
-- [ ] Document how `save_run_artifact` currently derives filenames.
-- [ ] Document current collision behavior and whether same-`ts` overwrites are acceptable.
-- [ ] Document containment checks for load/delete/tag operations.
-- [ ] Document legacy kind and filename alias support.
-- [ ] Document summary/detail/hydration path fields consumed by the frontend.
-- [ ] Document how history uses `report_xlsx_path` versus the artifact JSON path itself.
-- [ ] Add or tighten tests for out-of-dir, nonexistent, and same-timestamp path behavior if the contract changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the current app-local runs directory contract.
+- [x] Document how `save_run_artifact` currently derives filenames.
+- [x] Document current collision behavior and whether same-`ts` overwrites are acceptable.
+- [x] Document containment checks for load/delete/tag operations.
+- [x] Document legacy kind and filename alias support.
+- [x] Document summary/detail/hydration path fields consumed by the frontend.
+- [x] Document how history uses `report_xlsx_path` versus the artifact JSON path itself.
+- [x] Add or tighten tests for out-of-dir, nonexistent, and same-timestamp path behavior if the contract changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -144,6 +144,34 @@ Public-repo quality focus:
 - if filename collision behavior changes, document the compatibility effect on existing automation and saved-path expectations
 - if generic `open_path` or `reveal_path` authority is narrowed later, keep a migration path for report reopen flows
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on bounded path-contract hardening and regression coverage; the history/artifact surface did not need a workflow rewrite.
+- The app-local runs contract remains the same:
+  - run artifacts still live under `app_local_data_dir()/runs`
+  - history-facing list/detail/hydration payloads still expose the saved run JSON `path` separately from any persisted `report_xlsx_path`
+  - `open_runs_dir` still reveals the runs directory itself
+- Filename behavior is now explicit and safer:
+  - `save_run_artifact_blocking` now derives run JSON paths through the same timestamp-suffix allocator used by other artifact families
+  - same-timestamp saves now preserve the first `vectorgrid_run_<ts>.json` and allocate `vectorgrid_run_<ts>_2.json`, `..._3.json`, and so on instead of silently overwriting
+  - suffix-slot exhaustion now returns an explicit error instead of silently reusing an existing filename
+- Path containment failures are now explicit instead of leaking raw canonicalize behavior:
+  - missing artifact paths under `runs/` now return `artifact path does not exist: ...`
+  - out-of-dir paths still return `path is outside app runs dir`
+  - load/detail, delete, and tag-update flows all continue to share that containment boundary
+- Legacy compatibility remains preserved:
+  - `vectorbt_run_artifact` kind aliases still deserialize and summarize correctly
+  - legacy filename prefixes remain accepted by the artifact scan and prune logic
+- Frontend/history behavior remains unchanged by design:
+  - the history service still normalizes the saved run JSON `path` before load/detail/delete/reveal operations
+  - saved report reopening still uses the persisted `report_xlsx_path`, prefers `open_path`, and falls back to `reveal_path`
+  - the workflow artifact store still keeps `artifactPath` and `reportXlsxPath` as distinct fields
+- No `README.md` or `REPO_MAP.md` update was required because this item changed backend helper behavior and colocated tests only; user-facing routing and workspace navigation did not change.
+- Acceptance evidence for this closure:
+  - `cargo check -p ta_desktop_demo_app --lib`
+  - `cargo test -p ta_desktop_demo_app --lib run_artifacts::tests::`
+  - `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/stores/workflowArtifactsStore.test.ts`
 
 ## Related Docs
 

@@ -1,6 +1,6 @@
 # Execution Runner Lifecycle Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -50,7 +50,7 @@ The execution workspace can start one auto-runner for the current symbol, stop i
 - only one live execution runner slot exists at a time
 - supported live strategy kinds are currently `DoubleMa` and `CompositeCpu`
 - start requires a non-empty symbol, finite `qty > 0`, a non-empty strategy `data_id`, and an already loaded candle dataset for that `data_id`
-- frontend runner start also requires an active live candle stream for the same symbol
+- frontend and backend runner start both require an active live candle stream for the same symbol
 - broker-armed runner start requires Alpaca API key + secret; `dry_run=true` does not
 - `stop_live_execution_runner` is idempotent and returns both the prior status snapshot and the post-stop status
 - `live_execution_runner_status` exposes `active`, `config`, `inflight`, timestamps, counters, `last_action`, `last_order_id`, and `last_error`
@@ -121,21 +121,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current single-slot runner ownership model.
-- [ ] Document start preconditions at both frontend and backend boundaries.
-- [ ] Document the current runner status payload fields and their meaning.
-- [ ] Document the emitted runner event statuses and which code paths produce them.
-- [ ] Document generation-gated replacement and explicit cancel behavior.
-- [ ] Document in-flight bar coalescing and what `skip_count` currently means.
-- [ ] Document the `upsert_live_bar` dependency and derived-dataset invalidation side effect.
-- [ ] Document dry-run versus broker-armed credential and order-submission semantics.
-- [ ] Add or tighten tests if the event/status mapping changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document the current single-slot runner ownership model.
+- [x] Document start preconditions at both frontend and backend boundaries.
+- [x] Document the current runner status payload fields and their meaning.
+- [x] Document the emitted runner event statuses and which code paths produce them.
+- [x] Document generation-gated replacement and explicit cancel behavior.
+- [x] Document in-flight bar coalescing and what `skip_count` currently means.
+- [x] Document the `upsert_live_bar` dependency and derived-dataset invalidation side effect.
+- [x] Document dry-run versus broker-armed credential and order-submission semantics.
+- [x] Add or tighten tests if the event/status mapping changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -153,6 +153,24 @@ Public-repo quality focus:
 - treat clearer lifecycle docs as hardening, not permission to weaken backend cancel/generation safety
 - if a future change introduces a new runner event state, update both backend emitters and frontend parsers in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening lifecycle truth anchors across backend and frontend:
+  - [commands_execution.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_execution.rs) now enforces same-symbol active-feed preconditions before the runner can start
+  - [commands_execution.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/commands_execution.rs) now has direct request-normalization and zeroed-status tests for the runner status payload
+  - [executionService.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.ts) now centralizes the shipped runner-event active/inactive status vocabulary
+  - [executionService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/executionService.test.ts) now locks `started`, `triggered`, `queued_latest`, `signal_processed`, and `order_submitted` as active, `error` as state-neutral, and `stopped` / reserved `cancelled` as inactive
+  - [executionStore.actions.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/executionStore.actions.test.ts) now proves state-neutral error events surface operator feedback without silently clearing `runnerActive`
+- Kept cancellation behavior intentionally unchanged:
+  - no new `cancelled` backend event was introduced
+  - generation-gated replacement and silent cancel handling remain the shipped lifecycle behavior
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app commands_execution --lib`
+  - `npm.cmd --prefix web run test -- src/services/executionService.test.ts src/stores/executionStore.actions.test.ts src/components/ExecutionWorkspacePanel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo check -p ta_desktop_demo_app`
 
 ## Related Docs
 

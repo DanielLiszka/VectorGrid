@@ -68,4 +68,11 @@ mod tests {
         assert_eq!(worst_min(&[f64::NAN]), 0.0);
         assert_eq!(worst_max(&[f64::NAN]), 0.0);
     }
+
+    #[test]
+    fn worst_helpers_prefer_finite_extremes_over_nan_entries() {
+        let xs = [1.5, f64::NAN, -2.0, 4.25];
+        assert_eq!(worst_min(&xs), -2.0);
+        assert_eq!(worst_max(&xs), 4.25);
+    }
 }

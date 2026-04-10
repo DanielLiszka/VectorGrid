@@ -94,18 +94,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the required top-level report fields.
-- [ ] Document the required substructures for `data`, `run`, and `validation`.
-- [ ] Document when `optimization_metric_surface` is present and how it is preserved.
-- [ ] Add or tighten tests for direct report JSON and artifact-reconstructed report parity.
-- [ ] Add or tighten tests for dataset-meta projection into report data.
-- [ ] Clarify user-facing distinction between report JSON and validation JSON export.
-- [ ] Consider a formal JSON Schema document or schema-like test fixture for `vectorgrid_report`.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the required top-level report fields.
+- [x] Document the required substructures for `data`, `run`, and `validation`.
+- [x] Document when `optimization_metric_surface` is present and how it is preserved.
+- [x] Add or tighten tests for direct report JSON and artifact-reconstructed report parity.
+- [x] Add or tighten tests for dataset-meta projection into report data.
+- [x] Clarify user-facing distinction between report JSON and validation JSON export.
+- [x] Consider a formal JSON Schema document or schema-like test fixture for `vectorgrid_report`.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -130,4 +130,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/18_report_shortlist_csv_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/21_report_artifact_path_persistence_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/29_artifact_identity_workflow_model_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a report-JSON contract item. The repo already keeps `vectorgrid_report` as the named/versioned report envelope used both for direct export and artifact-backed workbook reconstruction.
+- Re-verified direct export status behavior in `web/src/services/validationService.test.ts` and artifact-backed report reconstruction/dataset-meta preservation in `src-tauri/src/commands_reports.rs`.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app artifact_report_builder_uses_persisted_dataset_meta --lib` and `npm.cmd --prefix web run test -- src/services/validationService.test.ts`.
 

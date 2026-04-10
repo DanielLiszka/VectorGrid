@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the raw exported descriptor contract and the narrower builder-eligible subset.
-- [ ] Document output-count, output-descriptor, and floating-output eligibility rules.
-- [ ] Document required/default/enum param behavior and defaultability rules.
-- [ ] Document capability and preference flags without overstating legality.
-- [ ] Add or tighten tests for catalog normalization and builder eligibility.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the raw exported descriptor contract and the narrower builder-eligible subset.
+- [x] Document output-count, output-descriptor, and floating-output eligibility rules.
+- [x] Document required/default/enum param behavior and defaultability rules.
+- [x] Document capability and preference flags without overstating legality.
+- [x] Add or tighten tests for catalog normalization and builder eligibility.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,12 @@ Public-repo quality focus:
 - if builder eligibility expands later, document the new admissibility rule explicitly rather than silently widening the set
 - keep unsupported-but-exported indicators out of the builder until runtime legality and defaults are verified together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the dynamic-indicator catalog as a two-stage contract: exported descriptor truth from the backend and the narrower builder-eligible subset enforced in the frontend builder. The existing backend and frontend tests continue to prove output typing, required-param behavior, and builder filtering for the current supported subset.
+- The new direct `commands_data.rs` dynamic-indicator export test now provides Tauri-side evidence that the exported descriptor list stays non-empty, unique, and restricted to `dynamic_strategy_eligible` indicators before frontend normalization occurs.
+- No additional code change was required in this tranche because the current descriptor shape and builder-eligibility rules already match the documented contract. The remaining future tightening opportunity is a true end-to-end parity test from real exported descriptors into builder eligibility and preview acceptance.
 
 ## Related Docs
 

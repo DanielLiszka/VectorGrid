@@ -4,39 +4,43 @@ GPU-accelerated Tauri desktop app for exact-grid trading strategy optimization a
 
 The desktop product and the benchmarked execution engine are both referred to as **VectorGrid** in this repository. `VectorBT` is mentioned only for explicit external benchmark comparisons.
 
-## Benchmark
+## Historical Benchmark Snapshots
 
-**Fastest saved benchmark snapshot**
+These figures are saved faceoff artifacts, not current perf-gate outputs. Every number below is a **warm app-path** snapshot tied to a specific scenario, timing boundary, and saved artifact date.
+
+**Fastest saved warm app-path snapshot (`2026-03-13` artifacts)**
 
 - Scenario: `Double MA`, `ALMA/ALMA`, exact grid
 - Workload: `58,300` backtests over `200,000` bars
+- Timing boundary: warm app-path faceoff, same-thread, dataset already loaded
 - Hardware: `AMD Ryzen 9 9950X`, `NVIDIA GeForce RTX 4090`
 - VectorGrid GPU kernel: `101.886 ms`
 - VectorGrid CPU: `3486.134 ms`
 - VectorBT CPU workflow: `92377.801 ms`
 
-That is about:
+Saved comparison ratios from those artifacts:
 
 - `907x` faster than the measured VectorBT CPU workflow
 - `34x` faster than the app's own CPU path on the same scenario
 
-**Latest saved 250k rerun set**
+**Latest saved `250,000`-pair warm app-path rerun (`2026-04-03` artifacts)**
 
 - Scenario: `Double MA`, `ALMA/ALMA`, exact grid
 - Workload: `250,000` backtests over `200,000` bars
+- Timing boundary: warm app-path faceoff, same-thread, dataset already loaded
 - Hardware: `AMD Ryzen 9 9950X`, `NVIDIA GeForce RTX 4090`
 - VectorGrid GPU kernel: `166.896 ms`
 - VectorGrid CPU: `25709.363 ms`
 - VectorBT CPU workflow: `422945.901 ms`
 
-That is about:
+Saved comparison ratios from those artifacts:
 
 - `2534x` faster than the latest saved VectorBT CPU workflow
 - `154x` faster than the latest saved VectorGrid CPU path on the same scenario
 
 ![VectorGrid vs VectorBT 250k benchmark chart](docs/assets/benchmark-double-ma-250k.svg)
 
-_The chart above is the earlier March public `250,000`-pair snapshot. The bullets above lead with the fastest saved benchmark and the latest heavier rerun set._
+_The chart above is the earlier March public `250,000`-pair warm app-path snapshot. The bullets above lead with the fastest saved snapshot and the latest heavier rerun set, both with explicit artifact-date context._
 
 **Saved benchmark snapshots**
 
@@ -48,7 +52,7 @@ _The chart above is the earlier March public `250,000`-pair snapshot. The bullet
 
 ## What This Measures
 
-These README benchmark snapshots are **warm app-path** faceoff numbers, not the tighter Criterion microbenchmark.
+These README benchmark snapshots are **warm app-path** faceoff numbers, not the tighter Criterion microbenchmark and not the CPU/GPU perf-gate outputs.
 
 - Dataset is loaded once.
 - Warmup runs happen before measured trials.
@@ -56,13 +60,14 @@ These README benchmark snapshots are **warm app-path** faceoff numbers, not the 
 - The `58,300`-pair and `250,000`-pair snapshots use `top_k=10` and `heatmap_bins=0`.
 - The latest `250,000`-pair rerun set uses the real-workflow `10`-row benchmark lane.
 - VectorBT is measured as a CPU Python workflow on `vectorbt 0.28.4`, with local ALMA generation and local metric aggregation that keeps the faceoff semantics aligned with the app's next-bar workflow.
+- Treat the scenario identity and saved-artifact date above as part of the claim. If you need a current number, rerun the matching faceoff scenario instead of reusing the saved snapshot prose.
 
 This repo also has a tighter engine benchmark boundary for the classic `58,300`-pair ALMA case:
 
 - Criterion anchor: `double_ma/gpu_kernel/alma_alma/200k/large/58300pairs`
 - Historical anchor: about `89 ms`
 
-Use the warm app-path numbers for product-facing comparisons. Use the Criterion benchmark for lower-level engine tracking.
+Use the warm app-path numbers only for scenario-matched saved-snapshot comparisons with explicit artifact/date context. Use the Criterion benchmark for lower-level engine tracking.
 
 ## What The App Does
 
@@ -157,7 +162,9 @@ Scenario file:
 
 - [scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json](scripts/vectorbt_double_ma_faceoff_scenario_real_workflow_250k.json)
 
-The saved artifacts currently reflected in the README were written to:
+The saved artifacts currently reflected in the README are historical snapshots. Rerun the matching scenario before repeating the numbers as current.
+
+Those saved artifacts were written to:
 
 - fastest saved `58,300`-pair snapshot:
   - `target/vectorgrid_app_faceoff_only_20260313/`

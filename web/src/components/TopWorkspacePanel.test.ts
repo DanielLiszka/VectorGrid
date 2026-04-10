@@ -9,20 +9,36 @@ import { useDataStore } from '../stores/dataStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { TOP_RESULTS_TABLE_STATE_KEY } from '../utils/core/storageKeys'
 
+const virtualTableState = vi.hoisted(() => ({
+  visibleIndexes: null as number[] | null,
+  topSpacerPx: 0,
+  bottomSpacerPx: 0,
+  scrollToTop: vi.fn(),
+}))
+
 vi.mock('../composables/useVirtualTableRows', () => ({
   useVirtualTableRows: (rows: { value: unknown[] }) => ({
     scrollElementRef: ref(null),
-    virtualRows: computed(() => rows.value.map((row, index) => ({ index, row }))),
-    topSpacerPx: computed(() => 0),
-    bottomSpacerPx: computed(() => 0),
-    scrollToTop: vi.fn(),
+    virtualRows: computed(() => {
+      const source = rows.value
+      const indexes = virtualTableState.visibleIndexes ?? source.map((_, index) => index)
+      return indexes
+        .map((index) => ({ index, row: source[index] }))
+        .filter((entry) => entry.row !== undefined)
+    }),
+    topSpacerPx: computed(() => virtualTableState.topSpacerPx),
+    bottomSpacerPx: computed(() => virtualTableState.bottomSpacerPx),
+    scrollToTop: virtualTableState.scrollToTop,
   }),
 }))
 
 function installTopPanelMountShell(): void {
   document.body.innerHTML = `
-    <section data-vue-panel="top"></section>
-    <div id="topVueShellMount"></div>
+    <section id="shellResultsColumn" class="resultsColumn">
+      <div id="results_panel_top" class="panelHost" data-vue-panel="top">
+        <div id="topVueShellMount"></div>
+      </div>
+    </section>
   `
 }
 
@@ -39,6 +55,10 @@ describe('TopWorkspacePanel', () => {
   beforeEach(() => {
     localStorage.clear()
     installTopPanelMountShell()
+    virtualTableState.visibleIndexes = null
+    virtualTableState.topSpacerPx = 0
+    virtualTableState.bottomSpacerPx = 0
+    virtualTableState.scrollToTop.mockReset()
   })
 
   afterEach(() => {
@@ -158,6 +178,57 @@ describe('TopWorkspacePanel', () => {
 
     rows[2]?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
     expect(document.activeElement).toBe(rows[0])
+  })
+
+  it('renders only the virtual window rows while preserving spacer and selection cues', async () => {
+    virtualTableState.visibleIndexes = [1, 3]
+    virtualTableState.topSpacerPx = 56
+    virtualTableState.bottomSpacerPx = 84
+
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.topRows = 4
+    analysisStore.topColumns = [{ key: 'name', label: 'Name', sort: '', alignLeft: true }]
+    analysisStore.topTableRows = [
+      { selected: false, cells: [{ text: 'row 1', className: 'left', title: 'row 1' }] },
+      { selected: false, cells: [{ text: 'row 2', className: 'left', title: 'row 2' }] },
+      { selected: false, cells: [{ text: 'row 3', className: 'left', title: 'row 3' }] },
+      { selected: true, cells: [{ text: 'row 4', className: 'left', title: 'row 4' }] },
+    ]
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const spacerRows = Array.from(document.querySelectorAll<HTMLTableRowElement>('tr.spacerRow'))
+    expect(spacerRows).toHaveLength(2)
+    expect(spacerRows[0]?.querySelector('td')?.getAttribute('style')).toContain('56px')
+    expect(spacerRows[1]?.querySelector('td')?.getAttribute('style')).toContain('84px')
+
+    const tableWrap = document.querySelector<HTMLElement>('[aria-label="Top optimization results table"]')
+    expect(tableWrap?.classList.contains('virtualTableViewport')).toBe(true)
+
+    const renderedRows = Array.from(document.querySelectorAll<HTMLTableRowElement>('tbody tr:not(.spacerRow)'))
+    expect(renderedRows).toHaveLength(2)
+    expect(renderedRows[0]?.textContent).toContain('row 2')
+    expect(renderedRows[1]?.textContent).toContain('row 4')
+    expect(renderedRows[0]?.textContent).not.toContain('row 1')
+    expect(renderedRows[1]?.getAttribute('aria-selected')).toBe('true')
+
+    const pinButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('button.pinCellBtn'))
+    expect(pinButtons.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Pin candidate 2',
+      'Pin candidate 4',
+    ])
   })
 
   it('announces the selected ranked candidate through a live status region', async () => {
@@ -556,5 +627,66 @@ describe('TopWorkspacePanel', () => {
 
     expect(resultsSpy).toHaveBeenCalledWith('drill')
     expect(resultsSpy).toHaveBeenCalledWith('overview')
+  })
+
+  it('surfaces the winner-only empty state when the run disables top-k output', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.bestTitle = 'Rank #1 · Winner'
+    analysisStore.topRows = 0
+    analysisStore.topFilterMeta = 'Top k disabled by current output settings.'
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('This run returned only the best winner.')
+    expect(text).toContain('Increase Advanced > Top K above 0 and rerun optimization')
+    expect(text).toContain('Top k disabled by current output settings.')
+  })
+
+  it('offers a clear-filter recovery path when active filters empty the shortlist', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const analysisStore = useAnalysisStore(pinia)
+    const dataStore = useDataStore(pinia)
+    const workflowStore = useWorkflowStore(pinia)
+    workflowStore.selectResultsTab('top', { persist: false })
+    dataStore.dataId = 'dataset_1'
+    analysisStore.bestTitle = 'Rank #1 · Winner'
+    analysisStore.topRows = 0
+    analysisStore.filterMinPnl = '1.5'
+    analysisStore.canClearTopFilters = true
+    analysisStore.topSelectionGuardrail = 'The prior selection fell out of the filtered shortlist.'
+    const clearSpy = vi.spyOn(analysisStore, 'clearTopFilters').mockImplementation(() => undefined)
+
+    mount(TopWorkspacePanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    })
+
+    await nextTick()
+    await nextTick()
+
+    const text = document.body.textContent || ''
+    expect(text).toContain('No rows match the current filters.')
+    expect(text).toContain('Broaden or clear the active filters to repopulate the ranking table.')
+    expect(text).toContain('The prior selection fell out of the filtered shortlist.')
+
+    const clearButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      String(button.textContent || '').includes('Clear filters'),
+    )
+    clearButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(clearSpy).toHaveBeenCalledTimes(1)
   })
 })

@@ -118,22 +118,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the app-local models directory path and bundle folder convention.
-- [ ] Document the `manifest.json` schema and required fields.
-- [ ] Document optional `long_model_path`, `short_model_path`, and `calibration_path` semantics.
-- [ ] Document current health states and issue-generation rules.
-- [ ] Document current frontend summary labels and status-line behavior.
-- [ ] Document that bundle selection is optional for score-cache-backed validation.
-- [ ] Document feature-schema-version compatibility as a first-class invariant.
-- [ ] Document which bundle fields are persisted into artifacts and replayed later.
-- [ ] Add or maintain tests for missing manifests, warning states, and UI normalization.
-- [ ] Preserve backward compatibility for currently saved bundle-aware artifacts.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the app-local models directory path and bundle folder convention.
+- [x] Document the `manifest.json` schema and required fields.
+- [x] Document optional `long_model_path`, `short_model_path`, and `calibration_path` semantics.
+- [x] Document current health states and issue-generation rules.
+- [x] Document current frontend summary labels and status-line behavior.
+- [x] Document that bundle selection is optional for score-cache-backed validation.
+- [x] Document feature-schema-version compatibility as a first-class invariant.
+- [x] Document which bundle fields are persisted into artifacts and replayed later.
+- [x] Add or maintain tests for missing manifests, warning states, and UI normalization.
+- [x] Preserve backward compatibility for currently saved bundle-aware artifacts.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -152,6 +152,23 @@ Public-repo quality focus:
 - keep the “bundle optional” user message accurate while the backend still supports score-cache-backed validation without one
 - if bundle metadata expands, keep current fields stable until older artifacts and UI surfaces are updated
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the bundle-inventory contract explicit in the Stage 2 panel rather than leaving it compressed into the status line alone.
+- `MlSignalWorkspacePanel.vue` now explains that:
+  - bundles come from the desktop app-local inventory
+  - selection is optional for score-cache-backed validation
+  - the status line should name the selected bundle state and manifest path when a bundle is chosen
+- The underlying inventory/service contract was left unchanged; `mlSignalService.test.ts` remains the authority for list normalization and optional-bundle status refresh behavior.
+- `REPO_MAP.md` was synced so contributors can locate the bundle inventory contract quickly.
+- Stable fixture / replay payload:
+  - `bundle_id = bundle-a`
+  - status line `Model bundle: bundle-a • healthy • C:\\models\\ml_signal\\bundle-a\\manifest.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

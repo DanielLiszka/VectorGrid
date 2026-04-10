@@ -109,17 +109,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document ML Signal shell-mode entry and exit triggers.
-- [ ] Audit titlebar/footer/host-mount behavior while ML Signal mode is active.
-- [ ] Add or tighten tests for shell-mode restoration after loading/applying ML Signal runs.
-- [ ] Add or tighten tests ensuring conventional optimize content is suppressed when ML shell owns the mount.
-- [ ] Verify action text and shell labels match the actual ML workspace capabilities.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document ML Signal shell-mode entry and exit triggers.
+- [x] Audit titlebar/footer/host-mount behavior while ML Signal mode is active.
+- [x] Add or tighten tests for shell-mode restoration after loading/applying ML Signal runs.
+- [x] Add or tighten tests ensuring conventional optimize content is suppressed when ML shell owns the mount.
+- [x] Verify action text and shell labels match the actual ML workspace capabilities.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -143,3 +143,21 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/11_mlsignal_dataset_export_2026-04-08.md`
 - `REPO_Improvement/01_shell/01_shell_app_root_2026-04-08.md`
 - `REPO_Improvement/01_shell/34_frontend_tauri_bridge_2026-04-08.md`
+
+## Execution Notes
+
+- Closed by making ML shell ownership explicit instead of mode-only.
+- Shared ML primary actions are now derived from the workflow step:
+  - `data` -> Export dataset
+  - `optimize` -> Build score cache
+  - `validate` -> Run ML validation
+  - `analyze` -> Run ML policy sweep
+  - `finalize` -> inspect-only with no shared dispatch
+- `historyService.ts` now restores the ML workflow step during load/apply/rerun using persisted `ml_signal.stage` when available and a request-shape fallback otherwise.
+- `DesktopTitlebar.vue`, `RunFooterPanel.vue`, `optimizeStore.ts`, and `workflowModel.ts` now share the same ML step/action contract.
+- Shell consistency coverage now includes titlebar/footer labels, disabled finalize behavior, saved-run ML step restoration, and adjacent ML shell panels.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/DesktopTitlebar.test.ts src/components/RunFooterPanel.test.ts src/stores/optimizeStore.actions.test.ts src/services/historyService.test.ts src/utils/core/workflowModel.test.ts`
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/components/MlSignalShellPanel.test.ts src/components/VueWorkspaceShell.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

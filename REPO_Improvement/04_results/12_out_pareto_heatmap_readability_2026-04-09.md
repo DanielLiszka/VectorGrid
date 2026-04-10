@@ -94,16 +94,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document minimum visible readability cues for Pareto output.
-- [ ] Document minimum visible readability cues for Heatmap output.
-- [ ] Document axis, legend, and palette language as part of the output contract.
-- [ ] Document Top-results handoff visibility requirements.
-- [ ] Add or tighten tests for rendered chart guidance and readiness output.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document minimum visible readability cues for Pareto output.
+- [x] Document minimum visible readability cues for Heatmap output.
+- [x] Document axis, legend, and palette language as part of the output contract.
+- [x] Document Top-results handoff visibility requirements.
+- [x] Add or tighten tests for rendered chart guidance and readiness output.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -121,6 +121,12 @@ Public-repo quality focus:
 - if chart palette or axis options evolve later, update visible framing and help text in the same change
 - keep readability improvements compatible with both fresh and hydrated result views
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Expanded [ParetoWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/ParetoWorkspacePanel.test.ts) to pin the no-data and no-run empty states and the ready-state axis/meta cues that make the frontier readable without relying on the canvas alone.
+- Revalidated [HeatmapWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/HeatmapWorkspacePanel.test.ts) and [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts) so legend/palette/readiness cues remain aligned with actual chart semantics.
+- No production code change was required in this tranche because the current Pareto and Heatmap output framing already satisfies the documented readability contract once the missing Pareto regression coverage was added.
 
 ## Related Docs
 

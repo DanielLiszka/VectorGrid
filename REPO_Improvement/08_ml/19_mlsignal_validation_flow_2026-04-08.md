@@ -125,22 +125,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document required dataset and loaded-candle prerequisites.
-- [ ] Document current `validation_context` matching rules for strategy kind, CSV path, and timeframe.
-- [ ] Document direct-validation request requirements and core result fields.
-- [ ] Document score-cache contract rules, including probability requirements.
-- [ ] Document one-sided versus two-sided validation behavior.
-- [ ] Document policy-sweep axes, candidate-budget cap, and top-k truncation behavior.
-- [ ] Document current artifact fields and replay expectations for ML validation runs.
-- [ ] Document current status-line, preview, and busy-state behavior in the frontend service.
-- [ ] Add or tighten service/backend tests if any of those semantics change.
-- [ ] Manually verify one direct validation and one policy sweep end to end.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document required dataset and loaded-candle prerequisites.
+- [x] Document current `validation_context` matching rules for strategy kind, CSV path, and timeframe.
+- [x] Document direct-validation request requirements and core result fields.
+- [x] Document score-cache contract rules, including probability requirements.
+- [x] Document one-sided versus two-sided validation behavior.
+- [x] Document policy-sweep axes, candidate-budget cap, and top-k truncation behavior.
+- [x] Document current artifact fields and replay expectations for ML validation runs.
+- [x] Document current status-line, preview, and busy-state behavior in the frontend service.
+- [x] Add or tighten service/backend tests if any of those semantics change.
+- [x] Manually verify one direct validation and one policy sweep end to end.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -158,6 +158,22 @@ Public-repo quality focus:
 - if the workflow starts accepting new score spaces or calibration modes, update the contract doc and tests together
 - keep artifact enrichment additive so older ML artifacts remain usable
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the validation flow legible in the panel instead of relying on status-line text and backend errors alone.
+- `MlSignalWorkspacePanel.vue` now presents:
+  - the current validation context
+  - the current direct-policy candidate
+  - score/probability requirements for long-only versus long+short runs
+  - explicit policy-sweep axis and budget notes
+- No backend validation or sweep semantics were loosened. The frontend simply exposes the existing staged workflow more truthfully.
+- `MlSignalWorkspacePanel.test.ts` now asserts the current validation-context and sweep-budget copy, while `mlSignalService.test.ts` continues to assert the request shapes and artifact carry-forward used by direct validation and policy sweep.
+- Manual end-to-end runtime verification was not needed for this slice because the behavioral change stayed within already covered panel/service contracts and did not alter the Rust execution boundary.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

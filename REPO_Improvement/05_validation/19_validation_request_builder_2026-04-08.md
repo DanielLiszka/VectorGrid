@@ -106,19 +106,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate required top-level validation request fields.
-- [ ] Document strategy-kind normalization and backend shaping rules.
-- [ ] Document candidate-source selection and admission-policy behavior.
-- [ ] Document `admission_provenance` structure and current meaning.
-- [ ] Document module config defaults and clamps for walk-forward, reopt, SPA, perturb, bootstrap, CSCV, and cross-ticker.
-- [ ] Document validation context fields and compatibility expectations.
-- [ ] Document cross-dataset caps and preserved-finalists behavior.
-- [ ] Add or tighten tests if request-shaping behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate required top-level validation request fields.
+- [x] Document strategy-kind normalization and backend shaping rules.
+- [x] Document candidate-source selection and admission-policy behavior.
+- [x] Document `admission_provenance` structure and current meaning.
+- [x] Document module config defaults and clamps for walk-forward, reopt, SPA, perturb, bootstrap, CSCV, and cross-ticker.
+- [x] Document validation context fields and compatibility expectations.
+- [x] Document cross-dataset caps and preserved-finalists behavior.
+- [x] Add or tighten tests if request-shaping behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -135,6 +135,11 @@ Public-repo quality focus:
 - preserve validation context and provenance richness rather than simplifying them away
 - if builder refactoring happens, keep emitted payload shape stable first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the request-builder contract against the current frontend and backend tests rather than widening the payload shape. The existing builder suite still covers admission policy and provenance, module defaults, cross-dataset shaping, compatibility summaries, and validation-context emission.
+- Acceptance evidence for closure: `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts src/services/historyService.test.ts`, plus `cargo test -p ta_desktop_demo_app commands_validation --lib`, `npm --prefix web run lint`, and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

@@ -2672,4 +2672,22 @@ mod tests {
             .category_summary
             .contains("CPU-only: base reruns + hard gates"));
     }
+
+    #[test]
+    fn plain_composite_cpu_gpu_route_summary_remains_explicit() {
+        let req = json!({
+            "backend": { "backend": "GpuKernel" }
+        });
+
+        let summary = build_expected_execution_summary("CompositeCpu", Some(&req));
+        assert!(summary
+            .route_summary
+            .contains("expected GPU composite route (base composite)"));
+        assert!(summary
+            .module_summary
+            .contains("Expected GPU composite route (base composite):"));
+        assert!(summary.route_note_summary.contains(
+            "Plain CompositeCpu GPU validation currently requires uniform HalfTrend parameters across finalists; mixed finalist sets can fall back to CPU."
+        ));
+    }
 }

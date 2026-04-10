@@ -98,18 +98,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the preserved-finalists versus lightweight cross modes.
-- [ ] Document finalist-cap behavior and selection-order rules.
-- [ ] Document base-horizon alignment for cross datasets.
-- [ ] Document which validation modules are omitted during cross reruns and why.
-- [ ] Document post-cross-filter verdict recomputation behavior.
-- [ ] Add or tighten tests for finalist-cap behavior and recomputed approvals.
-- [ ] Add or tighten tests for frontend cross summaries and omitted-module warnings.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the preserved-finalists versus lightweight cross modes.
+- [x] Document finalist-cap behavior and selection-order rules.
+- [x] Document base-horizon alignment for cross datasets.
+- [x] Document which validation modules are omitted during cross reruns and why.
+- [x] Document post-cross-filter verdict recomputation behavior.
+- [x] Add or tighten tests for finalist-cap behavior and recomputed approvals.
+- [x] Add or tighten tests for frontend cross summaries and omitted-module warnings.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,6 +127,11 @@ Public-repo quality focus:
 - if omitted modules change, update preview text, summary text, and tests together
 - keep cross behavior additive and explicit rather than silently “upgrading” it
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the preserved-finalists and lightweight cross-ticker paths against the current command and frontend summaries. Existing tests already prove finalist cap behavior, base-horizon alignment, post-filter verdict recomputation, preserved-finalists request shaping, and cross-summary wording across the builder/service layers.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app commands_validation --lib`, `cargo test -p ta_desktop_demo_app validation_common --lib`, `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts`, plus `npm --prefix web run lint` and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

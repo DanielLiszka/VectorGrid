@@ -99,20 +99,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current RegimeHybrid route contract and its limits.
-- [ ] Ensure frontend preview matches backend runtime truth for hybrid vs CPU fallback.
-- [ ] Keep future no-ADX/full-kernel ideas out of the current shipped contract.
-- [ ] Verify validation summaries and route notes match the runtime path.
-- [ ] Maintain route-evidence tooling for RegimeHybrid cases.
-- [ ] Preserve strategy-local discoverability across route helpers and presets.
-- [ ] Add or maintain tests when route semantics or kernel flavors change.
-- [ ] Avoid generic capability copy that over-promises support.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the current RegimeHybrid route contract and its limits.
+- [x] Ensure frontend preview matches backend runtime truth for hybrid vs CPU fallback.
+- [x] Keep future no-ADX/full-kernel ideas out of the current shipped contract.
+- [x] Verify validation summaries and route notes match the runtime path.
+- [x] Maintain route-evidence tooling for RegimeHybrid cases.
+- [x] Preserve strategy-local discoverability across route helpers and presets.
+- [x] Add or maintain tests when route semantics or kernel flavors change.
+- [x] Avoid generic capability copy that over-promises support.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -131,6 +131,14 @@ Public-repo quality focus:
 - keep any future no-ADX/full-kernel exploration documented separately from the current strategy contract
 - if UI messaging gets sharper, do not silently change backend semantics at the same time
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed this item as a real shipped-contract correction plus a clarity pass. The product rule remains hybrid-first with `CpuOnly` fallback, and this tranche removed one conflicting helper that was still treating RegimeHybrid like a pure `GpuKernel` strategy in profiling code.
+- Fixed `crates/app_core/src/bin/profile_gpu_dynamic_runner.rs` so `backend_for_strategy()` now keeps `RegimeHybrid` on `GpuHybridKernel`, and updated its unit test to match. That aligns the profiling/evidence helper with the backend/frontend route contract already documented elsewhere in the repo.
+- Added route-preview and advanced-panel coverage so RegimeHybrid cannot silently re-grow exact-kernel controls or kernel-route messaging in the UI. Validation summaries for routed composites now also keep the RegimeHybrid wording specific instead of inheriting generic Double-MA GPU text.
+- Did not mix speculative no-ADX/full-kernel future work into the shipped contract. The outcome is stronger evidence and safer contributor-facing defaults, not broader route support.
+- Acceptance evidence for closure: `cargo test -p ta_app_core composite_profile_route --lib`, `cargo test -p ta_app_core --bin profile_gpu_dynamic_runner --quiet`, `cargo test -p ta_app_core double_ma_validation_gpu_hybrid_matches_cpu_metrics_regime_hybrid --quiet`, `cargo test -p ta_app_core double_ma_validation_gpu_hybrid_walk_forward_matches_cpu_regime_hybrid --quiet`, `cargo test -p ta_app_core double_ma_validation_gpu_hybrid_reopt_walk_forward_matches_cpu_regime_hybrid --quiet`, `npm.cmd --prefix web run test -- src/strategies/compositeProfileGpuPolicy.test.ts src/components/OptimizeWorkspacePanel.test.ts src/components/AdvancedWorkspacePanel.test.ts src/services/validationRequestBuilder.test.ts`, `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/services/optimizeService.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

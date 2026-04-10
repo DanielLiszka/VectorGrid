@@ -587,4 +587,29 @@ mod tests {
             overridden_program.executable_fingerprint_hex
         );
     }
+
+    #[test]
+    fn compile_gpu_program_repeated_builds_preserve_fingerprint_and_abi() {
+        let plan = make_plan(
+            StrategyProfileKind::CompositeTrend,
+            StrategyPlanBackend::GpuUnified,
+        );
+
+        let first_program =
+            compile_gpu_predicate_program(&plan).expect("first gpu program should compile");
+        let second_program =
+            compile_gpu_predicate_program(&plan).expect("second gpu program should compile");
+        let first_abi = compile_gpu_predicate_program_abi(&first_program);
+        let second_abi = compile_gpu_predicate_program_abi(&second_program);
+
+        assert_eq!(
+            first_program.compiled_plan_fingerprint_hex,
+            second_program.compiled_plan_fingerprint_hex
+        );
+        assert_eq!(
+            first_program.executable_fingerprint_hex,
+            second_program.executable_fingerprint_hex
+        );
+        assert_eq!(first_abi, second_abi);
+    }
 }

@@ -108,4 +108,85 @@ describe('datasetMeta', () => {
       source_content_fingerprint: null,
     })
   })
+
+  it('preserves explicit resample identity from the current dataset context', () => {
+    const meta = buildDatasetMetaForArtifact('C:/data/spy.csv', {
+      currentDataMeta: {
+        len: 50,
+        min_ts: 1700000000,
+        max_ts: 1700009000,
+        timeframe: '30m',
+      },
+      currentBaseDataMeta: {
+        timeframe: '5m',
+      },
+      currentBaseDatasetCtx: {
+        source: 'polygon',
+        market: 'stocks',
+        symbol: 'SPY',
+      },
+      currentDatasetCtx: {
+        label: 'SPY',
+        timeframe: '30m',
+        base_timeframe: '5m',
+        derived_timeframe: '30m',
+        resample_rule: 'explicit_rule',
+        resample_anchor: 'explicit_anchor',
+        source: 'polygon',
+        market: 'stocks',
+        symbol: 'SPY',
+      },
+    })
+
+    expect(meta).toMatchObject({
+      csv_path: 'C:/data/spy.csv',
+      timeframe: '30m',
+      base_timeframe: '5m',
+      derived_timeframe: '30m',
+      resample_applied: true,
+      resample_rule: 'explicit_rule',
+      resample_anchor: 'explicit_anchor',
+      source: 'polygon',
+      market: 'stocks',
+      symbol: 'SPY',
+    })
+  })
+
+  it('accepts frontend camelCase metadata fields when building artifact dataset provenance', () => {
+    const meta = buildDatasetMetaForArtifact('C:/data/qqq.csv', {
+      currentDataMeta: {
+        len: 60,
+        minTs: 1700000100,
+        maxTs: 1700009100,
+        timeframe: '1d',
+        sourceSizeBytes: 4096,
+        sourceMtimeUtcMs: 1700009200000,
+        sourceContentFingerprint: 'fp-qqq-1d',
+      },
+      currentBaseDataMeta: {
+        timeframe: '1d',
+      },
+      currentBaseDatasetCtx: {
+        source: 'csv',
+        symbol: 'QQQ',
+      },
+      currentDatasetCtx: {
+        label: 'QQQ',
+        timeframe: '1d',
+        source: 'csv',
+        symbol: 'QQQ',
+      },
+    })
+
+    expect(meta).toMatchObject({
+      csv_path: 'C:/data/qqq.csv',
+      len: 60,
+      min_ts: 1700000100,
+      max_ts: 1700009100,
+      source_size_bytes: 4096,
+      source_mtime_utc_ms: 1700009200000,
+      source_content_fingerprint: 'fp-qqq-1d',
+      symbol: 'QQQ',
+    })
+  })
 })

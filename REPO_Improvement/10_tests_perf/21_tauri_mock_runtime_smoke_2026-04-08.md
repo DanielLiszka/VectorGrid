@@ -1,6 +1,6 @@
 # Tauri Mock Runtime Smoke Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -94,17 +94,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current mock app builder and the exact state it wires.
-- [ ] Document what these tests do cover and do not cover.
-- [ ] Document current cancel-token/runtime assertions.
-- [ ] Keep the mock builder aligned with managed-state additions that affect command/runtime smoke.
-- [ ] Add or tighten tests only within this narrow scope unless another test layer is explicitly being extended.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the current mock app builder and the exact state it wires.
+- [x] Document what these tests do cover and do not cover.
+- [x] Document current cancel-token/runtime assertions.
+- [x] Keep the mock builder aligned with managed-state additions that affect command/runtime smoke.
+- [x] Add or tighten tests only within this narrow scope unless another test layer is explicitly being extended.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -119,6 +119,23 @@ Public-repo quality focus:
 - if broader Tauri behavior must be tested, add or extend a different test layer instead of overloading this one
 - update the mock builder in the same change as relevant managed-state additions
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the existing narrow Rust mock-runtime layer; no production runtime code change was required for this item.
+- The current mock app builder remains intentionally small:
+  - `src-tauri/tests/support/mod.rs` wires `AppState` and `BackgroundTaskState`
+  - this item does not claim plugin, window, invoke-handler, or full desktop-builder coverage
+- The current assertions remain the intended ownership boundary:
+  - `mock_runtime_smoke.rs` proves both managed cancel tokens start clear
+  - `command_runtime_wiring.rs` proves `cancel_background_task`, `cancel_current_run`, and `cancel_double_ma_optimization` flip the expected atomic state
+- Residual maintenance risk noted but not blocking for this doc:
+  - `src-tauri/src/run_artifacts.rs` still carries a second local `build_mock_app()` helper, so future managed-state changes still require contributors to keep both mock-builder sync points aligned
+  - that is a drift risk worth watching, but the current narrow smoke boundary is implemented and verified
+- No `README.md` or `REPO_MAP.md` update was required because this item only verified the current Rust mock-runtime boundary.
+- Acceptance evidence for this closure:
+  - `cargo test -p ta_desktop_demo_app --test mock_runtime_smoke`
+  - `cargo test -p ta_desktop_demo_app --test command_runtime_wiring`
 
 ## Related Docs
 

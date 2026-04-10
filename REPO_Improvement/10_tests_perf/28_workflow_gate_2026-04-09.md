@@ -1,6 +1,6 @@
 # Workflow Gate Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -87,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the workflow gate timing boundary and exclusions clearly.
-- [ ] Document the synthetic workload-pack contents and why they exist.
-- [ ] Keep baseline refresh tied to explicit pack or contract changes.
-- [ ] Keep the summary schema and stage breakdown stable or deliberately versioned.
-- [ ] Keep the workflow gate non-options only.
-- [ ] Cross-link workflow-gate results into CPU and post-release review docs without conflating boundaries.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the workflow gate timing boundary and exclusions clearly.
+- [x] Document the synthetic workload-pack contents and why they exist.
+- [x] Keep baseline refresh tied to explicit pack or contract changes.
+- [x] Keep the summary schema and stage breakdown stable or deliberately versioned.
+- [x] Keep the workflow gate non-options only.
+- [x] Cross-link workflow-gate results into CPU and post-release review docs without conflating boundaries.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +115,42 @@ Public-repo quality focus:
 - prefer additive schema discipline over ad hoc threshold tweaks
 - if new workflow stages are added, version the contract rather than quietly expanding the payload
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on direct verification of the existing workflow gate rather than a code change. The current tree already had the intended contract:
+  - a checked-in synthetic workload pack in `scripts/workflow_benchmark_pack.json`
+  - the standalone `ta_workflow_regression` bin as the timing authority
+  - candidate-mode baseline comparison against `scripts/baselines/workflow_regression_baseline.json`
+  - a structured summary written to `target/workflow_regression_summary.json`
+  - explicit stage-budget regression checks plus timing-boundary exclusions in the summary payload
+- Fresh acceptance evidence for this closure:
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_workflow_gate.ps1 -Mode candidate`
+- The fresh candidate gate passed with:
+  - summary artifact: `target/workflow_regression_summary.json`
+  - runtime: `238 ms` vs baseline `229 ms`
+  - stage totals:
+    - `optimize_ms_total`: `22` vs baseline `22`
+    - `validate_ms_total`: `122` vs baseline `119`
+    - `meta_select_ms`: `14` vs baseline `14`
+    - `holdout_ms`: `57` vs baseline `55`
+  - pass lines:
+    - `robust_score_p10_non_decreasing`
+    - `max_dd_p90_non_increasing`
+    - `holdout_score_p10_non_decreasing`
+    - `holdout_max_dd_p90_non_increasing`
+    - `runtime_not_regressed_50pct`
+    - `optimize_stage_not_regressed_100pct`
+    - `validate_stage_not_regressed_100pct`
+    - `meta_stage_not_regressed_150pct`
+    - `holdout_stage_not_regressed_150pct`
+- The fresh summary still records the intended exclusions instead of implying full-app latency:
+  - `tauri_analysis_command_latency`
+  - `workflow_artifact_sync_and_apply`
+  - `top_table_hydration`
+  - `heatmap_rendering`
+  - `drill_and_local_stability_panel_hydration`
+- No baseline refresh was performed. No `README.md` or `REPO_MAP.md` update was required because the workflow gate contract, workload-pack shape, exclusion set, and artifact location were confirmed rather than changed.
 
 ## Related Docs
 

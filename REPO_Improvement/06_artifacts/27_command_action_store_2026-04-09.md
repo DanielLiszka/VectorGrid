@@ -121,16 +121,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every action exported by `commandActionStore`.
-- [ ] Document and test latest-report and latest-meta-report precedence rules.
-- [ ] Add or tighten tests for runtime-running guards on open-report actions.
-- [ ] Audit each consuming component to ensure it delegates instead of duplicating logic.
-- [ ] Decide whether any current action should be split into a more domain-local store instead of expanding this one indefinitely.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document every action exported by `commandActionStore`.
+- [x] Document and test latest-report and latest-meta-report precedence rules.
+- [x] Add or tighten tests for runtime-running guards on open-report actions.
+- [x] Audit each consuming component to ensure it delegates instead of duplicating logic.
+- [x] Decide whether any current action should be split into a more domain-local store instead of expanding this one indefinitely.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -155,3 +155,11 @@ Public-repo quality focus:
 - `REPO_Improvement/01_shell/33_shell_task_lifecycle_summary_2026-04-08.md`
 - `REPO_Improvement/04_results/16_report_path_reopen_flow_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/29_artifact_identity_workflow_model_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a verification-led command-action router item without changing the current store or component call graph.
+- Re-verified the shared router through `web/src/stores/commandActionStore.test.ts` plus the consuming component suites for `GlobalShortcutBridge`, `DesktopTitlebar`, and `RunFooterPanel`, including latest-report precedence, runtime-running guards, and reveal fallback.
+- The consuming shell surfaces continue to delegate into `commandActionStore` instead of duplicating report/open/reveal logic locally.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/stores/commandActionStore.test.ts src/components/GlobalShortcutBridge.test.ts src/components/DesktopTitlebar.test.ts src/components/RunFooterPanel.test.ts`.
+

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import {
   applySavedRun,
@@ -102,6 +102,10 @@ describe('history store actions', () => {
     openRunsDirMock.mockResolvedValue(undefined)
     readSessionHistoryMock.mockClear()
     readSessionHistoryMock.mockReturnValue([])
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   async function flushServiceImports(): Promise<void> {
@@ -255,5 +259,285 @@ describe('history store actions', () => {
 
     store.setSavedRunsSearch('aapl 1m')
     expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
+  })
+
+  it('preserves selected detail while filters still match and clears it when no results remain', () => {
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl', 'holdout'],
+      },
+      {
+        ts: '2026-02-24T00:00:00Z',
+        path: 'C:/runs/msft.json',
+        bytes: 1024,
+        strategyKind: 'CompositeCpu',
+        hasValidation: false,
+        reportXlsxPath: '',
+        csvPath: 'C:/data/msft.csv',
+        tags: ['msft'],
+      },
+    ]
+    store.savedRunDetailCache = {
+      'C:/runs/aapl.json': {
+        strategyKind: 'DoubleMA',
+        timeframe: '1m',
+        csvPath: 'C:/data/aapl.csv',
+        reportPath: 'C:/runs/aapl.xlsx',
+        hasValidation: true,
+        metricSurfaceSummary: 'Core17',
+        metricSurfaceDetail: 'fields=pnl',
+        validationAdmissionSummary: 'scalar_union',
+        validationAdmissionDetail: 'src=top_rows',
+        tags: ['aapl', 'holdout'],
+        mlBundleId: '',
+        mlScoreCachePath: '',
+        mlScoreManifestPath: '',
+        mlFeatureSchemaPath: '',
+        mlFeatureSchemaVersion: '',
+        mlPolicySummary: '',
+        mlPolicySweepSummary: '',
+        mlRunVerdictSummary: '',
+        mlTopCandidatesSummary: '',
+        paramsText: 'strategy: DoubleMA',
+      },
+    }
+
+    store.syncSavedRunsView('C:/runs/aapl.json')
+    expect(store.savedSelectedValue).toBe('C:/runs/aapl.json')
+    expect(store.savedRunDetailTitle).toBe('2026-02-25T00:00:00Z')
+
+    store.setSavedRunsSearch('aapl')
+    expect(store.savedSelectedValue).toBe('C:/runs/aapl.json')
+    expect(store.savedRunDetailTitle).toBe('2026-02-25T00:00:00Z')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
+
+    store.setSavedRunsSearch('zzz')
+    expect(store.savedSelectedValue).toBe('')
+    expect(store.savedRunsVisible).toEqual([])
+    expect(store.savedRunsMeta).toBe('saved runs: 0/2')
+    expect(store.savedRunDetailTitle).toBe('No saved run selected')
+    expect(store.savedRunDetailParams).toBe('Select a saved run to inspect parameters.')
+  })
+
+  it('gates mutating saved-run actions while a runtime is marked active', () => {
+    vi.stubGlobal('document', {
+      documentElement: {
+        dataset: { running: '1' },
+      },
+    })
+
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl'],
+      },
+    ]
+
+    store.syncSavedRunsView('C:/runs/aapl.json')
+
+    expect(store.canSaveSavedRunTags).toBe(false)
+    expect(store.canRefreshSavedRuns).toBe(false)
+    expect(store.canLoadSavedRun).toBe(false)
+    expect(store.canApplySavedRun).toBe(false)
+    expect(store.canRerunSavedRun).toBe(false)
+    expect(store.canOpenSavedRunReport).toBe(false)
+    expect(store.canRevealSavedRun).toBe(false)
+    expect(store.canDeleteSavedRun).toBe(false)
+    expect(store.canOpenRunsDir).toBe(false)
+  })
+
+  it('prunes stale saved-run detail cache entries on refresh while preserving surviving selection', async () => {
+    const store = useHistoryStore()
+    const detailA = {
+      strategyKind: 'DoubleMA',
+      timeframe: '1m',
+      csvPath: 'C:/data/aapl.csv',
+      reportPath: 'C:/runs/aapl.xlsx',
+      hasValidation: true,
+      metricSurfaceSummary: 'Core17',
+      metricSurfaceDetail: '',
+      validationAdmissionSummary: '',
+      validationAdmissionDetail: '',
+      tags: ['aapl'],
+      mlBundleId: '',
+      mlScoreCachePath: '',
+      mlScoreManifestPath: '',
+      mlFeatureSchemaPath: '',
+      mlFeatureSchemaVersion: '',
+      mlPolicySummary: '',
+      mlPolicySweepSummary: '',
+      mlRunVerdictSummary: '',
+      mlTopCandidatesSummary: '',
+      paramsText: 'strategy: DoubleMA',
+    }
+    const detailB = {
+      ...detailA,
+      csvPath: 'C:/data/msft.csv',
+      reportPath: '',
+      tags: ['msft'],
+      paramsText: 'strategy: CompositeCpu',
+    }
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl'],
+      },
+      {
+        ts: '2026-02-24T00:00:00Z',
+        path: 'C:/runs/msft.json',
+        bytes: 1024,
+        strategyKind: 'CompositeCpu',
+        hasValidation: false,
+        reportXlsxPath: '',
+        csvPath: 'C:/data/msft.csv',
+        tags: ['msft'],
+      },
+    ]
+    store.savedRunDetailCache = {
+      'C:/runs/aapl.json': detailA,
+      'C:/runs/msft.json': detailB,
+    }
+    store.syncSavedRunsView('C:/runs/aapl.json')
+    refreshSavedRunsMock.mockResolvedValue({
+      runs: [
+        {
+          ts: '2026-02-25T00:00:00Z',
+          path: 'C:/runs/aapl.json',
+          bytes: 2048,
+          strategyKind: 'DoubleMA',
+          hasValidation: true,
+          reportXlsxPath: 'C:/runs/aapl.xlsx',
+          csvPath: 'C:/data/aapl.csv',
+          tags: ['aapl'],
+        },
+      ],
+    })
+
+    store.refreshSavedRuns()
+    await flushServiceImports()
+    await flushServiceImports()
+
+    expect(store.savedSelectedValue).toBe('C:/runs/aapl.json')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
+    expect(Object.keys(store.savedRunDetailCache)).toEqual(['C:/runs/aapl.json'])
+    expect(store.statusLine).toBe('Refreshed saved runs.')
+  })
+
+  it('prunes deleted saved-run detail cache entries and clears selection when the active run is removed', async () => {
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl'],
+      },
+      {
+        ts: '2026-02-24T00:00:00Z',
+        path: 'C:/runs/msft.json',
+        bytes: 1024,
+        strategyKind: 'CompositeCpu',
+        hasValidation: false,
+        reportXlsxPath: '',
+        csvPath: 'C:/data/msft.csv',
+        tags: ['msft'],
+      },
+    ]
+    store.savedRunDetailCache = {
+      'C:/runs/aapl.json': {
+        strategyKind: 'DoubleMA',
+        timeframe: '1m',
+        csvPath: 'C:/data/aapl.csv',
+        reportPath: 'C:/runs/aapl.xlsx',
+        hasValidation: true,
+        metricSurfaceSummary: '',
+        metricSurfaceDetail: '',
+        validationAdmissionSummary: '',
+        validationAdmissionDetail: '',
+        tags: ['aapl'],
+        mlBundleId: '',
+        mlScoreCachePath: '',
+        mlScoreManifestPath: '',
+        mlFeatureSchemaPath: '',
+        mlFeatureSchemaVersion: '',
+        mlPolicySummary: '',
+        mlPolicySweepSummary: '',
+        mlRunVerdictSummary: '',
+        mlTopCandidatesSummary: '',
+        paramsText: 'strategy: DoubleMA',
+      },
+      'C:/runs/msft.json': {
+        strategyKind: 'CompositeCpu',
+        timeframe: '1m',
+        csvPath: 'C:/data/msft.csv',
+        reportPath: '',
+        hasValidation: false,
+        metricSurfaceSummary: '',
+        metricSurfaceDetail: '',
+        validationAdmissionSummary: '',
+        validationAdmissionDetail: '',
+        tags: ['msft'],
+        mlBundleId: '',
+        mlScoreCachePath: '',
+        mlScoreManifestPath: '',
+        mlFeatureSchemaPath: '',
+        mlFeatureSchemaVersion: '',
+        mlPolicySummary: '',
+        mlPolicySweepSummary: '',
+        mlRunVerdictSummary: '',
+        mlTopCandidatesSummary: '',
+        paramsText: 'strategy: CompositeCpu',
+      },
+    }
+    store.syncSavedRunsView('C:/runs/aapl.json')
+    refreshSavedRunsMock.mockResolvedValue({
+      runs: [
+        {
+          ts: '2026-02-24T00:00:00Z',
+          path: 'C:/runs/msft.json',
+          bytes: 1024,
+          strategyKind: 'CompositeCpu',
+          hasValidation: false,
+          reportXlsxPath: '',
+          csvPath: 'C:/data/msft.csv',
+          tags: ['msft'],
+        },
+      ],
+    })
+
+    store.deleteSavedRun('C:/runs/aapl.json')
+    await flushServiceImports()
+    await flushServiceImports()
+
+    expect(deleteSavedRunMock).toHaveBeenCalledWith('C:/runs/aapl.json')
+    expect(store.savedSelectedValue).toBe('')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/msft.json'])
+    expect(Object.keys(store.savedRunDetailCache)).toEqual(['C:/runs/msft.json'])
+    expect(store.statusLine).toBe('Deleted saved run.')
   })
 })

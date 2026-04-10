@@ -1,6 +1,6 @@
 # CUPTI SASS Probe Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document inventory and capture modes separately.
-- [ ] Document the kernel-filter and metric-contract parameters that change probe meaning.
-- [ ] Keep process-exclusivity checks mandatory.
-- [ ] Keep the CUPTI probe non-options only.
-- [ ] Record environment prerequisites and expected artifact locations.
-- [ ] Avoid promoting probe outputs into release authority.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document inventory and capture modes separately.
+- [x] Document the kernel-filter and metric-contract parameters that change probe meaning.
+- [x] Keep process-exclusivity checks mandatory.
+- [x] Keep the CUPTI probe non-options only.
+- [x] Record environment prerequisites and expected artifact locations.
+- [x] Avoid promoting probe outputs into release authority.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,42 @@ Public-repo quality focus:
 - keep CUPTI invocation rare and explicit
 - if repeated capture questions emerge, prefer playbook refinement over broadening the tool’s authority
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on real inventory-mode and capture-mode probe runs rather than a wrapper change.
+- Fresh acceptance evidence for this closure:
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_cupti_sass_probe.ps1 -Mode inventory -OutputDir target/cupti_sass_probe/doc35_inventory`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_cupti_sass_probe.ps1 -Mode capture -Workload large -MetricContract full17 -OutputDir target/cupti_sass_probe/doc35_capture_large_full17`
+- The wrapper produced the expected inventory artifacts:
+  - `target/cupti_sass_probe/doc35_inventory/cupti_metric_inventory.json`
+  - `target/cupti_sass_probe/doc35_inventory/last_command.json`
+  - `target/cupti_sass_probe/doc35_inventory/run_cupti_sass_probe_last_command.txt`
+- The verified inventory output confirmed the local environment is supported for this probe surface:
+  - `capture_status`: `supported`
+  - GPU: `NVIDIA GeForce RTX 4090`
+  - driver version: `13020`
+  - CUDA path: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2`
+  - CUPTI DLL: `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\extras\CUPTI\lib64\cupti64_2026.1.0.dll`
+  - chip name: `AD102`
+  - metric inventory count: `48`
+- The wrapper also produced the expected capture artifacts:
+  - `target/cupti_sass_probe/doc35_capture_large_full17/large_full17_none_region_metrics.json`
+  - `target/cupti_sass_probe/doc35_capture_large_full17/last_command.json`
+  - `target/cupti_sass_probe/doc35_capture_large_full17/run_cupti_sass_probe_last_command.txt`
+- The verified capture output stayed within the documented default surface and returned non-empty matched records:
+  - `capture_status`: `ok`
+  - `target_kernel_filter`: `double_cross_backtest_tm_flex_f32_lockstep_time`
+  - `matched_kernel_names`: `double_cross_backtest_tm_flex_f32_lockstep_time_m17_regime_off_norisk_eps0_nocomm`
+  - `matched_instruction_records`: `1668`
+  - `region_metrics_count`: `1`
+  - `backend_used`: `Gpu`
+  - `backend_route`: `GpuKernel`
+  - runtime: `3791 ms`
+  - wall time: `3793 ms`
+- The capture notes also showed that the probe reused the exact-route CUDA runtime context, persisted only the filtered kernel family, and dropped `0` records at disable time.
+- Both commands were executed through `scripts/run_cupti_sass_probe.ps1`, so the wrapper’s mandatory process-exclusivity guard remained part of the verified behavior for this closure.
+- No `README.md` or `REPO_MAP.md` update was required because this item verified an existing specialized diagnostic workflow rather than changing public benchmark, routing, or product behavior.
 
 ## Related Docs
 

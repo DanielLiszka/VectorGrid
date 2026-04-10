@@ -101,7 +101,9 @@ const showModeControl = computed(() => strategyCapabilities.value.usesGlobalMode
 const showHeatmapControl = computed(() => strategyCapabilities.value.supportsHeatmap)
 const showTopKControl = computed(() => strategyCapabilities.value.supportsTopK)
 const showIncludeAllControl = computed(() => strategyCapabilities.value.supportsIncludeAll)
-const showExportControl = computed(() => strategyCapabilities.value.supportsExportAll)
+const showExportControl = computed(() =>
+  strategyCapabilities.value.supportsExportAll || exportPathDraft.value.trim().length > 0,
+)
 const showScoreModeControl = computed(() => [
   'DoubleMa',
   'DynamicDoubleMa',
@@ -335,6 +337,35 @@ const hurdleTauStateNote = computed(() =>
     ? 'Optional hurdle threshold applied to Sortino, Omega, and downside-family metrics. Leaving it blank preserves the current zero-threshold semantics.'
     : 'Optional hurdle threshold. Blank or 0 preserves the current metric semantics.',
 )
+const exportAllCsvPathStateNote = computed(() => {
+  const hasValue = exportPathDraft.value.trim().length > 0
+  if (!strategyCapabilities.value.supportsExportAll) {
+    return hasValue
+      ? 'The current route does not support export-all CSV output. Clear this path or switch to a GPU-kernel route that advertises export support.'
+      : 'Export-all CSV is available only on routes that advertise GPU-kernel export support.'
+  }
+  if (String(includeAllDraft.value || '').trim() === 'true') {
+    return 'Requires include all = false.'
+  }
+  if (modeDraft.value.trim() !== 'Grid') {
+    return 'Requires mode = Grid.'
+  }
+  if (extraShortlistObjectivesDraft.value.trim().length > 0) {
+    return 'Requires extra shortlist objectives to be empty.'
+  }
+  if (shortlistConfidenceModeDraft.value.trim().length > 0) {
+    return 'Requires shortlist confidence mode to be empty.'
+  }
+  if (shortlistUnionModeDraft.value.trim().length > 0) {
+    return 'Requires shortlist union mode to be empty.'
+  }
+  if (shortlistSliceModeDraft.value.trim().length > 0) {
+    return 'Requires shortlist slice mode to be empty.'
+  }
+  return hasValue
+    ? 'Streams per-pair optimize output to CSV on the current supported route.'
+    : 'Optional per-pair optimize CSV export on supported GPU-kernel routes.'
+})
 
 const stamp = computed(() => formatUiTimeFromUnixMs(updatedAtUnixMs.value))
 
@@ -927,8 +958,12 @@ onBeforeUnmount(() => {
             />
             <button type="button" :disabled="!canBrowseExportAll" @click="advancedStore.browseExportAll()">Browse</button>
           </div>
+          <div class="muted mono">{{ exportAllCsvPathStateNote }}</div>
         </template>
-        <div v-if="!showHeatmapControl || !showTopKControl || !showIncludeAllControl || !showExportControl" class="muted mono">
+        <div
+          v-if="!showHeatmapControl || !showTopKControl || !showIncludeAllControl || !strategyCapabilities.supportsExportAll"
+          class="muted mono"
+        >
           {{ strategyCapabilities.outputSummary }}
         </div>
       </section>

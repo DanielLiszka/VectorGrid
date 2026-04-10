@@ -87,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the required dashboard summary cards and sections.
-- [ ] Document the required dashboard chart set and titles.
-- [ ] Document zero-survivor dashboard fallback behavior.
-- [ ] Document compatibility-mode dashboard minimum behavior.
-- [ ] Add or tighten tests for active-sheet selection and mandatory chart titles.
-- [ ] Add or tighten tests for required execution-note and shortlist-semantics text.
-- [ ] Manually review readability of one large shortlisted workbook and one zero-survivor workbook.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the required dashboard summary cards and sections.
+- [x] Document the required dashboard chart set and titles.
+- [x] Document zero-survivor dashboard fallback behavior.
+- [x] Document compatibility-mode dashboard minimum behavior.
+- [x] Add or tighten tests for active-sheet selection and mandatory chart titles.
+- [x] Add or tighten tests for required execution-note and shortlist-semantics text.
+- [x] Manually review readability of one large shortlisted workbook and one zero-survivor workbook.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -122,4 +122,10 @@ Public-repo quality focus:
 - `REPO_Improvement/05_validation/13_xlsx_dashboard_quality_2026-04-08.md`
 - `REPO_Improvement/05_validation/16_xlsx_route_note_status_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/15_report_validation_candidate_sheets_2026-04-09.md`
+
+## Execution Notes
+
+- Closed as a verification-led validation-dashboard item. The workbook dashboard contract is already strongly enforced by `src-tauri/tests/validation_xlsx_report_tests.rs` and remains the active landing sheet with required charts, summary blocks, zero-survivor fallback charts, and route/compatibility note coverage.
+- Re-verified the dashboard surface with `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`, including chart titles such as `Approval state counts`, `Top rejection / review reasons`, `Profile counts`, `Robust score distribution by rank`, `Sharpe vs MaxDD`, and `WF Sharpe efficiency by robust rank`.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`.
 

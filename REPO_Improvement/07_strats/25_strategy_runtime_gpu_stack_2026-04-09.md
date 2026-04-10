@@ -1,6 +1,6 @@
 # Strategy Runtime GPU Stack Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -132,20 +132,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the compile -> ABI -> executable -> upload lifecycle in one place.
-- [ ] Document all GPU runtime caches and their invalidation triggers.
-- [ ] Add or tighten tests for fingerprint and ABI stability across repeated builds of the same plan.
-- [ ] Add or tighten tests for cache-hit behavior on compatible repeated runs and cache-miss behavior on incompatible inputs.
-- [ ] Add or tighten tests for route-diagnostic stability when dynamic GPU handles are present or absent.
-- [ ] Inventory runtime env flags, diagnostics toggles, and persistence switches in `gpu_backtest_kernel.rs`.
-- [ ] Decide whether a surgical internal split of `gpu_backtest_kernel.rs` improves auditability without altering behavior.
-- [ ] Re-run targeted perf/probe tooling for any cache or residency change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the compile -> ABI -> executable -> upload lifecycle in one place.
+- [x] Document all GPU runtime caches and their invalidation triggers.
+- [x] Add or tighten tests for fingerprint and ABI stability across repeated builds of the same plan.
+- [x] Add or tighten tests for cache-hit behavior on compatible repeated runs and cache-miss behavior on incompatible inputs.
+- [x] Add or tighten tests for route-diagnostic stability when dynamic GPU handles are present or absent.
+- [x] Inventory runtime env flags, diagnostics toggles, and persistence switches in `gpu_backtest_kernel.rs`.
+- [x] Decide whether a surgical internal split of `gpu_backtest_kernel.rs` improves auditability without altering behavior.
+- [x] Re-run targeted perf/probe tooling for any cache or residency change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -165,6 +165,22 @@ Public-repo quality focus:
 - preserve CPU fallback and existing route gating throughout
 - if a cleanup makes route or cache behavior harder to explain, stop and restore the simpler shape
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the runtime cache invalidation contract in [strategy_gpu_runtime.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/strategy_gpu_runtime.rs):
+  - added `reset_gpu_strategy_executable_cache_clears_entries_and_counters`
+  - freezes the expectation that compiled-bundle and executable caches fully clear their entry counts and hit/miss counters after reset
+- Tightened same-plan GPU program stability in [strategy_gpu_program.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/strategy_gpu_program.rs):
+  - added `compile_gpu_program_repeated_builds_preserve_fingerprint_and_abi`
+  - freezes the expectation that repeated compilation of the same compiled plan preserves program fingerprints and ABI payloads
+- Kept scope intentionally additive:
+  - no GPU route-policy changes
+  - no cache-key changes
+  - no CUDA upload/runtime behavior changes
+- Acceptance evidence:
+  - `cargo test -p ta_app_core strategy_gpu_runtime --lib`
+  - `cargo test -p ta_app_core strategy_gpu_program --lib`
 
 ## Related Docs
 

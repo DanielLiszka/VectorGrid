@@ -1,6 +1,6 @@
 # Desktop Geometry Behavior Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the geometry suite as opt-in, not stable-default coverage.
-- [ ] Keep resize assertions tolerance-based and environment-aware.
-- [ ] Keep restore-to-original-geometry mandatory in the spec.
-- [ ] Separate geometry smoke from window-state persistence concerns.
-- [ ] Keep the geometry suite non-options only.
-- [ ] Capture and review artifact logs whenever geometry behavior becomes flaky.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the geometry suite as opt-in, not stable-default coverage.
+- [x] Keep resize assertions tolerance-based and environment-aware.
+- [x] Keep restore-to-original-geometry mandatory in the spec.
+- [x] Separate geometry smoke from window-state persistence concerns.
+- [x] Keep the geometry suite non-options only.
+- [x] Capture and review artifact logs whenever geometry behavior becomes flaky.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [ ] Re-close only after a current `test:desktop:geometry` run proves restore-to-original-geometry for position as well as size on the real desktop harness.
 
 ## Verification Plan
 
@@ -114,6 +115,31 @@ Public-repo quality focus:
 - preserve the current restore behavior even if the assertion set evolves
 - if geometry flakes, first improve waits and diagnostics before loosening the contract
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Reopened on 2026-04-10 after a fresh desktop geometry run showed that restore-to-original-geometry is still not proven for position on the current harness.
+- The spec continues to pass the size/usability portion of the journey:
+  - resize to a deterministic target still lands within the configured width/height tolerance (`24px`)
+  - the shell remains usable after resize
+  - settings still opens after the resize step
+- The unresolved gap is restore position:
+  - the original window position at run start was `x=2973`, `y=2245`
+  - after the resize command, both WebDriver `getWindowRect()` and page-level `screenX/screenY` reported `x=5946`, `y=4490`
+  - reissuing the original rectangle in the restore step left the window at `x=5946`, `y=4490`
+  - that means this doc cannot stay closed while its scope still claims restore-to-original-geometry coverage
+- The geometry suite remains explicitly opt-in:
+  - `test:desktop:geometry` remains the focused verification command
+  - `test:desktop:smoke` remains the stable default suite and does not include geometry
+- Geometry smoke remains distinct from persisted window-state correctness:
+  - the failing surface is current-run resize/restore geometry, not relaunch persistence
+  - window-state persistence and titlebar maximize/restore semantics stay documented separately
+- Cross-doc sync updated in this session:
+  - `web/e2e/desktop/README.md` now points troubleshooting at `preview-server.log`, matching the actual harness artifact name
+- Refresh evidence from the reopen audit:
+  - latest failing opt-in geometry run: `output/wdio/desktop-smoke/2026-04-10T17-58-34-582Z/`
+  - previously passing size-only geometry run that is no longer sufficient for closure: `output/wdio/desktop-smoke/2026-04-10T17-44-33-069Z/`
+  - companion stable desktop smoke run from the earlier tranche: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
 
 ## Related Docs
 

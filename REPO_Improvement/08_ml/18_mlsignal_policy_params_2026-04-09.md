@@ -128,22 +128,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every current single-policy field and its shipped default.
-- [ ] Document every current sweep-axis field and its shipped default.
-- [ ] Distinguish backend defaults from frontend store defaults.
-- [ ] Call out the current sweep `top_k` mismatch between frontend and backend defaults.
-- [ ] Document the single-policy request shape versus the sweep request shape.
-- [ ] Document that sweep exit behavior still comes from the single-policy toggles.
-- [ ] Document the `20,000`-candidate expansion cap and robust-score ordering behavior.
-- [ ] Document PSR/DSR optional gates and where they are forwarded.
-- [ ] Document how policy details are persisted into artifacts and restored through replay.
-- [ ] Add or maintain tests for defaults, explicit overrides, and replay shape stability.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document every current single-policy field and its shipped default.
+- [x] Document every current sweep-axis field and its shipped default.
+- [x] Distinguish backend defaults from frontend store defaults.
+- [x] Call out the current sweep `top_k` mismatch between frontend and backend defaults.
+- [x] Document the single-policy request shape versus the sweep request shape.
+- [x] Document that sweep exit behavior still comes from the single-policy toggles.
+- [x] Document the `20,000`-candidate expansion cap and robust-score ordering behavior.
+- [x] Document PSR/DSR optional gates and where they are forwarded.
+- [x] Document how policy details are persisted into artifacts and restored through replay.
+- [x] Add or maintain tests for defaults, explicit overrides, and replay shape stability.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -162,6 +162,24 @@ Public-repo quality focus:
 - keep the current bounded sweep posture unless product goals change deliberately
 - preserve older artifacts that encode the current single-policy or sweep summary fields
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by surfacing the active policy-parameter contract directly in the panel rather than leaving it spread across store defaults and service code.
+- `MlSignalWorkspacePanel.vue` now shows:
+  - current single-policy parameters (`t_long`, `t_short`, `delta`, `max_hold_bars`)
+  - inherited exit-toggle behavior for sweep
+  - explicit sweep budget notes, including the frontend `top_k = 10` default and the fact that Rust still defaults omitted `top_k` to `25`
+  - the `20,000`-candidate cap note
+- No request-shape semantics were changed. The panel remains explicit while the service continues sending the current direct-validation and policy-sweep request shapes.
+- `MlSignalWorkspacePanel.test.ts` now asserts the current-policy summary and sweep-budget note so replay and default drift remain visible in component coverage.
+- Stable fixture / replay payload:
+  - single-policy: `t_long=0.63`, `t_short=0.58`, `delta=0.07`, `max_hold_bars=11`
+  - sweep retain: `top_k=10`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

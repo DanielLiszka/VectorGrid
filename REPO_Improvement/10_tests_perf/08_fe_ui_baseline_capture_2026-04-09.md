@@ -1,6 +1,6 @@
 # Frontend UI Baseline Capture Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -29,6 +29,7 @@ The repo already has a broad baseline capture script that serves the built `web/
 ## Current Code Surface
 
 - `web/scripts/capture-baseline-ui.mjs` drives the local static server, mocked-Tauri boot path, screenshot sequence, and metric emission.
+- `web/scripts/support/mockedTauriHarness.mjs` provides the mocked-Tauri startup and event behavior that keeps the capture path deterministic.
 - `scripts/baselines/ui_capture/` stores the generated PNG evidence and `perf_metrics.json` review payload.
 - `web/package.json` exposes the `baseline:ui` script and therefore defines how contributors actually trigger the capture path.
 - `web/src/App.vue` and shell-level components determine which high-level surfaces the capture script is attempting to record.
@@ -87,18 +88,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory the currently generated screenshot set and classify each image as required, optional, or redundant.
-- [ ] Document the meaning and non-authoritative nature of the captured performance metrics.
-- [ ] Tie each required screenshot family to a user-visible shell surface or workflow step.
-- [ ] Define a refresh procedure for legitimate UI changes that avoids accidental stale baselines.
-- [ ] Define reviewer prompts for layout drift, missing chrome, broken empty states, and bad result readability.
-- [ ] Keep the capture path non-options only and explicitly exclude options workspaces or options artifacts.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Inventory the currently generated screenshot set and classify each image as required, optional, or redundant.
+- [x] Document the meaning and non-authoritative nature of the captured performance metrics.
+- [x] Tie each required screenshot family to a user-visible shell surface or workflow step.
+- [x] Define a refresh procedure for legitimate UI changes that avoids accidental stale baselines.
+- [x] Define reviewer prompts for layout drift, missing chrome, broken empty states, and bad result readability.
+- [x] Keep the capture path non-options only and explicitly exclude options workspaces or options artifacts.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +116,39 @@ Public-repo quality focus:
 - preserve existing screenshot artifacts until a replacement capture taxonomy is documented
 - if a capture becomes too noisy to be useful, narrow the capture target rather than deleting baseline evidence entirely
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on a fresh artifact refresh after the dense-table viewport change from `10_tests_perf/06`.
+- Current required script-generated families are:
+  - startup evidence: `startup_overlay_intro.png` when the held overlay is visible, otherwise `startup_shell_bootstrap.png`
+  - top-level shell workspaces: `workspace_workflow.png`, `workspace_library.png`, `workspace_aggregate.png`, `workspace_pro.png`, `workspace_settings.png`
+  - workflow routing states: `workflow_step_data.png`, `workflow_step_optimize.png`, `workflow_step_validate.png`, `workflow_step_analyze.png`, `workflow_step_finalize.png`
+  - optimize controls/results: `workflow_optimize_controls_{opt,strategy,advanced}.png` and `workflow_optimize_results_{overview,top,pareto,heatmap}.png`
+  - analyze results: `workflow_analyze_results_{overview,top,pareto,drill,heatmap}.png`
+  - broad closing snapshot: `fullpage_final.png`
+  - metric payload: `perf_metrics.json`
+- Current optional historical artifacts in `scripts/baselines/ui_capture/` include older `prompt*`, `manual`, `results_tab_*`, `controls_tab_*`, and `workflow_tab_*` files. They remain retained review history but are not authoritative outputs of the current `baseline:ui` script.
+- `perf_metrics.json` remains review evidence only:
+  - use it for obvious cold-start, TTI, heap, and capture-runtime drift checks
+  - do not treat it as CPU/GPU perf-gate authority or release benchmark evidence
+- Reviewer prompts for the required images:
+  - startup capture: confirm shell bootstrap or overlay path still looks intentional and not half-mounted
+  - workspace/workflow families: look for missing chrome, broken navigation state, collapsed panes, empty or stale major surfaces, and visibly degraded dense-result readability
+  - `fullpage_final.png`: use as a broad shell sanity pass, not a pixel-perfect oracle
+  - `perf_metrics.json`: escalate only clearly suspicious changes, not normal run-to-run jitter
+- Refresh procedure:
+  - rerun `baseline:ui` after broad shell/layout/overlay changes, after deliberate capture-script changes, and when review needs updated broad screenshots for touched frontend surfaces
+  - keep non-options scope only; do not mix options workspaces into this capture lane
+- Cross-doc sync:
+  - no `README.md` or `REPO_MAP.md` update was required because the capture contract stayed within the existing non-options shell and artifact path
+- Acceptance evidence:
+  - `npm.cmd --prefix web run baseline:ui`
+  - output refreshed under `scripts/baselines/ui_capture/`
+  - `perf_metrics.json` emitted with current coarse capture telemetry
+  - supporting frontend regression evidence from the same tranche:
+    - `npm.cmd --prefix web run test:browser:ux`
+    - `npm.cmd --prefix web run a11y:smoke`
 
 ## Related Docs
 

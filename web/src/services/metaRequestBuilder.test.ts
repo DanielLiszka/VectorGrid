@@ -258,4 +258,31 @@ describe('metaRequestBuilder', () => {
       holdout_mode: 'light'
     })
   })
+
+  it('clamps grouping representatives and keeps shortlist defaults hard-enabled', () => {
+    const req = buildMetaSelectionRequest({
+      strategyKind: 'CompositeMo',
+      evalHoldout: true,
+      holdoutMode: 'heavy',
+      holdoutReps: '9',
+      clusterIntBucket: '0',
+      clusterFloatBucket: '',
+      holdoutEvalTopN: '10',
+      holdoutExploreN: '3',
+      holdoutRankBy: 'auto',
+    })
+
+    expect(req).toMatchObject({
+      cluster_config: {
+        int_bucket: 1,
+        float_bucket: 0,
+      },
+      cluster_representatives: 3,
+      strict_shortlist: true,
+      allow_shortlist_fallback: false,
+      holdout_eval_top_n: 10,
+      holdout_eval_explore_n: 3,
+      holdout_eval_rank_by: 'auto',
+    })
+  })
 })

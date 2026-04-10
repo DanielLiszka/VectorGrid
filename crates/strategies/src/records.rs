@@ -286,4 +286,62 @@ mod tests {
         // missing exit_t, etc
         assert!(recs.validate().is_err());
     }
+
+    #[test]
+    fn trade_records_stats_and_roundtrip_are_scoped_per_col() {
+        let mut recs = TradeRecords::default();
+        recs.try_push_trade(
+            7,
+            &Trade {
+                entry_t: 0,
+                exit_t: 4,
+                direction: 1,
+                pnl: 0.20,
+                bars: 4,
+                open: false,
+            },
+        )
+        .unwrap();
+        recs.try_push_trade(
+            8,
+            &Trade {
+                entry_t: 1,
+                exit_t: 5,
+                direction: -1,
+                pnl: -0.10,
+                bars: 4,
+                open: false,
+            },
+        )
+        .unwrap();
+
+        let col7 = recs.to_trades_for_col(7);
+        let col8 = recs.to_trades_for_col(8);
+        assert_eq!(col7.len(), 1);
+        assert_eq!(col8.len(), 1);
+        assert_eq!(col7[0].pnl, 0.20);
+        assert_eq!(col8[0].pnl, -0.10);
+
+        let stats7 = recs.trade_stats_for_col(7).expect("col 7 stats");
+        let stats8 = recs.trade_stats_for_col(8).expect("col 8 stats");
+        assert_eq!(stats7.closed_trades, 1);
+        assert_eq!(stats7.wins, 1);
+        assert_eq!(stats8.closed_trades, 1);
+        assert_eq!(stats8.losses, 1);
+    }
+
+    #[test]
+    fn trade_record_try_from_trade_rejects_timestamp_overflow() {
+        let trade = Trade {
+            entry_t: (u32::MAX as usize) + 1,
+            exit_t: 7,
+            direction: 1,
+            pnl: 0.0,
+            bars: 0,
+            open: false,
+        };
+
+        let err = TradeRecord::try_from_trade(0, &trade).unwrap_err();
+        assert!(err.contains("overflow"));
+    }
 }

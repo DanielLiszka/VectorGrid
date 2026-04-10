@@ -127,19 +127,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document validation service responsibility groups and ownership boundaries.
-- [ ] Document preview-generation and execution-orchestration flows separately.
-- [ ] Document status-line/store-patch behavior for success, failure, and partial export/report outcomes.
-- [ ] Document artifact persistence and workflow-artifact application behavior.
-- [ ] Document cross-dataset refresh and selection synchronization behavior.
-- [ ] Add tests for preview parity with actual request execution.
-- [ ] Add tests for export/report failure status handling.
-- [ ] Add tests for successful validation artifact application and cross-dataset refresh flows.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document validation service responsibility groups and ownership boundaries.
+- [x] Document preview-generation and execution-orchestration flows separately.
+- [x] Document status-line/store-patch behavior for success, failure, and partial export/report outcomes.
+- [x] Document artifact persistence and workflow-artifact application behavior.
+- [x] Document cross-dataset refresh and selection synchronization behavior.
+- [x] Add tests for preview parity with actual request execution.
+- [x] Add tests for export/report failure status handling.
+- [x] Add tests for successful validation artifact application and cross-dataset refresh flows.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -157,6 +157,11 @@ Public-repo quality focus:
 - keep preview and execution logic close unless a better shared contract layer is introduced
 - if the service is later split, preserve current user-visible behavior and store-patch semantics first
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the service orchestration layer after the earlier artifact-persistence/status hardening and the current report/export regression sweep. `validationService.test.ts` now covers preview generation, execution orchestration, artifact persistence warnings, CSV/JSON/XLSX export branches, and Stage 3 fallback behavior.
+- Acceptance evidence for closure: `npm --prefix web run test -- src/services/validationService.test.ts src/components/ValidationWorkspacePanel.test.ts src/stores/validationStore.actions.test.ts src/services/workflowArtifactsSync.test.ts src/stores/workflowArtifactsStore.test.ts`, plus `cargo test -p ta_desktop_demo_app commands_validation --lib`.
 
 ## Related Docs
 

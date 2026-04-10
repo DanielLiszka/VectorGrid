@@ -1,6 +1,6 @@
 # Frontend Tauri Bridge Tests Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -124,19 +124,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the bridge-test layers and what each one protects.
-- [ ] Document generated-command freshness and regeneration expectations.
-- [ ] Document mock IPC strictness and unknown-command failure expectations.
-- [ ] Document event-wrapper and instrumentation parity coverage expectations.
-- [ ] Add tests or checks discouraging raw Tauri API bypass in feature code.
-- [ ] Add parity tests when new commands/events are introduced.
-- [ ] Add tests for teardown/reset behavior where coverage is still implicit.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the bridge-test layers and what each one protects.
+- [x] Document generated-command freshness and regeneration expectations.
+- [x] Document mock IPC strictness and unknown-command failure expectations.
+- [x] Document event-wrapper and instrumentation parity coverage expectations.
+- [x] Add tests or checks discouraging raw Tauri API bypass in feature code.
+- [x] Add parity tests when new commands/events are introduced.
+- [x] Add tests for teardown/reset behavior where coverage is still implicit.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -154,6 +154,22 @@ Public-repo quality focus:
 - keep generated command inventory and runtime wrapper tests in sync with Rust command changes
 - if the bridge grows, extend the current test matrix instead of replacing it with one broad smoke test
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the verified current Tauri bridge contract:
+  - the invoke/event/instrumentation subset now passes explicitly via `npm.cmd --prefix web run test -- src/tauri/invoke.contract.test.ts src/tauri/invoke.mockIPC.test.ts src/tauri/events.test.ts src/tauri/instrumentation.test.ts`
+  - `npm.cmd --prefix web run lint` continues to enforce generated-command freshness through `check:commands` and `check-known-tauri-commands.mjs`
+- Tightened bridge authority during closure:
+  - [instrumentation.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/tauri/instrumentation.ts) now imports the shared `TRACKED_TAURI_COMMANDS` registry from [taskStore.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/taskStore.ts) instead of maintaining a duplicate tracked-command list
+- Kept scope intentionally additive:
+  - no raw Tauri API bypasses were introduced
+  - no mock IPC loosened
+  - no generated command inventory changed
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/tauri/invoke.contract.test.ts src/tauri/invoke.mockIPC.test.ts src/tauri/events.test.ts src/tauri/instrumentation.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `set NODE_OPTIONS=--max-old-space-size=4096 && npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

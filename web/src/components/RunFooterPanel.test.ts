@@ -159,9 +159,13 @@ describe("RunFooterPanel", () => {
     setActivePinia(pinia);
     const workflow = useWorkflowStore(pinia);
     const actions = useCommandActionStore(pinia);
+    const optimize = useOptimizeStore(pinia);
     workflow.selectWorkflowStep("optimize", { persist: false });
     workflow.selectMode("ml-signal", { persist: false });
-    useOptimizeStore(pinia).runDisabled = false;
+    optimize.runDisabled = false;
+    optimize.mlSignalScoreInputPath = "C:\\data\\scores.csv";
+    optimize.mlSignalScoreCachePath = "C:\\data\\score_cache.json";
+    useDataStore(pinia).dataId = "data-1";
     const runSpy = vi
       .spyOn(actions, "runOptimization")
       .mockImplementation(() => {});
@@ -178,6 +182,78 @@ describe("RunFooterPanel", () => {
     expect(primary).toBeDefined();
     primary?.click();
     expect(runSpy).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+  });
+
+  it("keeps the MlSignal footer action aligned with the current workflow step", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    const artifacts = useWorkflowArtifactsStore(pinia);
+    const data = useDataStore(pinia);
+    workflow.selectMode("ml-signal", { persist: false });
+    data.dataId = "data-1";
+    optimize.$patch({
+      runDisabled: false,
+      validateDisabled: false,
+      mlSignalDatasetExportPath: "C:\\data\\ml_dataset.csv",
+      mlSignalScoreInputPath: "C:\\data\\scores.csv",
+      mlSignalScoreCachePath: "C:\\data\\score_cache.json",
+    });
+    artifacts.applyVueRuntimePayload({
+      currentRun: {
+        ts: "2026-04-09T10:00:00Z",
+        artifact_path: "runs/vectorgrid_ml_signal.json",
+        csv_path: "C:\\data\\prices.csv",
+        req: { strategy_kind: "MlSignal" },
+        res: {},
+        ml_signal: {
+          stage: "policy_sweep",
+          score_cache_path: "C:\\data\\score_cache.json",
+        },
+      },
+      currentValidation: null,
+    });
+
+    const wrapper = mount(RunFooterPanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    workflow.selectWorkflowStep("data", { persist: false });
+    await flushPanel();
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Export dataset",
+      ),
+    ).toBe(true);
+
+    workflow.selectWorkflowStep("validate", { persist: false });
+    await flushPanel();
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Run ML validation",
+      ),
+    ).toBe(true);
+
+    workflow.selectWorkflowStep("analyze", { persist: false });
+    await flushPanel();
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Run ML policy sweep",
+      ),
+    ).toBe(true);
+
+    workflow.selectWorkflowStep("finalize", { persist: false });
+    await flushPanel();
+    const finalizePrimary = Array.from(document.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Artifacts ready",
+    ) as HTMLButtonElement | undefined;
+    expect(finalizePrimary).toBeDefined();
+    expect(finalizePrimary?.disabled).toBe(true);
 
     wrapper.unmount();
   });
@@ -287,6 +363,61 @@ describe("RunFooterPanel", () => {
     expect(text).toContain("1 queued");
     expect(text).toContain("1 failed");
     expect(text).toContain("Attention");
+
+    wrapper.unmount();
+  });
+
+  it("prefers live progress in the footer summary pill over stale readiness copy", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    workflow.selectWorkflowStep("optimize", { persist: false });
+    optimize.$patch({
+      canCancel: false,
+      progressMeta: "Optimize 42/100",
+      runPlanMeta: "Plan: snapshot medium grid",
+      runReadinessHint: "Readiness: stale snapshot",
+      runReadinessBadges: ["Data loaded", "Params valid"],
+    });
+
+    const wrapper = mount(RunFooterPanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    expect(document.querySelector(".summaryPill")?.textContent?.trim()).toBe(
+      "Optimize 42/100",
+    );
+    expect(document.body.textContent || "").toContain("Plan: snapshot medium grid");
+    expect(document.body.textContent || "").toContain("Readiness: stale snapshot");
+
+    wrapper.unmount();
+  });
+
+  it("falls back to readiness badges in the footer summary when no run is active", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const workflow = useWorkflowStore(pinia);
+    const optimize = useOptimizeStore(pinia);
+    workflow.selectWorkflowStep("optimize", { persist: false });
+    optimize.$patch({
+      canCancel: false,
+      progressMeta: "",
+      runReadinessHint: "Readiness: configured",
+      runReadinessBadges: ["Data loaded", "GPU route ready", "Top-K valid"],
+    });
+
+    const wrapper = mount(RunFooterPanel, {
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
+    await flushPanel();
+
+    expect(document.querySelector(".summaryPill")?.textContent?.trim()).toBe(
+      "Data loaded · GPU route ready",
+    );
 
     wrapper.unmount();
   });

@@ -1,6 +1,6 @@
 # Desktop Shell Readiness Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the minimum chrome that must be visible for the shell to count as ready.
-- [ ] Document the blank-shell recovery path and why it exists.
-- [ ] Keep readiness assertions independent from dynamic run data.
-- [ ] Keep selectors stable and shared-safe.
-- [ ] Keep the spec non-options only.
-- [ ] Use readiness as a prerequisite for heavier desktop flows rather than duplicating its checks everywhere.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the minimum chrome that must be visible for the shell to count as ready.
+- [x] Document the blank-shell recovery path and why it exists.
+- [x] Keep readiness assertions independent from dynamic run data.
+- [x] Keep selectors stable and shared-safe.
+- [x] Keep the spec non-options only.
+- [x] Use readiness as a prerequisite for heavier desktop flows rather than duplicating its checks everywhere.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,31 @@ Public-repo quality focus:
 - prefer additive helper improvements over expanding readiness assertions
 - if shell taxonomy changes, update the readiness contract deliberately and consistently
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on the current helper-plus-spec contract with fresh isolated and full-suite evidence.
+- `waitForShellReady()` is the authoritative readiness helper:
+  - detects `about:blank`
+  - navigates the desktop webview to the managed preview host
+  - waits for the URL handoff
+  - then requires the core chrome to render
+- The minimum chrome/taxonomy enforced by the shared helper and verified by the spec is now explicit:
+  - desktop titlebar
+  - workspace shell header
+  - workspace bar
+  - run footer
+  - top-level workspace labels `Workflow`, `Run Library`, `Aggregate Analysis`, `Pro Tools`, and `Settings`
+- The readiness contract remains independent from dynamic run data and continues to serve as the prerequisite for the heavier desktop shell journeys.
+- No additional cross-doc sync was required because the shared selector/wait surfaces already matched the current shell taxonomy after the `Pro Tools` workspace alignment.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck:desktop`
+  - `npm.cmd --prefix web run test:desktop:smoke:spec -- .\\e2e\\desktop\\specs\\desktop-shell-readiness.spec.ts`
+  - `npm.cmd --prefix web run test:desktop:smoke`
+- Raw evidence paths refreshed in this session:
+  - targeted readiness run: `output/wdio/desktop-smoke/2026-04-10T17-33-01-029Z/`
+  - stable desktop smoke: `output/wdio/desktop-smoke/2026-04-10T17-40-18-604Z/`
 
 ## Related Docs
 

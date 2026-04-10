@@ -116,22 +116,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document all current `MlConfidenceModelFamily` variants.
-- [ ] Document all current `MlConfidenceModelKind` variants and how they differ from family intent.
-- [ ] Document the current default family (`Auto`) and current default model kind (`Logistic`) semantics.
-- [ ] Document current auto-family resolution thresholds and conditions.
-- [ ] Document current GBDT training-failure fallback to logistic.
-- [ ] Document family-specific train-config defaults that materially affect behavior.
-- [ ] Document where the resolved `model_kind` is surfaced to users and persisted in saved models.
-- [ ] Preserve tests for logistic training, GBDT training, and auto-family fallback behavior.
-- [ ] Keep frontend docs honest about the lack of a shipped model-family selector.
-- [ ] Treat future family-selection UI work as additive, not as a retroactive reinterpretation of the current contract.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document all current `MlConfidenceModelFamily` variants.
+- [x] Document all current `MlConfidenceModelKind` variants and how they differ from family intent.
+- [x] Document the current default family (`Auto`) and current default model kind (`Logistic`) semantics.
+- [x] Document current auto-family resolution thresholds and conditions.
+- [x] Document current GBDT training-failure fallback to logistic.
+- [x] Document family-specific train-config defaults that materially affect behavior.
+- [x] Document where the resolved `model_kind` is surfaced to users and persisted in saved models.
+- [x] Preserve tests for logistic training, GBDT training, and auto-family fallback behavior.
+- [x] Keep frontend docs honest about the lack of a shipped model-family selector.
+- [x] Treat future family-selection UI work as additive, not as a retroactive reinterpretation of the current contract.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -150,6 +150,25 @@ Public-repo quality focus:
 - prefer additive reporting fields over changing the meaning of `Auto`, `Logistic`, or `GbdtStump`
 - if the UI later exposes family choice, preserve the current backend defaults for callers that still send `cfg: null`
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by surfacing the resolved `model_kind` in the formatted ML status and by making the panel explicit that family selection is backend-owned.
+- `metaService.ts` now includes `model_kind=<...>` when the backend status payload provides it.
+- `MetaWorkspacePanel.vue` now shows:
+  - backend-owned `Auto` family semantics
+  - the resolved model kind from the current status when available
+  - an explicit note that the shipped UI does not expose a family picker
+- `metaService.test.ts` now asserts `model_kind=logistic`, which keeps the resolved-family reporting under regression coverage.
+- Stable fixture / replay payload:
+  - `model_kind=logistic`
+  - `target=holdout_dataset_pass`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

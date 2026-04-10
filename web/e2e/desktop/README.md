@@ -137,9 +137,9 @@ Each run records:
 - session hangs during startup:
   - verify Edge and EdgeDriver versions match
 - app launches manually but smoke fails before shell readiness:
-  - inspect the `tauri-driver.log`, `preview.log`, and the failure screenshot under `output/wdio/desktop-smoke`
+  - inspect the `tauri-driver.log`, `preview-server.log`, and the failure screenshot under `output/wdio/desktop-smoke`
 - desktop automation attached to a blank shell:
-  - this harness already bootstraps `about:blank` to the managed preview host; if that still fails, inspect `preview.log` and verify `http://127.0.0.1:1420/` is reachable
+  - this harness already bootstraps `about:blank` to the managed preview host; if that still fails, inspect `preview-server.log` and verify `http://127.0.0.1:1420/` is reachable
 - maximize/restore assertion fails intermittently:
   - treat that as a harness bug and keep flaky native assertions out of the default green path
 

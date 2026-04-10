@@ -100,16 +100,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical evidence-gap vocabulary.
-- [ ] Document panel-specific evidence-gap cases and required messages.
-- [ ] Document configuration-caused gaps separately from true absence of data.
-- [ ] Document saved-run and artifact-related evidence gaps.
-- [ ] Add or tighten tests for guardrails, status lines, and empty-state messaging.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical evidence-gap vocabulary.
+- [x] Document panel-specific evidence-gap cases and required messages.
+- [x] Document configuration-caused gaps separately from true absence of data.
+- [x] Document saved-run and artifact-related evidence gaps.
+- [x] Add or tighten tests for guardrails, status lines, and empty-state messaging.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,6 +127,12 @@ Public-repo quality focus:
 - keep surface-specific guidance intact even if shared readiness logic is refactored
 - if a new result surface is added, classify its missing-evidence states using the same vocabulary
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added [useUiReadiness.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/composables/useUiReadiness.test.ts) to pin the shared readiness/evidence-gap vocabulary across no-data, no-run, results-available-no-selection, and ready states.
+- Revalidated the panel-level evidence-gap messages through the Overview, Top, Pareto, Drilldown, Heatmap, and analysis-service tests.
+- No production code change was required in this tranche because the current results surfaces already carry the documented evidence-gap distinctions once the shared readiness contract was explicitly tested.
 
 ## Related Docs
 

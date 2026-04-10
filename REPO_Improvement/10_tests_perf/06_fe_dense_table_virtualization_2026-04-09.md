@@ -1,6 +1,6 @@
 # FE Dense Table Virtualization Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -22,7 +22,7 @@ Out of scope:
 
 ## Current User-Facing Behavior
 
-The repo already treats large result surfaces as lazy/windowed where appropriate. Users see dense top-table and validation-table surfaces that must feel responsive while still preserving row identity, sorting/filtering cues, and visible selection state.
+The repo already treats large result surfaces as lazy/windowed where appropriate. Users see dense top-table and validation-table surfaces that must feel responsive while still preserving row identity, sorting/filtering cues, and visible selection state. The current shipped posture now also gives the Top and Validation tables an explicit local viewport cap so virtualization is bound to the table wrapper instead of only inheriting outer shell scrolling.
 
 ## Current Code Surface
 
@@ -31,6 +31,7 @@ The repo already treats large result surfaces as lazy/windowed where appropriate
 - `web/src/components/HistoryWorkspacePanel.vue`
 - `web/src/components/TopWorkspacePanel.test.ts`
 - `web/src/components/ValidationWorkspacePanel.test.ts`
+- `web/src/components/ValidationWorkspacePanel.virtualization.test.ts`
 - `web/src/components/HistoryWorkspacePanel.test.ts`
 - `web/src/components/VueWorkspaceShell.test.ts`
 - `web/package.json`
@@ -87,16 +88,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which surfaces are currently virtualized or size-sensitive.
-- [ ] Keep row identity, sorting/filtering, and visible-state behavior covered in tests.
-- [ ] Add representative large-data fixtures where current tests are too small.
-- [ ] Use browser proof for representative dense-surface interaction after major changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document which surfaces are currently virtualized or size-sensitive.
+- [x] Keep row identity, sorting/filtering, and visible-state behavior covered in tests.
+- [x] Add representative large-data fixtures where current tests are too small.
+- [x] Use browser proof for representative dense-surface interaction after major changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -111,6 +112,26 @@ Public-repo quality focus:
 - preserve current table-state behavior while improving virtualization coverage
 - prefer additive large-fixture tests over replacing small deterministic tests
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on an implementation-backed fix, not just test commentary:
+  - `TopWorkspacePanel.vue` and `ValidationWorkspacePanel.vue` now mark the dense table wrapper as the explicit virtualized viewport and clamp it locally with a shared `virtualTableViewport` rule
+  - this keeps the inner table wrapper, not only the outer shell column, responsible for the vertical window that TanStack Virtual uses
+- Dense-surface proof is now stronger where it was weakest:
+  - Top keeps its existing panel-level row-window assertions and now also proves the ranked table renders inside the owned viewport wrapper
+  - Validation now has a dedicated `ValidationWorkspacePanel.virtualization.test.ts` that keeps `useVirtualTableRows` real, mocks only the TanStack library boundary, and proves spacer rows plus off-window row omission
+  - existing Validation component coverage still owns summary, empty-state, and column-persistence behavior
+- Browser/static evidence was rerun after the viewport change:
+  - no browser UX regressions were introduced in the mocked shell smoke
+  - lint and typecheck remained clean for the touched frontend slice
+- Cross-doc sync:
+  - no `README.md` or `REPO_MAP.md` update was required because the change stayed inside existing frontend virtualization behavior and did not add a new workflow surface
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/TopWorkspacePanel.test.ts src/components/ValidationWorkspacePanel.test.ts src/components/ValidationWorkspacePanel.virtualization.test.ts src/components/ExecutionWorkspacePanel.virtualization.test.ts src/composables/useVirtualTableRows.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `npm.cmd --prefix web run test:browser:ux`
 
 ## Related Docs
 

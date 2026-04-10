@@ -101,16 +101,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document foreground, background, and legacy cancel paths separately.
-- [ ] Document `double_ma_progress` payload expectations and task-center ownership.
-- [ ] Document the single-foreground-run limitation and shared cancel-token model.
-- [ ] Document task restoration behavior when cancellation commands fail.
-- [ ] Add or tighten tests for fallback behavior, lifecycle status transitions, and progress compatibility.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document foreground, background, and legacy cancel paths separately.
+- [x] Document `double_ma_progress` payload expectations and task-center ownership.
+- [x] Document the single-foreground-run limitation and shared cancel-token model.
+- [x] Document task restoration behavior when cancellation commands fail.
+- [x] Add or tighten tests for fallback behavior, lifecycle status transitions, and progress compatibility.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -129,6 +129,11 @@ Public-repo quality focus:
 - prefer additive lifecycle metadata over repurposing existing task statuses
 - if the app later moves to per-run tokens, document the model change explicitly rather than quietly changing existing semantics
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the cancel bridge as a three-layer contract: frontend mapped cancel helper, Tauri cancel commands, and backend single-foreground-run cancel intent. `command_runtime_wiring`, `runControlService.test.ts`, `taskStore.lifecycle.test.ts`, `taskStorePerformance.test.ts`, and the optimize-service progress tests remain green in this tranche.
+- No code change was required here because the current preferred-command plus legacy-fallback behavior, task restoration, and shared progress-channel semantics are already in place and still verified.
 
 ## Related Docs
 

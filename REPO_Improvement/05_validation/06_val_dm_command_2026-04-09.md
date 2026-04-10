@@ -97,18 +97,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the accepted Double-MA-family strategy kinds for this command.
-- [ ] Document `validation_context` requirements and rejection behavior.
-- [ ] Document backend-route, route-note, and fallback fields returned by the command.
-- [ ] Document preserved-finalists cross-ticker filtering and verdict recomputation behavior.
-- [ ] Add or tighten tests for alias-strategy acceptance and mismatch rejection.
-- [ ] Add or tighten tests for GPU, hybrid, and CPU route reporting parity.
-- [ ] Add or tighten tests for post-cross-filter verdict recomputation.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the accepted Double-MA-family strategy kinds for this command.
+- [x] Document `validation_context` requirements and rejection behavior.
+- [x] Document backend-route, route-note, and fallback fields returned by the command.
+- [x] Document preserved-finalists cross-ticker filtering and verdict recomputation behavior.
+- [x] Add or tighten tests for alias-strategy acceptance and mismatch rejection.
+- [x] Add or tighten tests for GPU, hybrid, and CPU route reporting parity.
+- [x] Add or tighten tests for post-cross-filter verdict recomputation.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -128,9 +128,15 @@ Public-repo quality focus:
 - if command behavior changes, update builder previews and service summaries in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
+## Execution Notes
+
+- Verified the Double-MA command contract against the current backend and frontend surfaces without widening route policy. `commands_validation.rs` already covers strategy-kind allowlists, dataset/timeframe rejection, preserved-finalists cross reruns, verdict recomputation, and representative route-preserving request behavior.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app commands_validation --lib`, `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts`, `npm --prefix web run lint`, and `npm --prefix web run typecheck`.
+
 ## Related Docs
 
 - `REPO_Improvement/03_opt/11_opt_request_builder_2026-04-08.md`
 - `REPO_Improvement/05_validation/19_validation_request_builder_2026-04-08.md`
 - `REPO_Improvement/05_validation/20_validation_service_2026-04-08.md`
 - `REPO_Improvement/05_validation/09_eng_validation_verdicts_2026-04-09.md`
+

@@ -102,17 +102,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the intended top-level information architecture of `MetaWorkspacePanel`.
-- [ ] Audit headings, helper text, and action labels for conceptual clarity.
-- [ ] Add or tighten tests for tab/family switching and context-menu behavior.
-- [ ] Verify that Stage 4/5 and policy-eval controls remain distinguishable from Meta Selection and Batch Generation.
-- [ ] Decide whether some sections need stronger subheadings or summary chips instead of more controls.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the intended top-level information architecture of `MetaWorkspacePanel`.
+- [x] Audit headings, helper text, and action labels for conceptual clarity.
+- [x] Add or tighten tests for tab/family switching and context-menu behavior.
+- [x] Verify that Stage 4/5 and policy-eval controls remain distinguishable from Meta Selection and Batch Generation.
+- [x] Decide whether some sections need stronger subheadings or summary chips instead of more controls.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -137,3 +137,17 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/08_meta_batch_generation_2026-04-09.md`
 - `REPO_Improvement/08_ml/22_meta_selection_request_contract_2026-04-08.md`
 - `REPO_Improvement/01_shell/21_shell_context_menus_help_2026-04-09.md`
+
+## Execution Notes
+
+- Closed by clarifying the Meta workspace hierarchy instead of restructuring the whole panel.
+- `MetaWorkspacePanel.vue` now makes the Compare surface self-describing: it explicitly states that Compare uses a Saved Meta baseline, shows the current working-side source, and keeps later-stage Saved Stage 5 and Saved Policy Evaluation artifacts conceptually separated in copy.
+- The Saved Aggregate family summary remains visible and explicit, so the workspace now better distinguishes baseline meta artifacts from Stage 5 confidence reranks and policy-evaluation outputs without removing any actions.
+- `MetaWorkspacePanel.test.ts` now covers the compare-provenance presentation and preserves the previously verified saved-family action/menu behavior.
+- `REPO_MAP.md` was synced so contributors can find the Meta workspace provenance behavior quickly.
+- Stable fixture / replay payload:
+  - selected compare baseline `C:/runs/vectorgrid_meta_baseline.json` with compare option label `2026-04-09T10:00:00Z | CompositeMo | 1m | groups=4`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/stores/analysisStore.actions.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

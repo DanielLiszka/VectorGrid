@@ -130,22 +130,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document `Exact` versus `Clustered` semantics and current default mode.
-- [ ] Document `MetaClusterConfig` defaults and normalization rules.
-- [ ] Document the current representative-count clamp and its rationale.
-- [ ] Document where grouped counts are emitted and persisted.
-- [ ] Document how grouping affects workbook/report interpretation.
-- [ ] Document frontend/store defaults versus backend defaults.
-- [ ] Document current UX labels and why they should stay aligned with backend behavior.
-- [ ] Add or maintain tests for exact-vs-clustered collapse behavior.
-- [ ] Add or maintain tests for representative selection and persisted group counts.
-- [ ] Preserve compatibility for older saved artifacts that already depend on the current grouped-output shape.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document `Exact` versus `Clustered` semantics and current default mode.
+- [x] Document `MetaClusterConfig` defaults and normalization rules.
+- [x] Document the current representative-count clamp and its rationale.
+- [x] Document where grouped counts are emitted and persisted.
+- [x] Document how grouping affects workbook/report interpretation.
+- [x] Document frontend/store defaults versus backend defaults.
+- [x] Document current UX labels and why they should stay aligned with backend behavior.
+- [x] Add or maintain tests for exact-vs-clustered collapse behavior.
+- [x] Add or maintain tests for representative selection and persisted group counts.
+- [x] Preserve compatibility for older saved artifacts that already depend on the current grouped-output shape.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -165,6 +165,24 @@ Public-repo quality focus:
 - keep older grouped artifacts replayable even if future grouping metadata becomes richer
 - prefer additive metadata over replacing current grouped-count fields
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by surfacing the grouping contract in the Stage 3 panel instead of leaving clustering semantics implicit in builder and backend code.
+- `MetaWorkspacePanel.vue` now shows:
+  - the current grouping mode
+  - integer and float bucket sizes
+  - the representative count plus the explicit `1..=3` clamp note
+- `metaRequestBuilder.test.ts` now pins the representative clamp and keeps the builder normalization visible in test coverage.
+- `REPO_MAP.md` was updated to note that clustered mode remains the shipped default and that grouping stays backend-owned.
+- Stable fixture / replay payload:
+  - `grouping_mode = clustered`
+  - `cluster_config = { int_bucket = 5, float_bucket = 0.25 }`
+  - `cluster_representatives = 2`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaRequestBuilder.test.ts src/services/metaService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

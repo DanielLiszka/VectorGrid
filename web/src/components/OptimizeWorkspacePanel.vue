@@ -351,12 +351,12 @@ const backendExecutionHint = computed(() => {
   const routePreview = compositeRoutePreview.value;
   if (routePreview) {
     if (routePreview.targetBackend === "CpuOnly") {
-      return "Composite route preview: current inputs resolve to the CPU route. Heatmap, Top-K, and include-all remain available; export-all does not.";
+      return "Composite route preview: current inputs resolve to the CPU route. Heatmap, Top-K, include-all, and explicit metric-contract overrides remain available; export-all and exact-kernel shortlist controls do not.";
     }
     if (routePreview.targetBackend === "GpuHybridKernel") {
-      return "Composite route preview: current inputs resolve to the hybrid GPU route. Export-all stays disabled on hybrid execution.";
+      return "Composite route preview: current inputs resolve to the hybrid GPU route. Heatmap, Top-K, include-all, and explicit metric-contract overrides remain available; export-all and exact-kernel shortlist controls stay disabled on hybrid execution.";
     }
-    return "Composite route preview: current inputs resolve to the GPU kernel route.";
+    return "Composite route preview: current inputs resolve to the GPU kernel route. Export-all and exact-kernel shortlist controls stay available on this route.";
   }
   const backendKind = selectedBackend.value;
   if (backendKind === "CpuOnly") {
@@ -1320,12 +1320,26 @@ function buildSideMaParamsAndSweeps(side: MaSide): {
   if (!maId || schema.length === 0) return { params: null, sweeps: null };
 
   const stateByKey = resolveSideTypeState(side, maId);
+  const seededParams =
+    side === "fast" ? optimizeStore.fastMaParams : optimizeStore.slowMaParams;
+  const seededSweeps =
+    side === "fast"
+      ? optimizeStore.fastMaParamSweeps
+      : optimizeStore.slowMaParamSweeps;
+  const paramsRow =
+    seededParams && typeof seededParams === "object"
+      ? (seededParams as Record<string, unknown>)
+      : {};
+  const sweepsRow =
+    seededSweeps && typeof seededSweeps === "object"
+      ? (seededSweeps as Record<string, unknown>)
+      : {};
   const params: Record<string, number> = {};
   const sweeps: Record<string, [number, number, number]> = {};
   for (const item of schema) {
     const state =
       stateByKey[item.key] ||
-      createMaParamUiState(item, item.defaultValue, null);
+      createMaParamUiState(item, paramsRow[item.key], sweepsRow[item.key]);
     const rawValue = normalizeFinite(state.value);
     params[item.key] = rawValue ?? item.defaultValue;
     if (!state.sweepEnabled) continue;

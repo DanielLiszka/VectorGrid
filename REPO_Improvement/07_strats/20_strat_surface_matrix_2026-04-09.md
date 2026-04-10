@@ -1,6 +1,6 @@
 # Strategy Surface Matrix Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -110,18 +110,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document every current non-options strategy kind and its major workflow availability.
-- [ ] Document which layer owns hard legality versus explanatory copy.
-- [ ] Document cross-surface differences such as campaign/meta exclusions.
-- [ ] Add or tighten tests for strategy-specific advanced-control visibility and request legality.
-- [ ] Add or tighten tests for matrix reuse between Optimize, Advanced, and Meta surfaces.
-- [ ] Review whether any component still bypasses the shared matrix with local special cases.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document every current non-options strategy kind and its major workflow availability.
+- [x] Document which layer owns hard legality versus explanatory copy.
+- [x] Document cross-surface differences such as campaign/meta exclusions.
+- [x] Add or tighten tests for strategy-specific advanced-control visibility and request legality.
+- [x] Add or tighten tests for matrix reuse between Optimize, Advanced, and Meta surfaces.
+- [x] Review whether any component still bypasses the shared matrix with local special cases.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -141,6 +141,25 @@ Public-repo quality focus:
 - prefer central capability updates over component-local conditionals
 - if a strategy remains unsupported in a surface, keep the restriction explicit and user-visible
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by expanding the strategy-surface matrix truth anchors in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md):
+  - documented the authority order between backend/request-builder legality, capability summaries, and component copy
+  - named the central owners: `strategyOptimizationCapabilities.ts`, `compositeProfileGpuPolicy.ts`, `OptimizeWorkspacePanel.vue`, `AdvancedWorkspacePanel.vue`, and the Meta campaign request/service layer
+  - documented the current campaign/meta exclusions and route-preview responsibilities explicitly
+- Tightened matrix coverage with a new `MlSignal` capability test in [strategyOptimizationCapabilities.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/utils/strategyOptimizationCapabilities.test.ts):
+  - pins that `MlSignal` stays outside optimize-only controls
+  - pins its dedicated workflow copy as dataset-export / score-cache / validation artifacts rather than optimizer heatmaps or export-all grids
+- Reused the existing cross-surface proofs rather than widening scope:
+  - optimize/advanced matrix rendering stays covered by `OptimizeWorkspacePanel.test.ts` and `AdvancedWorkspacePanel.test.ts`
+  - campaign/meta strategy legality stays covered by `metaServiceCampaignStrategy.test.ts` and the `campaign_` Rust test set in `commands_campaign.rs`
+  - no component-local bypasses were introduced
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/utils/strategyOptimizationCapabilities.test.ts src/components/OptimizeWorkspacePanel.test.ts src/components/AdvancedWorkspacePanel.test.ts src/services/metaServiceCampaignStrategy.test.ts`
+  - `cargo test -p ta_desktop_demo_app campaign_ --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

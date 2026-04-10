@@ -56,4 +56,20 @@ describe('metaBatchRequestBuilder', () => {
     expect(req.tags).toEqual(['one', 'two'])
     expect(req.holdout_pct).toBe(0)
   })
+
+  it('falls back to conservative defaults for invalid execution and preload modes', () => {
+    const req = buildMetaBatchRequest({
+      executionMode: 'strange_mode',
+      preloadPolicy: 'vram_everything',
+      holdoutTag: '',
+      tags: 'alpha alpha beta',
+    })
+
+    expect(req).toMatchObject({
+      holdout_tag: 'holdout',
+      execution_mode: 'full',
+      preload_policy: 'host_only',
+      tags: ['alpha', 'beta'],
+    })
+  })
 })

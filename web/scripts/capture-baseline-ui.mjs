@@ -3,6 +3,12 @@ import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import { chromium } from 'playwright'
+import {
+  dispatchClick,
+  dispatchClickIfPresent,
+  dismissStartupOverlayIfPresent,
+  installMockedTauri,
+} from './support/mockedTauriHarness.mjs'
 
 const ROOT = process.cwd()
 const DIST_DIR = path.resolve(ROOT, 'dist')
@@ -60,61 +66,6 @@ function startServer() {
   })
 }
 
-function installTauriMocks(context, holdStartupOverlay = false) {
-  return context.addInitScript((hold) => {
-    const handlers = {}
-    const callbacks = {}
-    let nextCallbackId = 1
-    const listen = async (event, cb) => {
-      if (!handlers[event]) handlers[event] = []
-      handlers[event].push(cb)
-      return () => {
-        handlers[event] = (handlers[event] || []).filter((fn) => fn !== cb)
-      }
-    }
-    const invoke = async () => null
-    const transformCallback = (cb) => {
-      const id = nextCallbackId++
-      callbacks[id] = cb
-      return id
-    }
-    const unregisterCallback = (id) => {
-      delete callbacks[id]
-    }
-    if (hold) {
-      try {
-        localStorage.setItem('VTA_STARTUP_OVERLAY_HOLD', '1')
-      } catch {
-        // ignore storage failures in baseline harness
-      }
-    }
-    window.isTauri = true
-    window.__TAURI_INTERNALS__ = {
-      invoke,
-      transformCallback,
-      unregisterCallback,
-      convertFileSrc: (path) => path,
-    }
-    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-      unregisterListener: () => {},
-    }
-    window.__TAURI__ = window.__TAURI__ || {}
-    window.__TAURI__.event = { listen }
-    window.__TAURI__.core = { invoke }
-    window.__TAURI__.invoke = invoke
-    window.__VTA_TEST_EMIT = (event, payload) => {
-      const list = handlers[event] || []
-      for (const cb of list) {
-        try {
-          cb({ event, payload })
-        } catch {
-          // ignore callback errors in baseline capture harness
-        }
-      }
-    }
-  }, holdStartupOverlay)
-}
-
 async function clickAndCapture(page, selector, fileName) {
   await dispatchClick(page, selector)
   await page.waitForTimeout(150)
@@ -122,39 +73,6 @@ async function clickAndCapture(page, selector, fileName) {
     path: path.resolve(OUT_DIR, fileName),
     fullPage: true,
   })
-}
-
-async function dispatchClick(page, selector) {
-  const clicked = await page.evaluate((sel) => {
-    const el = document.querySelector(sel)
-    if (!el) return false
-    ;(el instanceof HTMLElement ? el : null)?.click?.()
-    return true
-  }, selector)
-  if (!clicked) {
-    throw new Error(`Selector not found for click: ${selector}`)
-  }
-}
-
-async function dispatchClickIfPresent(page, selector) {
-  await page.evaluate((sel) => {
-    const el = document.querySelector(sel)
-    if (!el) return
-    ;(el instanceof HTMLElement ? el : null)?.click?.()
-  }, selector)
-}
-
-async function waitForStartupOverlayToSettle(page) {
-  await page.waitForFunction(() => {
-    const overlay = document.querySelector('#startupAnimationOverlay')
-    return !overlay
-  }, { timeout: 5000 })
-}
-
-async function dismissStartupOverlay(page) {
-  await page.waitForTimeout(460)
-  await dispatchClickIfPresent(page, '.startupSkipButton')
-  await waitForStartupOverlayToSettle(page)
 }
 
 async function selectWorkspace(page, workspace) {
@@ -180,7 +98,7 @@ async function main() {
 
   const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width: 1720, height: 1080 } })
-  await installTauriMocks(context, true)
+  await installMockedTauri(context, { holdStartupOverlay: true, emitTestEvents: true })
   const page = await context.newPage()
 
   const navStart = Date.now()
@@ -193,15 +111,22 @@ async function main() {
     const mem = perf && 'memory' in perf ? perf.memory : null
     return mem && typeof mem.usedJSHeapSize === 'number' ? mem.usedJSHeapSize : null
   })
+  let startupCapture = 'shell_bootstrap'
 
   await page.waitForSelector('#workspaceBar button[data-workspace="workflow"]', { timeout: 15_000 })
-  await page.waitForSelector('#startupAnimationOverlay', { timeout: 5000 })
-  await page.screenshot({
-    path: path.resolve(OUT_DIR, 'startup_overlay_intro.png'),
-    fullPage: true,
-  })
-  await dismissStartupOverlay(page)
-  await waitForStartupOverlayToSettle(page)
+  const overlayVisible = await dismissStartupOverlayIfPresent(page)
+  if (overlayVisible) {
+    startupCapture = 'startup_overlay'
+    await page.screenshot({
+      path: path.resolve(OUT_DIR, 'startup_overlay_intro.png'),
+      fullPage: true,
+    })
+  } else {
+    await page.screenshot({
+      path: path.resolve(OUT_DIR, 'startup_shell_bootstrap.png'),
+      fullPage: true,
+    })
+  }
   await clickAndCapture(page, '#workspaceBar button[data-workspace="workflow"]', 'workspace_workflow.png')
 
   for (const workspace of WORKSPACES) {
@@ -282,6 +207,7 @@ async function main() {
     app_cold_start_ms: domContentLoadedMs,
     time_to_interactive_ms: ttiMs,
     js_heap_used_bytes_at_idle: jsHeapUsedBytes,
+    startup_capture_mode: startupCapture,
     chart_live_feed_responsiveness: chartResponsiveness,
     capture_runtime_ms: Date.now() - startedAt,
     note: 'Synthetic live-bar event throughput captured via mocked Tauri event emitter.',

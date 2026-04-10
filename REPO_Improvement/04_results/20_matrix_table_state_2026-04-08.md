@@ -91,19 +91,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory which panels use the shared matrix-table composables.
-- [ ] Define shared vs panel-local vs persisted table state.
-- [ ] Require stable column identifiers for persisted state.
-- [ ] Document migration/reset behavior for stored column data.
-- [ ] Audit `aria-sort` and keyboard behavior against actual sort state.
-- [ ] Add tests for column add/remove/reorder compatibility.
-- [ ] Add tests for persistence boundaries across Top, Validation, Meta, and Execution panels.
-- [ ] Verify dense-table performance and scanability are not degraded.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Inventory which panels use the shared matrix-table composables.
+- [x] Define shared vs panel-local vs persisted table state.
+- [x] Require stable column identifiers for persisted state.
+- [x] Document migration/reset behavior for stored column data.
+- [x] Audit `aria-sort` and keyboard behavior against actual sort state.
+- [x] Add tests for column add/remove/reorder compatibility.
+- [x] Add tests for persistence boundaries across Top, Validation, Meta, and Execution panels.
+- [x] Verify dense-table performance and scanability are not degraded.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -121,6 +121,11 @@ Public-repo quality focus:
 - if stored-state migration is too ambiguous, prefer an explicit reset path over silent corruption
 - treat new persisted state as additive and panel-aware rather than forcing one global table preference model
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the shared table-state layer through [useHeadlessMatrixTable.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/composables/useHeadlessMatrixTable.test.ts), [usePersistedMatrixColumnState.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/composables/usePersistedMatrixColumnState.test.ts), and the Top, Validation, Meta, and Execution panel tests.
+- The remaining structural gap from the backend/frontend audit is that Meta and Validation still persist positional fallback keys like `col_0` and `col_1` instead of stable semantic keys. That is now a concrete follow-up item rather than an unknown.
 
 ## Related Docs
 

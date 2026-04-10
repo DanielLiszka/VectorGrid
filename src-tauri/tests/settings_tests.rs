@@ -3,6 +3,32 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ta_desktop_demo_app::settings;
 
+struct TempPath {
+    path: PathBuf,
+}
+
+impl TempPath {
+    fn new(name: &str) -> Self {
+        Self {
+            path: unique_temp_dir(name),
+        }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        if self.path.is_dir() {
+            let _ = std::fs::remove_dir_all(&self.path);
+        } else if self.path.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn unique_temp_dir(name: &str) -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -78,4 +104,31 @@ fn move_dir_all_moves_contents() {
 
     assert!(!src.exists());
     assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"hello");
+}
+
+#[test]
+fn load_settings_reports_malformed_json() {
+    let base = TempPath::new("load_settings_reports_malformed_json");
+
+    std::fs::create_dir_all(base.path()).unwrap();
+    std::fs::write(
+        settings::settings_path(base.path()),
+        r#"{ "market_data_root_dir": "#,
+    )
+    .unwrap();
+
+    let err = settings::load_settings(base.path()).unwrap_err();
+    assert!(err.contains("failed to parse"));
+    assert!(err.contains("app_settings.json"));
+}
+
+#[test]
+fn save_settings_fails_when_base_path_is_a_file() {
+    let base = TempPath::new("save_settings_fails_when_base_path_is_a_file");
+
+    std::fs::write(base.path(), b"not a directory").unwrap();
+
+    let err = settings::save_settings(base.path(), &settings::AppSettings::default()).unwrap_err();
+    assert!(!err.is_empty());
+    assert!(!settings::settings_path(base.path()).exists());
 }

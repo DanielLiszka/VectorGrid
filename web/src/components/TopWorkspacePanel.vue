@@ -597,7 +597,7 @@ onBeforeUnmount(() => {
         <div
           v-else
           ref="tableScrollElementRef"
-          class="tableWrap overflowShadowY overflowShadowX surfaceWorking"
+          class="tableWrap virtualTableViewport overflowShadowY overflowShadowX surfaceWorking"
           tabindex="0"
           aria-label="Top optimization results table"
           aria-describedby="topSelectionStatus"
@@ -815,6 +815,10 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in oklab, var(--border) 90%, transparent);
   border-radius: 12px;
   background: color-mix(in oklab, var(--surface-working) 96%, var(--panel));
+}
+
+.virtualTableViewport {
+  max-height: clamp(18rem, 52vh, 34rem);
 }
 
 .columnDetails {

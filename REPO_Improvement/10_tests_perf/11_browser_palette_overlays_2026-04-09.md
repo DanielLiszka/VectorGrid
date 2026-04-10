@@ -1,6 +1,6 @@
 # Browser Palette and Overlay Smoke Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -87,18 +87,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the minimal stable command-palette journey owned by browser smoke.
-- [ ] Document the minimal stable task-center overlay journey owned by browser smoke.
-- [ ] Keep active-descendant and focus-return assertions explicit.
-- [ ] Keep overlay selectors accessible and stable.
-- [ ] Avoid turning overlay smoke into a generic command-action integration suite.
-- [ ] Keep the browser overlay suite non-options only.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the minimal stable command-palette journey owned by browser smoke.
+- [x] Document the minimal stable task-center overlay journey owned by browser smoke.
+- [x] Keep active-descendant and focus-return assertions explicit.
+- [x] Keep overlay selectors accessible and stable.
+- [x] Avoid turning overlay smoke into a generic command-action integration suite.
+- [x] Keep the browser overlay suite non-options only.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +115,37 @@ Public-repo quality focus:
 - add new overlay journeys only when the user-visible behavior cannot be covered cleanly at component level
 - if the task center or command palette IA changes, update the assertion hierarchy instead of just loosening expectations
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on current-state browser overlay evidence; no new spec or helper change was required for this item.
+- Minimal stable command-palette journey currently owned by browser smoke:
+  - open from the shell launcher
+  - type a broad query and confirm expected result visibility
+  - move active descendant with arrow keys
+  - execute the stable `Go to Settings` path with Enter
+  - confirm dialog dismissal, workspace selection, and focus return to the opener
+  - separate Escape-close path keeps focus restoration explicit without coupling it to command execution
+- Minimal stable task-center journey currently owned by browser smoke:
+  - open from the launcher
+  - confirm stable section presence (`Active posture`, `Recent outcomes`)
+  - close with Escape
+  - confirm focus return to the launcher and `aria-expanded="false"`
+- Selector/state contract remains healthy:
+  - dialog, listbox, active descendant, `aria-expanded`, focus, and shared shell selectors stay first-class
+  - no decorative CSS selectors were introduced
+  - the spec still avoids deep command-action correctness or broad overlay rendering detail
+- Scope remains disciplined:
+  - non-options only
+  - browser smoke continues to treat the overlays as the subject, not their downstream service/store internals
+  - denser overlay rendering rules remain owned by component tests for `CommandPaletteOverlay` and `TaskCenterOverlay`
+- Cross-doc sync:
+  - no `README.md` or `REPO_MAP.md` update was required because the overlay browser contract already matched the current spec and helper posture; this closure records fresh verification against the current journeys
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test:browser:ux`
+  - supporting adjacent overlay/component evidence from the same tranche:
+    - `npm.cmd --prefix web run test -- src/components/CommandPaletteOverlay.test.ts src/components/StartupAnimationOverlay.test.ts`
+    - `npm.cmd --prefix web run test -- src/components/TaskCenterOverlay.test.ts src/components/VueWorkspaceShell.test.ts src/App.test.ts`
 
 ## Related Docs
 

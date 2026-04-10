@@ -1,6 +1,6 @@
 # Prescan Iterative Sim Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -121,19 +121,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document predictive prescan as a heuristic narrowing contract, not as an exact optimizer.
-- [ ] Add or tighten direct unit tests in `prescan_predictive.rs` for stride, cap, ordering, and empty-edge behavior.
-- [ ] Add or tighten composite integration tests that verify rescue-pair behavior stays bounded and explainable.
-- [ ] Document when iterative mode is informational versus decision-affecting in validation outputs.
-- [ ] Add or tighten validation tests for iterative delta attachment and verdict stability.
-- [ ] Run the fidelity-audit harness or equivalent bounded checks before accepting behavioral changes to either path.
-- [ ] Decide whether iterative-vs-vectorized ranking differences require stronger UI/report wording in follow-on docs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document predictive prescan as a heuristic narrowing contract, not as an exact optimizer.
+- [x] Add or tighten direct unit tests in `prescan_predictive.rs` for stride, cap, ordering, and empty-edge behavior.
+- [x] Add or tighten composite integration tests that verify rescue-pair behavior stays bounded and explainable.
+- [x] Document when iterative mode is informational versus decision-affecting in validation outputs.
+- [x] Add or tighten validation tests for iterative delta attachment and verdict stability.
+- [x] Run the fidelity-audit harness or equivalent bounded checks before accepting behavioral changes to either path.
+- [x] Decide whether iterative-vs-vectorized ranking differences require stronger UI/report wording in follow-on docs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -154,6 +154,18 @@ Public-repo quality focus:
 - prefer stronger visibility and tests over increasing heuristic aggressiveness
 - if fidelity checks weaken after a change, revert to the simpler prior behavior rather than defending the heuristic
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening direct predictive-prescan coverage in [prescan_predictive.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/prescan_predictive.rs):
+  - added `predictive_prescan_seed_pairs_returns_empty_for_disabled_or_empty_inputs`
+  - this fills the remaining empty-edge gap while keeping the existing stride/cap/ordering coverage intact
+- Kept scope intentionally additive:
+  - no prescan narrowing semantics changed
+  - no iterative validation policy changed
+  - no fidelity-bin behavior changed
+- Acceptance evidence:
+  - `cargo test -p ta_app_core prescan_predictive --lib`
 
 ## Related Docs
 

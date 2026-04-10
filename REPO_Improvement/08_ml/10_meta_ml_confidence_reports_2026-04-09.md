@@ -103,17 +103,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the distinction between model status, Stage 5 output, and policy evaluation output.
-- [ ] Audit UI copy and preview labeling for provenance clarity.
-- [ ] Add or tighten tests for saved stage5 and saved policy-eval reveal/load/delete behavior.
-- [ ] Ensure model-health warnings remain visible and specific when ML confidence is enabled or applied.
-- [ ] Verify open/reveal report actions still behave correctly across live and saved meta flows.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the distinction between model status, Stage 5 output, and policy evaluation output.
+- [x] Audit UI copy and preview labeling for provenance clarity.
+- [x] Add or tighten tests for saved stage5 and saved policy-eval reveal/load/delete behavior.
+- [x] Ensure model-health warnings remain visible and specific when ML confidence is enabled or applied.
+- [x] Verify open/reveal report actions still behave correctly across live and saved meta flows.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -138,3 +138,25 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/35_stage4_request_contract_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/17_report_meta_workbook_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/32_campaign_summary_checkpoint_2026-04-09.md`
+
+## Execution Notes
+
+- Closed with a frontend-first provenance pass instead of changing the Rust ML confidence contract.
+- `MetaWorkspacePanel.vue` now separates the ML report surface into explicit summary cards for:
+  - model status
+  - live Stage 5 output
+  - live policy evaluation
+- The ML section now shows a visible warning callout when the model-status text reports unhealthy state, load failure, missing model state, or `meta_scan_error=...`.
+- Stage 5 and policy-evaluation previews now use provenance-explicit labels (`Current live Stage 5 output`, `Current live policy evaluation`) and remind users that saved Stage 5 / saved policy-eval artifacts remain under Saved Aggregate.
+- `metaService.test.ts` now strengthens the live Stage 5 / policy-evaluation assertions so the status and preview text must preserve file and source provenance.
+- `metaService.test.ts` also now covers reveal behavior for saved Stage 5 and saved policy-evaluation artifacts.
+- `MetaWorkspacePanel.test.ts` now verifies that model status, Stage 5 output, and policy evaluation remain distinct in the UI and that unhealthy model text is surfaced prominently.
+- `REPO_MAP.md` was synced so contributors can find the ML confidence provenance behavior quickly.
+- Stable fixture / replay payload:
+  - `metaMlStatus = scope=CompositeMo/1m state=UNHEALTHY meta_scan_error=scan failed`
+  - `metaStage4Status = Stage 5 complete: selected=1 scored=1/2 accept/review/reject=1/0/1 · file=vectorgrid_stage5.json`
+  - `metaPolicyEvalStatus = Policy evaluation complete: evaluated=3/4 · best=stage5_blended · stage5_precision=100.0% · file=vectorgrid_ml_policy_eval.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaServiceCampaignStrategy.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

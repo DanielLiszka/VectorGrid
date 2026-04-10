@@ -126,22 +126,22 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current-meta apply flow and its in-memory-only behavior.
-- [ ] Document the backend `apply_ml_confidence_model` contract and returned confidence payload shape.
-- [ ] Document the Stage 5 execution path and its saved-artifact behavior.
-- [ ] Document policy evaluation as a separate offline contract.
-- [ ] Document the current feature-vector contract shared between frontend rows and backend prediction.
-- [ ] Document current Stage 5 defaults and health/fallback flags that shape the execution path.
-- [ ] Document when training can trigger immediate apply behavior in the frontend.
-- [ ] Preserve tests for in-memory apply, Stage 5 run behavior, and policy-eval orchestration.
-- [ ] Preserve tests for feature-vector/prediction parity in `ml_confidence.rs`.
-- [ ] Keep docs explicit that only Stage 5 and policy eval persist durable artifacts today.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the current-meta apply flow and its in-memory-only behavior.
+- [x] Document the backend `apply_ml_confidence_model` contract and returned confidence payload shape.
+- [x] Document the Stage 5 execution path and its saved-artifact behavior.
+- [x] Document policy evaluation as a separate offline contract.
+- [x] Document the current feature-vector contract shared between frontend rows and backend prediction.
+- [x] Document current Stage 5 defaults and health/fallback flags that shape the execution path.
+- [x] Document when training can trigger immediate apply behavior in the frontend.
+- [x] Preserve tests for in-memory apply, Stage 5 run behavior, and policy-eval orchestration.
+- [x] Preserve tests for feature-vector/prediction parity in `ml_confidence.rs`.
+- [x] Keep docs explicit that only Stage 5 and policy eval persist durable artifacts today.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -164,6 +164,28 @@ Public-repo quality focus:
 - keep Stage 4 compatibility aliases explicit until the naming migration is intentional and complete
 - prefer additive reporting/state fields over collapsing the three apply paths into one generic status concept
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the apply-path separation explicit in the ML contract surface instead of relying only on button labels and service naming.
+- `MetaWorkspacePanel.vue` now states that:
+  - `Apply to current meta` is an in-memory augmentation path
+  - `Run Stage 5` creates a saved rerank artifact
+  - `Evaluate policy` creates a saved offline comparison artifact
+  - only Stage 5 and Policy Eval persist durable artifacts today
+- Existing orchestration/tests remain intact:
+  - `metaService.test.ts` continues to cover current-meta apply DTO shaping and Stage 5 / policy-eval orchestration
+  - targeted Rust suites continue to cover backend feature-vector and ML-confidence prediction behavior
+- Stable fixture / replay payload:
+  - in-memory `apply_ml_confidence_model` request over current groups
+  - `vectorgrid_stage5.json`
+  - `vectorgrid_ml_policy_eval.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts`
+  - `cargo test -p ta_desktop_demo_app commands_meta --lib`
+  - `cargo test -p ta_app_core ml_confidence --lib`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

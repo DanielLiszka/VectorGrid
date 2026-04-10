@@ -25,6 +25,7 @@ import { useDataStore } from "../stores/dataStore";
 import { useExecutionStore } from "../stores/executionStore";
 import { useOptimizeStore } from "../stores/optimizeStore";
 import { useSettingsStore } from "../stores/settingsStore";
+import { useStrategyStore } from "../stores/strategyStore";
 import { useValidationStore } from "../stores/validationStore";
 import { useWorkflowStore } from "../stores/workflowStore";
 import {
@@ -433,6 +434,7 @@ describe("historyService", () => {
 
     const artifacts = useWorkflowArtifactsStore(pinia);
     expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
     expect(artifacts.currentRun?.artifactPath).toBe("C:/runs/ml_signal.json");
     expect(artifacts.currentRun?.mlSignal?.stage).toBe("validation");
     expect(artifacts.currentRun?.mlSignal?.scoreScope).toBe(
@@ -454,9 +456,24 @@ describe("historyService", () => {
       runReq: {
         strategy_kind: "DoubleMa",
         objective: "Sharpe",
-        mode: "Grid",
+        mode: "GpuProgressive",
         backend: { backend: "GpuKernel", device_id: 0 },
         ma_source: "close",
+        score_mode: "balanced_risk_adjusted_10",
+        hurdle_tau: 0.02,
+        metric_contract: "trade_22",
+        include_trade_metrics: true,
+        extra_shortlist_objectives: ["Pnl", "Omega"],
+        shortlist_confidence_mode: "dsr",
+        shortlist_union_mode: "weighted_rank",
+        shortlist_slice_mode: "halves",
+        shortlist_slice_benchmark: "buy_and_hold",
+        shortlist_neighborhood_radius: 2,
+        shortlist_neighborhood_step: 3,
+        top_k: 32,
+        include_all: false,
+        heatmap_bins: 256,
+        export_all_csv_path: "C:/runs/all_pairs.csv",
         fast_range: { start: 5, end: 20, step: 1 },
         slow_range: { start: 21, end: 80, step: 1 },
         fast_ma_types: ["sma"],
@@ -483,9 +500,26 @@ describe("historyService", () => {
     });
     expect(optimize.strategyKind).toBe("DoubleMa");
     expect(optimize.backend).toBe("GpuKernel");
+    expect(optimize.mode).toBe("Grid");
     expect(optimize.fastStart).toBe("5");
     expect(optimize.slowEnd).toBe("80");
     expect(advanced.maSource).toBe("close");
+    expect(advanced.mode).toBe("Grid");
+    expect(advanced.scoreMode).toBe("balanced_risk_adjusted_10");
+    expect(advanced.hurdleTau).toBe("0.02");
+    expect(advanced.metricContract).toBe("trade_22");
+    expect(advanced.includeTradeMetrics).toBe(true);
+    expect(advanced.extraShortlistObjectives).toBe("Pnl, Omega");
+    expect(advanced.shortlistConfidenceMode).toBe("dsr");
+    expect(advanced.shortlistUnionMode).toBe("weighted_rank");
+    expect(advanced.shortlistSliceMode).toBe("halves");
+    expect(advanced.shortlistSliceBenchmark).toBe("buy_and_hold");
+    expect(advanced.shortlistNeighborhoodRadius).toBe("2");
+    expect(advanced.shortlistNeighborhoodStep).toBe("3");
+    expect(advanced.topK).toBe("32");
+    expect(advanced.includeAll).toBe("false");
+    expect(advanced.heatmapBins).toBe("256");
+    expect(advanced.exportAllCsvPath).toBe("C:/runs/all_pairs.csv");
     expect(data.csvPath).toBe("C:/data/msft.csv");
     expect(data.dataTimeframe).toBe("5m");
     expect(validation.candidates).toBe("12");
@@ -493,6 +527,61 @@ describe("historyService", () => {
     expect(validation.minPsr).toBe("0.55");
     expect(validation.minDsr).toBe("0.4");
     expect(validation.admissionPolicy).toBe("scalar_union");
+  });
+
+  it("clears stale advanced builder fields when the saved run omits them", async () => {
+    useWorkflowStore(pinia).selectMode("ml-signal", { persist: false });
+    const advanced = useAdvancedStore(pinia);
+    advanced.scoreMode = "balanced_risk_adjusted_10";
+    advanced.hurdleTau = "0.05";
+    advanced.metricContract = "trade_22";
+    advanced.includeTradeMetrics = true;
+    advanced.extraShortlistObjectives = "Pnl, Omega";
+    advanced.shortlistConfidenceMode = "dsr";
+    advanced.shortlistUnionMode = "weighted_rank";
+    advanced.shortlistSliceMode = "halves";
+    advanced.shortlistSliceBenchmark = "buy_and_hold";
+    advanced.shortlistNeighborhoodRadius = "2";
+    advanced.shortlistNeighborhoodStep = "3";
+    advanced.topK = "64";
+    advanced.includeAll = "true";
+    advanced.heatmapBins = "512";
+    advanced.exportAllCsvPath = "C:/runs/stale_pairs.csv";
+
+    invokeCommandMock.mockResolvedValueOnce({
+      strategyKind: "DoubleMa",
+      timeframe: "5m",
+      csvPath: "C:/data/msft.csv",
+      runReq: {
+        strategy_kind: "DoubleMa",
+        objective: "Sharpe",
+        mode: "Grid",
+        backend: { backend: "GpuKernel", device_id: 0 },
+        ma_source: "close",
+        fast_range: { start: 5, end: 20, step: 1 },
+        slow_range: { start: 21, end: 80, step: 1 },
+        fast_ma_types: ["sma"],
+        slow_ma_types: ["alma"],
+      },
+    });
+
+    await applySavedRun(" C:/runs/run_minimal.json ");
+
+    expect(advanced.scoreMode).toBe("");
+    expect(advanced.hurdleTau).toBe("");
+    expect(advanced.metricContract).toBe("auto");
+    expect(advanced.includeTradeMetrics).toBe(false);
+    expect(advanced.extraShortlistObjectives).toBe("");
+    expect(advanced.shortlistConfidenceMode).toBe("");
+    expect(advanced.shortlistUnionMode).toBe("");
+    expect(advanced.shortlistSliceMode).toBe("");
+    expect(advanced.shortlistSliceBenchmark).toBe("");
+    expect(advanced.shortlistNeighborhoodRadius).toBe("");
+    expect(advanced.shortlistNeighborhoodStep).toBe("");
+    expect(advanced.topK).toBe("20");
+    expect(advanced.includeAll).toBe("false");
+    expect(advanced.heatmapBins).toBe("128");
+    expect(advanced.exportAllCsvPath).toBe("");
   });
 
   it("applies MlSignal saved run request into Vue optimize/data stores", async () => {
@@ -508,6 +597,7 @@ describe("historyService", () => {
         output_path: "C:/runs/ml_score_cache.json",
         model_bundle_id: "bundle-a",
       },
+      mlSignalStage: "validation",
       validationReq: {
         candidates: [
           {
@@ -521,6 +611,9 @@ describe("historyService", () => {
               long_only: true,
               allow_flip: false,
               trade_on_next_bar: false,
+              fee_bps: 0.5,
+              spread_bps: 1.0,
+              slippage_bps: 0.25,
               cooldown_bars: 2,
               signal_persistence_bars: 3,
             },
@@ -535,7 +628,9 @@ describe("historyService", () => {
 
     const optimize = useOptimizeStore(pinia);
     const data = useDataStore(pinia);
+    const strategy = useStrategyStore(pinia);
     expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
     expect(optimize.strategyKind).not.toBe("MlSignal");
     expect(optimize.mlSignalScoreInputPath).toBe("C:/scores/ml_scores.csv");
     expect(optimize.mlSignalScoreCachePath).toBe("C:/runs/ml_score_cache.json");
@@ -546,6 +641,18 @@ describe("historyService", () => {
     expect(optimize.mlSignalMaxHoldBars).toBe("11");
     expect(optimize.mlSignalMinPsr).toBe("0.55");
     expect(optimize.mlSignalMinDsr).toBe("0.4");
+    expect(strategy.longOnly).toBe(true);
+    expect(strategy.allowFlip).toBe(false);
+    expect(strategy.tradeOnNext).toBe(true);
+    expect(strategy.feeBps).toBe("0.5");
+    expect(strategy.spreadBps).toBe("1");
+    expect(strategy.slippageBps).toBe("0.25");
+    expect(strategy.cooldownBars).toBe("2");
+    expect(strategy.signalPersistenceBars).toBe("3");
+    expect(strategy.commission).toBe("0.000125");
+    expect(strategy.costHint).toBe(
+      "Total: 1.25 bps/side (2.50 bps round-trip)",
+    );
     expect(data.csvPath).toBe("C:/data/spy.csv");
     expect(data.dataTimeframe).toBe("1d");
   });
@@ -594,6 +701,7 @@ describe("historyService", () => {
         output_path: "C:/runs/ml_score_cache.json",
         model_bundle_id: "bundle-a",
       },
+      mlSignalStage: "validation",
       validationReq: {
         candidates: [
           {
@@ -610,6 +718,7 @@ describe("historyService", () => {
 
     expect(loadDataCsvMock).toHaveBeenCalledWith("C:/data/spy.csv");
     expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("validate");
     expect(runOptimizationMock).not.toHaveBeenCalled();
     expect(generateMlSignalScoreCacheMock).toHaveBeenCalledTimes(1);
     expect(runMlSignalValidationMock).toHaveBeenCalledTimes(1);
@@ -639,6 +748,7 @@ describe("historyService", () => {
 
     expect(exportMlSignalDatasetMock).toHaveBeenCalledTimes(1);
     expect(useWorkflowStore(pinia).mode).toBe("ml-signal");
+    expect(useWorkflowStore(pinia).workflowStep).toBe("data");
     expect(generateMlSignalScoreCacheMock).not.toHaveBeenCalled();
     expect(runMlSignalValidationMock).not.toHaveBeenCalled();
     expect(runMlSignalPolicySweepMock).not.toHaveBeenCalled();
@@ -868,5 +978,45 @@ describe("historyService", () => {
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {
       path: "C:/runs/report.xlsx",
     });
+  });
+
+  it("falls back to reveal when opening a saved report fails", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      reportPath: "C:/runs/report.xlsx",
+      paramsText: "",
+    });
+    invokeCommandMock.mockRejectedValueOnce(new Error("blocked"));
+    invokeCommandMock.mockResolvedValueOnce(undefined);
+
+    await openSavedRunReport(" C:/runs/run1.json ");
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "load_run_artifact_detail", {
+      path: "C:/runs/run1.json",
+    });
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(2, "open_path", {
+      path: "C:/runs/report.xlsx",
+    });
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(3, "reveal_path", {
+      path: "C:/runs/report.xlsx",
+    });
+  });
+
+  it("does not treat ML attachment paths as a saved run report path", async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      reportPath: "",
+      mlScoreCachePath: "C:/runs/cache.json",
+      mlFeatureSchemaPath: "C:/runs/schema.json",
+      paramsText: "",
+    });
+
+    await expect(openSavedRunReport("C:/runs/run1.json")).rejects.toThrow(
+      "No report path for this saved run yet",
+    );
+
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, "load_run_artifact_detail", {
+      path: "C:/runs/run1.json",
+    });
+    expect(invokeCommandMock).not.toHaveBeenCalledWith("open_path", expect.anything());
+    expect(invokeCommandMock).not.toHaveBeenCalledWith("reveal_path", expect.anything());
   });
 });

@@ -48,6 +48,42 @@ describe('compositeProfileGpuPolicy', () => {
     })
   })
 
+  it('keeps the three composite profile route previews aligned with the current product route matrix', () => {
+    expect(resolveCompositeProfileRoute('CompositeTrend', 'GpuKernel', { trendUseAdx: false })).toMatchObject({
+      targetBackend: 'GpuKernel',
+      usesHybrid: false,
+      supportsExportAll: true,
+    })
+    expect(resolveCompositeProfileRoute('CompositeTrend', 'GpuKernel', { trendUseAdx: true })).toMatchObject({
+      targetBackend: 'GpuHybridKernel',
+      usesHybrid: true,
+      supportsExportAll: false,
+    })
+    expect(resolveCompositeProfileRoute('BreakoutMomentum', 'GpuKernel', { breakoutUseAdx: false })).toMatchObject({
+      targetBackend: 'GpuKernel',
+      usesHybrid: false,
+      supportsExportAll: true,
+    })
+    expect(resolveCompositeProfileRoute('BreakoutMomentum', 'GpuKernel', { breakoutUseAdx: true })).toMatchObject({
+      targetBackend: 'GpuHybridKernel',
+      usesHybrid: true,
+      supportsExportAll: false,
+    })
+    expect(resolveCompositeProfileRoute('RegimeHybrid', 'GpuKernel')).toMatchObject({
+      targetBackend: 'GpuHybridKernel',
+      usesHybrid: true,
+      supportsExportAll: false,
+    })
+    expect(resolveCompositeProfileRoute('RegimeHybrid', 'CpuOnly')).toMatchObject({
+      targetBackend: 'CpuOnly',
+      usesHybrid: false,
+      supportsExportAll: false,
+      supportsHeatmap: true,
+      supportsTopK: true,
+      supportsIncludeAll: true,
+    })
+  })
+
   it('describes the route policy', () => {
     expect(describeCompositeProfileGpuPolicy('CompositeTrend')).toContain('GpuKernel')
     expect(describeCompositeProfileGpuPolicy('BreakoutMomentum')).toContain('GpuHybridKernel')

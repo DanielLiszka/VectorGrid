@@ -95,16 +95,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document shared chart-runtime responsibilities and boundaries.
-- [ ] Document resize-observer and disposal expectations.
-- [ ] Document panel-local versus shared rendering responsibilities.
-- [ ] Document rerender and restore expectations for chart-bearing result panels.
-- [ ] Add or tighten tests for chart lifecycle, rerender, and tab-switch stability.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document shared chart-runtime responsibilities and boundaries.
+- [x] Document resize-observer and disposal expectations.
+- [x] Document panel-local versus shared rendering responsibilities.
+- [x] Document rerender and restore expectations for chart-bearing result panels.
+- [x] Add or tighten tests for chart lifecycle, rerender, and tab-switch stability.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,12 @@ Public-repo quality focus:
 - if new chart surfaces are added later, route them through the shared lifecycle model unless there is a clear exception
 - keep chart-runtime changes synchronized with panel rerender and restore semantics
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Added [useLightweightChart.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/composables/useLightweightChart.test.ts) to lock in the shared chart runtime’s resize-observer lifecycle and disposal behavior.
+- Revalidated the chart-bearing result panels through the Drilldown, Heatmap, Pareto, and analysis-service tests so panel-local rerender/restore semantics remain aligned with the shared helper contract.
+- The main remaining deeper gap from the backend audit is broader composite drill/local-stability coverage, not a missing frontend chart-lifecycle contract.
 
 ## Related Docs
 

@@ -13,6 +13,25 @@ function normalizeText(value: unknown): string {
   return String(value ?? '').trim()
 }
 
+function normalizeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const out: string[] = []
+  for (const item of value) {
+    const next = normalizeText(item)
+    if (!next) continue
+    out.push(next)
+  }
+  return out
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false
+  }
+  return true
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   return value as Record<string, unknown>
@@ -22,6 +41,20 @@ function syncSourceIfStoreBound(source: WorkflowArtifactsSource): void {
   const pinia = resolveRuntimePinia()
   if (!pinia) return
   useWorkflowArtifactsStore(pinia).source = source
+}
+
+function latestSummaryMatchesCurrentStore(latest: Record<string, unknown>): boolean {
+  const pinia = resolveRuntimePinia()
+  if (!pinia) return true
+  const currentRun = useWorkflowArtifactsStore(pinia).currentRun
+  if (!currentRun) return true
+  return (
+    normalizeText(latest.report_xlsx_path ?? latest.reportXlsxPath) ===
+      normalizeText(currentRun.reportXlsxPath) &&
+    normalizeText(latest.csv_path ?? latest.csvPath) ===
+      normalizeText(currentRun.csvPath) &&
+    sameStringArray(normalizeTags(latest.tags), normalizeTags(currentRun.tags))
+  )
 }
 
 export async function syncWorkflowArtifactsFromLegacyRuntime(
@@ -35,14 +68,15 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
     const latest = asRecord(rows[0])
     const latestPath = normalizeText(latest?.path)
     const latestTs = normalizeText(latest?.ts)
-    if (!latestPath) return false
+    if (!latest || !latestPath) return false
 
     const currentIdentity = readLatestWorkflowRunIdentitySnapshot()
     const canSkipLoad = !!(
       currentIdentity &&
       currentIdentity.artifactPath === latestPath &&
       currentIdentity.ts === latestTs &&
-      currentIdentity.hasValidation
+      currentIdentity.hasValidation &&
+      latestSummaryMatchesCurrentStore(latest)
     )
     if (canSkipLoad) {
       syncSourceIfStoreBound(source)

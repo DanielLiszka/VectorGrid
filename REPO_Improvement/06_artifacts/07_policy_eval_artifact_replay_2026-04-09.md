@@ -91,18 +91,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the typed policy-eval replay response and consumed result fields.
-- [ ] Document why this family is JSON-only and does not expose `Open report`.
-- [ ] Document `policyEvals` versus `policy_evals` normalization rules.
-- [ ] Document selection-retention behavior during refresh.
-- [ ] Add or tighten tests for typed replay loading and summary-field preservation.
-- [ ] Add or tighten tests for field-name normalization and no-report action behavior.
-- [ ] Keep this family separate from workbook/report-oriented replay semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the typed policy-eval replay response and consumed result fields.
+- [x] Document why this family is JSON-only and does not expose `Open report`.
+- [x] Document `policyEvals` versus `policy_evals` normalization rules.
+- [x] Document selection-retention behavior during refresh.
+- [x] Add or tighten tests for typed replay loading and summary-field preservation.
+- [x] Add or tighten tests for field-name normalization and no-report action behavior.
+- [x] Keep this family separate from workbook/report-oriented replay semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -127,3 +127,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/06_stage5_artifact_replay_2026-04-09.md`
 - `REPO_Improvement/08_ml/25_meta_replay_routes_2026-04-08.md`
 - `REPO_Improvement/08_ml/34_policy_eval_outputs_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a JSON-only typed replay contract audit. Existing Meta-service replay tests already prove typed policy-eval loading and current family restoration behavior.
+- The new `policy_evals` normalization regression test in `web/src/services/metaService.test.ts` also strengthens this family because policy-eval replay depends on consistent aggregate-library field normalization before load.
+- The current product rule remains explicit: Saved Policy Eval has reveal/delete/load behavior but no workbook/report `Open report` surface.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/components/MetaWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.

@@ -5,6 +5,7 @@ import { applyWorkflowArtifactsPayload, readLatestWorkflowRunSnapshot } from '..
 import { useWorkflowStore } from '../stores/workflowStore'
 import { computeConfigFingerprint } from '../utils/core/artifactIdentity'
 import { buildDatasetMetaForArtifact } from '../utils/core/datasetMeta'
+import { openPathWithRevealFallback } from '../utils/openPath'
 import { formatUiCount, formatUtcDateFromUnixMs } from '../utils/uiFormat'
 
 interface PolygonCrossDatasetResponse {
@@ -37,8 +38,18 @@ export interface ValidationCrossRefreshSummary {
   datasets: ValidationCrossDatasetSummary[]
 }
 
+export interface ValidationContextCompatibilityPreview {
+  state: 'compatible' | 'warning' | 'incompatible' | 'missing'
+  summary: string
+  detail: string
+}
+
 function normalizePath(value: string): string {
   return String(value || '').trim()
+}
+
+function canonicalPathKey(value: unknown): string {
+  return normalizePath(String(value || '').trim()).replace(/\//g, '\\').toLowerCase()
 }
 
 function normalizeText(value: unknown): string {
@@ -85,6 +96,11 @@ function normalizeStrategyKindRaw(kindRaw: unknown): string {
   if (kind === 'RegimeHybrid') return 'RegimeHybrid'
   if (kind === 'BreakoutMomentum') return 'BreakoutMomentum'
   return 'DoubleMa'
+}
+
+function normalizeOptionalStrategyKind(kindRaw: unknown): string {
+  const raw = normalizeText(kindRaw)
+  return raw ? normalizeStrategyKindRaw(raw) : ''
 }
 
 function isDoubleLikeKind(kindRaw: unknown): boolean {
@@ -172,6 +188,7 @@ interface ReportPayload {
   }
   run: { req: unknown; res: unknown }
   validation: { req: unknown; res: unknown } | null
+  optimization_metric_surface?: Record<string, unknown> | null
 }
 
 interface WorkflowRunArtifactSnapshot {
@@ -181,6 +198,7 @@ interface WorkflowRunArtifactSnapshot {
   csvPath: string
   datasetMeta: Record<string, unknown> | null
   mlSignal: Record<string, unknown> | null
+  optimizationMetricSurface: Record<string, unknown> | null
   tags: string[]
   req: unknown
   res: unknown
@@ -214,7 +232,9 @@ interface PersistValidationArtifactResult {
   reportXlsxPath: string
   datasetMeta: Record<string, unknown> | null
   mlSignal: Record<string, unknown> | null
+  optimizationMetricSurface: Record<string, unknown> | null
   tags: string[]
+  persistenceWarning: string
 }
 
 interface ReportXlsxExportResult {
@@ -523,6 +543,12 @@ function readWorkflowRunArtifactFromStore(): WorkflowRunArtifactSnapshot | null 
       : (row.ml_signal && typeof row.ml_signal === 'object'
         ? row.ml_signal as Record<string, unknown>
         : null),
+    optimizationMetricSurface:
+      row.optimizationMetricSurface && typeof row.optimizationMetricSurface === 'object'
+        ? row.optimizationMetricSurface as Record<string, unknown>
+        : (row.optimization_metric_surface && typeof row.optimization_metric_surface === 'object'
+          ? row.optimization_metric_surface as Record<string, unknown>
+          : null),
     tags: normalizeStringList(row.tags),
     req: row.req ?? null,
     res: row.res ?? null
@@ -543,11 +569,11 @@ function readWorkflowValidationArtifactFromStore(): WorkflowValidationArtifactSn
 }
 
 function readLatestMetaReportPath(): string {
-  const commandActionsStore = readPiniaStoreState('commandActions')
-  const fromStore = normalizeText(commandActionsStore?.latestMetaReportPath)
-  if (fromStore) return fromStore
   if (typeof document === 'undefined') return ''
-  return normalizeText(document.documentElement?.dataset?.latestMetaReportPath)
+  const fromRuntime = normalizeText(document.documentElement?.dataset?.latestMetaReportPath)
+  if (fromRuntime) return fromRuntime
+  const commandActionsStore = readPiniaStoreState('commandActions')
+  return normalizeText(commandActionsStore?.latestMetaReportPath)
 }
 
 function readValidationExportPrefs(): {
@@ -651,13 +677,14 @@ function buildReportDataFromDatasetMeta(datasetMeta: Record<string, unknown> | n
 function buildReportPayload(input: {
   ts?: unknown
   datasetMeta?: Record<string, unknown> | null
+  optimizationMetricSurface?: Record<string, unknown> | null
   runReq: unknown
   runRes: unknown
   validationReq: unknown
   validationRes: unknown
 }): ReportPayload {
   const ts = normalizeText(input.ts) || new Date().toISOString()
-  return {
+  const payload: ReportPayload = {
     version: 1,
     kind: 'vectorgrid_report',
     ts,
@@ -670,6 +697,10 @@ function buildReportPayload(input: {
       ? { req: input.validationReq ?? null, res: input.validationRes }
       : null
   }
+  if (input.optimizationMetricSurface) {
+    payload.optimization_metric_surface = input.optimizationMetricSurface
+  }
+  return payload
 }
 
 function buildCurrentReportPayloadFromStore(): ReportPayload {
@@ -678,6 +709,7 @@ function buildCurrentReportPayloadFromStore(): ReportPayload {
   return buildReportPayload({
     ts: run?.ts || validation?.ts,
     datasetMeta: run?.datasetMeta ?? null,
+    optimizationMetricSurface: run?.optimizationMetricSurface ?? null,
     runReq: run?.req ?? null,
     runRes: run?.res ?? null,
     validationReq: validation?.req ?? null,
@@ -731,16 +763,6 @@ function downloadBase64(filename: string, base64: string, mime: string): boolean
   const copy = new Uint8Array(bytes.length)
   copy.set(bytes)
   return downloadBlob(filename, new Blob([copy.buffer], { type: mime }))
-}
-
-async function openPathWithRevealFallback(path: string): Promise<void> {
-  const nextPath = normalizeText(path)
-  if (!nextPath) return
-  try {
-    await invokeCommand('open_path', { path: nextPath })
-  } catch {
-    await invokeCommand('reveal_path', { path: nextPath })
-  }
 }
 
 function buildRunDatasetContextState(): {
@@ -839,6 +861,134 @@ function assertValidationRunMatchesCurrentDataset(
     : '')
   if (runtimeStrategy && artifactStrategy !== runtimeStrategy) {
     throw new Error(`Validation requires strategy ${runtimeStrategy}; current run context is ${artifactStrategy}.`)
+  }
+}
+
+function resolveValidationCompatibilityContext(
+  workflowRun: WorkflowRunArtifactSnapshot,
+  runReq: Record<string, unknown> | null,
+  validationReq: Record<string, unknown> | null,
+): {
+  expectedCsvPath: string
+  expectedLabel: string
+  expectedTimeframe: string
+  expectedStrategy: string
+} {
+  const validationContext = asRecord(validationReq?.validation_context)
+  const datasetMeta = workflowRun.datasetMeta
+  return {
+    expectedCsvPath: normalizePath(firstNonEmptyText(
+      validationContext?.csv_path,
+      datasetMeta?.csv_path,
+      workflowRun.csvPath,
+    )),
+    expectedLabel: firstNonEmptyText(
+      validationContext?.label,
+      datasetMeta?.symbol,
+      datasetMeta?.label,
+      validationContext?.csv_path,
+      datasetMeta?.csv_path,
+      workflowRun.csvPath,
+    ) || 'artifact dataset',
+    expectedTimeframe: canonicalLower(firstNonEmptyText(
+      validationContext?.timeframe,
+      datasetMeta?.timeframe,
+      datasetMeta?.derived_timeframe,
+      datasetMeta?.base_timeframe,
+    )),
+    expectedStrategy: normalizeOptionalStrategyKind(
+      validationContext?.strategy_kind ?? runReq?.strategy_kind ?? runReq?.strategyKind,
+    ),
+  }
+}
+
+export function previewValidationContextCompatibilityFromStores(): ValidationContextCompatibilityPreview {
+  const workflowRun = readWorkflowRunArtifactFromStore()
+  if (!workflowRun) {
+    return {
+      state: 'missing',
+      summary: 'Awaiting optimization artifact',
+      detail: 'Run or reopen an optimization artifact before validating so dataset, timeframe, and strategy compatibility can be checked.',
+    }
+  }
+
+  const artifactReq = asRecord(workflowRun.req)
+  const runSnapshot = readRunSnapshotFromStore()
+  const runReq = asRecord(runSnapshot?.req ?? artifactReq)
+  const validationReq = asRecord(readWorkflowValidationArtifactFromStore()?.req)
+  const {
+    expectedCsvPath,
+    expectedLabel,
+    expectedTimeframe,
+    expectedStrategy,
+  } = resolveValidationCompatibilityContext(workflowRun, runReq, validationReq)
+  const currentStrategy = normalizeOptionalStrategyKind(
+    runReq?.strategy_kind ?? runReq?.strategyKind,
+  )
+
+  if (expectedStrategy && currentStrategy && expectedStrategy !== currentStrategy) {
+    return {
+      state: 'incompatible',
+      summary: 'Incompatible: strategy mismatch',
+      detail: `Validation artifact expects strategy ${expectedStrategy}; current run context is ${currentStrategy}.`,
+    }
+  }
+
+  const dataStore = readPiniaStoreState('data')
+  const currentCsvPath = normalizePath(normalizeText(dataStore?.csvPath))
+  const currentLabel = firstNonEmptyText(dataStore?.datasetLabel, currentCsvPath) || 'loaded dataset'
+  const currentTimeframe = canonicalLower(
+    firstNonEmptyText(dataStore?.dataTimeframe, asRecord(dataStore?.baseDataMeta)?.timeframe),
+  )
+
+  if (expectedCsvPath && !currentCsvPath) {
+    return {
+      state: 'missing',
+      summary: `Load ${expectedLabel}`,
+      detail: `Validation artifact expects dataset ${expectedLabel} (${expectedCsvPath}). Load that dataset before running validation.`,
+    }
+  }
+
+  if (expectedCsvPath && currentCsvPath && canonicalPathKey(currentCsvPath) !== canonicalPathKey(expectedCsvPath)) {
+    return {
+      state: 'incompatible',
+      summary: 'Incompatible: dataset mismatch',
+      detail: `Validation artifact expects dataset ${expectedLabel} (${expectedCsvPath}); loaded dataset is ${currentLabel} (${currentCsvPath}).`,
+    }
+  }
+
+  if (expectedTimeframe && currentTimeframe && currentTimeframe !== expectedTimeframe) {
+    return {
+      state: 'incompatible',
+      summary: 'Incompatible: timeframe mismatch',
+      detail: `Validation artifact expects timeframe ${expectedTimeframe}; loaded dataset is ${currentTimeframe}.`,
+    }
+  }
+
+  if (expectedTimeframe && !currentTimeframe) {
+    return {
+      state: 'warning',
+      summary: 'Partial: current timeframe unavailable',
+      detail: `Validation artifact expects timeframe ${expectedTimeframe}, but the currently loaded dataset does not expose an active timeframe label yet.`,
+    }
+  }
+
+  const missingArtifactContext: string[] = []
+  if (!expectedCsvPath) missingArtifactContext.push('dataset')
+  if (!expectedTimeframe) missingArtifactContext.push('timeframe')
+  if (!expectedStrategy) missingArtifactContext.push('strategy')
+  if (missingArtifactContext.length > 0) {
+    return {
+      state: 'warning',
+      summary: `Partial: missing ${missingArtifactContext.join(' + ')}`,
+      detail: `This artifact is missing ${missingArtifactContext.join(', ')} metadata, so compatibility cannot be fully confirmed before validation runs.`,
+    }
+  }
+
+  return {
+    state: 'compatible',
+    summary: 'Compatible: dataset + timeframe + strategy aligned',
+    detail: `Loaded dataset ${expectedLabel}${expectedTimeframe ? ` (${expectedTimeframe})` : ''} matches the artifact context${expectedStrategy ? ` for ${expectedStrategy}` : ''}.`,
   }
 }
 
@@ -1749,6 +1899,7 @@ async function persistValidationArtifact(
       ?? currentRun?.datasetMeta
       ?? buildDatasetMetaForArtifact(csvPath, buildRunDatasetContextState())
   const mlSignal = currentRun?.mlSignal ?? null
+  const optimizationMetricSurface = currentRun?.optimizationMetricSurface ?? null
   const configFingerprint = computeConfigFingerprint(runReq, validationReq)
   const artifact: Record<string, unknown> = {
     version: 1,
@@ -1761,20 +1912,35 @@ async function persistValidationArtifact(
     data: { csv_path: csvPath },
     dataset_meta: datasetMeta,
     ml_signal: mlSignal,
+    optimization_metric_surface: optimizationMetricSurface,
     tags
   }
   let path = normalizeText(currentRun?.artifactPath)
+  let persistenceWarning = ''
   try {
     const saved = (await invokeCommand('save_run_artifact', {
       artifact
     })) as SaveRunArtifactResponse
     const next = normalizeText(saved?.path)
     if (next) path = next
-  } catch {
-    // keep validation non-throwing if artifact persistence fails
+  } catch (error) {
+    const detail = normalizeText(error)
+    persistenceWarning = detail
+      ? `Validation artifact persistence failed: ${detail}`
+      : 'Validation artifact persistence failed.'
   }
 
-  return { path, ts, csvPath, reportXlsxPath, datasetMeta, mlSignal, tags }
+  return {
+    path,
+    ts,
+    csvPath,
+    reportXlsxPath,
+    datasetMeta,
+    mlSignal,
+    optimizationMetricSurface,
+    tags,
+    persistenceWarning,
+  }
 }
 
 function applyVueValidationArtifacts(
@@ -1793,6 +1959,7 @@ function applyVueValidationArtifacts(
         csv_path: persisted.csvPath,
         dataset_meta: persisted.datasetMeta,
         ml_signal: persisted.mlSignal,
+        optimization_metric_surface: persisted.optimizationMetricSurface,
         tags: persisted.tags,
         req: runReq,
         res: runRes
@@ -1967,6 +2134,7 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
       const report = buildReportPayload({
         ts: workflowRun.ts,
         datasetMeta,
+        optimizationMetricSurface: workflowRun.optimizationMetricSurface,
         runReq,
         runRes,
         validationReq,
@@ -1988,7 +2156,14 @@ export async function runValidation(options: ValidationRunOptions = {}): Promise
 
     applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
     const endToEndMs = Math.max(0, nowMs() - validationStartedAt)
-    const statusLine = formatValidationStatus(commandMs, endToEndMs, autoExportStatus)
+    const statusLine = formatValidationStatus(
+      commandMs,
+      endToEndMs,
+      [autoExportStatus, persisted.persistenceWarning]
+        .map((part) => normalizeText(part))
+        .filter((part) => part.length > 0)
+        .join(' • '),
+    )
     patchValidationStoreState({
       validationHint: buildValidationHintText(validationRes),
       validationMeta,
@@ -2337,8 +2512,8 @@ async function exportReportXlsxInternal(
         reportXlsxPath: ''
       }
     }
-    await openPathWithRevealFallback(stage3Path)
-    if (prefs.autoReveal) {
+    const opened = await openPathWithRevealFallback(stage3Path)
+    if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
       await invokeCommand('reveal_path', { path: stage3Path }).catch(() => undefined)
     }
     return {
@@ -2390,8 +2565,8 @@ async function exportReportXlsxInternal(
     }
   }
 
-  await openPathWithRevealFallback(path)
-  if (prefs.autoReveal) {
+  const opened = await openPathWithRevealFallback(path)
+  if (prefs.autoReveal && opened.openedWith !== 'reveal_path') {
     await invokeCommand('reveal_path', { path }).catch(() => undefined)
   }
   return {
@@ -2407,13 +2582,18 @@ export async function exportReportXlsx(): Promise<void> {
   const validationReq = asRecord(report.validation?.req ?? null)
   const validationRes = report.validation?.res ?? null
   const result = await exportReportXlsxInternal(report, readValidationExportPrefs())
+  let statusLine = result.statusLine
   if (runReq && runRes != null && validationReq && validationRes != null && result.reportXlsxPath) {
     const persisted = await persistValidationArtifact(runReq, runRes, validationReq, validationRes, {
       reportXlsxPath: result.reportXlsxPath,
     })
     applyVueValidationArtifacts(runReq, runRes, validationReq, validationRes, persisted)
+    statusLine = [result.statusLine, persisted.persistenceWarning]
+      .map((part) => normalizeText(part))
+      .filter((part) => part.length > 0)
+      .join(' • ')
   }
-  patchValidationStoreState({ statusLine: result.statusLine })
+  patchValidationStoreState({ statusLine })
 }
 
 export async function openReportsDir(): Promise<void> {

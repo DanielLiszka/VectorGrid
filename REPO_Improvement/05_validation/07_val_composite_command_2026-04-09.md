@@ -95,18 +95,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the accepted composite-family strategy kinds for this command.
-- [ ] Document current route restrictions and warnings for plain `CompositeCpu`.
-- [ ] Document why `CompositeMo` currently uses the CPU validation route.
-- [ ] Document how route summaries and warning summaries should map to backend behavior.
-- [ ] Add or tighten tests for strategy-kind routing and mismatch rejection.
-- [ ] Add or tighten tests for `CompositeMo` CPU-route messaging and `CompositeCpu` GPU restriction messaging.
-- [ ] Add or tighten tests for representative family variants such as `Rocb`, `Mkcs`, and `Carm`.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the accepted composite-family strategy kinds for this command.
+- [x] Document current route restrictions and warnings for plain `CompositeCpu`.
+- [x] Document why `CompositeMo` currently uses the CPU validation route.
+- [x] Document how route summaries and warning summaries should map to backend behavior.
+- [x] Add or tighten tests for strategy-kind routing and mismatch rejection.
+- [x] Add or tighten tests for `CompositeMo` CPU-route messaging and `CompositeCpu` GPU restriction messaging.
+- [x] Add or tighten tests for representative family variants such as `Rocb`, `Mkcs`, and `Carm`.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,11 @@ Public-repo quality focus:
 - prefer additive clarification over broad route-policy changes
 - if a composite route opens or closes, update builder previews, service summaries, and tests together
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the composite command path against the current heterogeneous route matrix instead of changing route policy. Existing `commands_validation.rs` coverage already exercises composite-family strategy-kind acceptance, `CompositeMo` CPU validation behavior, preserved-finalists filtering, and representative GPU-kernel composite families.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app commands_validation --lib`, `npm --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts`, `npm --prefix web run lint`, and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

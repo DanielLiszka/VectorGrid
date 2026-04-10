@@ -1404,3 +1404,150 @@ fn infer_timeframe_label(ts: &[i64]) -> Option<String> {
     };
     Some(label.to_string())
 }
+
+#[cfg(test)]
+mod state_live_stream_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn make_live_stream_task(symbol: &str, delayed: bool) -> LiveCandleStreamTask {
+        LiveCandleStreamTask {
+            handle: tauri::async_runtime::spawn(async move {
+                std::thread::sleep(Duration::from_millis(25));
+            }),
+            market: "stocks".to_string(),
+            symbol: symbol.to_string(),
+            delayed,
+        }
+    }
+
+    #[test]
+    fn live_candle_stream_replacement_and_stop_preserve_prior_metadata() {
+        let state = AppState::default();
+
+        let first = make_live_stream_task("AAPL", true);
+        let replaced = match state.replace_live_candle_stream(first) {
+            Ok(replaced) => replaced,
+            Err((error, _task)) => panic!("replace first live stream failed: {error}"),
+        };
+        assert!(replaced.is_none());
+
+        let active = state
+            .live_candle_stream_info()
+            .expect("live stream info after first start")
+            .expect("active stream");
+        assert_eq!(active.market, "stocks");
+        assert_eq!(active.symbol, "AAPL");
+        assert!(active.delayed);
+        assert!(active.active);
+
+        let replaced = match state.replace_live_candle_stream(make_live_stream_task("MSFT", false))
+        {
+            Ok(Some(replaced)) => replaced,
+            Ok(None) => panic!("expected prior stream metadata on replacement"),
+            Err((error, _task)) => panic!("replace second live stream failed: {error}"),
+        };
+        assert_eq!(replaced.symbol, "AAPL");
+        assert!(replaced.delayed);
+
+        let active = state
+            .live_candle_stream_info()
+            .expect("live stream info after replacement")
+            .expect("replacement stream");
+        assert_eq!(active.symbol, "MSFT");
+        assert!(!active.delayed);
+        assert!(active.active);
+
+        let stopped = state
+            .stop_live_candle_stream()
+            .expect("stop live stream")
+            .expect("stopped stream metadata");
+        assert_eq!(stopped.symbol, "MSFT");
+        assert!(!stopped.delayed);
+        assert!(
+            state
+                .live_candle_stream_info()
+                .expect("live stream info")
+                .is_none(),
+            "stop should clear the live stream slot"
+        );
+    }
+
+    #[test]
+    fn live_candle_stream_info_clears_finished_tasks_lazily() {
+        let state = AppState::default();
+        let task = LiveCandleStreamTask {
+            handle: tauri::async_runtime::spawn(async {}),
+            market: "stocks".to_string(),
+            symbol: "AAPL".to_string(),
+            delayed: true,
+        };
+
+        match state.replace_live_candle_stream(task) {
+            Ok(_) => {}
+            Err((error, _task)) => panic!("replace finished live stream task failed: {error}"),
+        }
+        std::thread::sleep(Duration::from_millis(10));
+
+        assert!(
+            state
+                .live_candle_stream_info()
+                .expect("live stream info after finished task")
+                .is_none(),
+            "finished tasks should be cleared on status inspection"
+        );
+    }
+}
+
+#[cfg(test)]
+mod state_guard_tests {
+    use super::*;
+
+    #[test]
+    fn run_guard_rejects_reentry_and_resets_on_drop() {
+        let state = AppState::default();
+        state.request_cancel();
+
+        let guard = state
+            .try_begin_run()
+            .expect("first run guard should acquire");
+        assert!(
+            !state.cancel_token().load(Ordering::SeqCst),
+            "acquiring the run guard should clear prior cancel intent"
+        );
+        assert!(
+            state.try_begin_run().is_err(),
+            "second run guard acquisition should be rejected while active"
+        );
+
+        drop(guard);
+
+        let _guard = state
+            .try_begin_run()
+            .expect("run guard should be reacquirable after drop");
+    }
+
+    #[test]
+    fn background_task_guard_rejects_reentry_and_resets_on_drop() {
+        let state = BackgroundTaskState::default();
+        state.request_cancel();
+
+        let guard = state
+            .try_begin()
+            .expect("first background task guard should acquire");
+        assert!(
+            !state.cancel_token().load(Ordering::SeqCst),
+            "acquiring the background guard should clear prior cancel intent"
+        );
+        assert!(
+            state.try_begin().is_err(),
+            "second background guard acquisition should be rejected while active"
+        );
+
+        drop(guard);
+
+        let _guard = state
+            .try_begin()
+            .expect("background guard should be reacquirable after drop");
+    }
+}

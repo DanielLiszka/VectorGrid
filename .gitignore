@@ -42,3 +42,10 @@ codex_tmp*/
 # Local crash dumps / one-off profiling artifacts
 rustc-ice-*.txt
 codex_tmp*.svg
+
+# Generated profiler captures in research trees
+SASS research/**/profiling/**/*.ncu-rep
+SASS research/**/profiling/**/*.nsys-rep
+SASS research/**/profiling/**/*.qdrep
+SASS research/**/profiling/**/*.qdstrm
+SASS research/**/profiling/**/*.sqlite

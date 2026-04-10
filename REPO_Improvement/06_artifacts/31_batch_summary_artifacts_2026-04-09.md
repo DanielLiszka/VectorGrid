@@ -104,16 +104,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the difference between legacy batch summaries and current campaign summaries.
-- [ ] Audit whether `save_batch_summary_blocking()` is still actively used or purely compatibility-oriented.
-- [ ] Add or tighten tests for last-summary persistence and reload behavior.
-- [ ] Add or tighten tests for kind discrimination across `vectorbt_batch_summary`, `vectorgrid_batch_summary`, and `vectorgrid_campaign_summary`.
-- [ ] Decide whether summary reveal/resume flows need clearer UI wording about what is actually being resumed.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the difference between legacy batch summaries and current campaign summaries.
+- [x] Audit whether `save_batch_summary_blocking()` is still actively used or purely compatibility-oriented.
+- [x] Add or tighten tests for last-summary persistence and reload behavior.
+- [x] Add or tighten tests for kind discrimination across `vectorbt_batch_summary`, `vectorgrid_batch_summary`, and `vectorgrid_campaign_summary`.
+- [x] Decide whether summary reveal/resume flows need clearer UI wording about what is actually being resumed.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -137,3 +137,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/22_meta_stage3_report_flow_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/32_campaign_summary_checkpoint_2026-04-09.md`
 - `REPO_Improvement/08_ml/35_stage4_request_contract_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a verification-led batch-summary compatibility item. The current frontend/tests already preserve last-summary resume/reveal behavior while accepting the current campaign-summary flow and legacy batch-summary compatibility paths.
+- Re-verified summary resume/reveal behavior through `web/src/services/metaService.test.ts`, `metaServiceCampaignResume.test.ts`, and `metaServiceCampaignStrategy.test.ts`.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/metaService.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaServiceCampaignStrategy.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SETTINGS_FILE: &str = "polygon_settings.json";
@@ -1077,6 +1078,7 @@ pub fn top_off_cached_dataset(
     app_identifier: &str,
     cache_dir: &Path,
     csv_path: &str,
+    cancel: Option<&AtomicBool>,
 ) -> Result<PolygonDownloadResult, String> {
     let manifest = load_manifest(cache_dir)?;
     let dataset = find_manifest_dataset_by_csv_path(&manifest, csv_path)
@@ -1084,14 +1086,23 @@ pub fn top_off_cached_dataset(
         .ok_or_else(|| "dataset not found in Polygon manifest".to_string())?;
     let now_date = chrono::Utc::now().date_naive();
     let req = build_top_off_request_for_dataset(&dataset, now_date)?;
-    download_1m_to_cache(app_identifier, cache_dir, &req)
+    download_1m_to_cache(app_identifier, cache_dir, &req, cancel)
+}
+
+fn check_cancelled(cancel: Option<&AtomicBool>) -> Result<(), String> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return Err("cancelled".to_string());
+    }
+    Ok(())
 }
 
 pub fn download_1m_to_cache(
     app_identifier: &str,
     cache_dir: &Path,
     req: &PolygonDownloadRequest,
+    cancel: Option<&AtomicBool>,
 ) -> Result<PolygonDownloadResult, String> {
+    check_cancelled(cancel)?;
     let market = Market::parse(&req.market)?;
     let (polygon_ticker, display_symbol) = normalize_symbol(market, &req.symbol)?;
 
@@ -1178,6 +1189,7 @@ pub fn download_1m_to_cache(
             let chunk_end = to_date;
 
             while chunk_from <= chunk_end {
+                check_cancelled(cancel)?;
                 let chunk_to =
                     std::cmp::min(chunk_from + Duration::days(CHUNK_DAYS - 1), chunk_end);
                 let from_s = chunk_from.format("%Y-%m-%d").to_string();
@@ -1191,6 +1203,7 @@ pub fn download_1m_to_cache(
                     adjusted,
                     &tf,
                 )?;
+                check_cancelled(cancel)?;
                 let wrote = append_bars(&csv_path, &bars, &mut min_ts, &mut max_ts)?;
                 downloaded += wrote;
                 if row_count > 0 {
@@ -1203,6 +1216,7 @@ pub fn download_1m_to_cache(
             let mut all: Vec<AggBar> = Vec::new();
             let mut chunk_from = from_date;
             while chunk_from <= to_date {
+                check_cancelled(cancel)?;
                 let chunk_to = std::cmp::min(chunk_from + Duration::days(CHUNK_DAYS - 1), to_date);
                 let from_s = chunk_from.format("%Y-%m-%d").to_string();
                 let to_s = chunk_to.format("%Y-%m-%d").to_string();
@@ -1215,9 +1229,11 @@ pub fn download_1m_to_cache(
                     adjusted,
                     &tf,
                 )?;
+                check_cancelled(cancel)?;
                 all.append(&mut bars);
                 chunk_from = chunk_to + Duration::days(1);
             }
+            check_cancelled(cancel)?;
             if all.is_empty() {
                 return Err("Polygon returned no data for that range.".to_string());
             }

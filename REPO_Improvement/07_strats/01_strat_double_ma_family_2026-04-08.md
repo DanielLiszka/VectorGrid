@@ -97,20 +97,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document what belongs to the Double-MA family vs overlay-specific policy.
-- [ ] Document exact-grid, approximate, CPU, hybrid, and kernel route expectations.
-- [ ] Clarify which result/report surfaces are guaranteed across the whole family.
-- [ ] Keep validation compatibility and artifact/report behavior tied to the family contract.
-- [ ] Add references to the fidelity audit harness wherever approximate paths are discussed.
-- [ ] Review whether `double_ma.rs` should be split further by ownership area without losing discoverability.
-- [ ] Keep frontend request-shaping and backend route behavior aligned.
-- [ ] Avoid introducing new hidden special cases into the family without tests.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document what belongs to the Double-MA family vs overlay-specific policy.
+- [x] Document exact-grid, approximate, CPU, hybrid, and kernel route expectations.
+- [x] Clarify which result/report surfaces are guaranteed across the whole family.
+- [x] Keep validation compatibility and artifact/report behavior tied to the family contract.
+- [x] Add references to the fidelity audit harness wherever approximate paths are discussed.
+- [x] Review whether `double_ma.rs` should be split further by ownership area without losing discoverability.
+- [x] Keep frontend request-shaping and backend route behavior aligned.
+- [x] Avoid introducing new hidden special cases into the family without tests.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -129,6 +129,14 @@ Public-repo quality focus:
 - prefer strategy-local docs and helpers over adding more generic abstraction first
 - if family ownership is refactored, keep route/report behavior stable and test-covered
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Kept this family slice additive and evidence-first. No Double-MA family refactor landed here; instead, the family contract is now explicitly reinforced by request-builder, capability-summary, validation-summary, and backend route-helper tests that cover the routed overlay strategies using the family.
+- Tightened frontend/backend alignment for the family’s routed composite members. `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` now have locked parity around CPU fallback summaries, hybrid-vs-kernel route messaging, and composite route-preview expectations across `optimizeRequestBuilder`, `validationRequestBuilder`, `strategyOptimizationCapabilities`, and `compositeProfileGpuPolicy`.
+- Added a backend helper regression in `crates/app_core/src/composite_profile_route.rs` proving the default family surface stays on the `CompositeCpu`/`CpuOnly` label path unless explicit overlay flags promote it, which protects the family’s baseline route vocabulary for future contributors.
+- Kept the exact-anchor posture intact. This tranche did not widen approximate behavior or route semantics; it only hardened the contract around which family members retain exact-kernel controls, which ones stay hybrid or CPU-routed, and how those facts are surfaced.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/optimizeRequestBuilder.test.ts src/utils/strategyOptimizationCapabilities.test.ts src/services/validationRequestBuilder.test.ts src/strategies/compositeProfileGpuPolicy.test.ts`, `npm.cmd --prefix web run lint`, `npm.cmd --prefix web run typecheck`, `cargo test -p ta_app_core composite_profile_route --lib`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

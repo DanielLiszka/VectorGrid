@@ -89,17 +89,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document config-fingerprint inputs, ignored fields, and version semantics.
-- [ ] Document summary-level provenance fields and their meaning.
-- [ ] Document fallback behavior when older artifacts lack fingerprint/version fields.
-- [ ] Add or tighten tests for canonicalization and ignored-field behavior.
-- [ ] Add or tighten tests for provenance-field preservation in summaries and details.
-- [ ] Keep frontend history/detail identity logic aligned with backend semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document config-fingerprint inputs, ignored fields, and version semantics.
+- [x] Document summary-level provenance fields and their meaning.
+- [x] Document fallback behavior when older artifacts lack fingerprint/version fields.
+- [x] Add or tighten tests for canonicalization and ignored-field behavior.
+- [x] Add or tighten tests for provenance-field preservation in summaries and details.
+- [x] Keep frontend history/detail identity logic aligned with backend semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -117,6 +117,12 @@ Public-repo quality focus:
 - preserve provenance fields even when some values are unavailable
 - continue treating dataset/source provenance as related to but distinct from config identity
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed as a verified provenance-contract item. The backend already centralizes fingerprint computation in `compute_config_fingerprint_from_artifact(...)`, ignores intentionally unstable fields such as `data_id` and cross-dataset ordering, and surfaces summary/detail provenance fields like `source_size_bytes`, `source_mtime_utc_ms`, and `source_content_fingerprint`.
+- Existing Rust coverage already pins both halves of the contract: deterministic fingerprint canonicalization/ignored-field behavior and preservation of provenance fields in run-artifact summaries/details. Existing history/detail consumers continue to load the same fields without frontend-side reinterpretation.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app config_fingerprint_ignores_data_ids_candidates_and_cross_dataset_order --lib`, `cargo test -p ta_desktop_demo_app run_artifact_summary_preserves_schema_identity_and_resample_fields --lib`, and the existing history/detail test slice already run for this artifact tranche.
 
 ## Related Docs
 

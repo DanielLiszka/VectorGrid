@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { useWorkflowStore } from "./workflowStore";
 import { resolveRuntimePinia } from "./runtimePinia";
+import { mlSignalPrimaryActionForStep } from "../utils/core/workflowModel";
 
 let optimizeServicePromise:
   | Promise<typeof import("../services/optimizeService")>
@@ -398,6 +399,35 @@ function applyVueFieldUpdate(
       return true;
     default:
       return false;
+  }
+}
+
+function syncOptimizeParityFieldsToAdvancedStore(
+  field: string,
+  value: string,
+): void {
+  const pinia = resolveRuntimePinia();
+  const advancedState = pinia?.state.value?.advanced as
+    | Record<string, unknown>
+    | undefined;
+  if (!advancedState) return;
+
+  const now = Date.now();
+  if (field === "objective") {
+    const next = String(value || "").trim() || "Sharpe";
+    if (String(advancedState.objective ?? "").trim() === next) return;
+    advancedState.objective = next;
+    advancedState.source = "vue";
+    advancedState.updatedAtUnixMs = now;
+    return;
+  }
+
+  if (field === "mode") {
+    const next = String(value || "").trim() || "Grid";
+    if (String(advancedState.mode ?? "").trim() === next) return;
+    advancedState.mode = next;
+    advancedState.source = "vue";
+    advancedState.updatedAtUnixMs = now;
   }
 }
 
@@ -933,6 +963,8 @@ export const useOptimizeStore = defineStore("optimize", {
       );
       this.source = "vue";
       this.updatedAtUnixMs = Date.now();
+      syncOptimizeParityFieldsToAdvancedStore("objective", this.objective);
+      syncOptimizeParityFieldsToAdvancedStore("mode", this.mode);
     },
 
     setInputField(field: string, value: string): void {
@@ -950,6 +982,9 @@ export const useOptimizeStore = defineStore("optimize", {
       if (applyVueFieldUpdate(this, key, next)) {
         this.source = "vue";
         this.updatedAtUnixMs = Date.now();
+        if (key === "objective" || key === "mode") {
+          syncOptimizeParityFieldsToAdvancedStore(key, next);
+        }
       }
     },
 
@@ -1038,8 +1073,33 @@ export const useOptimizeStore = defineStore("optimize", {
     runOptimization(): void {
       const pinia = resolveRuntimePinia();
       if (pinia && String(useWorkflowStore(pinia).mode || "").trim() === "ml-signal") {
+        const workflowStep = String(useWorkflowStore(pinia).workflowStep || "").trim();
+        const action = mlSignalPrimaryActionForStep(workflowStep);
         void import("../services/mlSignalService").then(
-          ({ generateMlSignalScoreCache }) => generateMlSignalScoreCache(),
+          ({
+            exportMlSignalDataset,
+            generateMlSignalScoreCache,
+            runMlSignalPolicySweep,
+            runMlSignalValidation,
+          }) => {
+            switch (action.kind) {
+              case "dataset_export":
+                return exportMlSignalDataset();
+              case "score_cache":
+                return generateMlSignalScoreCache();
+              case "validation":
+                return runMlSignalValidation();
+              case "policy_sweep":
+                return runMlSignalPolicySweep();
+              case "artifacts": {
+                this.statusLine =
+                  "Current ML artifacts are inspect-only from the Artifacts step.";
+                this.source = "vue";
+                this.updatedAtUnixMs = Date.now();
+                return Promise.resolve();
+              }
+            }
+          },
         );
         return;
       }

@@ -112,17 +112,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the ML Signal config contract assembled by `mlSignalService.ts`.
-- [ ] Separate dataset, model, validation, and artifact-path concerns in the documentation and tests.
-- [ ] Add or tighten tests for ML artifact payload construction and persistence.
-- [ ] Audit naming/fallback consistency between frontend payloads and `commands_ml_signal.rs`.
-- [ ] Decide whether some current `mlSignalService.ts` helpers should become shared schema normalizers instead of ad hoc builders.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the ML Signal config contract assembled by `mlSignalService.ts`.
+- [x] Separate dataset, model, validation, and artifact-path concerns in the documentation and tests.
+- [x] Add or tighten tests for ML artifact payload construction and persistence.
+- [x] Audit naming/fallback consistency between frontend payloads and `commands_ml_signal.rs`.
+- [x] Decide whether some current `mlSignalService.ts` helpers should become shared schema normalizers instead of ad hoc builders.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -146,3 +146,15 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/16_mlsignal_score_cache_build_2026-04-08.md`
 - `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/30_core_dataset_meta_paths_2026-04-09.md`
+
+## Execution Notes
+
+- Closed by tightening the existing ML config/artifact contract rather than introducing new fields.
+- `datasetMeta.ts` now accepts the repo’s real frontend camelCase dataset metadata shape in addition to persisted snake_case payloads, which keeps ML artifact `dataset_meta` complete when persisted from Vue state.
+- `mlSignalService.test.ts` now asserts stage-specific `save_run_artifact` payloads, `validation_context`, `config_fingerprint`, `dataset_meta`, and `ml_signal` stage/path fields for dataset export, validation, and policy sweep.
+- `historyService.test.ts` now verifies stage-aware ML replay/apply semantics against the persisted config/artifact contract.
+- `workflowModel.ts` and `optimizeStore.ts` now consume the same ML stage contract, which reduces drift between config ownership and shell ownership.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/mlSignalService.test.ts src/services/historyService.test.ts src/utils/core/datasetMeta.test.ts src/stores/optimizeStore.actions.test.ts src/utils/core/workflowModel.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

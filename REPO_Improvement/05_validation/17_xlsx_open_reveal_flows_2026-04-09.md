@@ -110,18 +110,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the canonical validation report save/open/reveal flow.
-- [ ] Document the artifact-backed export preference path.
-- [ ] Document the Stage 3 fallback path when validation output is unavailable.
-- [ ] Document folder-open behavior for `reports/`.
-- [ ] Centralize or document one shared frontend helper for file open/reveal fallback.
-- [ ] Add or tighten tests for artifact-backed export, Stage 3 fallback, and save-failure download fallback.
-- [ ] Add or tighten tests for history/meta saved-report open/reveal parity.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the canonical validation report save/open/reveal flow.
+- [x] Document the artifact-backed export preference path.
+- [x] Document the Stage 3 fallback path when validation output is unavailable.
+- [x] Document folder-open behavior for `reports/`.
+- [x] Centralize or document one shared frontend helper for file open/reveal fallback.
+- [x] Add or tighten tests for artifact-backed export, Stage 3 fallback, and save-failure download fallback.
+- [x] Add or tighten tests for history/meta saved-report open/reveal parity.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -140,6 +140,11 @@ Public-repo quality focus:
 - if path-action helpers are centralized, migrate callers without changing user-visible capability
 - preserve current latest-report and latest-meta-report quick-action semantics
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the save/open/reveal contract across validation, history, meta, and command-action entry points without narrowing any existing fallback paths. The current service/store tests continue to prove artifact-backed export preference, Stage 3 fallback, save-failure download fallback, and open/reveal parity across the saved-report surfaces.
+- Acceptance evidence for closure: `npm --prefix web run test -- src/services/validationService.test.ts src/services/historyService.test.ts src/services/metaService.test.ts src/stores/commandActionStore.test.ts`, plus `npm --prefix web run lint` and `npm --prefix web run typecheck`.
 
 ## Related Docs
 

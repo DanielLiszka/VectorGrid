@@ -101,17 +101,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the purpose of Saved Meta, Saved Stage 5, and Saved Policy Eval as separate artifact families.
-- [ ] Audit labels, empty states, and action menus for clear family-specific wording.
-- [ ] Add or tighten tests for family switching, selection, and action dispatch.
-- [ ] Add or tighten tests for load/reveal/delete behavior per family.
-- [ ] Decide whether any duplicated `metaService.ts` helper logic should be shared while preserving explicit family ownership.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the purpose of Saved Meta, Saved Stage 5, and Saved Policy Eval as separate artifact families.
+- [x] Audit labels, empty states, and action menus for clear family-specific wording.
+- [x] Add or tighten tests for family switching, selection, and action dispatch.
+- [x] Add or tighten tests for load/reveal/delete behavior per family.
+- [x] Decide whether any duplicated `metaService.ts` helper logic should be shared while preserving explicit family ownership.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -136,3 +136,23 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/07_meta_selection_compare_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/31_batch_summary_artifacts_2026-04-09.md`
 - `REPO_Improvement/06_artifacts/17_report_meta_workbook_2026-04-09.md`
+
+## Execution Notes
+
+- Closed by making the saved-family identity explicit in the shared UI instead of splitting the families into separate panels.
+- `MetaWorkspacePanel.vue` now keeps family role and active selection visible while the user switches between:
+  - Saved Meta
+  - Saved Stage 5
+  - Saved Policy Eval
+- The shared action menu remains reused, but the family-purpose copy and active-selection summary now make it clearer that these artifact families are related but not interchangeable.
+- `MetaWorkspacePanel.test.ts` now verifies that family-role and active-selection text update correctly as the user switches across the three saved families.
+- Existing typed load/reveal/delete coverage in `metaService.test.ts` remains the contract anchor for per-family backend behavior.
+- `REPO_MAP.md` was updated so contributors can find the saved-family identity behavior quickly.
+- Stable fixture / replay payload:
+  - `metaSavedSelected = meta-a`
+  - `stage4SavedSelected = stage5-a`
+  - `policyEvalSavedSelected = policy-a`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MetaWorkspacePanel.test.ts src/services/metaService.test.ts src/services/metaServiceCampaignResume.test.ts src/services/metaServiceCampaignStrategy.test.ts src/stores/analysisStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

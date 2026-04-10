@@ -109,17 +109,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the authoritative meaning of `report_xlsx_path` for ML-signal runs.
-- [ ] Document which ML-specific paths are troubleshooting attachments versus primary workflow outputs.
-- [ ] Audit report-path precedence across history, analysis, and workflow artifact stores.
-- [ ] Add or tighten tests for ML-signal saved-run detail payloads in `run_artifacts.rs`.
-- [ ] Add or tighten tests for history/workflow behavior when ML paths exist but report paths do not.
-- [ ] Tighten UI wording where ML runs currently read too much like conventional report-only runs.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the authoritative meaning of `report_xlsx_path` for ML-signal runs.
+- [x] Document which ML-specific paths are troubleshooting attachments versus primary workflow outputs.
+- [x] Audit report-path precedence across history, analysis, and workflow artifact stores.
+- [x] Add or tighten tests for ML-signal saved-run detail payloads in `run_artifacts.rs`.
+- [x] Add or tighten tests for history/workflow behavior when ML paths exist but report paths do not.
+- [x] Tighten UI wording where ML runs currently read too much like conventional report-only runs.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -143,3 +143,10 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/24_history_library_core_2026-04-08.md`
 - `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`
 - `REPO_Improvement/04_results/16_report_path_reopen_flow_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as an ML-signal report-path semantics item. The current code already keeps `report_xlsx_path` as the primary report contract while surfacing ML-specific attachments separately through saved-run detail, workflow artifacts, and analysis/report consumers.
+- Re-verified ML path semantics through `run_artifacts` ML detail tests, `historyService.test.ts`, `analysisService.test.ts`, and `workflowArtifactsStore.test.ts`, ensuring ML attachment fields do not replace the conventional report-path contract.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/services/historyService.test.ts src/services/analysisService.test.ts src/stores/workflowArtifactsStore.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

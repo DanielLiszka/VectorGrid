@@ -1,6 +1,6 @@
 # Browser Shell UX Smoke Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the required shell-navigation assertions for workspace tabs.
-- [ ] Document the required shell-navigation assertions for workflow-step tabs.
-- [ ] Keep focus, selection, and panel visibility as first-class assertions.
-- [ ] Audit selectors so they stay stable and accessibility-oriented.
-- [ ] Avoid adding dense optimize/validate/analyze detail checks to this shell smoke spec.
-- [ ] Keep the spec non-options only.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the required shell-navigation assertions for workspace tabs.
+- [x] Document the required shell-navigation assertions for workflow-step tabs.
+- [x] Keep focus, selection, and panel visibility as first-class assertions.
+- [x] Audit selectors so they stay stable and accessibility-oriented.
+- [x] Avoid adding dense optimize/validate/analyze detail checks to this shell smoke spec.
+- [x] Keep the spec non-options only.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,39 @@ Public-repo quality focus:
 - if shell IA changes, update the contract intentionally rather than weakening the test to “make it pass”
 - split genuinely separate shell behaviors into additional docs/specs instead of bloating this one
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed on current-state browser-shell evidence; no new Playwright spec change was required for this item.
+- Required workspace-tab assertions are currently:
+  - keyboard movement from workflow -> library -> aggregate -> pro -> settings
+  - focus transfer to the newly selected tab
+  - `aria-selected="true"` on the active workspace tab
+  - orientation proof through the matching visible panel or shell surface (`#results_panel_history`, `#results_panel_meta`, settings grid)
+  - `Home` returning focus and selection to workflow
+- Required workflow-step assertions are currently:
+  - initial `data` step selected
+  - keyboard movement through `data -> optimize -> validate -> analyze`
+  - focus follows the active step
+  - optimize step still exposes the expected controls/results routing surfaces
+  - validate step still exposes the validation results panel
+  - analyze step still leaves a visible active results-tab state
+- Selector audit outcome:
+  - the spec stays on accessibility-oriented or state-oriented selectors (`aria-selected`, focus, `data-workspace`, `data-workflow-step`, shared shell selectors)
+  - shared selectors remain reused from the desktop harness without introducing decorative style hooks
+  - the lone explicit `pro` workspace selector remains bounded and readable without widening the selector surface elsewhere
+- Scope remains correct:
+  - no dense results-table assertions were added here
+  - no form-detail behavior was pulled in from optimize/validate/analyze surfaces
+  - non-options only
+- Cross-doc sync:
+  - no `README.md` or `REPO_MAP.md` update was required because the shell smoke contract already matched the current spec; this closure records fresh verification against the current selector/state posture
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test:browser:ux`
+  - the browser shell UX journey passed in the built mocked-Tauri harness during this tranche
+  - supporting harness-level evidence from adjacent browser docs:
+    - `npm.cmd --prefix web run a11y:smoke`
+    - `npm.cmd --prefix web run baseline:ui`
 
 ## Related Docs
 

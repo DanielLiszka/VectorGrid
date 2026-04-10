@@ -1,6 +1,6 @@
 # Workflow Benchmark Pack Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -86,18 +86,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the meaning of each current pack field.
-- [ ] Document how pack changes affect the workflow baseline.
-- [ ] Keep the pack non-options only.
-- [ ] Review pack representativeness periodically without changing it casually.
-- [ ] Avoid multiplying workload knobs without a concrete regression-detection benefit.
-- [ ] Cross-link pack stewardship with workflow-gate stewardship.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the meaning of each current pack field.
+- [x] Document how pack changes affect the workflow baseline.
+- [x] Keep the pack non-options only.
+- [x] Review pack representativeness periodically without changing it casually.
+- [x] Avoid multiplying workload knobs without a concrete regression-detection benefit.
+- [x] Cross-link pack stewardship with workflow-gate stewardship.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -114,6 +114,30 @@ Public-repo quality focus:
 - prefer explicit versioning over silent field reinterpretation
 - if multiple packs are ever introduced, keep one canonical authority pack for the workflow gate
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on verification of the existing checked-in pack and its consumer path rather than a code change.
+- The current pack remains intentionally small and explicit:
+  - `version`: `1`
+  - `name`: `regpack-v1`
+  - `description`: deterministic synthetic workflow pack for optimize -> validate -> meta -> holdout regression gates
+  - `workflow_bin`: `ta_workflow_regression`
+  - `seed`: `1`
+  - `candles_len`: `10000`
+  - `train_assets`: `10`
+  - `holdout_assets`: `6`
+- Pack stewardship and workflow-gate stewardship remain directly linked:
+  - `scripts/run_workflow_gate.ps1` reads the pack and passes its values into `ta_workflow_regression`
+  - any material change to the pack semantics invalidates `scripts/baselines/workflow_regression_baseline.json`
+  - the CPU perf gate depends on the workflow gate and therefore indirectly depends on this same pack contract
+- Fresh acceptance evidence for this closure:
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_workflow_gate.ps1 -Mode candidate`
+- The fresh candidate workflow run proved the wrapper and bin still agree on the current pack semantics:
+  - `target/workflow_regression_summary.json` was rewritten successfully
+  - candidate runtime and stage totals stayed within the current baseline budgets
+  - no pack change or baseline refresh was required
+- No `README.md` or `REPO_MAP.md` update was required because the pack file, its field meanings, and its downstream workflow-gate relationship were confirmed rather than changed.
 
 ## Related Docs
 

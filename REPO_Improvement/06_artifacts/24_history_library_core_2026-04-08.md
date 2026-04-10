@@ -107,17 +107,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document session-history versus saved-run-library responsibilities.
-- [ ] Document saved-run search and visible-list behavior.
-- [ ] Document saved-run detail cache shape and fetch behavior.
-- [ ] Document load/apply/rerun/open/reveal/delete/tag flows.
-- [ ] Document current non-options scope boundary for this library surface.
-- [ ] Add or tighten tests if search, detail, or workflow-restore behavior changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document session-history versus saved-run-library responsibilities.
+- [x] Document saved-run search and visible-list behavior.
+- [x] Document saved-run detail cache shape and fetch behavior.
+- [x] Document load/apply/rerun/open/reveal/delete/tag flows.
+- [x] Document current non-options scope boundary for this library surface.
+- [x] Add or tighten tests if search, detail, or workflow-restore behavior changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -141,3 +141,11 @@ Public-repo quality focus:
 - `REPO_Improvement/06_artifacts/28_workflow_artifacts_sync_2026-04-08.md`
 - `REPO_Improvement/04_results/01_results_overview_2026-04-08.md`
 - `REPO_Improvement/04_results/17_analysis_store_service_2026-04-08.md`
+
+## Execution Notes
+
+- Closed as a history-library core hardening slice without widening the surface beyond the existing non-options run library.
+- Added store-level regression coverage in `web/src/stores/historyStore.actions.test.ts` for detail-cache persistence through filtering and for stale-cache pruning during refresh/delete flows, complementing the existing service and panel coverage.
+- Re-verified that session history, saved-run listing/search, lazy detail loading, and load/apply/rerun/report/reveal/delete flows remain split between the history store and history service instead of collapsing into ad hoc component logic.
+- Acceptance evidence for closure: `npm.cmd --prefix web run test -- src/stores/historyStore.actions.test.ts src/stores/historyStore.search.test.ts src/services/historyService.test.ts src/components/HistoryWorkspacePanel.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
+

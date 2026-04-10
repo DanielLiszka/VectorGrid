@@ -110,19 +110,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document all major ML Signal frontend-service responsibilities.
-- [ ] Document current bundle-optional behavior and where it applies.
-- [ ] Document the service’s artifact persistence and workflow-state updates.
-- [ ] Document busy/status ownership in the service layer.
-- [ ] Preserve tests for export, score-cache build, validation, sweep, and artifact persistence.
-- [ ] Preserve tests for history/replay surfaces that depend on persisted ML Signal artifacts.
-- [ ] Keep ML Signal docs separate from the Meta service/campaign family.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document all major ML Signal frontend-service responsibilities.
+- [x] Document current bundle-optional behavior and where it applies.
+- [x] Document the service’s artifact persistence and workflow-state updates.
+- [x] Document busy/status ownership in the service layer.
+- [x] Preserve tests for export, score-cache build, validation, sweep, and artifact persistence.
+- [x] Preserve tests for history/replay surfaces that depend on persisted ML Signal artifacts.
+- [x] Keep ML Signal docs separate from the Meta service/campaign family.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -140,6 +140,20 @@ Public-repo quality focus:
 - keep artifact persistence compatible with current history/replay behavior
 - prefer additive bundle/status metadata over reinterpreting existing fields
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making ML Signal’s service-local ownership explicit in both code comments and [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md). `mlSignalService.ts` now states that ML Signal owns its own busy/status surface instead of leaning on Meta service semantics.
+- `mlSignalService.test.ts` gained a new in-flight export test that proves the service itself owns `runDisabled`, `validateDisabled`, `canCancel`, `progressMeta`, and `statusLine` while work is running, then restores those fields after completion.
+- Existing ML Signal tests already covered the other critical service boundaries: bundle-optional validation status, artifact persistence into `workflowArtifactsStore`, score-cache validation, policy sweep, and artifact open/reveal behavior.
+- Stable fixture / replay payload:
+  - `Model bundle: optional for score-cache-backed validation.`
+  - `stage=dataset_export`
+  - `artifact_path=runs/vectorgrid_ml_dataset_busy.json`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/mlSignalService.test.ts src/components/MlSignalWorkspacePanel.test.ts src/services/historyService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

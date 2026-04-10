@@ -97,16 +97,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document cue families: provenance chips, stale reasons, guardrails, and artifact metadata.
-- [ ] Document shortlist-filter and selection-loss stale behavior.
-- [ ] Document saved-run and artifact dataset provenance expectations.
-- [ ] Document dock and panel consistency expectations for stale/provenance cues.
-- [ ] Add or tighten tests for reconciliation and metadata normalization.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document cue families: provenance chips, stale reasons, guardrails, and artifact metadata.
+- [x] Document shortlist-filter and selection-loss stale behavior.
+- [x] Document saved-run and artifact dataset provenance expectations.
+- [x] Document dock and panel consistency expectations for stale/provenance cues.
+- [x] Add or tighten tests for reconciliation and metadata normalization.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -124,6 +124,12 @@ Public-repo quality focus:
 - keep artifact metadata normalization backward-safe while UI cues are clarified
 - if provenance cues later move into a dedicated summary surface, keep the existing Top and Overview cues during the transition
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated stale/provenance behavior through [analysisService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/analysisService.test.ts), [TopWorkspacePanel.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/components/TopWorkspacePanel.test.ts), [workflowArtifactsStore.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/stores/workflowArtifactsStore.test.ts), and [historyService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/historyService.test.ts).
+- The current evidence confirms selected-candidate provenance chips, pinned-candidate stale reasons, shortlist guardrails, and normalized artifact metadata are all still present and mutually consistent.
+- No production code change was required in this tranche because the current stale/provenance cue families already satisfy the documented contract at the present scope.
 
 ## Related Docs
 

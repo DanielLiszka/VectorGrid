@@ -893,6 +893,49 @@ describe("optimizeRequestBuilder", () => {
     ]);
   });
 
+  it("treats legacy DynamicDoubleMa GPU aliases as the kernel preview route for exact-compatible controls", () => {
+    for (const backend of ["GpuOnly", "GpuHybridKernel"] as const) {
+      const req = buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "DynamicDoubleMa",
+          data_id: `data-extra-shortlist-dynamic-${backend}`,
+          current_data_meta: { has_close: true },
+        },
+        backend,
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        extraShortlistObjectives: "Pnl",
+        mode: "Grid",
+        topK: "20",
+        includeAll: "false",
+        heatmapBins: "0",
+        startingEquity: "10000",
+        costPreset: "custom",
+        feeBps: "0",
+        spreadBps: "0",
+        slippageBps: "0",
+        epsRel: "0",
+        dynamicStrategyIr: { profile: "double_ma" },
+      });
+
+      expect((req as Record<string, unknown>).backend).toEqual({
+        backend: "GpuKernel",
+        device_id: 0,
+      });
+      expect((req as Record<string, unknown>).extra_shortlist_objectives).toEqual([
+        "Pnl",
+      ]);
+    }
+  });
+
   it("still rejects extra shortlist objectives for DynamicDoubleMa off the GpuKernel route", () => {
     expect(() =>
       buildDoubleMaOptimizationRequest({
@@ -2789,6 +2832,72 @@ describe("optimizeRequestBuilder", () => {
     expect((cpuReq as Record<string, unknown>).include_trade_metrics).toBe(false);
   });
 
+  it("enforces composite strategy data prerequisites before route shaping", () => {
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "CompositeTrend",
+          data_id: "data-trend-missing-high-low",
+          current_data_meta: { has_close: true },
+        },
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        backend: "GpuKernel",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+        trendUseAdx: true,
+      }),
+    ).toThrow(/CompositeTrend with ADX enabled requires high and low candle fields/i);
+
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "RegimeHybrid",
+          data_id: "data-regime-missing-high-low",
+          current_data_meta: { has_close: true, has_volume: true },
+        },
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        backend: "GpuKernel",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+      }),
+    ).toThrow(/RegimeHybrid requires high and low candle fields/i);
+
+    expect(() =>
+      buildDoubleMaOptimizationRequest({
+        context: {
+          strategy_kind: "BreakoutMomentum",
+          data_id: "data-breakout-missing-volume",
+          current_data_meta: { has_high: true, has_low: true, has_close: true },
+        },
+        fastStart: "5",
+        fastEnd: "15",
+        fastStep: "5",
+        slowStart: "20",
+        slowEnd: "40",
+        slowStep: "10",
+        backend: "GpuKernel",
+        fastMaType: "sma",
+        slowMaType: "ema",
+        maSource: "close",
+        objective: "Sharpe",
+      }),
+    ).toThrow(/BreakoutMomentum requires high, low, and volume candle fields/i);
+  });
+
   it("accepts canonicalized MA support keys without cloning the whole support map", () => {
     const req = buildCompositeDoubleMaRequest("CompositeTrend", {
       backend: "Auto",
@@ -2961,6 +3070,74 @@ describe("optimizeRequestBuilder", () => {
       confirm_bars: 3,
       require_momentum_accel: false,
       max_trade_bars: 140,
+    });
+  });
+
+  it("builds an ASR request through the composite CPU builder path", () => {
+    const req = buildCompositeCpuOptimizationRequest({
+      context: {
+        strategy_kind: "Asr",
+        data_id: "data-asr",
+        current_data_meta: {
+          has_open: true,
+          has_high: true,
+          has_low: true,
+          has_close: true,
+          has_volume: true,
+        },
+      },
+      backend: "GpuKernel",
+      fastStart: "5",
+      fastEnd: "15",
+      fastStep: "5",
+      slowStart: "20",
+      slowEnd: "40",
+      slowStep: "10",
+      fastMaType: "alma",
+      slowMaType: "alma",
+      maSource: "close",
+      objective: "Sharpe",
+      topK: "20",
+      includeAll: "false",
+      compositeSignalMode: "hard_gate",
+      asrSqueezeBbMult: "2.3",
+      asrSqueezeKcMult: "1.7",
+      asrAngleDegMin: "12",
+      asrAngleDegMr: "7",
+      asrUseErFilter: true,
+      asrErMin: "0.35",
+      asrErMr: "0.28",
+      asrZMaType: "ema",
+      asrZNbdev: "1.2",
+      asrZDevtype: "1",
+      asrZEntry: "2.4",
+      asrZExit: "0.6",
+      asrConfirmBars: "2",
+      asrMomFadeBars: "3",
+      asrMaxTradeBars: "90",
+      asrMaxMrTradeBars: "32",
+    });
+
+    expect(req).toBeTruthy();
+    expect(req?.strategy_kind).toBe("Asr");
+    expect(req?.backend).toEqual({ backend: "GpuKernel", device_id: 0 });
+    expect(req?.asr).toMatchObject({
+      squeeze_bb_mult: 2.3,
+      squeeze_kc_mult: 1.7,
+      angle_deg_min: 12,
+      angle_deg_mr: 7,
+      use_er_filter: true,
+      er_min: 0.35,
+      er_mr: 0.28,
+      z_ma_type: "ema",
+      z_nbdev: 1.2,
+      z_devtype: 1,
+      z_entry: 2.4,
+      z_exit: 0.6,
+      confirm_bars: 2,
+      mom_fade_bars: 3,
+      max_trade_bars: 90,
+      max_mr_trade_bars: 32,
     });
   });
 
@@ -3671,6 +3848,39 @@ describe("optimizeRequestBuilder", () => {
     ]);
   });
 
+  it("builds the explicit CompositeMo prescan contract without leaking global backend semantics", () => {
+    const req = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      moSampler: "Random",
+      moPrescanEnable: true,
+      moPrescanTopK: "32",
+      moPrescanWindow: "4",
+      moPrescanPredictiveTopK: "6",
+      moPrescanPredictiveStride: "12",
+      moPrescanRequireGpu: true,
+      moPrescanDeviceId: "3",
+      moPrescanObjectives: "maximize",
+      moPrescanMode: "CoarseToFine",
+      moPrescanMaPairs: "sma,ema\nvidya,ema",
+    });
+
+    expect(req?.mode).toBeNull();
+    expect(req?.gpu_prescan).toEqual({
+      top_k: 32,
+      window: 4,
+      predictive_top_k: 6,
+      predictive_stride: 12,
+      device_id: 3,
+      require_gpu: true,
+      objectives: "maximize",
+      ma_pairs: [
+        { fast_ma_type: "sma", slow_ma_type: "ema" },
+        { fast_ma_type: "vidya", slow_ma_type: "ema" },
+      ],
+      mode: "CoarseToFine",
+    });
+  });
+
   it("fails clearly when CompositeMo MA-pair auto-expansion would exceed eight pairs", () => {
     expect(() =>
       buildCompositeMoOptimizationRequest({
@@ -3751,6 +3961,21 @@ describe("optimizeRequestBuilder", () => {
     ).toMatchObject({
       trials: 1,
       startup_trials: 0,
+    });
+  });
+
+  it("builds the Qmc CompositeMo sampler contract with explicit sequence settings", () => {
+    const req = buildCompositeMoOptimizationRequest({
+      ...baseCompositeMoInputs(),
+      moSampler: "Qmc",
+      moQmcSeed: "17",
+      moQmcTrials: "144",
+      moQmcSequence: "halton",
+    });
+
+    expect(req?.sampler).toEqual({
+      sampler: "Qmc",
+      config: { seed: 17, trials: 144, sequence: "halton" },
     });
   });
 

@@ -255,6 +255,8 @@ function patchOptimizeState(patch: Record<string, unknown>): void {
 }
 
 function setMlBusy(message: string): void {
+  // ML Signal keeps its own busy/status ownership instead of reusing the
+  // Meta service, so UI disablement and status text stay stage-local.
   patchOptimizeState({
     runDisabled: true,
     validateDisabled: true,
@@ -788,11 +790,11 @@ export async function exportMlSignalDataset(): Promise<unknown> {
           test_bars: splitTestBars,
           gap_bars: Math.max(
             0,
-            parseOptionalInteger(optimize.mlSignalSplitGapBars) ?? 10,
+            parseOptionalInteger(optimize.mlSignalSplitGapBars) ?? 0,
           ),
           step_bars: Math.max(
             1,
-            parseOptionalInteger(optimize.mlSignalSplitStepBars) ?? 63,
+            parseOptionalInteger(optimize.mlSignalSplitStepBars) ?? 1,
           ),
         }
       : null;

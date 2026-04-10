@@ -1,6 +1,6 @@
 # File Picker Path Boundary Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -125,20 +125,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document which pickers are Tauri-native and Windows-only today.
-- [ ] Document which file-selection flows are browser-native instead of Tauri-native.
-- [ ] Document current market-data-root path requirements and optional cache-move behavior.
-- [ ] Document runs-directory containment rules for artifact load/delete/tag.
-- [ ] Document generic `open_path` / `reveal_path` behavior separately from contained artifact operations.
-- [ ] Document current history/report reopen behavior and the path fields it relies on.
-- [ ] Add or tighten tests if picker authority or path-containment behavior changes.
-- [ ] Review any future path broadening against Tauri capabilities and current reopen compatibility.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
+- [x] Document which pickers are Tauri-native and Windows-only today.
+- [x] Document which file-selection flows are browser-native instead of Tauri-native.
+- [x] Document current market-data-root path requirements and optional cache-move behavior.
+- [x] Document runs-directory containment rules for artifact load/delete/tag.
+- [x] Document generic `open_path` / `reveal_path` behavior separately from contained artifact operations.
+- [x] Document current history/report reopen behavior and the path fields it relies on.
+- [x] Add or tighten tests if picker authority or path-containment behavior changes.
+- [x] Review any future path broadening against Tauri capabilities and current reopen compatibility.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document the failure source, user-visible signal, persisted evidence, and redaction or secret-handling expectations for this live/runtime surface.
 
 ## Verification Plan
 
@@ -157,6 +157,25 @@ Public-repo quality focus:
 - if open/reveal authority is narrowed later, provide a migration path for saved report and history actions
 - avoid platform-promising picker behavior beyond the current Windows-native implementation
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by tightening the thinnest current path-boundary contract without broadening filesystem authority:
+  - [dataService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/dataService.test.ts) now proves `browseCsv()` stays intentionally non-throwing when the native picker itself fails, which is the current legacy-compatible behavior documented by this plan
+- Existing coverage continues to anchor the rest of the surface:
+  - market-data root validation and relative-path rejection in [settings_tests.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/settings_tests.rs)
+  - runs-directory containment in [run_artifacts.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/src/run_artifacts.rs)
+  - open/reveal fallback behavior and saved-path reopen flows in [historyService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/historyService.test.ts) and [mlSignalService.test.ts](/C:/Rust%20Projects/ta_desktop_demo/web/src/services/mlSignalService.test.ts)
+- Kept scope intentionally additive:
+  - no picker authority was broadened
+  - no artifact containment rule changed
+  - no reopen path semantics were narrowed
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/dataService.test.ts src/services/historyService.test.ts src/services/mlSignalService.test.ts`
+  - `cargo test -p ta_desktop_demo_app --test settings_tests`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
+  - `cargo check -p ta_desktop_demo_app`
 
 ## Related Docs
 

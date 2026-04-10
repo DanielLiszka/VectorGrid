@@ -107,17 +107,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the ML policy-sweep request and response contract.
-- [ ] Add or tighten tests for sweep-axis parsing and optional-axis omission behavior.
-- [ ] Add or tighten tests for saved-run sweep-summary attachment and reopen interpretation.
-- [ ] Audit UI copy so users can distinguish sweep output from normal ML validation.
-- [ ] Confirm frontend controls match `run_ml_signal_policy_sweep` payload semantics exactly.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the ML policy-sweep request and response contract.
+- [x] Add or tighten tests for sweep-axis parsing and optional-axis omission behavior.
+- [x] Add or tighten tests for saved-run sweep-summary attachment and reopen interpretation.
+- [x] Audit UI copy so users can distinguish sweep output from normal ML validation.
+- [x] Confirm frontend controls match `run_ml_signal_policy_sweep` payload semantics exactly.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -141,3 +141,14 @@ Public-repo quality focus:
 - `REPO_Improvement/08_ml/21_mlsignal_artifact_attachment_2026-04-08.md`
 - `REPO_Improvement/08_ml/04_ml_validation_surface_2026-04-08.md`
 - `REPO_Improvement/06_artifacts/23_mlsignal_report_path_semantics_2026-04-09.md`
+
+## Execution Notes
+
+- Closed by tightening the existing sweep request/summary contract rather than redesigning the feature.
+- `mlSignalService.test.ts` now verifies optional sweep-axis omission behavior (`delta` and `max_hold_bars` remain null when unset) while keeping the dedicated `run_ml_signal_policy_sweep` payload shape explicit.
+- Sweep-summary persistence and reopen interpretation remain covered through the saved-artifact assertions in `mlSignalService.test.ts` and `historyService.test.ts`.
+- The workspace panel continues to distinguish policy sweep from direct validation through dedicated stage labels, button text, and Stage 5 attached-summary wording.
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/services/mlSignalService.test.ts src/components/MlSignalWorkspacePanel.test.ts src/services/historyService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`

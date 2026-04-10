@@ -9,6 +9,7 @@ import { useOptimizeStore } from '../stores/optimizeStore'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { LAST_BATCH_SUMMARY_KEY } from '../utils/core/storageKeys'
 import { defaultBatchTag, dedupTags, splitHoldoutPaths } from '../utils/core/artifactIdentity'
+import { openPathWithRevealFallback } from '../utils/openPath'
 import { readStorageString, removeStorageKey, writeStorageString } from '../utils/storage'
 import { formatUiCount, formatUtcDateFromUnixMs } from '../utils/uiFormat'
 import { buildMetaBatchRequest } from './metaBatchRequestBuilder'
@@ -417,6 +418,8 @@ function readStoreCheckboxValue(id: string): boolean {
 }
 
 function tryBuildAutoMetaRequest(): Record<string, unknown> | null {
+  // Keep Stage 3, batch, Stage 5, and ML scope request shaping in separate
+  // builders so compatibility aliases do not blur their contracts.
   return buildMetaSelectionRequest({
     strategyKind: readStoreTextInputValue('metaStrategyKind'),
     timeframe: readStoreTextInputValue('metaTimeframe'),
@@ -485,9 +488,10 @@ function tryBuildAutoMetaBatchRequest(): Record<string, unknown> | null {
 }
 
 function tryBuildAutoMetaStage4Request(): Record<string, unknown> | null {
+  const scope = currentMetaScope()
   return buildMetaStage4Request({
-    strategyKind: readStoreTextInputValue('metaStrategyKind'),
-    timeframe: readStoreTextInputValue('metaTimeframe'),
+    strategyKind: scope.strategy_kind,
+    timeframe: scope.timeframe,
     sourceMetaPath: currentMetaSourcePath(),
     topK: readStoreTextInputValue('metaStage4TopK'),
     minMlConfidence: readStoreTextInputValue('metaStage4MinConf'),
@@ -531,6 +535,8 @@ function tryBuildAutoMetaMlScope(): Record<string, unknown> | null {
 function currentMetaScope(): { strategy_kind: string; timeframe: string } {
   const store = getAnalysisStore()
   const result = asRecord(LAST_META_RUN?.result)
+  // ML actions prefer the latest saved/live Meta result before draft store
+  // inputs so rerank/train flows can recover scope after a real Meta run.
   const strategy = normalizeText(result?.strategy_kind ?? store?.metaStrategyKind ?? 'CompositeMo') || 'CompositeMo'
   const timeframe = normalizeText(result?.timeframe ?? store?.metaTimeframe)
   return {
@@ -614,6 +620,13 @@ function renderMetaSelection(resp: Record<string, unknown> | null): void {
   const groupsWithEvidenceFlags = groups.filter((group) => Array.isArray(group.evidence_flags) && group.evidence_flags.length > 0).length
   const reportPath = normalizePath(resp?.report_xlsx_path)
   const metaPath = normalizePath(resp?.meta_json_path)
+  if (typeof document !== 'undefined') {
+    if (reportPath) {
+      document.documentElement.dataset.latestMetaReportPath = reportPath
+    } else {
+      delete document.documentElement.dataset.latestMetaReportPath
+    }
+  }
 
   const warnText = warnings.length ? ` · warn=${warnings.length}` : ''
   const evidenceText = groupsWithEvidenceFlags ? ` · weak=${groupsWithEvidenceFlags}` : ''
@@ -690,6 +703,7 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   const groups = asRecordArray(result?.selected_groups)
   const decisionCounts = asRecord(result?.decision_counts) ?? {}
   const path = responseStage5Path(resp)
+  const stage4Path = normalizePath(resp?.stage4_json_path)
   const sourceMetaPath = normalizePath(result?.source_meta_json_path)
 
   if (!result || groups.length === 0) {
@@ -704,8 +718,11 @@ function renderMetaStage4(resp: Record<string, unknown> | null): void {
   const lines: string[] = []
   lines.push(`scope=${normalizeText(result.strategy_kind)}/${normalizeText(result.timeframe)} selected=${Math.max(0, Math.floor(Number(result.groups_selected || 0)))} scored=${Math.max(0, Math.floor(Number(result.groups_scored || 0)))}/${Math.max(0, Math.floor(Number(result.groups_considered || 0)))} min_ml=${fmtFixed(result.min_ml_confidence, 3)}`)
   lines.push(`source_meta=${sourceMetaPath ? fileBasename(sourceMetaPath) : '—'} model=${normalizeText(result.model_path) ? fileBasename(normalizeText(result.model_path)) : '—'} state=${normalizeText(result.model_state) || 'unknown'} healthy=${normalizeBoolean(result.model_healthy) ? 'yes' : 'no'} trained_now=${normalizeBoolean(result.model_trained_now) ? 'yes' : 'no'}`)
+  lines.push(`execution=run_meta_stage5_ml_confidence artifact=json replay only stage4/stage5_alias=${path && stage4Path && path === stage4Path ? 'same_path' : 'compat_only'}`)
   lines.push(`weights(meta/ml/unc)=${fmtFixed(result.meta_weight, 3)}/${fmtFixed(result.ml_weight, 3)}/${fmtFixed(result.uncertainty_weight, 3)} buckets(accept/review/reject)=${Math.max(0, Math.floor(Number(decisionCounts.accept || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.review || 0)))}/${Math.max(0, Math.floor(Number(decisionCounts.reject || 0)))}`)
   lines.push(`policy accept>=${fmtFixed(result.accept_confidence, 3)} review>=${fmtFixed(result.review_confidence, 3)} max_accept_unc=${fmtFixed(result.max_accept_uncertainty, 3)}`)
+  lines.push('selection=weighted rank -> min_ml filter -> optional meta fallback -> decision buckets')
+  lines.push('auto_train excludes the active source meta artifact from history to avoid train/score leakage')
   const fallbackReason = normalizeText(result.fallback_reason)
   if (fallbackReason) {
     lines.push(`fallback=${fallbackReason}`)
@@ -767,6 +784,8 @@ function renderMlPolicyEvaluation(resp: Record<string, unknown> | null): void {
 
   const lines = [
     `scope=${normalizeText(result.strategy_kind)}/${normalizeText(result.timeframe)} evaluated=${Math.max(0, Math.floor(Number(result.artifacts_evaluated || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_considered || 0)))} top_k=${Math.max(0, Math.floor(Number(result.top_k || 0)))}`,
+    'contract=offline scoped history over saved Meta artifacts • request reuses current Stage 5 thresholds/weights • artifact=json replay only',
+    'arms=meta_only / ml_only / stage5_blended',
     `skipped(no_history/train_fail/unhealthy/no_labels)=${Math.max(0, Math.floor(Number(result.artifacts_skipped_no_history || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_skipped_training_failure || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_skipped_unhealthy_model || 0)))}/${Math.max(0, Math.floor(Number(result.artifacts_skipped_no_labels || 0)))}`,
     `meta_only: precision@k=${fmtPct(metaOnly.precision_at_k, 1)} positives=${Math.max(0, Math.floor(Number(metaOnly.positives_total || 0)))}/${Math.max(0, Math.floor(Number(metaOnly.selected_total || 0)))}`,
     `ml_only: precision@k=${fmtPct(mlOnly.precision_at_k, 1)} positives=${Math.max(0, Math.floor(Number(mlOnly.positives_total || 0)))}/${Math.max(0, Math.floor(Number(mlOnly.selected_total || 0)))}`,
@@ -855,6 +874,7 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
       ? 'healthy'
       : 'unknown'
   const target = normalizeText(modelMeta?.target)
+  const modelKind = normalizeText(modelSummary?.model_kind)
   const trainedRows = Number(modelMeta?.trained_rows)
   const auc = Number(modelMeta?.cv_auc)
   const brierRaw = Number(modelMeta?.cv_brier_calibrated)
@@ -863,6 +883,7 @@ function formatMlStatus(status: Record<string, unknown>, scope: { strategy_kind:
 
   const parts = [`Model: ${fileBasename(modelPath) || modelPath || 'model.json'}`, `bytes=${Math.max(0, Math.floor(Number(status.bytes || 0)))}`, `state=${modelState}`, healthy]
 
+  if (modelKind) parts.push(`model_kind=${modelKind}`)
   if (target) parts.push(`target=${target}`)
   if (legacyModel) parts.push('legacy')
   if (Number.isFinite(trainedRows)) parts.push(`trained_rows=${Math.max(0, Math.floor(trainedRows))}`)
@@ -1034,7 +1055,7 @@ function updateMetaSavedState(preferredPath = ''): void {
   const compareOptions = [
     {
       value: '',
-      label: SAVED_META.length > 0 ? 'Compare against...' : 'No meta runs yet',
+      label: SAVED_META.length > 0 ? 'Compare against saved meta...' : 'No meta runs yet',
       disabled: false
     },
     ...SAVED_META.map((entry) => {
@@ -1042,10 +1063,12 @@ function updateMetaSavedState(preferredPath = ''): void {
       const kind = normalizeText(entry.strategy_kind)
       const tf = normalizeText(entry.timeframe)
       const groups = Math.max(0, Math.floor(Number(entry.groups || 0)))
+      const artifacts = Math.max(0, Math.floor(Number(entry.artifacts_used || 0)))
       const tfHint = tf ? ` | ${tf}` : ''
+      const artifactsHint = artifacts ? ` | arts=${artifacts}` : ''
       return {
         value: normalizePath(entry.path),
-        label: `${ts} | ${kind}${tfHint} | groups=${groups}`,
+        label: `${ts} | ${kind}${tfHint} | groups=${groups}${artifactsHint}`,
         disabled: false
       }
     })
@@ -1097,6 +1120,9 @@ function updateStage4SavedState(preferredPath = ''): void {
         Number.isFinite(Number(selectedEntry.top_k)) ? `top_k=${Math.max(0, Math.floor(Number(selectedEntry.top_k || 0)))}` : '',
         `model=${normalizeBoolean(selectedEntry.model_healthy) ? 'healthy' : 'unhealthy'}`,
         normalizeText(selectedEntry.source_meta_json_path) ? `source=${fileBasename(normalizeText(selectedEntry.source_meta_json_path))}` : '',
+        'alias=stage4Saved*',
+        'replay=json',
+        'path_alias=stage4/stage5',
         Array.isArray(selectedEntry.tags) && selectedEntry.tags.length > 0
           ? `tags=${selectedEntry.tags
               .map((tag) => normalizeText(tag))
@@ -1177,6 +1203,8 @@ function updatePolicyEvalSavedState(preferredPath = ''): void {
         `stage5_p@k=${fmtPct(selectedEntry.stage5_precision_at_k, 1)}`,
         Number.isFinite(Number(selectedEntry.stage5_vs_meta_precision_delta)) ? `vs_meta=${fmtPct(selectedEntry.stage5_vs_meta_precision_delta, 1)}` : '',
         Number.isFinite(Number(selectedEntry.stage5_vs_ml_precision_delta)) ? `vs_ml=${fmtPct(selectedEntry.stage5_vs_ml_precision_delta, 1)}` : '',
+        'arms=meta/ml/stage5',
+        'replay=json',
         Array.isArray(selectedEntry.tags) && selectedEntry.tags.length > 0
           ? `tags=${selectedEntry.tags
               .map((tag) => normalizeText(tag))
@@ -2367,13 +2395,8 @@ export async function openSavedReport(): Promise<void> {
       return
     }
 
-    try {
-      await invokeCommand('open_path', { path: reportPath })
-      setStatusLine('Opened report.')
-    } catch {
-      await invokeCommand('reveal_path', { path: reportPath })
-      setStatusLine('Revealed report.')
-    }
+    const opened = await openPathWithRevealFallback(reportPath)
+    setStatusLine(opened.openedWith === 'reveal_path' ? 'Revealed report.' : 'Opened report.')
   } catch (error) {
     setErrorStatus(error)
   }
@@ -2889,13 +2912,8 @@ export async function openMetaReport(): Promise<void> {
       return
     }
 
-    try {
-      await invokeCommand('open_path', { path: reportPath })
-      setStatusLine('Opened meta report.')
-    } catch {
-      await invokeCommand('reveal_path', { path: reportPath })
-      setStatusLine('Revealed meta report.')
-    }
+    const opened = await openPathWithRevealFallback(reportPath)
+    setStatusLine(opened.openedWith === 'reveal_path' ? 'Revealed meta report.' : 'Opened meta report.')
   } catch (error) {
     setErrorStatus(error)
   }

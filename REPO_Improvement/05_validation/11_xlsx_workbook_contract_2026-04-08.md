@@ -131,21 +131,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate the required workbook sheets and current order.
-- [ ] Enumerate the required chart titles and chart families.
-- [ ] Document approved-row and shortlist visible-cap behavior.
-- [ ] Document how `Approved Candidates`, `Shortlist`, and `Audit Data` differ in scope.
-- [ ] Document `Dashboard` and `Distributions` responsibilities separately.
-- [ ] Document `Regime Audit` expectations and when it may contain `n/a` versus `not run`.
-- [ ] Define compatibility-mode semantics when newer verdict fields are absent.
-- [ ] Define zero-survivor fallback requirements.
-- [ ] Add or tighten tests anywhere a sheet/chart/placeholder invariant is still implicit.
-- [ ] Verify the workbook still opens in Excel after any contract-affecting change.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the required workbook sheets and current order.
+- [x] Enumerate the required chart titles and chart families.
+- [x] Document approved-row and shortlist visible-cap behavior.
+- [x] Document how `Approved Candidates`, `Shortlist`, and `Audit Data` differ in scope.
+- [x] Document `Dashboard` and `Distributions` responsibilities separately.
+- [x] Document `Regime Audit` expectations and when it may contain `n/a` versus `not run`.
+- [x] Define compatibility-mode semantics when newer verdict fields are absent.
+- [x] Define zero-survivor fallback requirements.
+- [x] Add or tighten tests anywhere a sheet/chart/placeholder invariant is still implicit.
+- [x] Verify the workbook still opens in Excel after any contract-affecting change.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -163,6 +163,11 @@ Public-repo quality focus:
 - if chart inventory changes, update both the workbook contract doc and regression tests in the same change
 - prefer additive workbook metadata and notes over silent reinterpretation of existing cells
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated the workbook-level contract against the current Rust regression suite instead of changing workbook structure. `validation_xlsx_report_tests.rs` continues to prove the required sheet inventory, chart inventory, compatibility behavior, zero-survivor fallback charts, and strategy-agnostic workbook generation.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`, `cargo test -p ta_desktop_demo_app commands_reports --lib`, `npm --prefix web run lint`, `npm --prefix web run typecheck`, and `cargo fmt --all -- --check`.
 
 ## Related Docs
 

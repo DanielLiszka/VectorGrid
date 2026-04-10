@@ -96,16 +96,16 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document `CompositeMo` command routing and special-case ownership.
-- [ ] Document which global optimize controls do not directly govern this command.
-- [ ] Document the shared run guard, cancel token, and progress sink behavior.
-- [ ] Add or tighten command-routing tests for Composite MO.
-- [ ] Document the separation between strategy-owned and product-owned route semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Document `CompositeMo` command routing and special-case ownership.
+- [x] Document which global optimize controls do not directly govern this command.
+- [x] Document the shared run guard, cancel token, and progress sink behavior.
+- [x] Add or tighten command-routing tests for Composite MO.
+- [x] Document the separation between strategy-owned and product-owned route semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -123,6 +123,13 @@ Public-repo quality focus:
 - keep strategy-owned route behavior explicit in UI and service layers
 - update this plan alongside any Composite MO control-surface changes
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Revalidated `CompositeMo` as its own command family rather than a variation of the other optimize routes. `optimizeService.test.ts`, `optimizeRequestBuilder.test.ts`, and `OptimizeWorkspacePanel.test.ts` already cover the special-case service routing, request construction, and the panel posture that hides global controls not governed by the Composite MO route.
+- Kept the shared run-guard and progress behavior untouched. `commands_optimize.rs` still routes Composite MO through the same run coordination and blocking execution pattern without introducing the product-mode normalization used by the Double-MA and Composite CPU paths.
+- No product-code change was required here because the current route separation and command selection already satisfy the plan’s contract goals under targeted verification.
+- Acceptance evidence captured during execution: `cargo test -p ta_desktop_demo_app commands_optimize --lib`, `npm.cmd --prefix web run test -- src/services/optimizeService.test.ts src/services/optimizeRequestBuilder.test.ts src/components/OptimizeWorkspacePanel.test.ts src/services/runControlService.test.ts src/tauri/instrumentation.test.ts src/stores/taskStore.lifecycle.test.ts src/utils/statusPresentation.test.ts`, `npm.cmd --prefix web run lint`, and `npm.cmd --prefix web run typecheck`.
 
 ## Related Docs
 

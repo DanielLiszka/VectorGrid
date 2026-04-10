@@ -113,17 +113,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Enumerate the current worksheet set and fixed order.
-- [ ] Enumerate mandatory chart titles and conditional chart families separately.
-- [ ] Document the `Dashboard` active-tab contract.
-- [ ] Document approved/shortlist cap-note behavior and what data charts actually use.
-- [ ] Document compatibility-mode messaging and zero-survivor fallback output.
-- [ ] Add or tighten regression tests for active tab, conditional charts, and cap-note semantics.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Enumerate the current worksheet set and fixed order.
+- [x] Enumerate mandatory chart titles and conditional chart families separately.
+- [x] Document the `Dashboard` active-tab contract.
+- [x] Document approved/shortlist cap-note behavior and what data charts actually use.
+- [x] Document compatibility-mode messaging and zero-survivor fallback output.
+- [x] Add or tighten regression tests for active tab, conditional charts, and cap-note semantics.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
 
 ## Verification Plan
 
@@ -141,6 +141,11 @@ Public-repo quality focus:
 - preserve artifact-backed export behavior and Stage 3 fallback behavior outside this validation-specific contract
 - if workbook structure changes, update tests and this document in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Confirmed the sheet and chart contract remains locked by the current workbook regression suite. The Rust tests still prove fixed worksheet order, `Dashboard` active-tab behavior, mandatory chart titles, conditional chart families, sparse cases, and compatibility-mode workbook output.
+- Acceptance evidence for closure: `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests` and `cargo test -p ta_desktop_demo_app commands_reports --lib`.
 
 ## Related Docs
 

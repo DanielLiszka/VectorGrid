@@ -831,7 +831,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="pane diagnosticsPane">
+        <section class="pane diagnosticsPane" aria-label="Desktop settings diagnostics">
           <div class="panelSectionHeader">
             <div>
               <div class="panelEyebrow">Diagnostics</div>
@@ -847,14 +847,14 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="actions">
-            <button type="button" @click="openTaskCenter">Open task center</button>
-            <button type="button" @click="copyDesktopDiagnostics">
+            <button type="button" aria-label="Open task center" @click="openTaskCenter">Open task center</button>
+            <button type="button" aria-label="Copy diagnostics snapshot" @click="copyDesktopDiagnostics">
               {{ diagnosticsCopied ? 'Copied diagnostics snapshot' : 'Copy diagnostics snapshot' }}
             </button>
             <button type="button" :disabled="recentAlerts.length === 0" @click="clearRecentAlerts">Clear recent alerts</button>
           </div>
-          <div class="diagnosticsGrid">
-            <section class="diagnosticsCard">
+          <div class="diagnosticsGrid" aria-label="Desktop diagnostics grid">
+            <section class="diagnosticsCard" aria-label="Runtime diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Runtime</div>
                 <div class="mono diagnosticsStamp">{{ runtimeStamp }}</div>
@@ -868,30 +868,30 @@ onBeforeUnmount(() => {
               </details>
             </section>
 
-            <section class="diagnosticsCard">
+            <section class="diagnosticsCard" aria-label="Native desktop diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Native desktop</div>
                 <div class="mono diagnosticsStamp">{{ desktopWindowStateStamp }}</div>
               </header>
-              <div class="diagnosticsPrimary">{{ desktopWindowStateDetail }}</div>
-              <div class="panelMuted">Notifications: {{ desktopNotificationPermissionLabel }}</div>
+              <div class="diagnosticsPrimary" aria-label="Desktop window state summary">{{ desktopWindowStateDetail }}</div>
+              <div class="panelMuted" aria-label="Desktop notification permission">Notifications: {{ desktopNotificationPermissionLabel }}</div>
               <div class="panelMuted">
                 {{ desktopLogConsoleAttached ? 'Desktop log mirror is attached to the browser console in dev.' : 'Desktop log output stays buffered in-app outside dev console mirroring.' }}
               </div>
             </section>
 
-            <section class="diagnosticsCard">
+            <section class="diagnosticsCard" aria-label="Desktop presence diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Desktop presence</div>
                 <div class="mono diagnosticsStamp">Foreground-first</div>
               </header>
-              <div class="diagnosticsPrimary">{{ desktopPresenceTitle }}</div>
+              <div class="diagnosticsPrimary" aria-label="Desktop presence summary">{{ desktopPresenceTitle }}</div>
               <div class="panelMuted">{{ desktopPresenceMinimizeDetail }}</div>
               <div class="panelMuted">{{ desktopPresenceCloseDetail }}</div>
               <div class="panelMuted">{{ desktopPresenceTaskCenterDetail }}</div>
             </section>
 
-            <section class="diagnosticsCard">
+            <section class="diagnosticsCard" aria-label="Task posture diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Task posture</div>
                 <div class="mono diagnosticsStamp">{{ centerStatusLabel }}</div>
@@ -931,7 +931,7 @@ onBeforeUnmount(() => {
               </div>
             </section>
 
-            <section class="diagnosticsCard">
+            <section class="diagnosticsCard" aria-label="Desktop log bridge diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Desktop log bridge</div>
                 <div class="mono diagnosticsStamp">{{ desktopLogConsoleAttached ? 'Console attached' : 'Buffered only' }}</div>
@@ -944,7 +944,7 @@ onBeforeUnmount(() => {
               </div>
             </section>
 
-            <section class="diagnosticsCard diagnosticsCardWide">
+            <section class="diagnosticsCard diagnosticsCardWide" aria-label="Desktop logs diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Desktop logs</div>
                 <div class="mono diagnosticsStamp">{{ desktopLogStamp }}</div>
@@ -990,7 +990,7 @@ onBeforeUnmount(() => {
               </ul>
             </section>
 
-            <section class="diagnosticsCard diagnosticsCardWide">
+            <section class="diagnosticsCard diagnosticsCardWide" aria-label="Recent timeline diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Recent timeline</div>
                 <div class="mono diagnosticsStamp">{{ recentTimeline.length }} items</div>
@@ -1019,7 +1019,7 @@ onBeforeUnmount(() => {
               </ul>
             </section>
 
-            <section class="diagnosticsCard diagnosticsCardWide">
+            <section class="diagnosticsCard diagnosticsCardWide" aria-label="Recent alerts diagnostics card">
               <header class="diagnosticsHead">
                 <div class="diagnosticsLabel">Recent alerts</div>
                 <div class="mono diagnosticsStamp">{{ recentAlerts.length }} items</div>

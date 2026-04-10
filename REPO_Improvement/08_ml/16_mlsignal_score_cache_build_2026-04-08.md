@@ -93,23 +93,23 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the real score-cache build request fields used by Rust.
-- [ ] Note any extra frontend-only or convenience fields that are not part of the backend request type.
-- [ ] Document returned score-cache result and manifest fields.
-- [ ] Document accepted input-column aliases and score-scope inference rules.
-- [ ] Document coverage, matched/skipped rows, and duplicate-timestamp semantics.
-- [ ] Clarify model-bundle context and when it is optional vs meaningful.
-- [ ] Document the raw-margin-only success path vs later validation/sweep restrictions.
-- [ ] Keep artifact linkage from score-cache build into later ML stages.
-- [ ] Add or maintain tests for malformed or partially compatible input score CSVs.
-- [ ] Preserve backend kind/version/schema checks.
-- [ ] Keep UI status and metadata summaries aligned with backend fields.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
+- [x] Document the real score-cache build request fields used by Rust.
+- [x] Note any extra frontend-only or convenience fields that are not part of the backend request type.
+- [x] Document returned score-cache result and manifest fields.
+- [x] Document accepted input-column aliases and score-scope inference rules.
+- [x] Document coverage, matched/skipped rows, and duplicate-timestamp semantics.
+- [x] Clarify model-bundle context and when it is optional vs meaningful.
+- [x] Document the raw-margin-only success path vs later validation/sweep restrictions.
+- [x] Keep artifact linkage from score-cache build into later ML stages.
+- [x] Add or maintain tests for malformed or partially compatible input score CSVs.
+- [x] Preserve backend kind/version/schema checks.
+- [x] Keep UI status and metadata summaries aligned with backend fields.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name one stable fixture, saved artifact, or replay payload plus the exact frontend and Rust commands that validate this ML/meta contract.
 
 ## Verification Plan
 
@@ -126,6 +126,30 @@ Public-repo quality focus:
 - keep score-cache generation bounded to the current ML Signal workflow
 - if cache manifests expand, preserve current fields until downstream consumers are updated
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the score-cache build contract explicit at the panel and artifact layers rather than only in service metadata strings.
+- `MlSignalWorkspacePanel.vue` now states that Stage 2 writes the JSON score cache plus a `.manifest.json` sidecar and that raw-margin-only caches can build while later threshold validation still requires probability scores.
+- `MlSignalWorkspacePanel.vue` also exposes a score-summary row in the current-artifact section so coverage, scope, space, matched rows, skipped rows, and duplicate timestamps remain visible after build/replay.
+- `mlSignalService.test.ts` now asserts that score-cache build / validation carry forward:
+  - `scoreManifestPath`
+  - `matchedRows`
+  - `skippedRows`
+  - `coverageRatio`
+  - `duplicateTimestamps`
+- Existing Rust tests remain the authority for score-space and score-scope inference, malformed input handling, and manifest emission.
+- Stable fixture / replay payload:
+  - `score_cache_path = C:\\data\\score_cache.json`
+  - `score_manifest_path = C:\\data\\score_cache.manifest.json`
+  - `score_space = Probability`
+  - `score_scope = CalibrationSlice`
+  - `matched_rows = 75`
+  - `coverage_ratio = 0.75`
+- Acceptance evidence:
+  - `npm.cmd --prefix web run test -- src/components/MlSignalWorkspacePanel.test.ts src/services/mlSignalService.test.ts src/services/historyService.test.ts src/stores/optimizeStore.actions.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 

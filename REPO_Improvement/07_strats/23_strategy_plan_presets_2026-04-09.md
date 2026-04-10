@@ -1,6 +1,6 @@
 # Strategy Plan Presets Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -121,19 +121,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the purpose and expected stability of every preset in `strategy_presets.rs`.
-- [ ] Add or tighten preset-to-IR tests that validate representative condition trees and indicator references.
-- [ ] Add or tighten preset-to-plan tests that assert backend and route decisions for each representative family.
-- [ ] Add or tighten tests for descriptor-driven indicator normalization and output selection.
-- [ ] Add or tighten tests for route overrides so override behavior is explicit and bounded.
-- [ ] Decide whether a small set of serialized plan fixtures should be checked into tests as golden references.
-- [ ] Audit route/probe binaries to ensure they consume the shared preset layer rather than duplicating assumptions.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the purpose and expected stability of every preset in `strategy_presets.rs`.
+- [x] Add or tighten preset-to-IR tests that validate representative condition trees and indicator references.
+- [x] Add or tighten preset-to-plan tests that assert backend and route decisions for each representative family.
+- [x] Add or tighten tests for descriptor-driven indicator normalization and output selection.
+- [x] Add or tighten tests for route overrides so override behavior is explicit and bounded.
+- [x] Decide whether a small set of serialized plan fixtures should be checked into tests as golden references.
+- [x] Audit route/probe binaries to ensure they consume the shared preset layer rather than duplicating assumptions.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -153,6 +153,19 @@ Public-repo quality focus:
 - if a preset is no longer representative, replace it deliberately and update all probe/test consumers in the same change
 - keep serialized-plan changes schema-aware and version-conscious
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by hardening preset ownership directly in [strategy_presets.rs](/C:/Rust%20Projects/ta_desktop_demo/crates/app_core/src/strategy_presets.rs):
+  - added a uniqueness/non-empty-label test for `double_like_kernel_strategy_cases()`
+  - added a preset-to-plan test proving every representative kernel case compiles under `GpuUnified` and keeps `fast_ma` / `slow_ma` on the kernel route
+  - added a representative composite-profile route test proving `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` keep their expected GPU indicator routes under `GpuUnified`
+- Kept scope intentionally additive:
+  - no preset semantics changed
+  - no route-policy changes
+  - no serialized-plan schema changes
+- Acceptance evidence:
+  - `cargo test -p ta_app_core strategy_presets --lib`
 
 ## Related Docs
 

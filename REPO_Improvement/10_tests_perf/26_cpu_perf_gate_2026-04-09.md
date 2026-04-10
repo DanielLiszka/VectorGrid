@@ -1,6 +1,6 @@
 # CPU Perf Gate Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -31,12 +31,14 @@ The current CPU perf gate already acts as a structured authority script rather t
 - `scripts/run_cpu_perf_gate.ps1` orchestrates workflow-gate execution, Criterion cases, baseline comparison, and summary emission.
 - `scripts/run_workflow_gate.ps1` and `src-tauri/src/bin/ta_workflow_regression.rs` provide the workflow wall-clock portion of the gate.
 - `crates/app_core/Cargo.toml` declares the Criterion bench targets the gate depends on.
+- `crates/app_core/benches/dynamic_strategy_cpu.rs` owns the dynamic-strategy CPU ratio bench entrypoint used by the gate and must stay aligned with the current `CompositeCpuRequest` contract.
 - `scripts/baselines/cpu_perf_baseline.json` stores the current authoritative CPU perf baseline snapshot.
 
 ## Current Verification Surface
 
 - `powershell -ExecutionPolicy Bypass -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`
 - `powershell -ExecutionPolicy Bypass -File scripts/run_cpu_perf_gate.ps1 -Mode baseline` when intentionally refreshing the baseline
+- `cargo bench -p ta_app_core --bench dynamic_strategy_cpu -- dynamic_strategy_cpu/full_run/2k/composite_mo`
 - generated summary JSON under `target/cpu_perf_summary.json`
 - workflow summary JSON under `target/workflow_regression_summary.json`
 
@@ -87,18 +89,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the CPU gate timing boundaries and which numbers come from workflow versus Criterion.
-- [ ] Document the current authoritative bench cases and why they exist.
-- [ ] Document the baseline refresh procedure and its review requirements.
-- [ ] Keep schema-version and case-registry compatibility checks mandatory.
-- [ ] Keep the CPU gate non-options only.
-- [ ] Cross-link CPU gate failures back to workflow-gate or Criterion-root causes before changing thresholds.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
+- [x] Document the CPU gate timing boundaries and which numbers come from workflow versus Criterion.
+- [x] Document the current authoritative bench cases and why they exist.
+- [x] Document the baseline refresh procedure and its review requirements.
+- [x] Keep schema-version and case-registry compatibility checks mandatory.
+- [x] Keep the CPU gate non-options only.
+- [x] Cross-link CPU gate failures back to workflow-gate or Criterion-root causes before changing thresholds.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the raw evidence expected for completion: exact commands, hardware/toolchain provenance, output artifact location, and refresh trigger for this check.
 
 ## Verification Plan
 
@@ -115,6 +117,31 @@ Public-repo quality focus:
 - prefer adding explanation and compatibility structure before broadening the benchmark set
 - if a case is no longer representative, replace it deliberately rather than silently retargeting its path
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item did require a small implementation fix on the current tree before it could close: the first fresh candidate run failed inside the dynamic CPU ratio bench because `crates/app_core/benches/dynamic_strategy_cpu.rs` had drifted behind the current `CompositeCpuRequest` shape and no longer populated `include_trade_metrics` or `metric_contract`.
+- The smallest safe fix was applied in `crates/app_core/benches/dynamic_strategy_cpu.rs`:
+  - `include_trade_metrics: false`
+  - `metric_contract: None`
+- No authority-gate thresholds, case inventory, baseline schema, or path contracts were changed. The fix only restored the existing dynamic-strategy CPU bench to the request contract already used by the rest of the non-options surfaces.
+- Fresh candidate verification was then rerun with no concurrent benchmark processes active. The current candidate summary proves the intended timing-boundary split still holds:
+  - workflow summary: `target/workflow_regression_summary.json`
+  - CPU gate summary: `target/cpu_perf_summary.json`
+  - workflow runtime: `239 ms`
+  - Criterion anchor means:
+    - `cpu_sma_small`: `156.167378 ms`
+    - `cpu_alma_large`: `5026.64155 ms`
+  - dynamic CPU ratio: `1.019626`
+- Fresh acceptance evidence for this closure:
+  - `cargo bench -p ta_app_core --bench dynamic_strategy_cpu -- dynamic_strategy_cpu/full_run/2k/composite_mo`
+  - `powershell -ExecutionPolicy Bypass -File scripts/run_cpu_perf_gate.ps1 -Mode candidate`
+- The full candidate gate passed after the bench fix:
+  - `criterion_case_cpu_sma_small_not_regressed_15pct`
+  - `criterion_case_cpu_alma_large_not_regressed_15pct`
+  - `workflow_runtime_not_regressed_50pct`
+  - `cpu_dynamic_strategy_ratio_not_regressed_20pct`
+- No `README.md` or `REPO_MAP.md` update was required because the user-facing gate contract, benchmark inventory, and summary locations did not change; this item closed on restoring the existing non-options gate to a verified working state.
 
 ## Related Docs
 

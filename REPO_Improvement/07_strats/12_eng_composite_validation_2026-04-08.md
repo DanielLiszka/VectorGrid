@@ -1,6 +1,6 @@
 # Composite Validation Plan
 
-Last updated: 2026-04-09
+Last updated: 2026-04-10
 
 ## Purpose
 
@@ -94,20 +94,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current composite validation matrix by strategy family.
-- [ ] Separate preview-only guidance from backend enforcement and exported route notes.
-- [ ] Document current CPU-preferred, mixed-route, and GPU-eligible cases explicitly.
-- [ ] Verify `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` follow the routed Double-MA validation contract.
-- [ ] Verify `CompositeMo` and plain `CompositeCpu` constraints are not conflated.
-- [ ] Add or maintain tests for route-note parity across preview, run summary, and report export.
-- [ ] Preserve current validation/report parity while improving readability.
-- [ ] Avoid collapsing family-specific rules into generic language that becomes false.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
+- [x] Document the current composite validation matrix by strategy family.
+- [x] Separate preview-only guidance from backend enforcement and exported route notes.
+- [x] Document current CPU-preferred, mixed-route, and GPU-eligible cases explicitly.
+- [x] Verify `CompositeTrend`, `RegimeHybrid`, and `BreakoutMomentum` follow the routed Double-MA validation contract.
+- [x] Verify `CompositeMo` and plain `CompositeCpu` constraints are not conflated.
+- [x] Add or maintain tests for route-note parity across preview, run summary, and report export.
+- [x] Preserve current validation/report parity while improving readability.
+- [x] Avoid collapsing family-specific rules into generic language that becomes false.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Name the truth anchor, representative fixture or dataset, and any exact-vs-approximate or perf gate evidence required to close this strategy/runtime item.
 
 ## Verification Plan
 
@@ -126,6 +126,26 @@ Public-repo quality focus:
 - if route-note copy changes, keep exported workbook wording aligned in the same change
 - prefer clearer family-specific truth over generic “GPU validation supported” messaging
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- Closed by making the composite validation matrix explicit in [REPO_MAP.md](/C:/Rust%20Projects/ta_desktop_demo/REPO_MAP.md): routed Double-MA composite profiles, plain `CompositeCpu`, `CompositeMo`, and standalone Cluster A/B families now have one shared truth surface describing which validation path they actually use.
+- Tightened report/export parity in [validation_xlsx_report_tests.rs](/C:/Rust%20Projects/ta_desktop_demo/src-tauri/tests/validation_xlsx_report_tests.rs) by adding workbook assertions for:
+  - `CompositeMo` CPU-route fallback notes
+  - plain `CompositeCpu` GPU-route compatibility notes
+- Existing preview and post-run parity remains the truth anchor and was intentionally preserved:
+  - preview/request matrix in `web/src/services/validationRequestBuilder.test.ts`
+  - post-run route summaries in `web/src/services/validationService.test.ts`
+  - exported workbook route notes in `src-tauri/tests/validation_xlsx_report_tests.rs`
+- Stable truth anchors:
+  - routed Double-MA validation in `crates/app_core/src/double_ma_validate.rs`
+  - composite validation helper/report wording in `src-tauri/src/commands_reports_validation_common.rs`
+  - frontend preview and post-run summaries in `validationRequestBuilder.ts` and `validationService.ts`
+- Acceptance evidence:
+  - `cargo test -p ta_desktop_demo_app --test validation_xlsx_report_tests`
+  - `npm.cmd --prefix web run test -- src/services/validationRequestBuilder.test.ts src/services/validationService.test.ts`
+  - `npm.cmd --prefix web run lint`
+  - `npm.cmd --prefix web run typecheck`
 
 ## Related Docs
 
