@@ -274,6 +274,8 @@ describe('optionsExpressionService', () => {
                 invalid_rate: 0.1667,
                 expectancy_per_trade: 12,
                 expectancy_per_premium: 0.2,
+                mean_return_on_premium: 0.16,
+                return_volatility_on_premium: 0.05,
                 median_return_on_premium: 0.15,
                 win_rate: 0.6,
                 total_pnl_per_contract: 60,
@@ -285,6 +287,8 @@ describe('optionsExpressionService', () => {
                 invalid_rate: 0,
                 expectancy_per_trade: 2,
                 expectancy_per_premium: 0.03,
+                mean_return_on_premium: 0.025,
+                return_volatility_on_premium: 0.01,
                 median_return_on_premium: 0.02,
                 win_rate: 0.5,
                 total_pnl_per_contract: 4,
@@ -295,6 +299,8 @@ describe('optionsExpressionService', () => {
                 invalid_rate: 0,
                 expectancy_per_trade: 2,
                 expectancy_per_premium: 0.02,
+                mean_return_on_premium: 0.018,
+                return_volatility_on_premium: 0.01,
                 median_return_on_premium: 0.01,
                 win_rate: 0.5,
                 total_pnl_per_contract: 3,
@@ -305,6 +311,8 @@ describe('optionsExpressionService', () => {
                 invalid_rate: 0,
                 expectancy_per_trade: 1,
                 expectancy_per_premium: 0.01,
+                mean_return_on_premium: 0.01,
+                return_volatility_on_premium: 0.0,
                 median_return_on_premium: 0.01,
                 win_rate: 0.5,
                 total_pnl_per_contract: 2,
@@ -315,6 +323,8 @@ describe('optionsExpressionService', () => {
                 invalid_rate: 0,
                 expectancy_per_trade: 1,
                 expectancy_per_premium: -0.01,
+                mean_return_on_premium: -0.01,
+                return_volatility_on_premium: 0.0,
                 median_return_on_premium: -0.01,
                 win_rate: 0.5,
                 total_pnl_per_contract: 1,
@@ -325,6 +335,8 @@ describe('optionsExpressionService', () => {
                 invalid_rate: 0,
                 expectancy_per_trade: 1,
                 expectancy_per_premium: -0.02,
+                mean_return_on_premium: -0.02,
+                return_volatility_on_premium: 0.0,
                 median_return_on_premium: -0.02,
                 win_rate: 0.5,
                 total_pnl_per_contract: 1,
@@ -388,6 +400,9 @@ describe('optionsExpressionService', () => {
             top_validation_verdict: 'stress_fragile',
             validated_tuple_count: 1,
             stress_fragile_tuple_count: 1,
+            supported_holdout_tuple_count: 1,
+            supported_sealed_tuple_count: 1,
+            supported_stress_tuple_count: 1,
             has_holdout_metrics: true,
             has_sealed_evaluation_metrics: true,
             has_stress_metrics: true,
@@ -413,6 +428,8 @@ describe('optionsExpressionService', () => {
     expect(run.rankedResults[0]?.preSealedRank).toBe(0)
     expect(run.rankedResults[0]?.sealedFinalist).toBe(false)
     expect(run.rankedResults[0]?.validationVerdict).toBe('stress_fragile')
+    expect(run.rankedResults[0]?.selectionMetrics.meanReturnOnPremium).toBe(0.16)
+    expect(run.rankedResults[0]?.selectionMetrics.returnVolatilityOnPremium).toBe(0.05)
     expect(run.rankedResults[0]?.sealedStressMetrics?.expectancyPerPremium).toBe(0.03)
     expect(run.rankedResults[0]?.harsherStressMetrics?.expectancyPerPremium).toBe(0.02)
     expect(run.rankedResults[0]?.sealedHarsherStressMetrics?.expectancyPerPremium).toBe(0.01)
@@ -443,6 +460,9 @@ describe('optionsExpressionService', () => {
     expect(artifacts[0]?.sealedEvaluatedTupleCount).toBe(0)
     expect(artifacts[0]?.validatedTupleCount).toBe(1)
     expect(artifacts[0]?.stressFragileTupleCount).toBe(1)
+    expect(artifacts[0]?.supportedHoldoutTupleCount).toBe(1)
+    expect(artifacts[0]?.supportedSealedTupleCount).toBe(1)
+    expect(artifacts[0]?.supportedStressTupleCount).toBe(1)
     expect(artifacts[0]?.hasSealedEvaluationMetrics).toBe(true)
     expect(artifacts[0]?.hasHarsherStressMetrics).toBe(true)
     expect(artifacts[0]?.hasExtremeStressMetrics).toBe(true)
@@ -499,6 +519,9 @@ describe('optionsExpressionService', () => {
           top_validation_verdict: 'search_only',
           validated_tuple_count: 0,
           stress_fragile_tuple_count: 0,
+          supported_holdout_tuple_count: 0,
+          supported_sealed_tuple_count: 0,
+          supported_stress_tuple_count: 0,
           has_holdout_metrics: false,
           has_sealed_evaluation_metrics: false,
           has_stress_metrics: false,
@@ -514,6 +537,9 @@ describe('optionsExpressionService', () => {
     expect(artifacts[0]?.leaderSummary.searchLeaderTupleIndex).toBeNull()
     expect(artifacts[0]?.leaderSummary.robustVsHoldoutDisagree).toBeNull()
     expect(artifacts[0]?.leaderSummary.robustLeaderReachedSealedFinalist).toBeNull()
+    expect(artifacts[0]?.supportedHoldoutTupleCount).toBe(0)
+    expect(artifacts[0]?.supportedSealedTupleCount).toBe(0)
+    expect(artifacts[0]?.supportedStressTupleCount).toBe(0)
   })
 
   it('normalizes feasibility preview responses', async () => {
@@ -868,6 +894,8 @@ describe('optionsExpressionService', () => {
             invalid_rate: 0.1667,
             expectancy_per_trade: 12,
             expectancy_per_premium: 0.2,
+            mean_return_on_premium: 0.16,
+            return_volatility_on_premium: 0.05,
             median_return_on_premium: 0.15,
             win_rate: 0.6,
             total_pnl_per_contract: 60,
@@ -888,6 +916,91 @@ describe('optionsExpressionService', () => {
     expect(artifact.coverageAdequacy.verdict).toBe('mixed_fragile')
     expect(artifact.splitInvalidReasons.searchInvalidReasons[0]?.count).toBe(2)
     expect(artifact.selectionMetrics[0]?.moneynessBucket).toBe('atm')
+    expect(artifact.selectionMetrics[0]?.selectionMetrics.meanReturnOnPremium).toBe(0.16)
+    expect(artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium).toBe(0.05)
+  })
+
+  it('defaults missing single-pass expansion metric fields for older artifacts', async () => {
+    invokeCommandMock.mockResolvedValueOnce({
+      version: 1,
+      kind: 'vectorgrid_options_expression_v1',
+      ts: '2026-04-05T12:00:00Z',
+      artifact_path: 'C:/runs/vectorgrid_options_expression_legacy_metrics.json',
+      parent_artifact_id: 'vectorgrid_run_1',
+      root_symbol: 'SPY',
+      options_dataset_id: 'spy_options',
+      options_dataset_hash: 'hash-1',
+      backend_used: 'cpu_reference',
+      price_semantics: 'minute_aggregate',
+      request: {
+        structure_family: 'long_single',
+        delay_minutes: [0],
+        dte_days: [1],
+        moneyness_buckets: ['atm'],
+        hold_minutes: [15],
+        target_returns: [0.25],
+        stop_returns: [0.25],
+        split_assignment_mode: 'event_chronological',
+      },
+      overlap_window: {
+        search_start_index: 0,
+        search_end_index: 1,
+        holdout_start_index: 1,
+        holdout_end_index: 2,
+        sealed_test_start_index: 2,
+        sealed_test_end_index: 3,
+        search_overlap_rate: 1,
+        holdout_overlap_rate: 1,
+        sealed_test_overlap_rate: 1,
+      },
+      coverage_adequacy: {
+        verdict: 'healthy',
+        coverage_non_promotable: false,
+        search_candidate_coverage_rate: 1,
+        holdout_candidate_coverage_rate: 1,
+        sealed_test_candidate_coverage_rate: 1,
+        search_baseline_outcome_coverage_rate: 1,
+        holdout_baseline_outcome_coverage_rate: 1,
+        sealed_test_baseline_outcome_coverage_rate: 1,
+      },
+      split_invalid_reasons: {
+        search_invalid_reasons: [],
+        holdout_invalid_reasons: [],
+        sealed_test_invalid_reasons: [],
+      },
+      selection_metrics: [
+        {
+          tuple: {
+            delay_minutes: 0,
+            dte_days: 1,
+            moneyness_bucket: 'atm',
+            hold_minutes: 15,
+            target_return: 0.25,
+            stop_return: 0.25,
+            exit_template: 'fixed_hold_or_target_stop',
+            fill_model: 'aggregate_research',
+          },
+          selection_metrics: {
+            valid_trades: 5,
+            invalid_events: 1,
+            invalid_rate: 0.1667,
+            expectancy_per_trade: 12,
+            expectancy_per_premium: 0.2,
+            median_return_on_premium: 0.15,
+            win_rate: 0.6,
+            total_pnl_per_contract: 60,
+          },
+          robust_score: 0.18,
+        },
+      ],
+    })
+
+    const artifact = await loadOptionsExpressionArtifact(
+      'C:/runs/vectorgrid_options_expression_legacy_metrics.json',
+    )
+
+    expect(artifact.selectionMetrics[0]?.selectionMetrics.meanReturnOnPremium).toBe(0)
+    expect(artifact.selectionMetrics[0]?.selectionMetrics.returnVolatilityOnPremium).toBe(0)
   })
 
   it('loads quote-aware artifacts without losing price semantics or fill-model provenance', async () => {
@@ -1010,6 +1123,8 @@ describe('optionsExpressionService', () => {
           invalid_rate: 0.3333,
           expectancy_per_trade: 10,
           expectancy_per_premium: 0.11,
+          mean_return_on_premium: 0.09,
+          return_volatility_on_premium: 0.02,
           median_return_on_premium: 0.08,
           win_rate: 0.5,
           total_pnl_per_contract: 20,

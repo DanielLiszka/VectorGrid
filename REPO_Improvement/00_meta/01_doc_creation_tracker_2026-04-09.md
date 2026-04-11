@@ -130,10 +130,12 @@ The next operational phase is:
 1. use the second-pass-hardened plan set as the routing layer for actual implementation work
 2. maintain and refine the completed doc set only when a real quality gap or repo change is found
 3. keep tracker/index status accurate if the meta plan or planned-doc catalog changes again
+4. route larger-scope post-checklist epics through [REPO_Improvement_Epics/README.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement_Epics/README.md) instead of mutating the completed first-tier catalog accounting
 
 ## Related Docs
 
 - [00_program_index_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/00_program_index_2026-04-09.md)
 - [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
 - [execution_ledger_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/execution_ledger_2026-04-09.md)
+- [REPO_Improvement_Epics/README.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement_Epics/README.md)
 - [REPO_IMPROVEMENT_META_PLAN_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md)

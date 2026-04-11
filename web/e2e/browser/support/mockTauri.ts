@@ -7,11 +7,17 @@ export interface MockTauriOptions {
 }
 
 const HOLD_STORAGE_KEY = 'VTA_STARTUP_OVERLAY_HOLD'
+const DEFAULT_COMMAND_RESULTS: Record<string, unknown> = {
+  load_latest_run_artifact_summary: null,
+}
 
 export async function installMockedTauri(context: BrowserContext, options: MockTauriOptions = {}): Promise<void> {
   const holdStartupOverlay = options.holdStartupOverlay ?? false
   const strictUnknownInvoke = options.strictUnknownInvoke ?? true
-  const commandResults = options.commandResults ?? {}
+  const commandResults = {
+    ...DEFAULT_COMMAND_RESULTS,
+    ...(options.commandResults ?? {}),
+  }
   await context.addInitScript(({ hold, holdKey, strictInvoke, results }) => {
     const handlers: Record<string, Array<(event: { event: string; payload: unknown }) => void>> = {}
     const callbacks: Record<number, unknown> = {}

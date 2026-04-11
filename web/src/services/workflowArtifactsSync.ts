@@ -61,11 +61,8 @@ export async function syncWorkflowArtifactsFromLegacyRuntime(
   source: WorkflowArtifactsSource = 'vue',
 ): Promise<boolean> {
   try {
-    const rowsRaw = (await invokeCommand('list_run_artifacts')) as unknown
-    const rows = Array.isArray(rowsRaw) ? rowsRaw : []
-    if (rows.length === 0) return false
-
-    const latest = asRecord(rows[0])
+    const latestRaw = (await invokeCommand('load_latest_run_artifact_summary')) as unknown
+    const latest = asRecord(latestRaw)
     const latestPath = normalizeText(latest?.path)
     const latestTs = normalizeText(latest?.ts)
     if (!latest || !latestPath) return false

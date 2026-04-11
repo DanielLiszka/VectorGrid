@@ -7,24 +7,25 @@ use crate::settings;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{hash_map::DefaultHasher, BTreeSet};
+use std::collections::{BTreeSet, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use ta_app_core::options_types::{
-    OptionsExpressionCoverageAdequacyVerdict, OptionsExpressionValidationVerdict,
+    OptionsExpressionCoverageAdequacyVerdict, OptionsExpressionMetrics,
+    OptionsExpressionValidationVerdict,
 };
 use ta_app_core::{
+    ImportedOptionsDatasetCsvBuildRequest, OPTIONS_EXPRESSION_ARTIFACT_VERSION,
+    OptionsExpressionArtifactV1, OptionsExpressionEventPathInspectionResult,
+    OptionsExpressionFeasibilityReport, OptionsExpressionRunRequest, OptionsExpressionRunResult,
+    OptionsExpressionTupleInspectionResult, OptionsPriceSemantics,
     analyze_options_expression_feasibility_blocking,
     compute_double_ma_drilldown_blocking_with_candles, dataset_manifest_path,
     inspect_options_expression_event_path_blocking, inspect_options_expression_tuple_blocking,
     load_imported_options_dataset_from_csv, parse_timeframe_label, read_options_dataset_manifest,
-    resample_candles, run_options_expression_blocking, ImportedOptionsDatasetCsvBuildRequest,
-    OptionsExpressionArtifactV1, OptionsExpressionEventPathInspectionResult,
-    OptionsExpressionFeasibilityReport, OptionsExpressionRunRequest, OptionsExpressionRunResult,
-    OptionsExpressionTupleInspectionResult, OptionsPriceSemantics,
-    OPTIONS_EXPRESSION_ARTIFACT_VERSION,
+    resample_candles, run_options_expression_blocking,
 };
 use tauri::Manager;
 
@@ -115,6 +116,9 @@ pub struct OptionsExpressionArtifactSummary {
     pub top_validation_verdict: OptionsExpressionValidationVerdict,
     pub validated_tuple_count: usize,
     pub stress_fragile_tuple_count: usize,
+    pub supported_holdout_tuple_count: usize,
+    pub supported_sealed_tuple_count: usize,
+    pub supported_stress_tuple_count: usize,
     pub has_holdout_metrics: bool,
     pub has_sealed_evaluation_metrics: bool,
     pub has_stress_metrics: bool,
@@ -689,6 +693,20 @@ fn best_tuple_index_by_metric(
     best.map(|(index, _)| index)
 }
 
+fn supported_metric_expectancy(metrics: Option<&OptionsExpressionMetrics>) -> Option<f64> {
+    metrics
+        .filter(|metrics| metrics.has_supported_trades())
+        .map(|metrics| metrics.expectancy_per_premium)
+}
+
+fn refresh_options_expression_artifact_validation_verdicts(
+    artifact: &mut OptionsExpressionArtifactV1,
+) {
+    for entry in &mut artifact.selection_metrics {
+        entry.validation_verdict = entry.inferred_validation_verdict();
+    }
+}
+
 fn build_artifact_leader_summary(
     tuples: &[ta_app_core::options_types::OptionsExpressionTupleResult],
 ) -> OptionsExpressionArtifactLeaderSummary {
@@ -699,20 +717,17 @@ fn build_artifact_leader_summary(
         best_tuple_index_by_metric(tuples, |entry| Some(entry.robust_score));
     let holdout_leader_tuple_index = best_tuple_index_by_metric(tuples, |entry| {
         entry
-            .holdout_metrics
-            .as_ref()
+            .supported_holdout_metrics()
             .map(|metrics| metrics.expectancy_per_premium)
     });
     let sealed_leader_tuple_index = best_tuple_index_by_metric(tuples, |entry| {
         entry
-            .sealed_evaluation_metrics
-            .as_ref()
+            .supported_sealed_evaluation_metrics()
             .map(|metrics| metrics.expectancy_per_premium)
     });
     let stress_leader_tuple_index = best_tuple_index_by_metric(tuples, |entry| {
         entry
-            .stress_metrics
-            .as_ref()
+            .strongest_validation_stress_metrics()
             .map(|metrics| metrics.expectancy_per_premium)
     });
     let distinct_leader_count = [
@@ -773,81 +788,45 @@ pub(crate) fn summarize_options_expression_artifact(
     let best_holdout_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
-        .filter_map(|entry| {
-            entry
-                .holdout_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
-        })
+        .filter_map(|entry| supported_metric_expectancy(entry.holdout_metrics.as_ref()))
         .max_by(|left, right| left.total_cmp(right));
     let best_sealed_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
-        .filter_map(|entry| {
-            entry
-                .sealed_evaluation_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
-        })
+        .filter_map(|entry| supported_metric_expectancy(entry.sealed_evaluation_metrics.as_ref()))
         .max_by(|left, right| left.total_cmp(right));
     let best_stress_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
-        .filter_map(|entry| {
-            entry
-                .stress_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
-        })
+        .filter_map(|entry| supported_metric_expectancy(entry.stress_metrics.as_ref()))
         .max_by(|left, right| left.total_cmp(right));
     let best_sealed_stress_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
-        .filter_map(|entry| {
-            entry
-                .sealed_stress_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
-        })
+        .filter_map(|entry| supported_metric_expectancy(entry.sealed_stress_metrics.as_ref()))
         .max_by(|left, right| left.total_cmp(right));
     let best_harsher_stress_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
-        .filter_map(|entry| {
-            entry
-                .harsher_stress_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
-        })
+        .filter_map(|entry| supported_metric_expectancy(entry.harsher_stress_metrics.as_ref()))
         .max_by(|left, right| left.total_cmp(right));
     let best_sealed_harsher_stress_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
         .filter_map(|entry| {
-            entry
-                .sealed_harsher_stress_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
+            supported_metric_expectancy(entry.sealed_harsher_stress_metrics.as_ref())
         })
         .max_by(|left, right| left.total_cmp(right));
     let best_extreme_stress_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
-        .filter_map(|entry| {
-            entry
-                .extreme_stress_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
-        })
+        .filter_map(|entry| supported_metric_expectancy(entry.extreme_stress_metrics.as_ref()))
         .max_by(|left, right| left.total_cmp(right));
     let best_sealed_extreme_stress_expectancy_per_premium = artifact
         .selection_metrics
         .iter()
         .filter_map(|entry| {
-            entry
-                .sealed_extreme_stress_metrics
-                .as_ref()
-                .map(|metrics| metrics.expectancy_per_premium)
+            supported_metric_expectancy(entry.sealed_extreme_stress_metrics.as_ref())
         })
         .max_by(|left, right| left.total_cmp(right));
     let sealed_evaluated_tuple_count = artifact
@@ -855,29 +834,40 @@ pub(crate) fn summarize_options_expression_artifact(
         .iter()
         .filter(|entry| entry.sealed_finalist || entry.sealed_evaluation_metrics.is_some())
         .count();
+    let supported_holdout_tuple_count = artifact
+        .selection_metrics
+        .iter()
+        .filter(|entry| entry.supported_holdout_metrics().is_some())
+        .count();
+    let supported_sealed_tuple_count = artifact
+        .selection_metrics
+        .iter()
+        .filter(|entry| entry.supported_sealed_evaluation_metrics().is_some())
+        .count();
+    let supported_stress_tuple_count = artifact
+        .selection_metrics
+        .iter()
+        .filter(|entry| entry.strongest_validation_stress_metrics().is_some())
+        .count();
     let top_validation_verdict = artifact
         .selection_metrics
         .first()
-        .map(|entry| entry.validation_verdict)
+        .map(|entry| entry.inferred_validation_verdict())
         .unwrap_or_default();
     let validated_tuple_count = artifact
         .selection_metrics
         .iter()
         .filter(|entry| {
-            !matches!(
-                entry.validation_verdict,
-                OptionsExpressionValidationVerdict::SearchOnly
-            )
+            let verdict = entry.inferred_validation_verdict();
+            !matches!(verdict, OptionsExpressionValidationVerdict::SearchOnly)
         })
         .count();
     let stress_fragile_tuple_count = artifact
         .selection_metrics
         .iter()
         .filter(|entry| {
-            matches!(
-                entry.validation_verdict,
-                OptionsExpressionValidationVerdict::StressFragile
-            )
+            let verdict = entry.inferred_validation_verdict();
+            matches!(verdict, OptionsExpressionValidationVerdict::StressFragile)
         })
         .count();
     let has_holdout_metrics = artifact
@@ -953,6 +943,9 @@ pub(crate) fn summarize_options_expression_artifact(
         top_validation_verdict,
         validated_tuple_count,
         stress_fragile_tuple_count,
+        supported_holdout_tuple_count,
+        supported_sealed_tuple_count,
+        supported_stress_tuple_count,
         has_holdout_metrics,
         has_sealed_evaluation_metrics,
         has_stress_metrics,
@@ -988,9 +981,7 @@ fn validate_saved_artifact_replay_provenance(
     if replay.options_dataset_hash != artifact.options_dataset_hash {
         return Err(format!(
             "saved artifact dataset hash '{}' no longer matches the currently imported dataset hash '{}' for '{}'; re-import the original dataset or rerun the options expression optimization",
-            artifact.options_dataset_hash,
-            replay.options_dataset_hash,
-            artifact.options_dataset_id
+            artifact.options_dataset_hash, replay.options_dataset_hash, artifact.options_dataset_id
         ));
     }
     if replay.dataset.manifest.price_semantics != artifact.price_semantics {
@@ -1346,18 +1337,20 @@ pub fn load_options_expression_artifact_blocking_headless(
     let runs_dir = runs_dir(app_local_data_dir)?;
     ensure_path_is_within_dir(artifact_path, &runs_dir)?;
     let value = read_artifact_value(artifact_path)?;
-    let artifact = serde_json::from_value::<OptionsExpressionArtifactV1>(value).map_err(|e| {
-        format!(
-            "failed to deserialize options expression artifact {}: {e}",
-            artifact_path.display()
-        )
-    })?;
+    let mut artifact =
+        serde_json::from_value::<OptionsExpressionArtifactV1>(value).map_err(|e| {
+            format!(
+                "failed to deserialize options expression artifact {}: {e}",
+                artifact_path.display()
+            )
+        })?;
     if artifact.kind.trim() != "vectorgrid_options_expression_v1" {
         return Err(format!(
             "unsupported options expression artifact kind: {}",
             artifact.kind
         ));
     }
+    refresh_options_expression_artifact_validation_verdicts(&mut artifact);
     Ok(artifact)
 }
 
@@ -1614,15 +1607,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     use ta_app_core::{
+        OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_SIGNAL_MANIFEST_VERSION,
+        OptionsEvaluationSplit, OptionsExpressionArtifactV1, OptionsExpressionDiagnostics,
+        OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionTupleResult,
+        OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1, SignalSide,
         options_types::{
             ImportedOptionsDataset, OptionsDatasetManifestV1, OptionsExpressionValidationVerdict,
             OptionsFillModelFamily, OptionsMoneynessBucket, OptionsStructureFamily,
             OptionsTupleSpec,
         },
-        OptionsEvaluationSplit, OptionsExpressionArtifactV1, OptionsExpressionDiagnostics,
-        OptionsExpressionMetrics, OptionsExpressionRunRequest, OptionsExpressionTupleResult,
-        OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1, SignalSide,
-        OPTIONS_EXPRESSION_ARTIFACT_VERSION, OPTIONS_SIGNAL_MANIFEST_VERSION,
     };
 
     fn temp_app_local_data_dir(test_name: &str) -> std::path::PathBuf {
@@ -1820,6 +1813,8 @@ mod tests {
             invalid_rate: 0.0,
             expectancy_per_trade: expectancy_per_premium * 100.0,
             expectancy_per_premium,
+            mean_return_on_premium: expectancy_per_premium,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: expectancy_per_premium / 2.0,
             win_rate: 0.6,
             total_pnl_per_contract: expectancy_per_premium * 400.0,
@@ -1986,6 +1981,8 @@ mod tests {
                 invalid_rate: 0.1667,
                 expectancy_per_trade: 8.0,
                 expectancy_per_premium: 0.20,
+                mean_return_on_premium: 0.16,
+                return_volatility_on_premium: 0.05,
                 median_return_on_premium: 0.15,
                 win_rate: 0.60,
                 total_pnl_per_contract: 40.0,
@@ -1996,6 +1993,8 @@ mod tests {
                 invalid_rate: 0.0,
                 expectancy_per_trade: 4.0,
                 expectancy_per_premium: 0.09,
+                mean_return_on_premium: 0.08,
+                return_volatility_on_premium: 0.02,
                 median_return_on_premium: 0.07,
                 win_rate: 0.50,
                 total_pnl_per_contract: 8.0,
@@ -2006,6 +2005,8 @@ mod tests {
                 invalid_rate: 0.0,
                 expectancy_per_trade: 4.0,
                 expectancy_per_premium: 0.09,
+                mean_return_on_premium: 0.08,
+                return_volatility_on_premium: 0.02,
                 median_return_on_premium: 0.07,
                 win_rate: 0.50,
                 total_pnl_per_contract: 8.0,
@@ -2016,6 +2017,8 @@ mod tests {
                 invalid_rate: 0.0,
                 expectancy_per_trade: 2.0,
                 expectancy_per_premium: 0.04,
+                mean_return_on_premium: 0.035,
+                return_volatility_on_premium: 0.01,
                 median_return_on_premium: 0.03,
                 win_rate: 0.50,
                 total_pnl_per_contract: 4.0,
@@ -2026,6 +2029,8 @@ mod tests {
                 invalid_rate: 0.0,
                 expectancy_per_trade: 2.0,
                 expectancy_per_premium: 0.03,
+                mean_return_on_premium: 0.025,
+                return_volatility_on_premium: 0.01,
                 median_return_on_premium: 0.02,
                 win_rate: 0.50,
                 total_pnl_per_contract: 4.0,
@@ -2039,11 +2044,13 @@ mod tests {
                 invalid_rate: 0.0,
                 expectancy_per_trade: -1.0,
                 expectancy_per_premium: -0.02,
+                mean_return_on_premium: -0.015,
+                return_volatility_on_premium: 0.01,
                 median_return_on_premium: -0.01,
                 win_rate: 0.50,
                 total_pnl_per_contract: -2.0,
             }),
-            validation_verdict: OptionsExpressionValidationVerdict::StressFragile,
+            validation_verdict: OptionsExpressionValidationVerdict::SearchOnly,
             robust_score: 0.14,
         };
         let artifact = OptionsExpressionArtifactV1 {
@@ -2152,9 +2159,114 @@ mod tests {
         assert_eq!(summary.search_baseline_outcome_coverage_rate, 1.0);
         assert_eq!(summary.validated_tuple_count, 1);
         assert_eq!(summary.stress_fragile_tuple_count, 1);
+        assert_eq!(summary.supported_holdout_tuple_count, 1);
+        assert_eq!(summary.supported_sealed_tuple_count, 1);
+        assert_eq!(summary.supported_stress_tuple_count, 1);
 
         let _ = std::fs::remove_file(&parent_artifact_path);
         let _ = std::fs::remove_dir(&temp_root);
+    }
+
+    #[test]
+    fn load_options_expression_artifact_blocking_headless_refreshes_tuple_verdicts() {
+        let app_local_data_dir = temp_app_local_data_dir("artifact_validation_refresh");
+        let runs = runs_dir(&app_local_data_dir).expect("runs dir");
+        let parent_artifact_path = write_parent_strategy_artifact(&app_local_data_dir, "DoubleMa");
+        let artifact_path = runs.join("vectorgrid_options_expression_legacy.json");
+        let mut artifact = sample_summary_artifact(
+            &parent_artifact_path,
+            "spy_options",
+            OptionsPriceSemantics::MinuteAggregate,
+            OptionsFillModelFamily::AggregateResearch,
+        );
+        artifact.artifact_path = artifact_path.to_string_lossy().to_string();
+        artifact.selection_metrics = vec![OptionsExpressionTupleResult {
+            tuple: OptionsTupleSpec {
+                structure_family: OptionsStructureFamily::LongSingle,
+                delay_minutes: 0,
+                dte_days: 1,
+                moneyness_bucket: OptionsMoneynessBucket::Atm,
+                hold_minutes: 15,
+                target_return: Some(0.25),
+                stop_return: Some(0.25),
+                exit_template: ta_app_core::OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+                fill_model: OptionsFillModelFamily::AggregateResearch,
+            },
+            pre_sealed_rank: 1,
+            sealed_finalist: true,
+            sealed_final_rank: 1,
+            selection_metrics: OptionsExpressionMetrics {
+                valid_trades: 5,
+                invalid_events: 1,
+                invalid_rate: 0.1667,
+                expectancy_per_trade: 8.0,
+                expectancy_per_premium: 0.20,
+                mean_return_on_premium: 0.16,
+                return_volatility_on_premium: 0.05,
+                median_return_on_premium: 0.15,
+                win_rate: 0.60,
+                total_pnl_per_contract: 40.0,
+            },
+            holdout_metrics: Some(OptionsExpressionMetrics {
+                valid_trades: 0,
+                invalid_events: 2,
+                invalid_rate: 1.0,
+                expectancy_per_trade: 0.0,
+                expectancy_per_premium: 0.0,
+                mean_return_on_premium: 0.0,
+                return_volatility_on_premium: 0.0,
+                median_return_on_premium: 0.0,
+                win_rate: 0.0,
+                total_pnl_per_contract: 0.0,
+            }),
+            sealed_evaluation_metrics: Some(OptionsExpressionMetrics {
+                valid_trades: 0,
+                invalid_events: 1,
+                invalid_rate: 1.0,
+                expectancy_per_trade: 0.0,
+                expectancy_per_premium: 0.0,
+                mean_return_on_premium: 0.0,
+                return_volatility_on_premium: 0.0,
+                median_return_on_premium: 0.0,
+                win_rate: 0.0,
+                total_pnl_per_contract: 0.0,
+            }),
+            stress_metrics: Some(OptionsExpressionMetrics {
+                valid_trades: 2,
+                invalid_events: 0,
+                invalid_rate: 0.0,
+                expectancy_per_trade: 2.0,
+                expectancy_per_premium: 0.04,
+                mean_return_on_premium: 0.035,
+                return_volatility_on_premium: 0.01,
+                median_return_on_premium: 0.03,
+                win_rate: 0.50,
+                total_pnl_per_contract: 4.0,
+            }),
+            sealed_stress_metrics: None,
+            harsher_stress_metrics: None,
+            sealed_harsher_stress_metrics: None,
+            extreme_stress_metrics: None,
+            sealed_extreme_stress_metrics: None,
+            validation_verdict: OptionsExpressionValidationVerdict::SealedFinalist,
+            robust_score: 0.14,
+        }];
+        std::fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&artifact).expect("serialize artifact"),
+        )
+        .expect("write artifact");
+
+        let loaded =
+            load_options_expression_artifact_blocking_headless(&artifact_path, &app_local_data_dir)
+                .expect("load artifact");
+
+        assert_eq!(
+            loaded.selection_metrics[0].validation_verdict,
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+
+        let _ = std::fs::remove_dir_all(app_local_data_dir);
     }
 
     #[test]

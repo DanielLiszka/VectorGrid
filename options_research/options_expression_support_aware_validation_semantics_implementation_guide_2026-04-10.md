@@ -1,7 +1,7 @@
 # Options Expression Support-Aware Validation Semantics — Detailed Implementation Guide
 
 Date: 2026-04-10  
-Status: implementation guide derived from the validated portions of Prompt 6 (`options_validation_depth_direction_FINAL.md`)
+Status: implemented and signed off on 2026-04-10 from the validated portions of Prompt 6 (`options_validation_depth_direction_FINAL.md`)
 
 ## Purpose
 
@@ -571,52 +571,52 @@ The correct sign-off for this pass is:
 
 ## 11.2 Metrics Helpers And Tuple Semantics
 
-- [ ] Add compact support-aware helper methods to `OptionsExpressionMetrics`.
-- [ ] Update `strongest_validation_metrics()` to prefer supported validation lanes only.
-- [ ] Update `strongest_validation_stress_metrics()` to prefer supported stress lanes only.
-- [ ] Update `inferred_validation_verdict()` to require supported holdout/sealed trades.
-- [ ] Update `is_stress_fragile()` to require supported base and stress lanes.
-- [ ] Preserve the existing verdict enum unchanged.
+- [x] Add compact support-aware helper methods to `OptionsExpressionMetrics`.
+- [x] Update `strongest_validation_metrics()` to prefer supported validation lanes only.
+- [x] Update `strongest_validation_stress_metrics()` to prefer supported stress lanes only.
+- [x] Update `inferred_validation_verdict()` to require supported holdout/sealed trades.
+- [x] Update `is_stress_fragile()` to require supported base and stress lanes.
+- [x] Preserve the existing verdict enum unchanged.
 
 ## 11.3 Runtime Refresh And Artifact Truth
 
-- [ ] Confirm `refresh_validation_verdicts(...)` applies the new semantics cleanly after exactification/finalist staging.
-- [ ] Recompute tuple verdicts when loading reopened artifacts.
-- [ ] Recompute artifact-level verdict counts from refreshed tuple semantics.
-- [ ] Recompute `top_validation_verdict` from refreshed tuple semantics.
-- [ ] Keep persisted artifact files backward-compatible and unchanged on disk.
+- [x] Confirm `refresh_validation_verdicts(...)` applies the new semantics cleanly after exactification/finalist staging.
+- [x] Recompute tuple verdicts when loading reopened artifacts.
+- [x] Recompute artifact-level verdict counts from refreshed tuple semantics.
+- [x] Recompute `top_validation_verdict` from refreshed tuple semantics.
+- [x] Keep persisted artifact files backward-compatible and unchanged on disk.
 
 ## 11.4 Existing UI Surface Hardening
 
-- [ ] Add compact raw support counts/ratios to selected tuple validation surfaces.
-- [ ] Add compact raw support counts/ratios to reopened artifact validation surfaces.
-- [ ] Add only minimal support-aware compare-surface cues if needed.
-- [ ] Update wording so the UI no longer overclaims validation from mere lane presence.
-- [ ] Avoid dashboard sprawl or new stage-like UI.
+- [x] Add compact raw support counts/ratios to selected tuple validation surfaces.
+- [x] Add compact raw support counts/ratios to reopened artifact validation surfaces.
+- [x] Add only minimal support-aware compare-surface cues if needed.
+- [x] Update wording so the UI no longer overclaims validation from mere lane presence.
+- [x] Avoid dashboard sprawl or new stage-like UI.
 
 ## 11.5 Tests
 
-- [ ] Add backend unit coverage for zero-support holdout/sealed lanes.
-- [ ] Add backend unit coverage for zero-support stress lanes not triggering fragility.
-- [ ] Add runtime-path coverage for verdict refresh after exactification/finalist staging.
-- [ ] Add Tauri command coverage for reopened-artifact semantic refresh.
-- [ ] Add frontend coverage for support-aware wording and raw support cues.
+- [x] Add backend unit coverage for zero-support holdout/sealed lanes.
+- [x] Add backend unit coverage for zero-support stress lanes not triggering fragility.
+- [x] Add runtime-path coverage for verdict refresh after exactification/finalist staging.
+- [x] Add Tauri command coverage for reopened-artifact semantic refresh.
+- [x] Add frontend coverage for support-aware wording and raw support cues.
 
 ## 11.6 Verification
 
-- [ ] Run `cargo test -q -p ta_app_core options_ --lib`.
-- [ ] Run `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`.
-- [ ] Run `cargo check -q -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel`.
-- [ ] Run `npm run typecheck`.
-- [ ] Run `npm run build`.
-- [ ] Run targeted frontend tests for options panel/service/store.
-- [ ] Reopen one saved artifact and confirm verdict semantics reflect support-aware logic.
+- [x] Run `cargo test -q -p ta_app_core options_ --lib`.
+- [x] Run `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`.
+- [x] Run `cargo check -q -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel`.
+- [x] Run `npm run typecheck`.
+- [x] Run `npm run build`.
+- [x] Run targeted frontend tests for options panel/service/store.
+- [x] Reopen one saved artifact and confirm verdict semantics reflect support-aware logic.
 
 ## 11.7 Documentation And Routing Sync
 
 - [x] Add this guide to `REPO_MAP.md`.
 - [x] Optionally add a pointer from the Prompt 6 final memo to this guide.
-- [ ] Mark this guide signed off once the above verification passes.
+- [x] Mark this guide signed off once the above verification passes.
 
 ---
 
@@ -653,13 +653,26 @@ npm run build
 npm run test -- src/components/OptionsExpressionPanel.test.ts src/stores/optionsExpressionStore.test.ts src/services/optionsExpressionService.test.ts
 ```
 
-### 12.4 Manual artifact verification
+### 12.4 Reopened-artifact verification
 
-Do one narrow reopened-artifact check:
+Executed via automated reopen-path coverage rather than a separate manual GUI pass:
 
-1. load a saved artifact whose persisted verdict would differ under support-aware semantics
-2. confirm reopened tuple/artifact surfaces now reflect current semantics
-3. confirm raw support counts/ratios appear in the expected current-host surfaces
+1. `load_options_expression_artifact_blocking_headless_refreshes_tuple_verdicts` verifies a reopened artifact no longer trusts a stale persisted verdict
+2. `summarize_options_expression_artifact_reports_validation_verdict_counts` verifies artifact summary counts/verdicts are recomputed from current support-aware semantics
+3. `falls back to support-aware tuple validation semantics when verdicts are absent` verifies the current panel shows support-aware wording/cues when tuple verdicts are absent
+
+### 12.5 Executed verification
+
+Executed on 2026-04-10:
+
+```powershell
+cargo test -q -p ta_app_core options_ --lib
+cargo test -q -p ta_desktop_demo_app commands_options_expression --lib
+cargo check -q -p ta_desktop_demo_app --features cuda,cuda-backtest-kernel
+npm run typecheck
+npm run build
+npm run test -- src/components/OptionsExpressionPanel.test.ts src/stores/optionsExpressionStore.test.ts src/services/optionsExpressionService.test.ts
+```
 
 ---
 

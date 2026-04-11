@@ -2878,13 +2878,10 @@ mod tests {
             })
             .collect();
 
-        let metrics = eval_asr_metrics_from_desired(
-            &candles,
-            &lr,
-            &desired_pos,
-            1,
-            &StrategyConfig::default(),
-        );
+        let mut strategy = StrategyConfig::default();
+        strategy.long_only = false;
+
+        let metrics = eval_asr_metrics_from_desired(&candles, &lr, &desired_pos, 1, &strategy);
 
         assert!(metrics.downside_frequency.is_finite());
         assert!((0.0..=1.0).contains(&metrics.downside_frequency));

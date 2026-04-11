@@ -41,6 +41,11 @@ interface SavedRunSearchRecord {
   searchText: string;
 }
 
+interface SavedRunSearchIndex {
+  records: SavedRunSearchRecord[];
+  fuse: Fuse<SavedRunSearchRecord>;
+}
+
 const SAVED_RUN_FUSE_OPTIONS: IFuseOptions<SavedRunSearchRecord> = {
   includeScore: true,
   ignoreLocation: true,
@@ -126,21 +131,33 @@ function sessionRunLabel(entry: HistorySessionSummary): string {
   return `${entry.ts || "unknown"} | ${entry.backend || ""} | ${Math.max(0, Math.floor(Number(entry.pairs || 0)))} pairs`;
 }
 
-function filterSavedRunsEntries(
+const savedRunSearchIndexCache = new WeakMap<
+  HistorySavedRunEntry[],
+  SavedRunSearchIndex
+>();
+
+function buildSavedRunSearchRecords(
   entries: HistorySavedRunEntry[],
-  search: string,
-): HistorySavedRunEntry[] {
-  const tokens = filterTokens(search);
-  if (!tokens.length) return entries;
-  const records: SavedRunSearchRecord[] = entries.map((entry, index) => {
+): SavedRunSearchRecord[] {
+  return entries.map((entry, index) => {
     const ts = normalizeSearchText(entry.ts);
     const strategyKind = normalizeSearchText(entry.strategyKind);
     const csvPath = normalizeSearchText(entry.csvPath);
     const csvBasename = normalizeSearchText(fileBasename(entry.csvPath));
     const artifactPath = normalizeSearchText(entry.path);
     const artifactBasename = normalizeSearchText(fileBasename(entry.path));
-    const tags = entry.tags.map((tag) => normalizeSearchText(tag)).filter((tag) => tag.length > 0);
-    const searchText = [ts, strategyKind, csvPath, csvBasename, artifactPath, artifactBasename, ...tags]
+    const tags = entry.tags
+      .map((tag) => normalizeSearchText(tag))
+      .filter((tag) => tag.length > 0);
+    const searchText = [
+      ts,
+      strategyKind,
+      csvPath,
+      csvBasename,
+      artifactPath,
+      artifactBasename,
+      ...tags,
+    ]
       .filter((part) => part.length > 0)
       .join(" ");
     return {
@@ -156,6 +173,30 @@ function filterSavedRunsEntries(
       searchText,
     };
   });
+}
+
+function getSavedRunSearchIndex(
+  entries: HistorySavedRunEntry[],
+): SavedRunSearchIndex {
+  const cached = savedRunSearchIndexCache.get(entries);
+  if (cached) return cached;
+
+  const records = buildSavedRunSearchRecords(entries);
+  const nextIndex = {
+    records,
+    fuse: new Fuse(records, SAVED_RUN_FUSE_OPTIONS),
+  };
+  savedRunSearchIndexCache.set(entries, nextIndex);
+  return nextIndex;
+}
+
+function filterSavedRunsEntries(
+  entries: HistorySavedRunEntry[],
+  search: string,
+): HistorySavedRunEntry[] {
+  const tokens = filterTokens(search);
+  if (!tokens.length) return entries;
+  const { records, fuse } = getSavedRunSearchIndex(entries);
 
   const shortQueryMatches = (): HistorySavedRunEntry[] => {
     const scored = records
@@ -193,7 +234,6 @@ function filterSavedRunsEntries(
     return shortQueryMatches();
   }
 
-  const fuse = new Fuse(records, SAVED_RUN_FUSE_OPTIONS);
   const query = normalizeSearchText(search);
   const results = fuse.search(query);
   if (!results.length) return shortQueryMatches();

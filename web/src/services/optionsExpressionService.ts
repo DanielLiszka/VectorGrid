@@ -90,6 +90,8 @@ export interface OptionsExpressionMetricsSummary {
   invalidRate: number
   expectancyPerTrade: number
   expectancyPerPremium: number
+  meanReturnOnPremium?: number
+  returnVolatilityOnPremium?: number
   medianReturnOnPremium: number
   winRate: number
   totalPnlPerContract: number
@@ -454,6 +456,9 @@ export interface OptionsExpressionArtifactSummary {
   sealedEvaluatedTupleCount?: number
   validatedTupleCount?: number
   stressFragileTupleCount?: number
+  supportedHoldoutTupleCount: number
+  supportedSealedTupleCount: number
+  supportedStressTupleCount: number
   hasHoldoutMetrics: boolean
   hasSealedEvaluationMetrics: boolean
   hasStressMetrics: boolean
@@ -655,13 +660,15 @@ function normalizeMetrics(raw: unknown): OptionsExpressionMetricsSummary {
     invalidRate: normalizeNumber(row.invalid_rate),
     expectancyPerTrade: normalizeNumber(row.expectancy_per_trade),
     expectancyPerPremium: normalizeNumber(row.expectancy_per_premium),
+    meanReturnOnPremium: normalizeNumber(row.mean_return_on_premium),
+    returnVolatilityOnPremium: normalizeNumber(row.return_volatility_on_premium),
     medianReturnOnPremium: normalizeNumber(row.median_return_on_premium),
     winRate: normalizeNumber(row.win_rate),
     totalPnlPerContract: normalizeNumber(row.total_pnl_per_contract),
   }
 }
 
-function normalizeValidationVerdict(raw: unknown): OptionsExpressionValidationVerdict {
+function normalizeValidationVerdict(raw: unknown): OptionsExpressionValidationVerdict | undefined {
   const value = normalizeText(raw)
   switch (value) {
     case 'holdout_supported':
@@ -669,8 +676,9 @@ function normalizeValidationVerdict(raw: unknown): OptionsExpressionValidationVe
     case 'stress_fragile':
       return value
     case 'search_only':
-    default:
       return 'search_only'
+    default:
+      return undefined
   }
 }
 
@@ -1143,6 +1151,9 @@ function normalizeOptionsExpressionArtifactSummary(raw: unknown): OptionsExpress
     sealedEvaluatedTupleCount: normalizeNumber(row.sealed_evaluated_tuple_count),
     validatedTupleCount: normalizeNumber(row.validated_tuple_count),
     stressFragileTupleCount: normalizeNumber(row.stress_fragile_tuple_count),
+    supportedHoldoutTupleCount: normalizeNumber(row.supported_holdout_tuple_count),
+    supportedSealedTupleCount: normalizeNumber(row.supported_sealed_tuple_count),
+    supportedStressTupleCount: normalizeNumber(row.supported_stress_tuple_count),
     hasHoldoutMetrics: Boolean(row.has_holdout_metrics),
     hasSealedEvaluationMetrics: Boolean(row.has_sealed_evaluation_metrics),
     hasStressMetrics: Boolean(row.has_stress_metrics),

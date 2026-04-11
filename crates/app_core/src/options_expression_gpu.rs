@@ -1,15 +1,15 @@
 #![cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 
 use crate::gpu_backtest_kernel::{
-    choose_launch_shape_1d_from_candidates, detect_device_launch_caps, detect_kernel_launch_caps,
-    DeviceLaunchCaps, KernelLaunchCaps, LaunchShape1d,
+    DeviceLaunchCaps, KernelLaunchCaps, LaunchShape1d, choose_launch_shape_1d_from_candidates,
+    detect_device_launch_caps, detect_kernel_launch_caps,
 };
 use crate::options_expression::GpuFlatScoreInputs;
 use cust::context::{Context, CurrentContext};
 use cust::device::Device;
 use cust::function::Function;
 use cust::launch;
-use cust::memory::{mem_get_info, CopyDestination, DeviceBuffer, DevicePointer};
+use cust::memory::{CopyDestination, DeviceBuffer, DevicePointer, mem_get_info};
 use cust::module::{Module, ModuleJitOption, OptLevel};
 use cust::prelude::{CudaFlags, Stream, StreamFlags};
 use std::cell::RefCell;
@@ -30,6 +30,8 @@ pub(crate) struct OptionsGpuTupleAggregate {
     pub(crate) wins: u32,
     pub(crate) total_pnl: f32,
     pub(crate) total_premium: f32,
+    pub(crate) sum_return_on_premium: f32,
+    pub(crate) sumsq_return_on_premium: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -83,10 +85,14 @@ struct ReusableOutputBuffers {
     d_out_wins: DeviceBuffer<i32>,
     d_out_total_pnl: DeviceBuffer<f32>,
     d_out_total_premium: DeviceBuffer<f32>,
+    d_out_sum_return_on_premium: DeviceBuffer<f32>,
+    d_out_sumsq_return_on_premium: DeviceBuffer<f32>,
     host_valid: Vec<i32>,
     host_wins: Vec<i32>,
     host_total_pnl: Vec<f32>,
     host_total_premium: Vec<f32>,
+    host_sum_return_on_premium: Vec<f32>,
+    host_sumsq_return_on_premium: Vec<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -129,7 +135,7 @@ fn per_tuple_shared_input_device_bytes() -> usize {
 }
 
 fn per_tuple_output_device_bytes() -> usize {
-    size_of::<i32>() * 2 + size_of::<f32>() * 2
+    size_of::<i32>() * 2 + size_of::<f32>() * 4
 }
 
 fn outcome_tensor_device_bytes(inputs: &GpuFlatScoreInputs) -> usize {
@@ -351,10 +357,20 @@ impl ReusableOutputBuffers {
             // Safety: same full-write guarantee as `d_out_valid`.
             d_out_total_premium: unsafe { DeviceBuffer::<f32>::uninitialized(tuple_count) }
                 .map_err(|e| e.to_string())?,
+            // Safety: same full-write guarantee as `d_out_valid`.
+            d_out_sum_return_on_premium: unsafe { DeviceBuffer::<f32>::uninitialized(tuple_count) }
+                .map_err(|e| e.to_string())?,
+            // Safety: same full-write guarantee as `d_out_valid`.
+            d_out_sumsq_return_on_premium: unsafe {
+                DeviceBuffer::<f32>::uninitialized(tuple_count)
+            }
+            .map_err(|e| e.to_string())?,
             host_valid: vec![0i32; tuple_count],
             host_wins: vec![0i32; tuple_count],
             host_total_pnl: vec![0.0f32; tuple_count],
             host_total_premium: vec![0.0f32; tuple_count],
+            host_sum_return_on_premium: vec![0.0f32; tuple_count],
+            host_sumsq_return_on_premium: vec![0.0f32; tuple_count],
         })
     }
 
@@ -371,6 +387,12 @@ impl ReusableOutputBuffers {
         self.d_out_total_premium
             .copy_to(&mut self.host_total_premium)
             .map_err(|e| e.to_string())?;
+        self.d_out_sum_return_on_premium
+            .copy_to(&mut self.host_sum_return_on_premium)
+            .map_err(|e| e.to_string())?;
+        self.d_out_sumsq_return_on_premium
+            .copy_to(&mut self.host_sumsq_return_on_premium)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -381,6 +403,8 @@ impl ReusableOutputBuffers {
                 wins: self.host_wins[index].max(0) as u32,
                 total_pnl: self.host_total_pnl[index],
                 total_premium: self.host_total_premium[index],
+                sum_return_on_premium: self.host_sum_return_on_premium[index],
+                sumsq_return_on_premium: self.host_sumsq_return_on_premium[index],
             })
             .collect()
     }
@@ -723,7 +747,9 @@ fn launch_score_range(
             outputs.d_out_valid.as_device_ptr(),
             outputs.d_out_wins.as_device_ptr(),
             outputs.d_out_total_pnl.as_device_ptr(),
-            outputs.d_out_total_premium.as_device_ptr()
+            outputs.d_out_total_premium.as_device_ptr(),
+            outputs.d_out_sum_return_on_premium.as_device_ptr(),
+            outputs.d_out_sumsq_return_on_premium.as_device_ptr()
         ))
         .map_err(|e| e.to_string())?;
     }
@@ -858,11 +884,20 @@ mod tests {
             buffers.host_wins[index] = index as i32;
             buffers.host_total_pnl[index] = index as f32;
             buffers.host_total_premium[index] = index as f32;
+            buffers.host_sum_return_on_premium[index] = index as f32 * 0.5;
+            buffers.host_sumsq_return_on_premium[index] = index as f32 * 1.5;
         }
 
         let prefix = buffers.aggregates_prefix(4);
         assert_eq!(prefix.len(), 4);
         assert_eq!(prefix[3].valid_trades, 3);
         assert_eq!(prefix[3].wins, 3);
+        assert_eq!(prefix[3].sum_return_on_premium, 1.5);
+        assert_eq!(prefix[3].sumsq_return_on_premium, 4.5);
+    }
+
+    #[test]
+    fn per_tuple_output_device_bytes_reflects_widened_layout() {
+        assert_eq!(per_tuple_output_device_bytes(), 24);
     }
 }

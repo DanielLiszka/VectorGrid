@@ -5,10 +5,16 @@ import { useDataStore } from '../stores/dataStore'
 import { bindRuntimePinia } from '../stores/runtimePinia'
 import { useWorkflowStore } from '../stores/workflowStore'
 import { CONTROLS_TAB_KEY, RESULTS_TAB_KEY } from '../utils/core/storageKeys'
+import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
 
 type StorageMap = Record<string, string>
 let pinia: ReturnType<typeof createPinia>
 let hydrateStartupStateSpy: ReturnType<typeof vi.spyOn>
+const syncWorkflowArtifactsFromLegacyRuntimeMock = vi.mocked(syncWorkflowArtifactsFromLegacyRuntime)
+
+vi.mock('./workflowArtifactsSync', () => ({
+  syncWorkflowArtifactsFromLegacyRuntime: vi.fn(async () => false),
+}))
 
 function installStorage(values: StorageMap): void {
   const state: StorageMap = { ...values }
@@ -38,9 +44,11 @@ describe('workflow bootstrap service', () => {
     setActivePinia(pinia)
     bindRuntimePinia(pinia)
     installStorage({})
+    vi.clearAllMocks()
     hydrateStartupStateSpy = vi
       .spyOn(useDataStore(pinia), 'hydrateStartupState')
       .mockResolvedValue(undefined)
+    syncWorkflowArtifactsFromLegacyRuntimeMock.mockResolvedValue(false)
   })
 
   it('reads and normalizes persisted bootstrap keys', () => {
@@ -280,6 +288,31 @@ describe('workflow bootstrap service', () => {
     deferred.resolve()
     await bootstrapPromise
     expect(settled).toBe(true)
+  })
+
+  it('schedules latest-run artifact sync after startup hydration without blocking bootstrap readiness', async () => {
+    const deferred = createDeferred<void>()
+    const artifactSyncDeferred = createDeferred<boolean>()
+    hydrateStartupStateSpy.mockReturnValueOnce(deferred.promise)
+    syncWorkflowArtifactsFromLegacyRuntimeMock.mockReturnValueOnce(artifactSyncDeferred.promise)
+
+    let settled = false
+    const bootstrapPromise = applyWorkflowBootstrapFromStorage({ includeDeferredData: false }).then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    expect(syncWorkflowArtifactsFromLegacyRuntimeMock).not.toHaveBeenCalled()
+    expect(settled).toBe(false)
+
+    deferred.resolve()
+    await bootstrapPromise
+    await Promise.resolve()
+
+    expect(settled).toBe(true)
+    expect(syncWorkflowArtifactsFromLegacyRuntimeMock).toHaveBeenCalledWith('legacy-runtime')
+
+    artifactSyncDeferred.resolve(false)
   })
 
   it('propagates startup hydration failures so boot can surface them', async () => {

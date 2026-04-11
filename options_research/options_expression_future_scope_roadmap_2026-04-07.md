@@ -339,6 +339,8 @@ Current shipped structures remain:
 - `debit_vertical`
 - `long_pair`
 
+For the current roadmap window, treat `long_single`, `debit_vertical`, and `long_pair` as the complete active structure-family set. Do not add a fourth structure family as an active next step; current effort should stay focused on optimization depth, embedded validation depth, realism/robustness interpretation, and performance preservation inside the existing workflow. Reopen structure-family breadth only if a candidate remains fixed-geometry and same-expiry in first-wave support and shows concrete decision value without breaking density, cache reuse, or GPU-fit economics.
+
 Current supported parent families remain:
 
 - `DoubleMa`
@@ -406,6 +408,8 @@ Future policy:
 
 - keep adding lanes only if they add concrete decision value
 - do not widen stress families for symmetry alone
+
+Current stress-family policy is to freeze the generic lane set at `baseline`, `conservative`, `harsher`, and `extreme` unless a new lane demonstrates concrete decision value beyond the existing surface. In the current runtime, `baseline` / `conservative` / `harsher` are the broad prepared lanes, while `extreme` remains an exact retained-tuple / sealed-finalist validation lane rather than an always-on broad compiled lane. Any later quote-aware spread or liquidity shock work should be treated as realism-lane or embedded-validation scope, not as default generic stress-family expansion.
 
 ### Stage 5 — optimization-depth within the current workflow
 

@@ -22,6 +22,10 @@ Current execution-status companion doc:
 
 - [execution_ledger_2026-04-09.md](./00_meta/execution_ledger_2026-04-09.md)
 
+Second-tier epic expansion program:
+
+- [REPO_Improvement_Epics/README.md](../REPO_Improvement_Epics/README.md)
+
 Canonical governance ownership:
 
 - `REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
@@ -61,6 +65,7 @@ Program maintenance rules:
 - if planned slots are merged, split, superseded, or archived in a way that changes program accounting, update the meta plan, program index, tracker, and execution ledger together
 - historical snapshots under `00_meta/` stay on disk with forward pointers instead of being silently replaced
 - `Frontend Review/`, `research/`, `SASS research/`, `CUDA kernel review/`, and `scripts/baselines/` are retained as historical/reference trees; they count as current authority only when the active routing docs explicitly point to them
+- `REPO_Improvement_Epics/` is the active second-tier epic tree for larger-scope post-checklist expansion work; it should not silently change the original `REPO_Improvement/` `v7` catalog accounting
 - release/build and verification authority remains repo-local first; archived GitHub Actions definitions under `.github/workflows.disabled/` are reference material, not active governance
 
 Wave-close checklist:

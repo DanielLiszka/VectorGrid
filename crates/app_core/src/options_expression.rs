@@ -18,9 +18,9 @@ use crate::options_types::{
     OptionsTupleSpec, SignalSide,
 };
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
@@ -30,9 +30,8 @@ use std::time::Instant;
 use crate::cuda_device::preferred_cuda_device_id;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_expression_gpu::{
-    inspect_options_expression_gpu_plan, score_options_expression_tensors_gpu_multi_range,
-    score_options_expression_tensors_gpu_range, OptionsGpuRuntimeCacheUsage,
-    OptionsGpuTupleAggregate,
+    OptionsGpuRuntimeCacheUsage, OptionsGpuTupleAggregate, inspect_options_expression_gpu_plan,
+    score_options_expression_tensors_gpu_multi_range, score_options_expression_tensors_gpu_range,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_types::OptionsExpressionBackendPreference;
@@ -532,11 +531,7 @@ fn assign_splits(
 
 fn lower_bound_timestamp(rows: &[OptionsPriceRow], timestamp_ms: i64) -> Option<usize> {
     let idx = rows.partition_point(|row| row.timestamp_ms < timestamp_ms);
-    if idx < rows.len() {
-        Some(idx)
-    } else {
-        None
-    }
+    if idx < rows.len() { Some(idx) } else { None }
 }
 
 fn actual_dte_days(expiration_timestamp_ms: i64, entry_timestamp_ms: i64) -> Option<u16> {
@@ -1393,6 +1388,23 @@ fn median(mut values: Vec<f64>) -> f64 {
     }
 }
 
+fn return_on_premium_mean_and_volatility(
+    sum_return_on_premium: f64,
+    sumsq_return_on_premium: f64,
+    valid_trades: usize,
+) -> (f64, f64) {
+    if valid_trades == 0 {
+        return (0.0, 0.0);
+    }
+
+    let count = valid_trades as f64;
+    let mean_return_on_premium = sum_return_on_premium / count;
+    let variance = (sumsq_return_on_premium / count
+        - mean_return_on_premium * mean_return_on_premium)
+        .max(0.0);
+    (mean_return_on_premium, variance.sqrt())
+}
+
 fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpressionMetrics {
     if event_count == 0 {
         return OptionsExpressionMetrics::default();
@@ -1406,25 +1418,37 @@ fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpr
             invalid_rate: invalid_events as f64 / event_count as f64,
             expectancy_per_trade: 0.0,
             expectancy_per_premium: 0.0,
+            mean_return_on_premium: 0.0,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: 0.0,
             win_rate: 0.0,
             total_pnl_per_contract: 0.0,
         };
     }
 
-    let total_pnl: f64 = outcomes
-        .iter()
-        .map(|outcome| outcome.pnl_per_contract)
-        .sum();
-    let total_premium: f64 = outcomes.iter().map(|outcome| outcome.premium_paid).sum();
-    let wins = outcomes
-        .iter()
-        .filter(|outcome| outcome.pnl_per_contract > 0.0)
-        .count();
-    let returns: Vec<f64> = outcomes
-        .iter()
-        .map(|outcome| outcome.return_on_premium)
-        .collect();
+    let mut total_pnl = 0.0;
+    let mut total_premium = 0.0;
+    let mut wins = 0usize;
+    let mut sum_return_on_premium = 0.0;
+    let mut sumsq_return_on_premium = 0.0;
+    let mut returns = Vec::with_capacity(valid_trades);
+    for outcome in outcomes {
+        total_pnl += outcome.pnl_per_contract;
+        total_premium += outcome.premium_paid;
+        if outcome.pnl_per_contract > 0.0 {
+            wins += 1;
+        }
+        let return_on_premium = outcome.return_on_premium;
+        sum_return_on_premium += return_on_premium;
+        sumsq_return_on_premium += return_on_premium * return_on_premium;
+        returns.push(return_on_premium);
+    }
+    let (mean_return_on_premium, return_volatility_on_premium) =
+        return_on_premium_mean_and_volatility(
+            sum_return_on_premium,
+            sumsq_return_on_premium,
+            valid_trades,
+        );
 
     OptionsExpressionMetrics {
         valid_trades,
@@ -1436,6 +1460,8 @@ fn compute_metrics(event_count: usize, outcomes: &[TradeOutcome]) -> OptionsExpr
         } else {
             0.0
         },
+        mean_return_on_premium,
+        return_volatility_on_premium,
         median_return_on_premium: median(returns),
         win_rate: wins as f64 / valid_trades as f64,
         total_pnl_per_contract: total_pnl,
@@ -2062,6 +2088,8 @@ struct TupleAggregateMetrics {
     win_count: usize,
     total_pnl_per_contract: f64,
     total_premium_paid: f64,
+    sum_return_on_premium: f64,
+    sumsq_return_on_premium: f64,
 }
 
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
@@ -2077,11 +2105,19 @@ fn metrics_from_aggregate(aggregate: TupleAggregateMetrics) -> OptionsExpression
             invalid_rate: aggregate.invalid_events as f64 / event_count as f64,
             expectancy_per_trade: 0.0,
             expectancy_per_premium: 0.0,
+            mean_return_on_premium: 0.0,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: 0.0,
             win_rate: 0.0,
             total_pnl_per_contract: 0.0,
         };
     }
+    let (mean_return_on_premium, return_volatility_on_premium) =
+        return_on_premium_mean_and_volatility(
+            aggregate.sum_return_on_premium,
+            aggregate.sumsq_return_on_premium,
+            aggregate.valid_trades,
+        );
     OptionsExpressionMetrics {
         valid_trades: aggregate.valid_trades,
         invalid_events: aggregate.invalid_events,
@@ -2092,6 +2128,8 @@ fn metrics_from_aggregate(aggregate: TupleAggregateMetrics) -> OptionsExpression
         } else {
             0.0
         },
+        mean_return_on_premium,
+        return_volatility_on_premium,
         median_return_on_premium: 0.0,
         win_rate: aggregate.win_count as f64 / aggregate.valid_trades as f64,
         total_pnl_per_contract: aggregate.total_pnl_per_contract,
@@ -2671,6 +2709,8 @@ mod gpu_scoring {
             win_count: aggregate.wins as usize,
             total_pnl_per_contract: aggregate.total_pnl as f64,
             total_premium_paid: aggregate.total_premium as f64,
+            sum_return_on_premium: aggregate.sum_return_on_premium as f64,
+            sumsq_return_on_premium: aggregate.sumsq_return_on_premium as f64,
         }
     }
 
@@ -4302,7 +4342,9 @@ pub fn analyze_options_expression_feasibility_blocking(
         if let Some(err) = gpu_ranking_error.as_ref() {
             push_unique_gpu_note(
                 &mut observed_gpu_cache_usage.gpu_plan_notes,
-                format!("GPU ranking attempt failed and feasibility fell back to CPU timing only: {err}"),
+                format!(
+                    "GPU ranking attempt failed and feasibility fell back to CPU timing only: {err}"
+                ),
             );
         }
         cache_stats.gpu_shared_input_cache_hits = observed_gpu_cache_usage.shared_input_cache_hits;
@@ -4587,9 +4629,10 @@ mod tests {
     use super::*;
     use crate::options_types::{
         ImportedOptionsDataset, OptionType, OptionsContractSeries, OptionsDatasetManifestV1,
-        OptionsExpressionEventStatus, OptionsExpressionExitReason, OptionsFillModelFamily,
-        OptionsMoneynessBucket, OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent,
-        OptionsSignalEventManifestV1, OptionsStaticFilterBundle, OptionsStructureFamily,
+        OptionsExpressionEventStatus, OptionsExpressionExitReason,
+        OptionsExpressionValidationVerdict, OptionsFillModelFamily, OptionsMoneynessBucket,
+        OptionsPriceRow, OptionsPriceSemantics, OptionsSignalEvent, OptionsSignalEventManifestV1,
+        OptionsStaticFilterBundle, OptionsStructureFamily,
     };
     use crate::test_support::lock_test_env;
 
@@ -4606,10 +4649,116 @@ mod tests {
             invalid_rate: 0.0,
             expectancy_per_trade,
             expectancy_per_premium,
+            mean_return_on_premium: expectancy_per_premium,
+            return_volatility_on_premium: 0.0,
             median_return_on_premium: expectancy_per_premium,
             win_rate,
             total_pnl_per_contract: expectancy_per_trade * valid_trades as f64,
         }
+    }
+
+    #[test]
+    fn compute_metrics_tracks_mean_and_return_on_premium_volatility() {
+        let outcomes = vec![
+            TradeOutcome {
+                pnl_per_contract: 10.0,
+                premium_paid: 10.0,
+                return_on_premium: 1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: -10.0,
+                premium_paid: 10.0,
+                return_on_premium: -1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: 0.0,
+                premium_paid: 5.0,
+                return_on_premium: 0.0,
+            },
+        ];
+
+        let metrics = compute_metrics(4, &outcomes);
+
+        assert_eq!(metrics.valid_trades, 3);
+        assert_eq!(metrics.invalid_events, 1);
+        assert!((metrics.mean_return_on_premium - 0.0).abs() < 1e-12);
+        assert!((metrics.return_volatility_on_premium - (2.0f64 / 3.0f64).sqrt()).abs() < 1e-12);
+        assert_eq!(metrics.median_return_on_premium, 0.0);
+    }
+
+    #[test]
+    fn compute_metrics_zero_valid_trades_zeroes_single_pass_expansion_metrics() {
+        let metrics = compute_metrics(3, &[]);
+
+        assert_eq!(metrics.valid_trades, 0);
+        assert_eq!(metrics.invalid_events, 3);
+        assert_eq!(metrics.mean_return_on_premium, 0.0);
+        assert_eq!(metrics.return_volatility_on_premium, 0.0);
+    }
+
+    #[test]
+    fn compute_metrics_single_trade_zeroes_return_on_premium_volatility() {
+        let metrics = compute_metrics(
+            1,
+            &[TradeOutcome {
+                pnl_per_contract: 12.0,
+                premium_paid: 24.0,
+                return_on_premium: 0.5,
+            }],
+        );
+
+        assert_eq!(metrics.valid_trades, 1);
+        assert_eq!(metrics.mean_return_on_premium, 0.5);
+        assert_eq!(metrics.return_volatility_on_premium, 0.0);
+    }
+
+    #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+    #[test]
+    fn metrics_from_aggregate_reconstructs_mean_and_return_on_premium_volatility() {
+        let outcomes = vec![
+            TradeOutcome {
+                pnl_per_contract: 10.0,
+                premium_paid: 10.0,
+                return_on_premium: 1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: -10.0,
+                premium_paid: 10.0,
+                return_on_premium: -1.0,
+            },
+            TradeOutcome {
+                pnl_per_contract: 0.0,
+                premium_paid: 5.0,
+                return_on_premium: 0.0,
+            },
+        ];
+        let exact_metrics = compute_metrics(5, &outcomes);
+        let aggregate_metrics = metrics_from_aggregate(TupleAggregateMetrics {
+            valid_trades: 3,
+            invalid_events: 2,
+            win_count: 1,
+            total_pnl_per_contract: 0.0,
+            total_premium_paid: 25.0,
+            sum_return_on_premium: 0.0,
+            sumsq_return_on_premium: 2.0,
+        });
+
+        assert_eq!(aggregate_metrics.valid_trades, exact_metrics.valid_trades);
+        assert_eq!(
+            aggregate_metrics.invalid_events,
+            exact_metrics.invalid_events
+        );
+        assert!(
+            (aggregate_metrics.mean_return_on_premium - exact_metrics.mean_return_on_premium).abs()
+                < 1e-12
+        );
+        assert!(
+            (aggregate_metrics.return_volatility_on_premium
+                - exact_metrics.return_volatility_on_premium)
+                .abs()
+                < 1e-12
+        );
+        assert_eq!(aggregate_metrics.median_return_on_premium, 0.0);
     }
 
     fn test_dataset() -> ImportedOptionsDataset {
@@ -5051,21 +5200,27 @@ mod tests {
         let session1 = folds_by_session
             .get("2026-04-01")
             .expect("session 1 should be present");
-        assert!(session1
-            .iter()
-            .all(|fold| *fold == OptionsEvaluationSplit::Search));
+        assert!(
+            session1
+                .iter()
+                .all(|fold| *fold == OptionsEvaluationSplit::Search)
+        );
         let session2 = folds_by_session
             .get("2026-04-02")
             .expect("session 2 should be present");
-        assert!(session2
-            .iter()
-            .all(|fold| *fold == OptionsEvaluationSplit::Holdout));
+        assert!(
+            session2
+                .iter()
+                .all(|fold| *fold == OptionsEvaluationSplit::Holdout)
+        );
         let session3 = folds_by_session
             .get("2026-04-03")
             .expect("session 3 should be present");
-        assert!(session3
-            .iter()
-            .all(|fold| *fold == OptionsEvaluationSplit::SealedTest));
+        assert!(
+            session3
+                .iter()
+                .all(|fold| *fold == OptionsEvaluationSplit::SealedTest)
+        );
     }
 
     #[test]
@@ -5291,10 +5446,12 @@ mod tests {
                 .sum::<usize>(),
             report.invalid_slot_count
         );
-        assert!(report
-            .invalid_reasons
-            .iter()
-            .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket));
+        assert!(
+            report
+                .invalid_reasons
+                .iter()
+                .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket)
+        );
         assert_eq!(report.axis_coverage.delay_minutes.len(), 1);
         assert_eq!(report.axis_coverage.dte_days.len(), 2);
         assert_eq!(
@@ -5306,10 +5463,12 @@ mod tests {
         assert_eq!(report.axis_coverage.dte_days[1].dte_days, 9);
         assert_eq!(report.axis_coverage.dte_days[0].valid_slot_count, 3);
         assert_eq!(report.axis_coverage.dte_days[1].valid_slot_count, 0);
-        assert!(report.axis_coverage.dte_days[1]
-            .invalid_reasons
-            .iter()
-            .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket));
+        assert!(
+            report.axis_coverage.dte_days[1]
+                .invalid_reasons
+                .iter()
+                .any(|entry| entry.reason == OptionsCandidateInvalidReason::NoExpirationInBucket)
+        );
         assert_eq!(report.event_coverage.total_events_with_candidates, 3);
         assert_eq!(report.event_coverage.search_events_with_candidates, 1);
         assert_eq!(report.event_coverage.total_events_with_baseline_outcomes, 3);
@@ -5344,11 +5503,13 @@ mod tests {
             report.coverage_adequacy.dominant_invalid_reason,
             Some(OptionsCandidateInvalidReason::NoExpirationInBucket)
         );
-        assert!(report
-            .coverage_adequacy
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("Dominant structural invalid reason")));
+        assert!(
+            report
+                .coverage_adequacy
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("Dominant structural invalid reason"))
+        );
         assert_eq!(report.split_invalid_reasons.search_invalid_reasons.len(), 1);
         assert_eq!(
             report.split_invalid_reasons.search_invalid_reasons[0].reason,
@@ -5421,8 +5582,9 @@ mod tests {
             OptionsExpressionCoverageAdequacyVerdict::SearchOverlapMissing
         );
         assert!(report.coverage_adequacy.non_promotable);
-        assert!(report.coverage_adequacy.reasons.iter().any(|reason| reason
-            .contains("No search events fall inside the imported options dataset window")));
+        assert!(report.coverage_adequacy.reasons.iter().any(|reason| {
+            reason.contains("No search events fall inside the imported options dataset window")
+        }));
     }
 
     #[test]
@@ -5524,16 +5686,20 @@ mod tests {
             "cpu_reference"
         );
         assert!(!report.auto_backend_decision.gpu_eligible);
-        assert!(report
-            .auto_backend_decision
-            .reasons
-            .iter()
-            .any(|entry| entry.contains("synthetic GPU planner failure")));
-        assert!(report
-            .cache_stats
-            .gpu_plan_notes
-            .iter()
-            .any(|entry| entry.contains("synthetic GPU planner failure")));
+        assert!(
+            report
+                .auto_backend_decision
+                .reasons
+                .iter()
+                .any(|entry| entry.contains("synthetic GPU planner failure"))
+        );
+        assert!(
+            report
+                .cache_stats
+                .gpu_plan_notes
+                .iter()
+                .any(|entry| entry.contains("synthetic GPU planner failure"))
+        );
     }
 
     #[test]
@@ -5567,14 +5733,18 @@ mod tests {
 
         assert!(!decision.gpu_eligible);
         assert_eq!(decision.recommended_backend, "cpu_reference");
-        assert!(decision
-            .reasons
-            .iter()
-            .any(|entry| entry.contains("Compiled tuple count")));
-        assert!(decision
-            .reasons
-            .iter()
-            .any(|entry| entry.contains("Search-event count")));
+        assert!(
+            decision
+                .reasons
+                .iter()
+                .any(|entry| entry.contains("Compiled tuple count"))
+        );
+        assert!(
+            decision
+                .reasons
+                .iter()
+                .any(|entry| entry.contains("Search-event count"))
+        );
     }
 
     #[test]
@@ -5690,8 +5860,8 @@ mod tests {
     }
 
     #[test]
-    fn runtime_auto_backend_decision_stays_gpu_eligible_even_if_measured_speedup_is_below_promotion_gate(
-    ) {
+    fn runtime_auto_backend_decision_stays_gpu_eligible_even_if_measured_speedup_is_below_promotion_gate()
+     {
         let template_manifest = test_manifest();
         let template_event = template_manifest.events[0].clone();
         let mut manifest = template_manifest.clone();
@@ -5750,10 +5920,12 @@ mod tests {
         );
         assert!(!promotion_decision.gpu_eligible);
         assert_eq!(promotion_decision.recommended_backend, "cpu_reference");
-        assert!(promotion_decision
-            .reasons
-            .iter()
-            .any(|entry| entry.contains("Measured GPU hybrid speedup")));
+        assert!(
+            promotion_decision
+                .reasons
+                .iter()
+                .any(|entry| entry.contains("Measured GPU hybrid speedup"))
+        );
     }
 
     #[test]
@@ -5764,6 +5936,8 @@ mod tests {
             invalid_rate: 0.0,
             expectancy_per_trade: 10.0,
             expectancy_per_premium: 0.20,
+            mean_return_on_premium: 0.15,
+            return_volatility_on_premium: 0.05,
             median_return_on_premium: 0.10,
             win_rate: 0.5,
             total_pnl_per_contract: 40.0,
@@ -5814,6 +5988,8 @@ mod tests {
                 invalid_rate: 0.0,
                 expectancy_per_trade,
                 expectancy_per_premium,
+                mean_return_on_premium: expectancy_per_premium,
+                return_volatility_on_premium: 0.0,
                 median_return_on_premium: expectancy_per_premium,
                 win_rate,
                 total_pnl_per_contract: expectancy_per_trade * valid_trades as f64,
@@ -5889,6 +6065,89 @@ mod tests {
         assert_eq!(ranked[0].result.sealed_final_rank, 2);
         assert_eq!(ranked[1].result.pre_sealed_rank, 2);
         assert_eq!(ranked[1].result.sealed_final_rank, 1);
+    }
+
+    #[test]
+    fn refresh_validation_verdicts_requires_supported_validation_lanes() {
+        let metrics = |valid_trades,
+                       invalid_events,
+                       expectancy_per_trade,
+                       expectancy_per_premium,
+                       win_rate| {
+            let total_events = valid_trades + invalid_events;
+            OptionsExpressionMetrics {
+                valid_trades,
+                invalid_events,
+                invalid_rate: if total_events == 0 {
+                    0.0
+                } else {
+                    invalid_events as f64 / total_events as f64
+                },
+                expectancy_per_trade,
+                expectancy_per_premium,
+                mean_return_on_premium: expectancy_per_premium,
+                return_volatility_on_premium: 0.0,
+                median_return_on_premium: expectancy_per_premium,
+                win_rate,
+                total_pnl_per_contract: expectancy_per_trade * valid_trades as f64,
+            }
+        };
+        let compiled = CompiledTupleSpec {
+            tuple: OptionsTupleSpec {
+                structure_family: OptionsStructureFamily::LongSingle,
+                delay_minutes: 0,
+                dte_days: 1,
+                moneyness_bucket: OptionsMoneynessBucket::Atm,
+                hold_minutes: 15,
+                target_return: Some(0.25),
+                stop_return: Some(0.25),
+                exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+                fill_model: OptionsFillModelFamily::AggregateResearch,
+            },
+            delay_index: 0,
+            dte_index: 0,
+            moneyness_index: 0,
+            hold_index: 0,
+            target_index: 0,
+            stop_index: 0,
+        };
+        let mut ranked = vec![RankedCompiledTuple {
+            compiled: compiled.clone(),
+            result: OptionsExpressionTupleResult {
+                tuple: compiled.tuple.clone(),
+                pre_sealed_rank: 1,
+                sealed_finalist: true,
+                sealed_final_rank: 1,
+                selection_metrics: metrics(8, 1, 0.30, 0.20, 0.60),
+                holdout_metrics: Some(metrics(0, 2, 0.0, 0.09, 0.0)),
+                sealed_evaluation_metrics: Some(metrics(0, 1, 0.0, 0.08, 0.0)),
+                stress_metrics: Some(metrics(2, 0, 0.04, 0.04, 0.50)),
+                sealed_stress_metrics: None,
+                harsher_stress_metrics: None,
+                sealed_harsher_stress_metrics: None,
+                extreme_stress_metrics: None,
+                sealed_extreme_stress_metrics: None,
+                validation_verdict: OptionsExpressionValidationVerdict::SealedFinalist,
+                robust_score: 0.18,
+            },
+        }];
+
+        refresh_validation_verdicts(&mut ranked);
+        assert_eq!(
+            ranked[0].result.validation_verdict,
+            OptionsExpressionValidationVerdict::SearchOnly
+        );
+
+        ranked[0].result.sealed_finalist = false;
+        ranked[0].result.sealed_evaluation_metrics = None;
+        ranked[0].result.holdout_metrics = Some(metrics(2, 0, 0.09, 0.09, 0.50));
+        ranked[0].result.stress_metrics = Some(metrics(2, 0, 0.08, 0.08, 0.50));
+
+        refresh_validation_verdicts(&mut ranked);
+        assert_eq!(
+            ranked[0].result.validation_verdict,
+            OptionsExpressionValidationVerdict::HoldoutSupported
+        );
     }
 
     #[test]

@@ -487,3 +487,9 @@ Default posture for the post-checklist phase:
 - performance and scale work should come before broad new-feature expansion
 - larger functionality changes should only be admitted when they clearly strengthen the core workflow
 - every new epic document should still preserve the same non-options, additive, no-regression policy used by the current program
+
+Current second-tier queue:
+
+- the active post-checklist epic program now lives under [REPO_Improvement_Epics/README.md](../../REPO_Improvement_Epics/README.md)
+- that sibling tree owns the new epic execution checklist:
+  - [REPO_Improvement_Epics/00_meta/execution_ledger_2026-04-10.md](../../REPO_Improvement_Epics/00_meta/execution_ledger_2026-04-10.md)

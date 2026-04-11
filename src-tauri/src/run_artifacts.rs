@@ -59,6 +59,11 @@ fn is_meta_artifact_file_name(name: &str) -> bool {
     trimmed.starts_with("vectorbt_meta_") || trimmed.starts_with("vectorgrid_meta_")
 }
 
+fn is_run_artifact_file_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.starts_with("vectorbt_run_") || trimmed.starts_with("vectorgrid_run_")
+}
+
 #[cfg(test)]
 fn is_meta_stage_artifact_file_name(name: &str) -> bool {
     let trimmed = name.trim();
@@ -740,7 +745,9 @@ fn read_json_value(path: &Path) -> Option<Value> {
     serde_json::from_str(&raw).ok()
 }
 
-fn scan_artifact_library(app: &tauri::AppHandle) -> Result<Vec<ArtifactScanEntry>, String> {
+fn scan_artifact_library(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<Vec<ArtifactScanEntry>, String> {
     let dir = runs_dir(app)?;
     let mut paths: Vec<(PathBuf, String)> = Vec::new();
 
@@ -764,22 +771,78 @@ fn scan_artifact_library(app: &tauri::AppHandle) -> Result<Vec<ArtifactScanEntry
 
     let mut out = Vec::with_capacity(paths.len());
     for (path, file_name) in paths {
-        let bytes = match std::fs::metadata(&path) {
-            Ok(meta) => meta.len(),
-            Err(_) => continue,
-        };
-        let Some(value) = read_json_value(&path) else {
+        let Some(entry) = read_artifact_scan_entry(path, file_name) else {
             continue;
         };
-        out.push(ArtifactScanEntry {
-            path,
-            file_name,
-            bytes,
-            value,
-        });
+        out.push(entry);
     }
 
     Ok(out)
+}
+
+fn read_artifact_scan_entry(path: PathBuf, file_name: String) -> Option<ArtifactScanEntry> {
+    let bytes = std::fs::metadata(&path).ok()?.len();
+    let value = read_json_value(&path)?;
+    Some(ArtifactScanEntry {
+        path,
+        file_name,
+        bytes,
+        value,
+    })
+}
+
+fn load_latest_run_artifact_entry_blocking(
+    app: &tauri::AppHandle<impl tauri::Runtime>,
+) -> Result<Option<ArtifactScanEntry>, String> {
+    let dir = runs_dir(app)?;
+    let mut candidate_paths: Vec<(PathBuf, String)> = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(file_name) = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
+        if !is_run_artifact_file_name(&file_name) {
+            continue;
+        }
+        candidate_paths.push((path, file_name));
+    }
+
+    candidate_paths.sort_by(|lhs, rhs| rhs.0.cmp(&lhs.0));
+    for (path, file_name) in candidate_paths {
+        let Some(entry) = read_artifact_scan_entry(path, file_name) else {
+            continue;
+        };
+        let kind = entry
+            .value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if is_run_artifact_kind(kind) {
+            return Ok(Some(entry));
+        }
+    }
+
+    for entry in scan_artifact_library(app)?.into_iter().rev() {
+        let kind = entry
+            .value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if is_run_artifact_kind(kind) {
+            return Ok(Some(entry));
+        }
+    }
+
+    Ok(None)
 }
 
 fn load_artifact_entry_checked(
@@ -1650,6 +1713,19 @@ pub(super) fn load_run_artifact_hydration_blocking<R: tauri::Runtime>(
     build_workflow_artifacts_hydration_payload(entry.path.to_string_lossy().as_ref(), &entry.value)
 }
 
+pub(super) fn load_latest_run_artifact_summary_blocking<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<Option<RunArtifactSummary>, String> {
+    let Some(entry) = load_latest_run_artifact_entry_blocking(&app)? else {
+        return Ok(None);
+    };
+    Ok(build_run_artifact_summary(
+        &entry.path,
+        entry.bytes,
+        &entry.value,
+    ))
+}
+
 pub(super) fn load_run_artifact_detail_blocking<R: tauri::Runtime>(
     path: String,
     app: tauri::AppHandle<R>,
@@ -1958,22 +2034,27 @@ mod tests {
         build_workflow_artifacts_hydration_payload, canonical_json,
         compute_config_fingerprint_from_artifact, delete_run_artifact_blocking,
         ensure_path_is_within_dir, is_meta_artifact_file_name, is_meta_stage_artifact_file_name,
-        is_options_expression_artifact_kind, is_run_artifact_kind,
-        load_run_artifact_detail_blocking, normalize_dataset_meta,
-        open_runs_dir_blocking_with_revealer, prune_old_meta_artifacts_blocking,
-        resolve_run_artifact_csv_path, resolve_run_artifact_strategy_kind,
-        resolve_run_artifact_timeframe, runs_dir, save_run_artifact_blocking,
-        suggest_meta_artifact_path, suggest_ts_file_path_with_limit, update_artifact_tags_blocking,
+        is_options_expression_artifact_kind, is_run_artifact_file_name, is_run_artifact_kind,
+        load_latest_run_artifact_summary_blocking, load_run_artifact_detail_blocking,
+        normalize_dataset_meta, open_runs_dir_blocking_with_revealer,
+        prune_old_meta_artifacts_blocking, resolve_run_artifact_csv_path,
+        resolve_run_artifact_strategy_kind, resolve_run_artifact_timeframe, runs_dir,
+        save_run_artifact_blocking, suggest_meta_artifact_path, suggest_ts_file_path_with_limit,
+        update_artifact_tags_blocking,
     };
     use crate::state::{AppState, BackgroundTaskState};
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
 
     fn build_mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        let unique = unique_token("run_artifacts_app");
+        let mut context = tauri::test::mock_context(tauri::test::noop_assets());
+        context.config_mut().product_name = Some(unique.clone());
+        context.config_mut().identifier = format!("com.test.{unique}");
         tauri::test::mock_builder()
             .manage(AppState::default())
             .manage(BackgroundTaskState::default())
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .build(context)
             .expect("failed to build tauri mock app")
     }
 
@@ -2251,6 +2332,15 @@ mod tests {
         assert!(is_run_artifact_kind("vectorbt_run_artifact"));
         assert!(is_run_artifact_kind("vectorgrid_run_artifact"));
         assert!(!is_run_artifact_kind("vectorbt_meta_selection"));
+    }
+
+    #[test]
+    fn run_artifact_file_name_alias_accepts_legacy_and_vectorgrid_prefixes() {
+        assert!(is_run_artifact_file_name("vectorbt_run_2026-03-13.json"));
+        assert!(is_run_artifact_file_name("vectorgrid_run_2026-03-13.json"));
+        assert!(!is_run_artifact_file_name(
+            "vectorgrid_meta_2026-03-13.json"
+        ));
     }
 
     #[test]
@@ -3007,6 +3097,70 @@ mod tests {
             .ends_with(&format!("vectorgrid_run_{ts}_2.json")));
         assert!(Path::new(&first.path).is_file());
         assert!(Path::new(&second.path).is_file());
+    }
+
+    #[test]
+    fn load_latest_run_artifact_summary_prefers_latest_run_file_without_scanning_meta_history() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        save_run_artifact_blocking(minimal_run_artifact("2026-04-10T10:00:00Z"), handle.clone())
+            .expect("save older run");
+        let latest = save_run_artifact_blocking(
+            minimal_run_artifact("2026-04-10T12:00:00Z"),
+            handle.clone(),
+        )
+        .expect("save latest run");
+        let newer_meta =
+            suggest_meta_artifact_path("2026-04-10T13:00:00Z", &handle).expect("meta path");
+        std::fs::write(
+            &newer_meta,
+            serde_json::to_vec_pretty(&json!({
+                "kind": "vectorgrid_meta_selection",
+                "ts": "2026-04-10T13:00:00Z",
+            }))
+            .expect("meta json"),
+        )
+        .expect("write newer meta");
+
+        let summary = load_latest_run_artifact_summary_blocking(handle)
+            .expect("latest run summary")
+            .expect("summary should exist");
+
+        assert_eq!(summary.ts, "2026-04-10T12:00:00Z");
+        assert_eq!(summary.path, latest.path);
+    }
+
+    #[test]
+    fn load_latest_run_artifact_summary_falls_back_to_full_scan_for_nonstandard_run_filenames() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+        let legacy_path = runs_dir(&handle)
+            .expect("runs dir")
+            .join("legacy_latest.json");
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec_pretty(&minimal_run_artifact("2026-04-10T14:00:00Z"))
+                .expect("artifact json"),
+        )
+        .expect("write legacy-named run artifact");
+
+        let summary = load_latest_run_artifact_summary_blocking(handle)
+            .expect("latest run summary")
+            .expect("summary should exist");
+
+        assert_eq!(summary.ts, "2026-04-10T14:00:00Z");
+        assert_eq!(summary.path, legacy_path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn load_latest_run_artifact_summary_returns_none_when_no_run_artifacts_exist() {
+        let app = build_mock_app();
+        let handle = app.handle().clone();
+
+        let summary = load_latest_run_artifact_summary_blocking(handle).expect("latest summary");
+
+        assert!(summary.is_none());
     }
 
     #[test]

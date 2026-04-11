@@ -261,6 +261,54 @@ describe('history store actions', () => {
     expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/aapl.json'])
   })
 
+  it('rebuilds saved-run search results when the raw library changes under the same query', () => {
+    const store = useHistoryStore()
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-25T00:00:00Z',
+        path: 'C:/runs/aapl.json',
+        bytes: 2048,
+        strategyKind: 'DoubleMA',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/aapl.xlsx',
+        csvPath: 'C:/data/aapl.csv',
+        tags: ['aapl', '1m'],
+      },
+      {
+        ts: '2026-02-24T00:00:00Z',
+        path: 'C:/runs/msft.json',
+        bytes: 1024,
+        strategyKind: 'CompositeCpu',
+        hasValidation: false,
+        reportXlsxPath: '',
+        csvPath: 'C:/data/msft.csv',
+        tags: ['msft'],
+      },
+    ]
+
+    store.setSavedRunsSearch('ms')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/msft.json'])
+
+    store.savedRunsRaw = [
+      {
+        ts: '2026-02-23T00:00:00Z',
+        path: 'C:/runs/nvda.json',
+        bytes: 4096,
+        strategyKind: 'CompositeTrend',
+        hasValidation: true,
+        reportXlsxPath: 'C:/runs/nvda.xlsx',
+        csvPath: 'C:/data/nvda.csv',
+        tags: ['nvda'],
+      },
+    ]
+
+    store.syncSavedRunsView('')
+    expect(store.savedRunsVisible).toEqual([])
+
+    store.setSavedRunsSearch('nv')
+    expect(store.savedRunsVisible.map((entry) => entry.path)).toEqual(['C:/runs/nvda.json'])
+  })
+
   it('preserves selected detail while filters still match and clears it when no results remain', () => {
     const store = useHistoryStore()
     store.savedRunsRaw = [

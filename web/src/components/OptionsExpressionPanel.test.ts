@@ -402,6 +402,9 @@ describe('OptionsExpressionPanel', () => {
           robustLeaderSealedFinalRank: null,
         },
         topValidationVerdict: 'stress_fragile',
+        supportedHoldoutTupleCount: 2,
+        supportedSealedTupleCount: 1,
+        supportedStressTupleCount: 2,
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
         hasStressMetrics: true,
@@ -460,6 +463,9 @@ describe('OptionsExpressionPanel', () => {
           robustLeaderSealedFinalRank: 1,
         },
         topValidationVerdict: 'sealed_finalist',
+        supportedHoldoutTupleCount: 2,
+        supportedSealedTupleCount: 2,
+        supportedStressTupleCount: 2,
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
         hasStressMetrics: true,
@@ -518,6 +524,9 @@ describe('OptionsExpressionPanel', () => {
           robustLeaderSealedFinalRank: 2,
         },
         topValidationVerdict: 'sealed_finalist',
+        supportedHoldoutTupleCount: 3,
+        supportedSealedTupleCount: 2,
+        supportedStressTupleCount: 3,
         hasHoldoutMetrics: true,
         hasSealedEvaluationMetrics: true,
         hasStressMetrics: true,
@@ -614,6 +623,7 @@ describe('OptionsExpressionPanel', () => {
     expect(wrapper.text()).toContain('sealed extreme -0.020')
     expect(wrapper.text()).toContain('Validated ratio')
     expect(wrapper.text()).toContain('Fragility ratio')
+    expect(wrapper.text()).toContain('Hold 2 / 2 (100.0%) · Sealed 1 / 2 (50.0%) · Stress 2 / 2 (100.0%)')
     expect(wrapper.text()).toContain('Selection')
     expect(wrapper.text()).toContain('Holdout')
     expect(wrapper.text()).toContain('Best validated artifact')
@@ -2404,6 +2414,7 @@ describe('OptionsExpressionPanel', () => {
     await holdoutRow!.trigger('click')
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('Selected tuple validation · Holdout-supported')
+    expect(wrapper.text()).toContain('Hold 2 / 2 (100.0%)')
 
     const sealedRow = rows.find((entry) => entry.text().includes('itm_1'))
     expect(sealedRow).toBeTruthy()
@@ -2411,6 +2422,7 @@ describe('OptionsExpressionPanel', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('Selected tuple validation · Sealed finalist')
     expect(wrapper.text()).toContain('Promoted into the sealed finalist set (#1)')
+    expect(wrapper.text()).toContain('Sealed 2 / 2 (100.0%)')
     expect(wrapper.text()).toContain('Validation frontier')
     expect(wrapper.text()).toContain('Sealed finalist')
 
@@ -2419,7 +2431,157 @@ describe('OptionsExpressionPanel', () => {
     await fragileRow!.trigger('click')
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('Selected tuple validation · Stress-fragile')
+    expect(wrapper.text()).toContain('Support')
     expect(wrapper.text()).toContain('EV / premium falls from 0.0900 to -0.0200')
+  })
+
+  it('falls back to support-aware tuple validation semantics when verdicts are absent', async () => {
+    listOptionsDatasetsMock.mockResolvedValue([
+      {
+        optionsDatasetId: 'spy_options',
+        rootSymbol: 'SPY',
+        priceSemantics: 'minute_aggregate',
+        contractCount: 3,
+        rowCount: 42,
+      },
+    ])
+    listOptionsExpressionArtifactsMock.mockResolvedValue([])
+
+    const wrapper = mount(OptionsExpressionPanel, {
+      props: {
+        parentArtifactPath: 'C:/runs/vectorgrid_run_1.json',
+        parentStrategyKind: 'DoubleMa',
+        parentDatasetLabel: 'SPY.csv',
+      },
+    })
+
+    await vi.waitFor(() => {
+      expect(listOptionsDatasetsMock).toHaveBeenCalledTimes(1)
+      expect(listOptionsExpressionArtifactsMock).toHaveBeenCalledTimes(1)
+    })
+
+    const store = useOptionsExpressionStore()
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          sealedFinalist: true,
+          sealedFinalRank: 1,
+          robustScore: 0.18,
+          selectionMetrics: {
+            validTrades: 8,
+            invalidEvents: 1,
+            invalidRate: 0.1111,
+            expectancyPerTrade: 10,
+            expectancyPerPremium: 0.22,
+            medianReturnOnPremium: 0.16,
+            winRate: 0.62,
+            totalPnlPerContract: 80,
+          },
+          holdoutMetrics: {
+            validTrades: 0,
+            invalidEvents: 2,
+            invalidRate: 1,
+            expectancyPerTrade: 0,
+            expectancyPerPremium: 0.09,
+            medianReturnOnPremium: 0,
+            winRate: 0,
+            totalPnlPerContract: 0,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 0,
+            invalidEvents: 1,
+            invalidRate: 1,
+            expectancyPerTrade: 0,
+            expectancyPerPremium: 0.08,
+            medianReturnOnPremium: 0,
+            winRate: 0,
+            totalPnlPerContract: 0,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.08,
+            medianReturnOnPremium: 0.05,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+        },
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Selected tuple validation · Search only')
+    expect(wrapper.text()).toContain('No supported holdout or sealed trades are present yet')
+
+    store.latestRun = makeRunSummary({
+      rankedResults: [
+        {
+          delayMinutes: 0,
+          dteDays: 1,
+          moneynessBucket: 'atm',
+          holdMinutes: 15,
+          targetReturn: 0.25,
+          stopReturn: 0.25,
+          exitTemplate: 'fixed_hold_or_target_stop',
+          fillModel: 'aggregate_research',
+          robustScore: 0.18,
+          selectionMetrics: {
+            validTrades: 8,
+            invalidEvents: 1,
+            invalidRate: 0.1111,
+            expectancyPerTrade: 10,
+            expectancyPerPremium: 0.22,
+            medianReturnOnPremium: 0.16,
+            winRate: 0.62,
+            totalPnlPerContract: 80,
+          },
+          holdoutMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 5,
+            expectancyPerPremium: 0.09,
+            medianReturnOnPremium: 0.06,
+            winRate: 0.5,
+            totalPnlPerContract: 10,
+          },
+          sealedEvaluationMetrics: {
+            validTrades: 0,
+            invalidEvents: 1,
+            invalidRate: 1,
+            expectancyPerTrade: 0,
+            expectancyPerPremium: 0.08,
+            medianReturnOnPremium: 0,
+            winRate: 0,
+            totalPnlPerContract: 0,
+          },
+          stressMetrics: {
+            validTrades: 2,
+            invalidEvents: 0,
+            invalidRate: 0,
+            expectancyPerTrade: 4,
+            expectancyPerPremium: 0.08,
+            medianReturnOnPremium: 0.05,
+            winRate: 0.5,
+            totalPnlPerContract: 8,
+          },
+        },
+      ],
+    })
+
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('Selected tuple validation · Holdout-supported')
+    expect(wrapper.text()).toContain('Supported holdout trades are present')
   })
 
   it('surfaces search-winner vs validation-winner disagreement in the current frontier', async () => {

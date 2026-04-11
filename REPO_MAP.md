@@ -123,6 +123,8 @@ If the task is about the current options backtest optimization / embedded valida
   - `options_research/options_expression_quote_aware_realism_semantic_hardening_implementation_guide_2026-04-09.md`
   - `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md`
   - `options_research/options_expression_support_aware_validation_semantics_implementation_guide_2026-04-10.md`
+  - `options_research/options_expression_gpt54_pro_prompt_pack_2026-04-08_attachments/prompt_07_stress_family_expansion_constraints/options_stress_scope_freeze_implementation_guide_2026-04-10.md`
+  - `options_research/options_expression_gpt54_pro_prompt_pack_2026-04-08_attachments/prompt_08_bounded_structure_family_expansion_or_freeze/options_structure_scope_freeze_implementation_guide_2026-04-10.md`
 - frontend host / request shaping
   - `web/src/components/OptionsExpressionPanel.vue`
   - `web/src/stores/optionsExpressionStore.ts`

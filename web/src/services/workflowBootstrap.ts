@@ -13,6 +13,7 @@ import { resolveRuntimePinia } from '../stores/runtimePinia'
 import { useDataStore } from '../stores/dataStore'
 import { readStorageString } from '../utils/storage'
 import { useWorkflowStore } from '../stores/workflowStore'
+import { syncWorkflowArtifactsFromLegacyRuntime } from './workflowArtifactsSync'
 
 const WORKSPACE_KEYS = new Set(['workflow', 'library', 'aggregate', 'pro', 'settings'])
 const WORKFLOW_MODE_KEYS = new Set(['conventional', 'ml-signal'])
@@ -70,6 +71,9 @@ export function applyWorkflowBootstrapFromStorage(options: WorkflowBootstrapOpti
   if (!pinia) return Promise.resolve()
   const includeDeferredData = options.includeDeferredData !== false
   const startupDataPromise = useDataStore(pinia).hydrateStartupState({ includeDeferred: includeDeferredData })
+  void startupDataPromise
+    .then(() => syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime'))
+    .catch(() => undefined)
 
   if (!state.mode && !state.workspace && !state.workflow && !state.workflowStep && !state.controlsTab && !state.resultsTab && !state.aggregateTab && !state.splitFraction) {
     return startupDataPromise

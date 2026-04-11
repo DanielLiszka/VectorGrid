@@ -393,19 +393,19 @@ function describeCoverageAdequacy(
 function strongestTupleValidationBaseMetrics(
   tuple: OptionsExpressionTupleSummary | null | undefined,
 ): OptionsExpressionMetricsSummary | null {
-  return tuple?.sealedEvaluationMetrics ?? tuple?.holdoutMetrics ?? null
+  return supportedMetrics(tuple?.sealedEvaluationMetrics) ?? supportedMetrics(tuple?.holdoutMetrics) ?? null
 }
 
 function strongestTupleValidationStressMetrics(
   tuple: OptionsExpressionTupleSummary | null | undefined,
 ): OptionsExpressionMetricsSummary | null {
   return (
-    tuple?.sealedExtremeStressMetrics
-    ?? tuple?.sealedHarsherStressMetrics
-    ?? tuple?.sealedStressMetrics
-    ?? tuple?.extremeStressMetrics
-    ?? tuple?.harsherStressMetrics
-    ?? tuple?.stressMetrics
+    supportedMetrics(tuple?.sealedExtremeStressMetrics)
+    ?? supportedMetrics(tuple?.sealedHarsherStressMetrics)
+    ?? supportedMetrics(tuple?.sealedStressMetrics)
+    ?? supportedMetrics(tuple?.extremeStressMetrics)
+    ?? supportedMetrics(tuple?.harsherStressMetrics)
+    ?? supportedMetrics(tuple?.stressMetrics)
     ?? null
   )
 }
@@ -445,6 +445,43 @@ function artifactValidationSupportRatio(
 ): number | null {
   if (!artifact || !artifact.tupleCount) return null
   return (artifact.validatedTupleCount ?? 0) / artifact.tupleCount
+}
+
+function supportedMetrics(
+  metrics: OptionsExpressionMetricsSummary | null | undefined,
+): OptionsExpressionMetricsSummary | null {
+  if (!metrics) return null
+  return metrics.validTrades > 0 ? metrics : null
+}
+
+function metricsTotalEvents(metrics: OptionsExpressionMetricsSummary | null | undefined): number {
+  if (!metrics) return 0
+  return Math.max(0, metrics.validTrades + metrics.invalidEvents)
+}
+
+function metricsSupportRate(
+  metrics: OptionsExpressionMetricsSummary | null | undefined,
+): number | null {
+  const totalEvents = metricsTotalEvents(metrics)
+  if (!totalEvents) return null
+  return (metrics?.validTrades ?? 0) / totalEvents
+}
+
+function formatMetricsSupport(metrics: OptionsExpressionMetricsSummary | null | undefined): string {
+  if (!metrics) return '—'
+  const totalEvents = metricsTotalEvents(metrics)
+  if (!totalEvents) return `${metrics.validTrades} / 0`
+  return `${metrics.validTrades} / ${totalEvents} (${formatPercent(metricsSupportRate(metrics), 1)})`
+}
+
+function formatArtifactSupportCount(
+  count: number | null | undefined,
+  total: number | null | undefined,
+): string {
+  const safeCount = Math.max(0, Number(count ?? 0))
+  const safeTotal = Math.max(0, Number(total ?? 0))
+  if (!safeTotal) return `${safeCount} / 0`
+  return `${safeCount} / ${safeTotal} (${formatPercent(safeCount / safeTotal, 1)})`
 }
 
 function artifactStressFragilityRatio(
@@ -560,7 +597,7 @@ function artifactValidationLabel(
 function artifactValidationVerdict(
   artifact: OptionsExpressionArtifactSummary | null | undefined,
 ): string {
-  return normalizeText(artifact?.topValidationVerdict) || 'search_only'
+  return resolveArtifactValidationVerdict(artifact)
 }
 
 function artifactStressDrop(
@@ -619,8 +656,8 @@ function resolveTupleValidationVerdict(
 ): OptionsExpressionValidationVerdict {
   if (!tuple) return 'search_only'
   if (tuple.validationVerdict) return tuple.validationVerdict
-  const hasSealed = Boolean(tuple.sealedFinalist || tuple.sealedEvaluationMetrics)
-  const hasHoldout = Boolean(tuple.holdoutMetrics)
+  const hasSealed = Boolean(supportedMetrics(tuple.sealedEvaluationMetrics))
+  const hasHoldout = Boolean(supportedMetrics(tuple.holdoutMetrics))
   const fragile = isStressFragile(
     strongestTupleValidationBaseMetrics(tuple)?.expectancyPerPremium,
     strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium,
@@ -635,8 +672,8 @@ function resolveArtifactValidationVerdict(
 ): OptionsExpressionValidationVerdict {
   if (!artifact) return 'search_only'
   if (artifact.topValidationVerdict) return artifact.topValidationVerdict
-  const hasSealed = Boolean(artifact.hasSealedEvaluationMetrics)
-  const hasHoldout = Boolean(artifact.hasHoldoutMetrics)
+  const hasSealed = (artifact.supportedSealedTupleCount ?? 0) > 0
+  const hasHoldout = (artifact.supportedHoldoutTupleCount ?? 0) > 0
   const fragile = isStressFragile(
     strongestArtifactValidationBaseExpectancy(artifact),
     strongestArtifactValidationStressExpectancy(artifact),
@@ -680,20 +717,23 @@ function describeTupleValidation(
   const verdict = resolveTupleValidationVerdict(tuple)
   const baseExpectancy = strongestTupleValidationBaseMetrics(tuple)?.expectancyPerPremium ?? null
   const stressedExpectancy = strongestTupleValidationStressMetrics(tuple)?.expectancyPerPremium ?? null
-  let detail = 'No holdout metrics are present yet; this tuple is still a search-stage candidate.'
+  let detail = 'No supported holdout or sealed trades are present yet; this tuple is still a search-stage candidate.'
   switch (verdict) {
     case 'holdout_supported':
-      detail = 'Holdout metrics are present, but this tuple has not yet been promoted into the sealed finalist set.'
+      detail =
+        tuple.sealedFinalist && !supportedMetrics(tuple.sealedEvaluationMetrics)
+          ? 'Supported holdout trades are present, but this sealed-budget tuple has not yet produced supported sealed validation.'
+          : 'Supported holdout trades are present, but this tuple has not yet been promoted into supported sealed validation.'
       break
     case 'sealed_finalist':
       detail = tuple.sealedFinalRank
-        ? `Promoted into the sealed finalist set (#${tuple.sealedFinalRank}) and still holding up under the current stress lanes.`
-        : 'Promoted into the sealed finalist set and still holding up under the current stress lanes.'
+        ? `Promoted into the sealed finalist set (#${tuple.sealedFinalRank}) and still holding up under the current supported stress lanes.`
+        : 'Promoted into the sealed finalist set and still holding up under the current supported stress lanes.'
       break
     case 'stress_fragile':
       detail = Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
-        ? `Validation exists, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under the current stress lanes.`
-        : 'Validation exists, but the tuple degrades materially under the current stress lanes.'
+        ? `Supported validation exists, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under the current stress lanes.`
+        : 'Supported validation exists, but the tuple degrades materially under the current stress lanes.'
       break
     case 'search_only':
     default:
@@ -717,15 +757,15 @@ function describeArtifactValidation(
   let detail = 'This artifact currently reads as search-stage only.'
   switch (verdict) {
     case 'holdout_supported':
-      detail = `Top tuple has holdout metrics across ${artifact.validatedTupleCount ?? 0} validated tuple${(artifact.validatedTupleCount ?? 0) === 1 ? '' : 's'}, but no sealed finalist confirmation yet.`
+      detail = `Top tuple has supported holdout validation across ${artifact.validatedTupleCount ?? 0} validated tuple${(artifact.validatedTupleCount ?? 0) === 1 ? '' : 's'}, but no supported sealed confirmation yet.`
       break
     case 'sealed_finalist':
-      detail = `Top tuple cleared sealed finalist evaluation. ${artifact.sealedEvaluatedTupleCount ?? 0}/${artifact.sealedFinalistBudget ?? 0} tuple${(artifact.sealedEvaluatedTupleCount ?? 0) === 1 ? '' : 's'} were evaluated in the sealed stage.`
+      detail = `Top tuple cleared supported sealed evaluation. ${artifact.sealedEvaluatedTupleCount ?? 0}/${artifact.sealedFinalistBudget ?? 0} tuple${(artifact.sealedEvaluatedTupleCount ?? 0) === 1 ? '' : 's'} were evaluated in the sealed stage.`
       break
     case 'stress_fragile':
       detail = Number.isFinite(baseExpectancy) && Number.isFinite(stressedExpectancy)
-        ? `Top tuple validates, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under stress.`
-        : `Top tuple validates, but ${artifact.stressFragileTupleCount ?? 0} tuple${(artifact.stressFragileTupleCount ?? 0) === 1 ? '' : 's'} degrade materially under stress.`
+        ? `Top tuple has supported validation, but EV / premium falls from ${formatOptionalDecimal(baseExpectancy)} to ${formatOptionalDecimal(stressedExpectancy)} under stress.`
+        : `Top tuple has supported validation, but ${artifact.stressFragileTupleCount ?? 0} tuple${(artifact.stressFragileTupleCount ?? 0) === 1 ? '' : 's'} degrade materially under stress.`
       break
     case 'search_only':
     default:
@@ -1356,6 +1396,27 @@ const selectedArtifactDerivedMetrics = computed(() => {
     },
   ]
 })
+const selectedArtifactSupportRows = computed(() => {
+  const artifact = selectedArtifactSummary.value
+  if (!artifact) return []
+  return [
+    {
+      key: 'artifact-holdout-support',
+      label: 'Holdout support',
+      value: formatArtifactSupportCount(artifact.supportedHoldoutTupleCount, artifact.tupleCount),
+    },
+    {
+      key: 'artifact-sealed-support',
+      label: 'Sealed support',
+      value: formatArtifactSupportCount(artifact.supportedSealedTupleCount, artifact.tupleCount),
+    },
+    {
+      key: 'artifact-stress-support',
+      label: 'Stress support',
+      value: formatArtifactSupportCount(artifact.supportedStressTupleCount, artifact.tupleCount),
+    },
+  ]
+})
 const selectedArtifactLeadershipRows = computed(() => {
   const artifact = selectedArtifactSummary.value
   if (!artifact || !hasArtifactLeaderSummaryData(artifact)) return []
@@ -1584,6 +1645,27 @@ const selectedEventPathInspection = computed(() => {
   return inspection.eventIndex === selectedRow.eventIndex ? inspection : null
 })
 const selectedTupleValidation = computed(() => describeTupleValidation(selectedTuple.value))
+const selectedTupleSupportRows = computed(() => {
+  const tuple = selectedTuple.value
+  if (!tuple) return []
+  return [
+    {
+      key: 'tuple-holdout-support',
+      label: 'Holdout support',
+      value: formatMetricsSupport(tuple.holdoutMetrics),
+    },
+    {
+      key: 'tuple-sealed-support',
+      label: 'Sealed support',
+      value: formatMetricsSupport(tuple.sealedEvaluationMetrics),
+    },
+    {
+      key: 'tuple-stress-support',
+      label: 'Stress support',
+      value: formatMetricsSupport(strongestTupleValidationStressMetrics(tuple)),
+    },
+  ]
+})
 const activeRealismLane = computed(() =>
   describeRealismLane(activePriceSemantics.value, activeRequest.value?.fillModel),
 )
@@ -1605,6 +1687,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
       expectancy: tuple.selectionMetrics.expectancyPerPremium,
       delta: 0,
       status: 'baseline',
+      support: formatMetricsSupport(tuple.selectionMetrics),
     },
     tuple.holdoutMetrics
       ? {
@@ -1613,6 +1696,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
           expectancy: tuple.holdoutMetrics.expectancyPerPremium,
           delta: metricDeltaAgainstSelection(selectionExpectancy, tuple.holdoutMetrics.expectancyPerPremium) ?? 0,
           status: 'validation',
+          support: formatMetricsSupport(tuple.holdoutMetrics),
         }
       : null,
     tuple.sealedEvaluationMetrics
@@ -1625,6 +1709,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
             tuple.sealedEvaluationMetrics.expectancyPerPremium,
           ) ?? 0,
           status: 'validation',
+          support: formatMetricsSupport(tuple.sealedEvaluationMetrics),
         }
       : null,
     tuple.stressMetrics
@@ -1634,6 +1719,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
           expectancy: tuple.stressMetrics.expectancyPerPremium,
           delta: metricDeltaAgainstSelection(selectionExpectancy, tuple.stressMetrics.expectancyPerPremium) ?? 0,
           status: 'stress',
+          support: formatMetricsSupport(tuple.stressMetrics),
         }
       : null,
     tuple.sealedStressMetrics
@@ -1646,6 +1732,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
             tuple.sealedStressMetrics.expectancyPerPremium,
           ) ?? 0,
           status: 'stress',
+          support: formatMetricsSupport(tuple.sealedStressMetrics),
         }
       : null,
     tuple.harsherStressMetrics
@@ -1658,6 +1745,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
             tuple.harsherStressMetrics.expectancyPerPremium,
           ) ?? 0,
           status: 'stress',
+          support: formatMetricsSupport(tuple.harsherStressMetrics),
         }
       : null,
     tuple.sealedHarsherStressMetrics
@@ -1670,6 +1758,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
             tuple.sealedHarsherStressMetrics.expectancyPerPremium,
           ) ?? 0,
           status: 'stress',
+          support: formatMetricsSupport(tuple.sealedHarsherStressMetrics),
         }
       : null,
     tuple.extremeStressMetrics
@@ -1682,6 +1771,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
             tuple.extremeStressMetrics.expectancyPerPremium,
           ) ?? 0,
           status: 'stress',
+          support: formatMetricsSupport(tuple.extremeStressMetrics),
         }
       : null,
     tuple.sealedExtremeStressMetrics
@@ -1694,6 +1784,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
             tuple.sealedExtremeStressMetrics.expectancyPerPremium,
           ) ?? 0,
           status: 'stress',
+          support: formatMetricsSupport(tuple.sealedExtremeStressMetrics),
         }
       : null,
   ].filter((entry): entry is {
@@ -1702,6 +1793,7 @@ const selectedTupleValidationFrontierRows = computed(() => {
     expectancy: number
     delta: number
     status: string
+    support: string
   } => Boolean(entry))
   return rows
 })
@@ -3284,6 +3376,9 @@ function focusTupleIndex(index: number): void {
         <div v-if="selectedArtifactLeadershipRows.length > 0" class="panelMuted">
           {{ selectedArtifactLeadershipRows[2]?.value }} · {{ selectedArtifactLeadershipRows[3]?.value }}
         </div>
+        <div v-if="selectedArtifactSupportRows.length > 0" class="panelMuted mono">
+          Hold {{ selectedArtifactSupportRows[0]?.value }} · Sealed {{ selectedArtifactSupportRows[1]?.value }} · Stress {{ selectedArtifactSupportRows[2]?.value }}
+        </div>
         <div v-if="selectedArtifactValidation" class="panelMuted">
           {{ selectedArtifactValidation.detail }}
         </div>
@@ -3313,6 +3408,12 @@ function focusTupleIndex(index: number): void {
             </div>
             <div class="detailGrid detailGridTight">
               <div v-for="row in selectedArtifactDerivedMetrics" :key="row.key">
+                <span class="panelMetricKey">{{ row.label }}</span>
+                <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
+              </div>
+            </div>
+            <div class="detailGrid detailGridTight" v-if="selectedArtifactSupportRows.length > 0">
+              <div v-for="row in selectedArtifactSupportRows" :key="row.key">
                 <span class="panelMetricKey">{{ row.label }}</span>
                 <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
               </div>
@@ -3822,6 +3923,9 @@ function focusTupleIndex(index: number): void {
         <div v-if="selectedTupleValidation" class="panelMuted">
           {{ selectedTupleValidation.detail }}
         </div>
+        <div v-if="selectedTupleSupportRows.length > 0" class="panelMuted mono">
+          Hold {{ selectedTupleSupportRows[0]?.value }} · Sealed {{ selectedTupleSupportRows[1]?.value }} · Stress {{ selectedTupleSupportRows[2]?.value }}
+        </div>
         <div v-if="winnerDisagreementSummary" class="gateBadgeRow">
           <span
             class="gateBadge"
@@ -3950,7 +4054,7 @@ function focusTupleIndex(index: number): void {
           </label>
         </div>
         <div v-if="activeRows.length > 0" class="warningText">
-          Ranked tuples remain search-stage candidates unless the validation verdict below shows holdout or sealed support.
+          Ranked tuples remain search-stage candidates unless the validation verdict below shows supported holdout or sealed trades.
         </div>
 
         <div v-if="activeRows.length > 0 && displayedRowsWithIndex.length > 0" class="tableWrap">
@@ -4111,7 +4215,11 @@ function focusTupleIndex(index: number): void {
             </div>
             <div class="detailGridSpan2">
               <span class="panelMetricKey">Validation note</span>
-              <span class="panelMetricValue">{{ selectedTupleValidation?.detail ?? 'No holdout metrics are present yet.' }}</span>
+              <span class="panelMetricValue">{{ selectedTupleValidation?.detail ?? 'No supported holdout or sealed trades are present yet.' }}</span>
+            </div>
+            <div v-for="row in selectedTupleSupportRows" :key="row.key">
+              <span class="panelMetricKey">{{ row.label }}</span>
+              <span class="panelMetricValue mono panelNumeric">{{ row.value }}</span>
             </div>
             <div>
               <span class="panelMetricKey">EV / Trade</span>
@@ -4206,6 +4314,7 @@ function focusTupleIndex(index: number): void {
                   <tr>
                     <th>Stage</th>
                     <th>Status</th>
+                    <th>Support</th>
                     <th>EV / Premium</th>
                     <th>Delta vs selection</th>
                   </tr>
@@ -4214,6 +4323,7 @@ function focusTupleIndex(index: number): void {
                   <tr v-for="row in selectedTupleValidationFrontierRows" :key="row.key">
                     <td class="mono">{{ row.label }}</td>
                     <td class="mono">{{ row.status }}</td>
+                    <td class="mono">{{ row.support }}</td>
                     <td class="mono">{{ row.expectancy.toFixed(4) }}</td>
                     <td class="mono">{{ row.delta.toFixed(4) }}</td>
                   </tr>

@@ -10,6 +10,7 @@ describe('tauri command registry', () => {
   it('validates known and unknown command names', () => {
     expect(isTauriCommand('run_double_ma_optimization')).toBe(true)
     expect(isTauriCommand('list_artifact_library')).toBe(true)
+    expect(isTauriCommand('load_latest_run_artifact_summary')).toBe(true)
     expect(isTauriCommand('load_run_artifact_hydration')).toBe(true)
     expect(isTauriCommand('load_run_artifact_detail')).toBe(true)
     expect(isTauriCommand('load_meta_artifact_replay')).toBe(true)

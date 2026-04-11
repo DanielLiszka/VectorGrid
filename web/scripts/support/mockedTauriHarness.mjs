@@ -1,8 +1,15 @@
+const DEFAULT_COMMAND_RESULTS = {
+  load_latest_run_artifact_summary: null,
+}
+
 export async function installMockedTauri(context, options = {}) {
   const holdStartupOverlay = options.holdStartupOverlay ?? false
   const emitTestEvents = options.emitTestEvents ?? false
   const strictUnknownInvoke = options.strictUnknownInvoke ?? true
-  const commandResults = options.commandResults ?? {}
+  const commandResults = {
+    ...DEFAULT_COMMAND_RESULTS,
+    ...(options.commandResults ?? {}),
+  }
   await context.addInitScript(({ hold, emitEvents, holdKey, strictInvoke, results }) => {
     const handlers = {}
     const callbacks = {}

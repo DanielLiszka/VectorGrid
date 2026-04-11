@@ -64,6 +64,7 @@ export const TAURI_COMMANDS = [
   'save_batch_summary',
   'run_research_campaign',
   'list_run_artifacts',
+  'load_latest_run_artifact_summary',
   'list_artifact_library',
   'list_meta_artifacts',
   'list_stage4_artifacts',

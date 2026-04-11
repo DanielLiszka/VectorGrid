@@ -55,6 +55,7 @@ The next phase is:
 1. using the completed plan set to route actual repo improvements safely
 2. maintaining the corpus when real repo changes or quality gaps require updates
 3. updating the tracker/index only when the planned catalog itself changes or a maintenance pass materially changes program status
+4. routing larger-scope post-checklist epic work through [REPO_Improvement_Epics/README.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement_Epics/README.md) instead of widening the completed first-tier `v7` catalog
 
 ## Folder Index
 
@@ -76,4 +77,5 @@ The next phase is:
 - [README.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/README.md)
 - [01_doc_creation_tracker_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md)
 - [execution_ledger_2026-04-09.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/execution_ledger_2026-04-09.md)
+- [REPO_Improvement_Epics/README.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement_Epics/README.md)
 - historical snapshot: [doc_creation_tracker_2026-04-08.md](/C:/Rust Projects/ta_desktop_demo/REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md)

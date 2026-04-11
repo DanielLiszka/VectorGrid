@@ -38,6 +38,17 @@ pub async fn list_run_artifacts(app: tauri::AppHandle) -> Result<Vec<RunArtifact
 }
 
 #[tauri::command]
+pub async fn load_latest_run_artifact_summary(
+    app: tauri::AppHandle,
+) -> Result<Option<RunArtifactSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_artifacts::load_latest_run_artifact_summary_blocking(app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn list_artifact_library(
     app: tauri::AppHandle,
 ) -> Result<ArtifactLibrarySnapshot, String> {

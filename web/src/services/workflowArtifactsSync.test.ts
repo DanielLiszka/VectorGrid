@@ -29,14 +29,14 @@ describe('workflowArtifactsSync', () => {
 
   it('hydrates workflow artifact store from latest saved run artifact', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'list_run_artifacts') {
-        return [{
+      if (command === 'load_latest_run_artifact_summary') {
+        return {
           ts: '2026-02-25T12:00:00Z',
           path: 'C:/runs/run.json',
           report_xlsx_path: 'C:/runs/report.xlsx',
           csv_path: 'C:/data/sample.csv',
           tags: ['alpha'],
-        }]
+        }
       }
 
       if (command === 'load_run_artifact_hydration') {
@@ -69,20 +69,20 @@ describe('workflowArtifactsSync', () => {
     expect(store.currentValidation?.ts).toBe('2026-02-25T12:00:00Z')
     expect(store.source).toBe('legacy-runtime')
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'list_run_artifacts')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
   })
 
   it('preserves dataset metadata, tags, ml signal, and metric surface when hydrating the latest artifact', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'list_run_artifacts') {
-        return [{
+      if (command === 'load_latest_run_artifact_summary') {
+        return {
           ts: '2026-02-25T12:00:00Z',
           path: 'C:/runs/run.json',
           report_xlsx_path: 'C:/runs/report.xlsx',
           csv_path: 'C:/data/sample.csv',
           tags: ['alpha', 'beta'],
-        }]
+        }
       }
 
       if (command === 'load_run_artifact_hydration') {
@@ -144,12 +144,12 @@ describe('workflowArtifactsSync', () => {
   })
 
   it('returns false when no artifacts exist', async () => {
-    invokeCommandMock.mockResolvedValueOnce([])
+    invokeCommandMock.mockResolvedValueOnce(null)
 
     const synced = await syncWorkflowArtifactsFromLegacyRuntime('vue')
 
     expect(synced).toBe(false)
-    expect(invokeCommandMock).toHaveBeenCalledWith('list_run_artifacts')
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_summary')
   })
 
   it('returns false when invoke throws', async () => {
@@ -175,10 +175,10 @@ describe('workflowArtifactsSync', () => {
         res: { rows: [] },
       },
     })
-    invokeCommandMock.mockResolvedValueOnce([{
+    invokeCommandMock.mockResolvedValueOnce({
       ts: '2026-02-25T12:00:00Z',
       path: 'C:/runs/run.json',
-    }])
+    })
 
     const synced = await syncWorkflowArtifactsFromLegacyRuntime('legacy-runtime')
 
@@ -186,7 +186,7 @@ describe('workflowArtifactsSync', () => {
     expect(store.source).toBe('legacy-runtime')
     expect(refreshAnalysisFromWorkflowRunMock).not.toHaveBeenCalled()
     expect(invokeCommandMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenCalledWith('list_run_artifacts')
+    expect(invokeCommandMock).toHaveBeenCalledWith('load_latest_run_artifact_summary')
   })
 
   it('still loads same-path same-ts artifacts when validation is currently absent', async () => {
@@ -201,11 +201,11 @@ describe('workflowArtifactsSync', () => {
       currentValidation: null,
     })
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'list_run_artifacts') {
-        return [{
+      if (command === 'load_latest_run_artifact_summary') {
+        return {
           ts: '2026-02-25T12:00:00Z',
           path: 'C:/runs/run.json',
-        }]
+        }
       }
       if (command === 'load_run_artifact_hydration') {
         return {
@@ -230,7 +230,7 @@ describe('workflowArtifactsSync', () => {
     expect(synced).toBe(true)
     expect(store.currentValidation?.req).toMatchObject({ candidates: 32 })
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'list_run_artifacts')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
   })
 
@@ -253,14 +253,14 @@ describe('workflowArtifactsSync', () => {
       },
     })
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'list_run_artifacts') {
-        return [{
+      if (command === 'load_latest_run_artifact_summary') {
+        return {
           ts: '2026-02-25T12:00:00Z',
           path: 'C:/runs/run.json',
           report_xlsx_path: 'C:/runs/new_report.xlsx',
           csv_path: 'C:/data/sample.csv',
           tags: ['alpha', 'beta'],
-        }]
+        }
       }
       if (command === 'load_run_artifact_hydration') {
         return {
@@ -289,17 +289,17 @@ describe('workflowArtifactsSync', () => {
     expect(store.currentRun?.reportXlsxPath).toBe('C:/runs/new_report.xlsx')
     expect(store.currentRun?.tags).toEqual(['alpha', 'beta'])
     expect(refreshAnalysisFromWorkflowRunMock).toHaveBeenCalledTimes(1)
-    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'list_run_artifacts')
+    expect(invokeCommandMock).toHaveBeenNthCalledWith(1, 'load_latest_run_artifact_summary')
     expect(invokeCommandMock).toHaveBeenNthCalledWith(2, 'load_run_artifact_hydration', { path: 'C:/runs/run.json' })
   })
 
   it('returns false when the hydration payload is malformed', async () => {
     invokeCommandMock.mockImplementation(async (command: string) => {
-      if (command === 'list_run_artifacts') {
-        return [{
+      if (command === 'load_latest_run_artifact_summary') {
+        return {
           ts: '2026-02-25T12:00:00Z',
           path: 'C:/runs/run.json',
-        }]
+        }
       }
       if (command === 'load_run_artifact_hydration') {
         return 'invalid-payload'

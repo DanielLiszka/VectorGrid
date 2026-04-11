@@ -110,6 +110,10 @@ Do not create a separate program-level change-log entry for every individual pla
   - completed the second-pass hardening sweep across the implementation-doc corpus
   - adopted the execution-ledger model for whole-document implementation tracking
   - promoted `00_program_index_2026-04-09.md` and `01_doc_creation_tracker_2026-04-09.md` as the canonical current-status meta docs
+- `2026-04-10`
+  - created the sibling `REPO_Improvement_Epics/` tree as the second-tier post-checklist epic program
+  - kept the original `REPO_Improvement/` `v7` catalog accounting fixed while moving larger-scope expansion work into the new epic tree
+  - seeded the initial epic queue for artifact/history scale, dense-surface scalability, validation/report throughput, GPU route maturity, and live execution productization
 
 ## Checklist
 
