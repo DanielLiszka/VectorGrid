@@ -27,8 +27,8 @@ The governance model already exists, but it is distributed across multiple docs:
 
 - `REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
 - `README.md`
-- `00_meta/program_index_2026-04-08.md`
-- `00_meta/doc_creation_tracker_2026-04-08.md`
+- `00_meta/00_program_index_2026-04-09.md`
+- `00_meta/01_doc_creation_tracker_2026-04-09.md`
 - `11_docs_ops/10_research_source_policy_2026-04-08.md`
 - `11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md`
 
@@ -50,10 +50,14 @@ So governance is already real. The gap is that it has not yet been consolidated 
   - master charter, scope, catalog, and program rules
 - `REPO_Improvement/README.md`
   - local entrypoint for the document tree
-- `REPO_Improvement/00_meta/program_index_2026-04-08.md`
+- `REPO_Improvement/00_meta/00_program_index_2026-04-09.md`
   - current-wave routing summary
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
   - counts, created-doc registry, and active queue
+- `REPO_Improvement/00_meta/05_status_legend_2026-04-08.md`
+  - canonical lifecycle/status definitions
+- `REPO_Improvement/00_meta/11_archive_policy_2026-04-08.md`
+  - canonical archive, supersede, and forward-pointer rules
 - `REPO_Improvement/11_docs_ops/10_research_source_policy_2026-04-08.md`
   - source-quality expectations
 - `REPO_Improvement/11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md`
@@ -137,19 +141,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define ownership boundaries for README, meta plan, program index, and tracker.
-- [ ] Define what “created”, “section-complete”, and “completed” each mean.
-- [ ] Define merge, split, supersede, and archive update rules.
-- [ ] Define the required wave-close sync checklist.
-- [ ] Preserve non-options-only and additive-only rules explicitly.
-- [ ] Preserve mandatory research-before-plan and quality-bar enforcement.
-- [ ] Require tracker and index updates whenever a wave advances.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Define ownership boundaries for README, meta plan, program index, and tracker.
+- [x] Define what “created”, “section-complete”, and “completed” each mean.
+- [x] Define merge, split, supersede, and archive update rules.
+- [x] Define the required wave-close sync checklist.
+- [x] Preserve non-options-only and additive-only rules explicitly.
+- [x] Preserve mandatory research-before-plan and quality-bar enforcement.
+- [x] Require tracker and index updates whenever a wave advances.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -169,9 +173,32 @@ Public-repo quality focus:
 - if a doc falls below the quality bar later, mark it for revision instead of pretending it is still complete
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
+## Execution Notes
+
+- This item closed on repo-owned governance text added to the existing canonical entry docs rather than on a new governance file.
+- Fresh governance surfaces now aligned for the document program:
+  - `REPO_Improvement/README.md`
+  - `REPO_Improvement/00_meta/05_status_legend_2026-04-08.md`
+  - `REPO_Improvement/00_meta/11_archive_policy_2026-04-08.md`
+  - `REPO_Improvement/00_meta/00_program_index_2026-04-09.md`
+  - `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
+  - `REPO_Improvement/00_meta/execution_ledger_2026-04-09.md`
+- The current README now freezes the missing operating contract this item called for:
+  - ownership boundaries for the meta plan, program index, tracker, execution ledger, status legend, and archive policy
+  - required sync rules when counts, waves, or supersede/archive actions change
+  - a wave-close checklist that requires count reconciliation, tracker/index sync, section-audit confirmation, and next-queue declaration
+- Fresh acceptance evidence:
+  - reviewed the updated governance contract in `REPO_Improvement/README.md`
+  - confirmed status meanings remain defined in `00_meta/05_status_legend_2026-04-08.md`
+  - confirmed archive/supersede rules remain defined in `00_meta/11_archive_policy_2026-04-08.md`
+  - confirmed the canonical current tracker/index files remain the 2026-04-09 surfaces
+- This closure is intentionally additive.
+  - It does not replace the meta plan or tracker.
+  - It closes because the repo now has one explicit operating contract that explains how those existing docs are supposed to move together.
+
 ## Related Docs
 
 - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
-- `REPO_Improvement/00_meta/program_index_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
+- `REPO_Improvement/00_meta/00_program_index_2026-04-09.md`
 - `REPO_Improvement/11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md`

@@ -100,18 +100,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current entry/lazy/total JS thresholds.
-- [ ] Document how the checker identifies the entry chunk.
-- [ ] Document when `analyze:bundle` should be used.
-- [ ] Document how budget changes must be justified.
-- [ ] Keep bundle-budget review tied to desktop shell/startup concerns.
-- [ ] Add or tighten checks if the build-output structure changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document the current entry/lazy/total JS thresholds.
+- [x] Document how the checker identifies the entry chunk.
+- [x] Document when `analyze:bundle` should be used.
+- [x] Document how budget changes must be justified.
+- [x] Keep bundle-budget review tied to desktop shell/startup concerns.
+- [x] Add or tighten checks if the build-output structure changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -128,6 +128,31 @@ Public-repo quality focus:
 - if chunk structure changes materially, update the checker and its documentation together
 - treat threshold changes as compatibility-significant for desktop productization
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a fresh bundle-gate and analysis pass rather than new frontend behavior changes.
+- The current bundle-budget authority surfaces remain aligned across:
+  - `web/scripts/check-bundle-budget.mjs`
+  - `web/package.json`
+  - `web/vite.config.ts`
+  - `REPO_MAP.md`
+- The deterministic thresholds currently enforced in `check-bundle-budget.mjs` are:
+  - entry chunk: `600 kB`
+  - largest lazy chunk: `550 kB`
+  - total JavaScript output: `2800 kB`
+- Fresh acceptance evidence:
+  - `npm --prefix web run check:bundle-budget`
+  - `npm --prefix web run analyze:bundle`
+- Fresh budget-gate readings from the verification run:
+  - entry: `index-C55SwwWK.js` at `112.2 kB`
+  - largest lazy: `app-state-DddBIJcb.js` at `297.3 kB`
+  - total JS: `1819.6 kB`
+- The fresh checker pass also reconfirmed the contract details this doc is meant to freeze:
+  - the entry chunk is identified directly from `dist/index.html`
+  - `analyze:bundle` remains the follow-up diagnostic lane, not the primary gate
+  - analysis-mode configuration stays rooted in `vite.config.ts` through the `rollup-plugin-visualizer` hook
+- No adjacent-doc text changes were required for closure because the current script/package/config surfaces already describe the live gate accurately enough for contributors and reviewers.
 
 ## Related Docs
 

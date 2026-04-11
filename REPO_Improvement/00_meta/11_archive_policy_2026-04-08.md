@@ -28,10 +28,19 @@ The program already assumes that docs may eventually become archived, but the ac
 
 - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
   - includes `archived` in the status model
+- `REPO_Improvement/README.md`
+  - current entrypoint doc that distinguishes canonical current surfaces from historical snapshots
 - `REPO_Improvement/11_docs_ops/12_program_governance_2026-04-08.md`
   - will govern future supersede/archive updates
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
   - should reflect archive/supersede changes once they occur
+- `REPO_MAP.md`
+  - current cross-tree routing surface for when specialist or historical docs remain useful
+- `Frontend Review/`
+- `research/`
+- `CUDA kernel review/`
+- `SASS research/`
+- `scripts/baselines/`
 
 ## Current Verification Surface
 
@@ -93,6 +102,18 @@ Public-repo quality focus:
 - tracker, index, and execution-ledger references must be updated in the same change as the supersede or archive action
 - historical documents must retain enough context that a contributor can understand why they are no longer active
 - archive or supersede actions must preserve short-path discoverability rather than hiding state in commit history alone
+- when specialist or historical trees remain in place outside `REPO_Improvement/`, active entry docs must point to the current canonical file instead of silently relying on folder names alone
+
+## Cross-Tree Archive Posture
+
+- `REPO_Improvement/` is the active planning and execution tree for the non-options improvement program.
+- `Frontend Review/`, `research/`, `CUDA kernel review/`, and `SASS research/` are retained specialist or historical trees.
+  - keep them linkable for provenance and historical context
+  - do not silently delete or relocate them just to make the top level look cleaner
+  - when one of those trees contains a still-useful authority doc, route to the exact file from `REPO_MAP.md` or another current entrypoint instead of assuming the folder itself communicates state
+- `scripts/baselines/` is the evidence tree for retained performance, parity, and review artifacts.
+  - keep active baseline/sample packs discoverable through manifests, readmes, or current routing docs
+  - do not treat baseline retention as a reason to move current authority docs out of their natural home
 
 ## Checklist
 
@@ -126,5 +147,5 @@ Public-repo quality focus:
 
 - `REPO_Improvement/00_meta/05_status_legend_2026-04-08.md`
 - `REPO_Improvement/11_docs_ops/12_program_governance_2026-04-08.md`
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
 - `REPO_Improvement/00_meta/12_program_change_log_2026-04-08.md`

@@ -26,30 +26,36 @@ Out of scope:
 
 ## Current User-Facing Behavior
 
-The repo already has strong technical documentation in `README.md`, `REPO_MAP.md`, `AGENTS.md`, and `RELEASE.md`. That helps code-aware contributors find their way around. But the public-repo health surface is still thin:
+The repo already has strong technical documentation in `README.md`, `REPO_MAP.md`, `AGENTS.md`, and `RELEASE.md`. That helps code-aware contributors find their way around. The repo now also has a minimum honest public-repo community-health surface:
 
-- there is no `LICENSE` file at the root
-- there is no `CONTRIBUTING.md`
-- there is no `SECURITY.md`
-- there is no `CODEOWNERS`
-- there is no visible support-resource doc
+- `LICENSE` now makes the Apache 2.0 licensing posture explicit at the repo root
+- `CONTRIBUTING.md` defines contribution shape, verification expectations, and docs-sync expectations
+- `SUPPORT.md` separates usage help and bug reporting from security disclosure
+- `SECURITY.md` defines a private vulnerability-reporting path
+- `.github/CODEOWNERS` routes the repo to the single maintainer
+- `README.md` and `REPO_MAP.md` now point contributors at the public community-health files
 - `.github/workflows` is present, but active workflow automation is currently disabled
 
-So the repo can be understandable to an insider while still feeling under-specified to an outside contributor or evaluator.
+The repo is still intentionally narrow: there is no broad support promise, no team-review pretense, and no `CODE_OF_CONDUCT.md` because there is not yet an enforcement posture beyond the single-maintainer model.
 
 ## Current Code Surface
 
 - `README.md`
 - `RELEASE.md`
 - `REPO_MAP.md`
+- `CONTRIBUTING.md`
+- `SUPPORT.md`
+- `SECURITY.md`
+- `LICENSE`
 - `AGENTS.md`
 - `.github/`
+- `.github/CODEOWNERS`
 - `.github/workflows.disabled/README.md`
-- repository root community-health file set or current absence of it
 
 ## Current Verification Surface
 
 - manual inspection of root docs and `.github` contents
+- cross-link inspection from `README.md` and `REPO_MAP.md` into the new community-health files
 - GitHub repository community-profile review once the repo is public
 - contributor onboarding attempts using only public docs
 
@@ -126,21 +132,21 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Inventory which public community-health files are currently absent.
-- [ ] Decide the minimum viable community-health file set for this repo.
-- [ ] Draft repo-specific contribution guidance for scoped improvements, verification, and doc updates.
-- [ ] Draft a support path that separates user help from bugs and vulnerabilities.
-- [ ] Draft a security-reporting path that does not route vulnerabilities through normal issues.
-- [ ] Choose and add an explicit license if the repo is intended to be open source.
-- [ ] Decide whether `CODEOWNERS` is useful at the current maintainer size and add it only if it reflects reality.
-- [ ] Decide whether a code of conduct will be actively enforced before adding one.
-- [ ] Cross-link the new community-health files from `README.md` where appropriate.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Inventory which public community-health files are currently absent.
+- [x] Decide the minimum viable community-health file set for this repo.
+- [x] Draft repo-specific contribution guidance for scoped improvements, verification, and doc updates.
+- [x] Draft a support path that separates user help from bugs and vulnerabilities.
+- [x] Draft a security-reporting path that does not route vulnerabilities through normal issues.
+- [x] Choose and add an explicit license if the repo is intended to be open source.
+- [x] Decide whether `CODEOWNERS` is useful at the current maintainer size and add it only if it reflects reality.
+- [x] Decide whether a code of conduct will be actively enforced before adding one.
+- [x] Cross-link the new community-health files from `README.md` where appropriate.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -158,6 +164,28 @@ Public-repo quality focus:
 - if support or code-of-conduct enforcement cannot be sustained, document a narrower but truthful posture
 - keep technical routing in `README.md` and `REPO_MAP.md`; community-health files should link out rather than duplicate them
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a repo-owned minimum community-health surface rather than on generic open-source boilerplate.
+- Added public community-health files:
+  - `LICENSE`
+  - `CONTRIBUTING.md`
+  - `SUPPORT.md`
+  - `SECURITY.md`
+  - `.github/CODEOWNERS`
+- Maintainer routing now reflects the actual operating model:
+  - Apache 2.0 license at the repo root
+  - single-owner review routing through `@DanielLiszka`
+  - support and bug guidance routed through GitHub Issues
+  - vulnerability disclosure routed away from normal issues and toward private GitHub reporting when available
+- `README.md` and `REPO_MAP.md` now cross-link the new files so outside contributors can discover the policy surface without private maintainer context.
+- `CODE_OF_CONDUCT.md` was intentionally not added because the repo does not yet claim a broader enforcement posture than the current single-maintainer model.
+- Fresh acceptance evidence for closure:
+  - manual root and `.github` file-set review after adding the new files
+  - `rg -n "CONTRIBUTING.md|SUPPORT.md|SECURITY.md|LICENSE|@DanielLiszka|private vulnerability" README.md REPO_MAP.md CONTRIBUTING.md SUPPORT.md SECURITY.md .github/CODEOWNERS`
+  - `git remote get-url origin`
+  - file-presence checks for `LICENSE`, `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, and `.github/CODEOWNERS`
 
 ## Related Docs
 

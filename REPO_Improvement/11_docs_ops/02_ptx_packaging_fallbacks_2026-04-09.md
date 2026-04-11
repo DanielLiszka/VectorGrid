@@ -109,19 +109,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current PTX artifact inputs and outputs.
-- [ ] Document current prebuilt fallback conditions.
-- [ ] Document current NVCC-required conditions.
-- [ ] Document required-symbol validation behavior.
-- [ ] Document the environment toggles and their compatibility implications.
-- [ ] Keep release/build docs aligned with actual `build.rs` behavior.
-- [ ] Add or tighten build verification if PTX selection logic changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document current PTX artifact inputs and outputs.
+- [x] Document current prebuilt fallback conditions.
+- [x] Document current NVCC-required conditions.
+- [x] Document required-symbol validation behavior.
+- [x] Document the environment toggles and their compatibility implications.
+- [x] Keep release/build docs aligned with actual `build.rs` behavior.
+- [x] Add or tighten build verification if PTX selection logic changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -138,6 +138,28 @@ Public-repo quality focus:
 - keep legacy environment-variable names documented until they are intentionally migrated
 - if symbol requirements change, regenerate and revalidate the packaged PTX in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a fresh verification pass of the live `build.rs` contract.
+- The PTX-selection authority surfaces are currently aligned across:
+  - `crates/app_core/build.rs`
+  - `crates/app_core/src/kernels/double_crossover.prebuilt.ptx`
+  - `crates/app_core/src/kernels/options_expression.prebuilt.ptx`
+  - `RELEASE.md`
+  - `REPO_MAP.md`
+- Fresh acceptance evidence for the three kernel-build lanes:
+  - `cargo build -p ta_desktop_demo_app --release --features cuda-backtest-kernel`
+  - `$env:VECTORBT_USE_PREBUILT_PTX='1'; cargo build -p ta_desktop_demo_app --release --features cuda-backtest-kernel`
+  - `$env:VECTORBT_REQUIRE_NVCC='1'; cargo build -p ta_desktop_demo_app --release --features cuda-backtest-kernel`
+- Toolchain provenance for this verification pass:
+  - `nvcc --version` reported CUDA `13.0.88`
+- The fresh audit reconfirmed the compatibility-critical behavior this doc is meant to preserve:
+  - `VECTORBT_USE_PREBUILT_PTX=1` forces the packaged prebuilt lane
+  - `VECTORBT_REQUIRE_NVCC=1` turns missing or failing NVCC into a hard failure
+  - otherwise `build.rs` prefers local NVCC output and falls back to the tracked prebuilt PTX when allowed
+  - required-symbol validation remains centralized in `build.rs` before the fallback artifact is accepted
+- No additional release-doc edits were required for closure because `RELEASE.md` and `REPO_MAP.md` already describe the same PTX artifact paths, environment toggles, and “CUDA Toolkit optional when prebuilt PTX is used” posture as the live build script.
 
 ## Related Docs
 

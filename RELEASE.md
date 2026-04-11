@@ -71,6 +71,67 @@ Environment toggles:
 
 Those environment variable names are legacy internal names kept for compatibility; they do not change the product branding, which is `VectorGrid`.
 
+## Public Release Operations
+
+### Supported public release scope
+
+- Platform: Windows x64 only
+- Variants:
+  - CPU-only
+  - GPU (MA sweep)
+  - GPU (kernel)
+- Public support posture is intentionally narrow:
+  - CPU-only is the broadest compatibility lane
+  - GPU variants require a working NVIDIA driver at runtime
+  - this repo does not currently promise macOS or Linux release artifacts
+  - only the latest tagged release and any immediate hotfix on top of it should be treated as current
+
+### Public release checklist
+
+Before publishing a public release or prerelease:
+
+1. confirm which variant(s) are being published and name them explicitly
+2. run the repo quality lane and the relevant build verification for those variants
+3. confirm `web/dist` handoff, command parity, and Tauri config sync are still green
+4. confirm release assets use the normalized naming convention below
+5. draft release notes using the minimum section set below
+6. keep benchmark evidence linked as supporting material rather than as the release note body
+
+### Release asset naming
+
+When manual release artifacts are attached to a GitHub release, normalize the attachment names to:
+
+- `vectorgrid-<version>-windows-x64-cpu.<ext>`
+- `vectorgrid-<version>-windows-x64-gpu-ma.<ext>`
+- `vectorgrid-<version>-windows-x64-gpu-kernel.<ext>`
+
+Use the same variant labels in release notes, perf artifacts, and support discussions. Do not mix internal experiment names into public release attachment names.
+
+### Release notes minimum sections
+
+Every public release or prerelease note should include:
+
+1. summary of what changed
+2. supported platform and published variant(s)
+3. verification summary
+4. GPU/driver requirements and known constraints
+5. compatibility or migration notes
+6. known issues or deferred items
+
+Benchmark or faceoff evidence may be linked, but should stay subordinate to operational release guidance.
+
+### Post-release validation and rollback posture
+
+- After publishing, rerun at least one smoke check against the released artifact or an equivalent candidate build.
+- Treat the first `72` hours after publication as the high-attention triage window for launch, packaging, and compatibility regressions.
+- Prefer a hotfix or release withdrawal when a public release has any of these problems:
+  - app fails to launch
+  - wrong frontend bundle or stale command inventory is shipped
+  - variant labeling or GPU requirements are misleading
+  - core shell/report-opening flows are broken
+  - the published asset does not match the documented variant
+- Use `scripts/post_release_telemetry_review.mjs` as supplemental follow-up evidence, not as the sole release gate.
+
 ## Vue + Vite Migration Notes (2026-02-26)
 
 This release line includes the completed frontend migration from the legacy static bundle to Vue + Vite while preserving Tauri command/event contracts and storage compatibility.
@@ -100,3 +161,10 @@ For high-risk non-options UI changes, pair the automated accessibility smoke wit
 - No Tauri command contract changes (68 commands parity-checked).
 - Existing storage keys remain backward compatible (schema migration adapter in `web/src/utils/storage.ts`).
 - Existing artifact/report structures are parity-checked with representative baseline/candidate pairs.
+
+### Scoped migration freeze helper
+
+- `node scripts/check_migration_freeze_scope.mjs` is a narrow local guard for explicit migration or stabilization windows only.
+- It is not a general repo-quality gate and should not be treated as an always-on repo policy.
+- When it is used, keep the allowlist in that script aligned with the approved migration note for the current window.
+- The current allowlist is intentionally small: `web/`, `scripts/baselines/`, and a short set of top-level docs/scripts that belonged to the Vue + Vite migration lane.

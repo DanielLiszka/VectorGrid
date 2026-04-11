@@ -127,20 +127,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define the public release checklist for this repo.
-- [ ] Define the supported platform and build-variant statement format.
-- [ ] Define the public release-note structure and minimum required sections.
-- [ ] Define release asset naming expectations.
-- [ ] Define where benchmark evidence may be linked and where it must not dominate release notes.
-- [ ] Define a post-release validation and triage window.
-- [ ] Define rollback or hotfix criteria for broken public releases.
-- [ ] Cross-link the release process from `README.md` and `RELEASE.md` if the repo begins shipping public releases.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Define the public release checklist for this repo.
+- [x] Define the supported platform and build-variant statement format.
+- [x] Define the public release-note structure and minimum required sections.
+- [x] Define release asset naming expectations.
+- [x] Define where benchmark evidence may be linked and where it must not dominate release notes.
+- [x] Define a post-release validation and triage window.
+- [x] Define rollback or hotfix criteria for broken public releases.
+- [x] Cross-link the release process from `README.md` and `RELEASE.md` if the repo begins shipping public releases.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -158,6 +158,32 @@ Public-repo quality focus:
 - keep prereleases distinct from stable releases if the quality bar differs
 - if the repo is not ready for a broad support promise, document a narrower supported-platform statement instead of vague language
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on repo-owned release-operations guidance added to `RELEASE.md` plus a README cross-link, rather than on new packaging automation.
+- Fresh release-operations surfaces now aligned for public use:
+  - `RELEASE.md`
+  - `README.md`
+  - `REPO_MAP.md`
+- `RELEASE.md` now includes the missing public-release contract this item called for:
+  - supported public platform and variant statement
+  - public release checklist
+  - normalized release asset naming convention
+  - minimum release-note section set
+  - post-release validation, triage, and rollback/hotfix posture
+- The new guidance is intentionally narrow and honest:
+  - Windows x64 only
+  - CPU-only, GPU (MA sweep), and GPU (kernel) as the published variant vocabulary
+  - benchmark evidence may be linked, but it must not dominate release notes
+  - `scripts/post_release_telemetry_review.mjs` remains supplemental follow-up evidence rather than the sole gate
+- Fresh acceptance evidence for the operational surface comes from the already-verified release/build lanes closed earlier in this docs/ops wave:
+  - `cargo build -p ta_desktop_demo_app --release`
+  - `cargo build -p ta_desktop_demo_app --release --features cuda`
+  - `cargo build -p ta_desktop_demo_app --release --features cuda-backtest-kernel`
+  - `npm --prefix web run build`
+  - `npm --prefix web run test:desktop:smoke`
+- `README.md` now points contributors at `RELEASE.md` for Windows build variants, PTX packaging, and release posture, which removes the last discoverability gap this item described.
 
 ## Related Docs
 

@@ -117,19 +117,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current CPU-only, GPU, and GPU-kernel release variants.
-- [ ] Document feature forwarding between `src-tauri` and `ta_app_core`.
-- [ ] Document runtime prerequisites separately from compile-time features.
-- [ ] Document which verification surfaces are variant-specific.
-- [ ] Keep README and `RELEASE.md` variant language aligned.
-- [ ] Tie benchmark claims to explicit variants.
-- [ ] Add or tighten checks if variant wiring changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document the current CPU-only, GPU, and GPU-kernel release variants.
+- [x] Document feature forwarding between `src-tauri` and `ta_app_core`.
+- [x] Document runtime prerequisites separately from compile-time features.
+- [x] Document which verification surfaces are variant-specific.
+- [x] Keep README and `RELEASE.md` variant language aligned.
+- [x] Tie benchmark claims to explicit variants.
+- [x] Add or tighten checks if variant wiring changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -147,6 +147,28 @@ Public-repo quality focus:
 - preserve CPU-only as the safe fallback path
 - if variant names change later, update release docs and benchmark wording in the same change
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on live contract verification rather than new product-code changes.
+- The current variant matrix is already expressed consistently across:
+  - `README.md`
+  - `RELEASE.md`
+  - `REPO_MAP.md`
+  - `src-tauri/Cargo.toml`
+  - `crates/app_core/Cargo.toml`
+- Fresh acceptance evidence for the three practical non-options build lanes:
+  - `cargo build -p ta_desktop_demo_app --release`
+  - `cargo build -p ta_desktop_demo_app --release --features cuda`
+  - `cargo build -p ta_desktop_demo_app --release --features cuda-backtest-kernel`
+- The fresh audit also reconfirmed the feature-forwarding contract this doc is meant to freeze:
+  - `src-tauri` forwards `cuda` and `cuda-backtest-kernel` into `ta_app_core`
+  - `ta_app_core` forwards `cuda` into `vector-ta/cuda`
+- Runtime prerequisites remain clearly separated from compile-time features in the current public docs:
+  - CPU-only remains the default safe lane
+  - GPU variants require driver/device availability at runtime
+  - the kernel lane is documented as its own distinct variant instead of being flattened into generic GPU wording
+- No additional README, `RELEASE.md`, or `REPO_MAP.md` edits were required for closure because the current repo-facing language already matches the live Cargo feature wiring and release commands.
 
 ## Related Docs
 

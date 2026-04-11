@@ -90,18 +90,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document current sample outputs and why each exists.
-- [ ] Document current source-candidate lookup behavior.
-- [ ] Document the manifest fields and their intended stability.
-- [ ] Keep sample artifacts distinct from the broader parity pack.
-- [ ] Review sample freshness when report or artifact contracts change.
-- [ ] Add or tighten checks if the sample manifest shape changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document current sample outputs and why each exists.
+- [x] Document current source-candidate lookup behavior.
+- [x] Document the manifest fields and their intended stability.
+- [x] Keep sample artifacts distinct from the broader parity pack.
+- [x] Review sample freshness when report or artifact contracts change.
+- [x] Add or tighten checks if the sample manifest shape changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -119,6 +119,30 @@ Public-repo quality focus:
 - if source-candidate order changes, update the manifest documentation in the same change
 - keep sample artifacts small and reviewable rather than expanding them into a full archival store
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a fresh baseline-sample export plus manifest and artifact spot checks.
+- The current authority surfaces for this contract remain aligned across:
+  - `scripts/export_baseline_samples.mjs`
+  - `scripts/baselines/samples/manifest.json`
+  - `scripts/run_output_parity_check.mjs`
+  - `REPO_MAP.md`
+- Fresh acceptance evidence:
+  - `node scripts/export_baseline_samples.mjs`
+  - inspect `scripts/baselines/samples/manifest.json`
+  - spot-check `scripts/baselines/samples/top_rows.csv`
+  - spot-check `scripts/baselines/samples/validation_shortlist.csv`
+  - verify `scripts/baselines/samples/report.xlsx` exists and is non-empty
+- The fresh export confirmed the sample-pack shape this doc is meant to preserve:
+  - outputs: `top_rows.csv`, `validation_shortlist.csv`, `run_artifact.json`, `batch_summary.json`, `report.json`, `report.xlsx`, `manifest.json`
+  - counts: `top_rows = 80`, `validation_shortlist_rows = 12`
+  - sources currently resolve to `_write_test/cli_runs/AAPL_opt.json`, `target/workflow_regression_summary.json`, and `_write_test/headless_reports/AAPL_headless_test.{json,xlsx}` when those preferred sources are present
+- The spot check also reconfirmed that this sample pack is intentionally smaller than the broader parity pack:
+  - the CSV outputs are human-reviewable slices rather than exhaustive exports
+  - the workbook copy remains a compact evidence artifact, not the full parity authority
+  - `scripts/run_output_parity_check.mjs` remains the structural-parity surface, while `export_baseline_samples.mjs` remains the review-pack surface
+- No additional README or release-doc edits were required for closure because `REPO_MAP.md` already routes contributors to the sample-export helper and distinguishes it from the parity-authority scripts.
 
 ## Related Docs
 

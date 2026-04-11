@@ -33,6 +33,8 @@ The repo already contains a concrete scope-freeze script that inspects `git stat
   - current product/release framing that can be affected by freeze windows
 - `RELEASE.md`
   - release/build notes that may be part of approved freeze-scope edits
+- `REPO_MAP.md`
+  - maintenance-helper routing note for when this narrow guard should be used
 - `web/`
   - currently approved prefix in the shipped script
 - `scripts/baselines/`
@@ -92,18 +94,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current purpose of the freeze script.
-- [ ] Document allowed exact files and allowed prefixes as a deliberate scope.
-- [ ] Review allowlist changes whenever the migration phase changes.
-- [ ] Keep the script tied to a human-readable migration note or release note.
-- [ ] Preserve normalized-path and rename handling.
-- [ ] Add or tighten checks if the freeze mechanism expands.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document the current purpose of the freeze script.
+- [x] Document allowed exact files and allowed prefixes as a deliberate scope.
+- [x] Review allowlist changes whenever the migration phase changes.
+- [x] Keep the script tied to a human-readable migration note or release note.
+- [x] Preserve normalized-path and rename handling.
+- [x] Add or tighten checks if the freeze mechanism expands.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -120,6 +122,29 @@ Public-repo quality focus:
 - if the migration window closes, either retire the script or update its scope explicitly
 - avoid leaving historical allowlists active without context
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed by tightening the current freeze helper and documenting its intended use as an opt-in migration/stabilization guard rather than a permanent repo policy.
+- Fresh scope surfaces now aligned for this contract:
+  - `scripts/check_migration_freeze_scope.mjs`
+  - `RELEASE.md`
+  - `REPO_MAP.md`
+- The script was tightened by removing the stale `VUE_VITE_MIGRATION_MASTER_CHECKLIST.md` allowlist entry, which no longer exists in the repo.
+- The human-readable posture is now explicit:
+  - `RELEASE.md` states that the helper is only for explicit migration or stabilization windows
+  - `REPO_MAP.md` classifies it as a narrow maintenance helper rather than a general quality gate
+- Fresh acceptance evidence for the static contract:
+  - reviewed the current exact-file allowlist and prefix allowlist in `scripts/check_migration_freeze_scope.mjs`
+  - confirmed normalized-path and rename handling remain intact in the script
+  - confirmed the repo docs now describe when to use the helper and what kind of scope it is expected to guard
+- Fresh runtime evidence in a disposable worktree using the updated script:
+  - `node scripts/check_migration_freeze_scope.mjs` passed with only the script itself changed
+  - adding an in-scope `web/README.md` change still passed
+  - adding an out-of-scope `REPO_Improvement/README.md` change failed as expected
+- This closure is intentionally about the guard definition and its documentation.
+  - The script is expected to fail on ordinary broad-scope repo work, because that is the point of a narrow freeze guard.
+  - It now has enough context and cleanup to count as a maintained, trustworthy helper instead of a stale unexplained script.
 
 ## Related Docs
 

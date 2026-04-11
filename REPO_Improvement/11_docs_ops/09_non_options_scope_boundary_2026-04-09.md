@@ -27,8 +27,8 @@ The current `REPO_Improvement` program is explicitly non-options-only. That scop
 ## Current Code Surface
 
 - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
-- `REPO_Improvement/00_meta/program_index_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
+- `REPO_Improvement/00_meta/00_program_index_2026-04-09.md`
 - `options_research/`
 - options-specific files in `web/src/components/OptionsExpressionPanel.vue`, related stores/services, and matching backend commands
 
@@ -85,17 +85,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Keep non-options-only scope explicit in the meta docs.
-- [ ] Exclude options-only files and folders from new implementation docs.
-- [ ] Mark shared-surface docs carefully when shared infrastructure is unavoidable.
-- [ ] Keep tracker and summary wording honest about partial-repo scope.
-- [ ] Review future doc proposals against the boundary before creation.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Keep non-options-only scope explicit in the meta docs.
+- [x] Exclude options-only files and folders from new implementation docs.
+- [x] Mark shared-surface docs carefully when shared infrastructure is unavoidable.
+- [x] Keep tracker and summary wording honest about partial-repo scope.
+- [x] Review future doc proposals against the boundary before creation.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -113,9 +113,27 @@ Public-repo quality focus:
 - do not silently migrate options docs into this tree
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
+## Execution Notes
+
+- This item closed on a fresh corpus audit plus a small doc-sync correction from the historical 2026-04-08 tracker/index files to the current canonical 2026-04-09 tracker/index files.
+- The non-options boundary remains explicit in the current authority surfaces:
+  - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
+  - `REPO_Improvement/README.md`
+  - `REPO_Improvement/00_meta/00_program_index_2026-04-09.md`
+  - `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
+- Fresh acceptance evidence:
+  - `rg -n "non-options only|non-options|options-related|options-specific" REPO_Improvement`
+  - `rg --files options_research web/src src-tauri/src crates/app_core/src | rg "OptionsExpressionPanel|optionsExpressionStore|optionsExpressionService|commands_options_expression|options_expression"`
+- The audit reconfirmed the actual boundary this doc is meant to freeze:
+  - the active program corpus repeatedly states `non-options only`
+  - options-specific ownership remains discoverable in `options_research/`, the `OptionsExpressionPanel` frontend surfaces, and the matching backend options-expression command/runtime files
+  - `REPO_Improvement` leaf docs continue to treat options work as out of scope rather than as silently covered behavior
+- This closure does not claim that shared infrastructure never touches options workflows.
+  - It closes because the program boundary is explicit, repeatable, and still honestly described in the canonical meta surfaces.
+
 ## Related Docs
 
 - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
 - `REPO_Improvement/11_docs_ops/12_program_governance_2026-04-08.md`
 - `REPO_Improvement/11_docs_ops/14_repo_surface_coverage_audit_2026-04-09.md`
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`

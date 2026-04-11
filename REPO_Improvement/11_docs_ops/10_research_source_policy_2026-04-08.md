@@ -87,20 +87,20 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Read the relevant repo files and tests before browsing.
-- [ ] Prefer official docs over third-party summaries.
-- [ ] Prefer standards/specs for file formats and schemas when available.
-- [ ] Capture why each external source is relevant to the topic.
-- [ ] Reject sources that are stale, low-signal, or off-topic.
-- [ ] State when evidence is incomplete or conflicting.
-- [ ] Include source links in every finished plan doc.
-- [ ] Re-run research when the topic is time-sensitive or vendor behavior may have changed.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Read the relevant repo files and tests before browsing.
+- [x] Prefer official docs over third-party summaries.
+- [x] Prefer standards/specs for file formats and schemas when available.
+- [x] Capture why each external source is relevant to the topic.
+- [x] Reject sources that are stale, low-signal, or off-topic.
+- [x] State when evidence is incomplete or conflicting.
+- [x] Include source links in every finished plan doc.
+- [x] Re-run research when the topic is time-sensitive or vendor behavior may have changed.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -116,6 +116,37 @@ Public-repo quality focus:
 - this policy applies immediately to all new Wave 1+ implementation-plan docs
 - older seed docs can remain as-is unless they are rewritten
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on a fresh corpus audit rather than new code or tooling changes.
+- The current policy anchors remain:
+  - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
+  - `REPO_Improvement/00_meta/02_pre_impl_research_gate_2026-04-08.md`
+  - `REPO_Improvement/11_docs_ops/10_research_source_policy_2026-04-08.md`
+  - `REPO_Improvement/11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md`
+- Fresh acceptance evidence:
+  - file-by-file audit of `REPO_Improvement/**/*.md` for the `## External Research Summary` section
+  - file-by-file audit of `REPO_Improvement/**/*.md` for at least one external `http://` or `https://` citation
+- Fresh audit result:
+  - only 9 files in `REPO_Improvement` currently lack the external-research section
+  - the same 9 files are the only files without an external link
+  - those exceptions are seed/support/meta surfaces rather than active implementation-plan leaf docs:
+    - `REPO_Improvement/IMPROVEMENT_FEATURE_INVENTORY_2026-04-08.md`
+    - `REPO_Improvement/IMPROVEMENT_MASTER_PLAN_2026-04-08.md`
+    - `REPO_Improvement/README.md`
+    - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
+    - `REPO_Improvement/00_meta/00_program_index_2026-04-09.md`
+    - `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
+    - `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
+    - `REPO_Improvement/00_meta/execution_ledger_2026-04-09.md`
+    - `REPO_Improvement/00_meta/program_index_2026-04-08.md`
+- That means the active implementation-plan corpus already follows the source-policy contract this doc describes:
+  - repo grounding first
+  - official or primary external sources where appropriate
+  - explicit link attribution inside the finished plan docs
+- This closure remains intentionally manual-policy based.
+  - There is still no dedicated repo script that enforces the rule automatically, but the current corpus audit is strong enough to count this policy as implemented.
 
 ## Related Docs
 

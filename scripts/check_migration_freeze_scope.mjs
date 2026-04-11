@@ -2,10 +2,12 @@
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 
+// Narrow helper for explicitly documented migration/stabilization windows only.
+// Keep the allowlist aligned with the matching repo notes when this guard is used.
+
 const ALLOWED_EXACT = new Set([
   'README.md',
   'RELEASE.md',
-  'VUE_VITE_MIGRATION_MASTER_CHECKLIST.md',
   'src-tauri/tauri.conf.json',
   'tauri.conf.json',
   'scripts/check_output_parity.mjs',
@@ -17,6 +19,12 @@ const ALLOWED_EXACT = new Set([
 ])
 
 const ALLOWED_PREFIXES = ['web/', 'scripts/baselines/']
+const USAGE_NOTE = [
+  'Migration freeze scope helper:',
+  '- use this only during an explicitly declared migration or stabilization window',
+  '- keep allowlist changes paired with the matching human-readable note in RELEASE.md/REPO_MAP.md',
+  '- this is not a general repo-wide gate',
+].join('\n')
 
 function asRepoPath(p) {
   return p.replace(/\\/g, '/')
@@ -43,7 +51,21 @@ function isAllowed(p) {
   return ALLOWED_PREFIXES.some((prefix) => p.startsWith(prefix))
 }
 
+function printScope() {
+  console.log(USAGE_NOTE)
+  console.log('')
+  console.log('Allowed exact files:')
+  for (const p of Array.from(ALLOWED_EXACT).sort()) console.log(`- ${p}`)
+  console.log('Allowed prefixes:')
+  for (const p of ALLOWED_PREFIXES) console.log(`- ${p}`)
+}
+
 function main() {
+  if (process.argv.includes('--help') || process.argv.includes('-h') || process.argv.includes('--print-scope')) {
+    printScope()
+    return
+  }
+
   const changed = changedPathsFromStatus()
   if (changed.length === 0) {
     console.log('Migration freeze scope check: no local changes detected.')
@@ -56,13 +78,12 @@ function main() {
     return
   }
 
+  console.error(USAGE_NOTE)
+  console.error('')
   console.error('Migration freeze scope check failed. Disallowed changed paths:')
   for (const p of blocked) console.error(`- ${p}`)
   console.error('')
-  console.error('Allowed exact files:')
-  for (const p of Array.from(ALLOWED_EXACT).sort()) console.error(`- ${p}`)
-  console.error('Allowed prefixes:')
-  for (const p of ALLOWED_PREFIXES) console.error(`- ${p}`)
+  printScope()
   process.exit(1)
 }
 

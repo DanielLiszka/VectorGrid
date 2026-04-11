@@ -110,18 +110,18 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Document the current build sequence for the frontend handoff.
-- [ ] Document which scripts are contract checks versus plain build steps.
-- [ ] Document `frontendDist` ownership in canonical and mirrored Tauri config.
-- [ ] Document how desktop smoke depends on the same handoff.
-- [ ] Keep release docs aligned with the actual handoff path.
-- [ ] Add or tighten checks if the frontend output path or generator flow changes.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Document the current build sequence for the frontend handoff.
+- [x] Document which scripts are contract checks versus plain build steps.
+- [x] Document `frontendDist` ownership in canonical and mirrored Tauri config.
+- [x] Document how desktop smoke depends on the same handoff.
+- [x] Keep release docs aligned with the actual handoff path.
+- [x] Add or tighten checks if the frontend output path or generator flow changes.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -141,6 +141,32 @@ Public-repo quality focus:
 - if build script ordering changes, update smoke/build docs and command checks together
 - keep the config-mirror check active whenever Tauri config changes
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed on fresh handoff verification across the generated-command checks, the Tauri config mirror, the frontend build, and a real desktop smoke run.
+- The current handoff authority surfaces are aligned across:
+  - `web/package.json`
+  - `web/scripts/generate-tauri-commands.mjs`
+  - `web/scripts/check-known-tauri-commands.mjs`
+  - `src-tauri/tauri.conf.json`
+  - `tauri.conf.json`
+  - `RELEASE.md`
+  - `REPO_MAP.md`
+- Fresh acceptance evidence:
+  - `npm --prefix web run typecheck`
+  - `npm --prefix web run parity`
+  - `npm --prefix web run check:commands`
+  - `node scripts/check_tauri_config_sync.mjs`
+  - `npm --prefix web run build`
+  - `npm --prefix web run test:desktop:smoke`
+- The fresh pass also surfaced why this doc matters:
+  - `npm --prefix web run check:commands` initially failed on a stale generated-command inventory
+  - rerunning `npm --prefix web run gen:commands` restored the generated file to the expected state and the follow-up `check:commands` pass succeeded
+- Desktop smoke then revalidated that the same `web/dist` handoff still drives the actual packaged shell path:
+  - all 6 WDIO desktop smoke specs passed
+  - the titlebar native-controls spec also passed, which reconfirmed the earlier selector/label mismatch is no longer blocking this lane
+- No additional public-doc edits were required for closure because `RELEASE.md` and `REPO_MAP.md` already describe the same `web/dist` handoff, config-mirror ownership, and command-generation checks as the live build/test path.
 
 ## Related Docs
 

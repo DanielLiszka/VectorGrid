@@ -30,6 +30,7 @@ The repo already contains active docs, historical research, prompt packs, baseli
 - `REPO_Improvement/`
 - `research/`
 - `Frontend Review/`
+- `CUDA kernel review/`
 - `SASS research/`
 - `scripts/baselines/`
 - `REPO_Improvement/11_docs_ops/12_program_governance_2026-04-08.md`
@@ -85,17 +86,17 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Define when a doc is active, historical, archived, or superseded.
-- [ ] Define when a doc should be moved versus relabeled in place.
-- [ ] Update indexes and cross-links when archive actions happen.
-- [ ] Keep evidence/sample docs discoverable if active claims still depend on them.
-- [ ] Avoid deleting provenance without replacement.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Define when a doc is active, historical, archived, or superseded.
+- [x] Define when a doc should be moved versus relabeled in place.
+- [x] Update indexes and cross-links when archive actions happen.
+- [x] Keep evidence/sample docs discoverable if active claims still depend on them.
+- [x] Avoid deleting provenance without replacement.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -112,6 +113,25 @@ Public-repo quality focus:
 - use physical moves only when the active tree becomes meaningfully harder to navigate
 - keep historical docs linkable after any archival action
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
+
+## Execution Notes
+
+- This item closed by extending the existing archive policy from `REPO_Improvement`-only semantics to the broader set of retained historical and evidence trees the repo actually uses.
+- Fresh contract surfaces now aligned for this policy:
+  - `REPO_Improvement/README.md`
+  - `REPO_Improvement/00_meta/11_archive_policy_2026-04-08.md`
+  - `REPO_MAP.md`
+- The archive policy now explicitly covers:
+  - `REPO_Improvement/` as the active planning/execution tree
+  - `Frontend Review/`, `research/`, `CUDA kernel review/`, and `SASS research/` as retained specialist or historical trees
+  - `scripts/baselines/` as the retained evidence tree
+- Fresh acceptance evidence:
+  - reviewed the canonical archive/supersede rules in `00_meta/11_archive_policy_2026-04-08.md`
+  - confirmed `REPO_Improvement/README.md` now states the cross-tree archive posture and canonical governance surfaces
+  - confirmed `REPO_MAP.md` remains the routing surface that points contributors at current authority docs instead of leaving state implicit in folder names
+- This closure is intentionally policy/documentation scoped.
+  - It does not claim that every historical tree was physically reorganized.
+  - It closes because the repo now has an explicit, current rule for when to retain, relabel, or route around historical/specialist trees without deleting provenance.
 
 ## Related Docs
 

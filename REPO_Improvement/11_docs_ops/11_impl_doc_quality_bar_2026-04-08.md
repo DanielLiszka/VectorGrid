@@ -34,7 +34,7 @@ This quality bar is user-facing in the sense that the document program is alread
   - current research-before-planning gate
 - `REPO_Improvement/00_meta/09_regression_safety_rules_2026-04-08.md`
   - additive-only and regression-safety expectations
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
   - tracks completion state and section-complete audits
 - `REPO_Improvement/11_docs_ops/10_research_source_policy_2026-04-08.md`
   - current research-source policy
@@ -114,19 +114,19 @@ Public-repo quality focus:
 
 ## Checklist
 
-- [ ] Keep the 14-section implementation-doc template mandatory.
-- [ ] Require repo-grounded code and verification surfaces in every doc.
-- [ ] Require external research summary before the doc is considered complete.
-- [ ] Prefer official or primary sources when available; call out when only weaker sources exist.
-- [ ] Require additive-only, no-regression, no-functionality-removal framing in every doc.
-- [ ] Require a concrete checklist and verification plan in every doc.
-- [ ] Use sub-agents when they materially improve context gathering, code-surface coverage, or verification confidence.
-- [ ] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
-- [ ] Break the work into the smallest additive implementation slices that can be verified independently.
-- [ ] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
-- [ ] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
-- [ ] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
-- [ ] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
+- [x] Keep the 14-section implementation-doc template mandatory.
+- [x] Require repo-grounded code and verification surfaces in every doc.
+- [x] Require external research summary before the doc is considered complete.
+- [x] Prefer official or primary sources when available; call out when only weaker sources exist.
+- [x] Require additive-only, no-regression, no-functionality-removal framing in every doc.
+- [x] Require a concrete checklist and verification plan in every doc.
+- [x] Use sub-agents when they materially improve context gathering, code-surface coverage, or verification confidence.
+- [x] Identify the exact files, modules, fixtures, artifacts, and adjacent docs that must change together for this plan.
+- [x] Break the work into the smallest additive implementation slices that can be verified independently.
+- [x] Define the surface-specific code-quality expectations for naming, structure, diagnostics, comments or docs, accessibility where relevant, and contributor readability.
+- [x] Define the exact static-analysis, automated, artifact, and manual acceptance evidence required before this item can be closed.
+- [x] Record any required cross-doc sync updates in `README.md`, `REPO_MAP.md`, release notes, or adjacent implementation docs when behavior changes.
+- [x] Record the public-repo sync surfaces and minimum-bar artifacts that must be updated together when this docs/ops change lands.
 
 ## Verification Plan
 
@@ -145,9 +145,30 @@ Public-repo quality focus:
 - keep the quality bar additive and explicit so later waves do not regress in detail
 - keep changes additive, preserve existing functionality, and avoid broad cleanup-only refactors unless they provide objective user or maintainer value and include the necessary migration notes
 
+## Execution Notes
+
+- This item closed on a fresh audit of the current implementation-plan corpus plus a small doc-sync correction from the historical 2026-04-08 tracker reference to the canonical 2026-04-09 tracker.
+- The current quality-bar authority surfaces remain:
+  - `REPO_Improvement/REPO_IMPROVEMENT_META_PLAN_2026-04-08.md`
+  - `REPO_Improvement/00_meta/02_pre_impl_research_gate_2026-04-08.md`
+  - `REPO_Improvement/00_meta/04_doc_template_2026-04-08.md`
+  - `REPO_Improvement/00_meta/09_regression_safety_rules_2026-04-08.md`
+  - `REPO_Improvement/00_meta/10_verification_expectations_2026-04-08.md`
+  - `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
+  - `REPO_Improvement/11_docs_ops/10_research_source_policy_2026-04-08.md`
+- Fresh acceptance evidence:
+  - `rg -n "all current planned implementation docs follow the required 14-section template|public-repo code-quality language" REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
+  - targeted review of the canonical template and verification-authority docs
+  - fresh section/link audit used for `11_docs_ops/10_research_source_policy_2026-04-08.md`
+- The current tracker now explicitly records the corpus-wide evidence this quality-bar doc wanted frozen:
+  - all current planned implementation docs follow the required 14-section template
+  - all current planned implementation docs include the stronger public-repo code-quality and acceptance-evidence language
+- This closure is intentionally based on documented policy plus tracker-backed corpus audit rather than a new enforcement script.
+  - There is still no standalone automated “section-complete audit” tool, but the template, tracker assertions, and corpus spot checks are now strong enough to count the quality bar itself as implemented.
+
 ## Related Docs
 
 - `REPO_Improvement/00_meta/02_pre_impl_research_gate_2026-04-08.md`
 - `REPO_Improvement/00_meta/09_regression_safety_rules_2026-04-08.md`
-- `REPO_Improvement/00_meta/doc_creation_tracker_2026-04-08.md`
+- `REPO_Improvement/00_meta/01_doc_creation_tracker_2026-04-09.md`
 - `REPO_Improvement/11_docs_ops/10_research_source_policy_2026-04-08.md`

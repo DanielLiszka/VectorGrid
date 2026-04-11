@@ -116,6 +116,8 @@ CPU-only app run:
 cargo run -p ta_desktop_demo_app --release
 ```
 
+For Windows build variants, PTX packaging, and public release posture, use [RELEASE.md](RELEASE.md).
+
 ## Local Quality Gate
 
 Use the repo-level quality gate before handoff for broad non-options changes and public-facing cleanup:
@@ -147,6 +149,8 @@ powershell -ExecutionPolicy Bypass -File scripts/run_repo_quality_gate.ps1 -Incl
 Use `-StrictClippy` only when you explicitly want warnings treated as errors. The repo is not yet warning-free under Clippy, so the default lane keeps Clippy advisory while still making it part of the public quality bar.
 
 For contributor-facing routing, verification ownership, and the broader workflow map, use `REPO_MAP.md` rather than expanding this README into a routing document.
+
+For public contribution, support, security-reporting, and license terms, use `CONTRIBUTING.md`, `SUPPORT.md`, `SECURITY.md`, and `LICENSE`.
 
 ## Reproduce The Benchmark
 

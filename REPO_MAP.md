@@ -20,6 +20,10 @@ Do not treat this as the full implementation spec. Use it together with:
 - `README.md` for product framing and benchmark posture
 - `ARCHITECTURE_NOTES.md` for backend/runtime notes
 - `RELEASE.md` for build/release/PTX packaging notes
+- `CONTRIBUTING.md` for public contribution scope, verification expectations, and docs-sync rules
+- `SUPPORT.md` for support boundaries and issue-routing guidance
+- `SECURITY.md` for vulnerability-reporting posture
+- `LICENSE` for Apache 2.0 reuse terms
 - `web/README.md` for frontend runtime notes
 - `Frontend Review/frontend_audit_2026-03-27.md` for the completed frontend remediation ledger
 - `Frontend Review/Unfinished/frontend_followup_evaluation_2026-03-28.md` for the active frontend follow-up checklist and defer/adopt decisions
@@ -83,6 +87,10 @@ Open these first before broad search:
 - `README.md`
 - `ARCHITECTURE_NOTES.md`
 - `RELEASE.md`
+- `CONTRIBUTING.md`
+- `SUPPORT.md`
+- `SECURITY.md`
+- `LICENSE`
 - `web/README.md`
 - `src-tauri/src/lib.rs`
 - `src-tauri/tauri.conf.json`
@@ -244,7 +252,7 @@ These crates are smaller than `app_core`, but they are part of the real executio
   - expected single path difference: root mirror `build.frontendDist` is `./web/dist` while the canonical config keeps `../web/dist`
   - keep it aligned via `scripts/check_tauri_config_sync.mjs`
 - `RELEASE.md`
-  - Windows build variants, `cargo tauri build`, PTX packaging notes, and compatibility/release validation commands
+  - Windows build variants, `cargo tauri build`, PTX packaging notes, public release checklist, asset naming, rollback posture, and compatibility/release validation commands
 
 Current local quality gate to know:
 
@@ -1677,6 +1685,8 @@ Benchmark and faceoff helpers:
 Maintenance and review helpers:
 
 - `scripts/check_migration_freeze_scope.mjs`
+  - narrow opt-in helper for explicit migration or stabilization windows; not a general repo-quality gate
+  - current allowlist is intentionally limited to `web/`, `scripts/baselines/`, and a short set of migration-support docs/scripts
 - `scripts/post_release_telemetry_review.mjs`
   - supplemental post-release review, not an authority gate
 - `scripts/capture_optimization_memory.ps1`
@@ -1691,7 +1701,7 @@ Maintenance and review helpers:
 - `.github/workflows.disabled/desktop-smoke.yml.disabled`
   - archived desktop smoke workflow definition; desktop smoke coverage remains repo-local unless workflows are reactivated
 - `RELEASE.md`
-  - Windows build variants, PTX/prebuilt-kernel packaging notes, frontend migration notes, and release-facing validation commands
+  - Windows build variants, PTX/prebuilt-kernel packaging notes, public release checklist, frontend migration notes, rollback posture, and release-facing validation commands
   - useful for packaging and release posture, but use `src-tauri/src/lib.rs` and request builders as authority for current command counts and request rules
 - `tauri.conf.json` and `src-tauri/tauri.conf.json`
   - Tauri build/runtime configuration, including the built frontend handoff into `web/dist`

@@ -30,7 +30,7 @@ This ledger is intentionally coarse:
 ## Current Totals
 
 - planned implementation-plan documents tracked here: `356`
-- current completed items: `341`
+- current completed items: `355`
 - current in-progress items: `0`
 
 ## 00 Meta
@@ -432,22 +432,22 @@ This ledger is intentionally coarse:
 
 - section total: `16`
 
-- [ ] [11_docs_ops/01_release_build_variants_2026-04-09.md](../11_docs_ops/01_release_build_variants_2026-04-09.md)
-- [ ] [11_docs_ops/02_ptx_packaging_fallbacks_2026-04-09.md](../11_docs_ops/02_ptx_packaging_fallbacks_2026-04-09.md)
-- [ ] [11_docs_ops/03_frontend_build_handoff_2026-04-09.md](../11_docs_ops/03_frontend_build_handoff_2026-04-09.md)
-- [ ] [11_docs_ops/04_bundle_budget_analysis_2026-04-09.md](../11_docs_ops/04_bundle_budget_analysis_2026-04-09.md)
-- [ ] [11_docs_ops/05_baseline_samples_manifest_2026-04-09.md](../11_docs_ops/05_baseline_samples_manifest_2026-04-09.md)
+- [x] [11_docs_ops/01_release_build_variants_2026-04-09.md](../11_docs_ops/01_release_build_variants_2026-04-09.md)
+- [x] [11_docs_ops/02_ptx_packaging_fallbacks_2026-04-09.md](../11_docs_ops/02_ptx_packaging_fallbacks_2026-04-09.md)
+- [x] [11_docs_ops/03_frontend_build_handoff_2026-04-09.md](../11_docs_ops/03_frontend_build_handoff_2026-04-09.md)
+- [x] [11_docs_ops/04_bundle_budget_analysis_2026-04-09.md](../11_docs_ops/04_bundle_budget_analysis_2026-04-09.md)
+- [x] [11_docs_ops/05_baseline_samples_manifest_2026-04-09.md](../11_docs_ops/05_baseline_samples_manifest_2026-04-09.md)
 - [x] [11_docs_ops/06_repo_map_readme_hygiene_2026-04-09.md](../11_docs_ops/06_repo_map_readme_hygiene_2026-04-09.md)
 - [x] [11_docs_ops/07_local_vs_ci_authority_2026-04-09.md](../11_docs_ops/07_local_vs_ci_authority_2026-04-09.md)
-- [ ] [11_docs_ops/08_docs_archive_policy_2026-04-09.md](../11_docs_ops/08_docs_archive_policy_2026-04-09.md)
-- [ ] [11_docs_ops/09_non_options_scope_boundary_2026-04-09.md](../11_docs_ops/09_non_options_scope_boundary_2026-04-09.md)
-- [ ] [11_docs_ops/10_research_source_policy_2026-04-08.md](../11_docs_ops/10_research_source_policy_2026-04-08.md)
-- [ ] [11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md](../11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md)
-- [ ] [11_docs_ops/12_program_governance_2026-04-08.md](../11_docs_ops/12_program_governance_2026-04-08.md)
-- [ ] [11_docs_ops/13_migration_freeze_scope_2026-04-09.md](../11_docs_ops/13_migration_freeze_scope_2026-04-09.md)
-- [ ] [11_docs_ops/14_repo_surface_coverage_audit_2026-04-09.md](../11_docs_ops/14_repo_surface_coverage_audit_2026-04-09.md)
-- [ ] [11_docs_ops/15_public_repo_community_health_2026-04-09.md](../11_docs_ops/15_public_repo_community_health_2026-04-09.md)
-- [ ] [11_docs_ops/16_public_release_operations_2026-04-09.md](../11_docs_ops/16_public_release_operations_2026-04-09.md)
+- [x] [11_docs_ops/08_docs_archive_policy_2026-04-09.md](../11_docs_ops/08_docs_archive_policy_2026-04-09.md)
+- [x] [11_docs_ops/09_non_options_scope_boundary_2026-04-09.md](../11_docs_ops/09_non_options_scope_boundary_2026-04-09.md)
+- [x] [11_docs_ops/10_research_source_policy_2026-04-08.md](../11_docs_ops/10_research_source_policy_2026-04-08.md)
+- [x] [11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md](../11_docs_ops/11_impl_doc_quality_bar_2026-04-08.md)
+- [x] [11_docs_ops/12_program_governance_2026-04-08.md](../11_docs_ops/12_program_governance_2026-04-08.md)
+- [x] [11_docs_ops/13_migration_freeze_scope_2026-04-09.md](../11_docs_ops/13_migration_freeze_scope_2026-04-09.md)
+- [x] [11_docs_ops/14_repo_surface_coverage_audit_2026-04-09.md](../11_docs_ops/14_repo_surface_coverage_audit_2026-04-09.md)
+- [x] [11_docs_ops/15_public_repo_community_health_2026-04-09.md](../11_docs_ops/15_public_repo_community_health_2026-04-09.md)
+- [x] [11_docs_ops/16_public_release_operations_2026-04-09.md](../11_docs_ops/16_public_release_operations_2026-04-09.md)
 
 ## Related Docs
 
