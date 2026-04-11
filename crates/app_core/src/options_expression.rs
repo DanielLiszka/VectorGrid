@@ -18,10 +18,8 @@ use crate::options_types::{
     OptionsTupleSpec, SignalSide,
 };
 use std::cmp::Ordering;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
-#[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -30,9 +28,8 @@ use std::time::Instant;
 use crate::cuda_device::preferred_cuda_device_id;
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_expression_gpu::{
-    inspect_options_expression_gpu_plan, score_options_expression_tensors_gpu_multi_range,
-    score_options_expression_tensors_gpu_range, OptionsGpuRuntimeCacheUsage,
-    OptionsGpuTupleAggregate,
+    OptionsGpuRuntimeCacheUsage, OptionsGpuTupleAggregate, inspect_options_expression_gpu_plan,
+    score_options_expression_tensors_gpu_multi_range, score_options_expression_tensors_gpu_range,
 };
 #[cfg(all(feature = "cuda", feature = "cuda-backtest-kernel"))]
 use crate::options_types::OptionsExpressionBackendPreference;
@@ -314,6 +311,47 @@ fn stress_mode_label(stress_mode: AggregateStressMode) -> &'static str {
     }
 }
 
+fn hash_signal_manifest_cache_inputs(signal_manifest: &OptionsSignalEventManifestV1) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    signal_manifest.manifest_id.hash(&mut hasher);
+    signal_manifest.parent_artifact_id.hash(&mut hasher);
+    signal_manifest.parent_run_kind.hash(&mut hasher);
+    signal_manifest
+        .source_dataset_identity_hash
+        .hash(&mut hasher);
+    signal_manifest.source_content_fingerprint.hash(&mut hasher);
+    signal_manifest.dataset_hash.hash(&mut hasher);
+    signal_manifest.timeframe.hash(&mut hasher);
+    signal_manifest.resample_spec_hash.hash(&mut hasher);
+    signal_manifest.adjustment_mode.hash(&mut hasher);
+    signal_manifest.symbol_root.hash(&mut hasher);
+    signal_manifest.calendar_id.hash(&mut hasher);
+    signal_manifest.runtime_dataset_id.hash(&mut hasher);
+    signal_manifest.events.len().hash(&mut hasher);
+    for event in &signal_manifest.events {
+        event.event_id.hash(&mut hasher);
+        std::mem::discriminant(&event.side).hash(&mut hasher);
+        event.decision_timestamp.hash(&mut hasher);
+        event.earliest_tradable_timestamp.hash(&mut hasher);
+        event.decision_bar_index.hash(&mut hasher);
+        event.earliest_tradable_bar_index.hash(&mut hasher);
+        event.raw_underlier_price.to_bits().hash(&mut hasher);
+        event
+            .adjusted_underlier_price
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        event.base_entry_timestamp.hash(&mut hasher);
+        event.base_exit_timestamp.hash(&mut hasher);
+        event.base_exit_bar_index.hash(&mut hasher);
+        std::mem::discriminant(&event.fold).hash(&mut hasher);
+        event.session_id.hash(&mut hasher);
+        event.regime_tag.hash(&mut hasher);
+        event.confidence_tag.hash(&mut hasher);
+        event.calendar_id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn structural_candidate_cache_key(
     signal_manifest: &OptionsSignalEventManifestV1,
     dataset: &ImportedOptionsDataset,
@@ -322,12 +360,14 @@ fn structural_candidate_cache_key(
     filters: &crate::options_types::OptionsStaticFilterBundle,
     stress_mode: AggregateStressMode,
 ) -> String {
+    let signal_manifest_cache_hash = hash_signal_manifest_cache_inputs(signal_manifest);
     format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         signal_manifest.manifest_id,
         signal_manifest.source_content_fingerprint,
         signal_manifest.dataset_hash,
         signal_manifest.events.len(),
+        signal_manifest_cache_hash,
         dataset.manifest.options_dataset_id,
         dataset.manifest.root_symbol,
         dataset.manifest.row_count,
@@ -3346,27 +3386,23 @@ fn robust_score(
     harsher_stress: Option<&OptionsExpressionMetrics>,
     extreme_stress: Option<&OptionsExpressionMetrics>,
 ) -> f64 {
-    let coverage = (1.0 - search.invalid_rate).clamp(0.0, 1.0);
-    let search_score = search.expectancy_per_premium;
-    let holdout_score = holdout
-        .map(|metrics| metrics.expectancy_per_premium)
-        .unwrap_or(search_score);
-    let stress_score = stress
-        .map(|metrics| metrics.expectancy_per_premium)
-        .unwrap_or(search_score);
-    let harsher_stress_score = harsher_stress
-        .map(|metrics| metrics.expectancy_per_premium)
-        .unwrap_or(stress_score);
+    fn lane_utility(metrics: &OptionsExpressionMetrics) -> f64 {
+        (1.0 - metrics.invalid_rate).clamp(0.0, 1.0) * metrics.expectancy_per_premium
+    }
+
+    let search_score = lane_utility(search);
+    let holdout_score = holdout.map(lane_utility).unwrap_or(search_score);
+    let stress_score = stress.map(lane_utility).unwrap_or(search_score);
+    let harsher_stress_score = harsher_stress.map(lane_utility).unwrap_or(stress_score);
     let extreme_stress_score = extreme_stress
-        .map(|metrics| metrics.expectancy_per_premium)
+        .map(lane_utility)
         .unwrap_or(harsher_stress_score);
     // Sealed metrics are recorded for final reporting, not for tuple ranking.
-    coverage
-        * (0.45 * search_score
-            + 0.25 * holdout_score
-            + 0.15 * stress_score
-            + 0.10 * harsher_stress_score
-            + 0.05 * extreme_stress_score)
+    0.45 * search_score
+        + 0.25 * holdout_score
+        + 0.15 * stress_score
+        + 0.10 * harsher_stress_score
+        + 0.05 * extreme_stress_score
 }
 
 fn build_event_detail_row(
@@ -4662,6 +4698,22 @@ mod tests {
         }
     }
 
+    fn metrics_with_invalid_rate(
+        expectancy_per_premium: f64,
+        invalid_rate: f64,
+    ) -> OptionsExpressionMetrics {
+        OptionsExpressionMetrics {
+            invalid_rate,
+            expectancy_per_trade: expectancy_per_premium * 100.0,
+            ..metrics_with_values(
+                4,
+                expectancy_per_premium * 100.0,
+                expectancy_per_premium,
+                0.5,
+            )
+        }
+    }
+
     #[test]
     fn compute_metrics_tracks_mean_and_return_on_premium_volatility() {
         let outcomes = vec![
@@ -5581,6 +5633,64 @@ mod tests {
     }
 
     #[test]
+    fn options_expression_prepare_cache_distinguishes_shifted_manifest_events() {
+        let _env = lock_test_env();
+        reset_options_expression_prepare_caches();
+        let req = OptionsExpressionRunRequest {
+            parent_artifact_path: "C:/runs/a.json".to_string(),
+            parent_candidate_index: None,
+            options_dataset_id: "spy".to_string(),
+            structure_family: OptionsStructureFamily::LongSingle,
+            backend_preference: crate::options_types::OptionsExpressionBackendPreference::Auto,
+            delay_minutes: vec![0],
+            dte_buckets: vec![1],
+            moneyness_buckets: vec![OptionsMoneynessBucket::Atm],
+            hold_minutes: vec![1],
+            target_return_buckets: vec![0.25],
+            stop_return_buckets: vec![0.25],
+            exit_template: OptionsExitTemplateFamily::FixedHoldOrTargetStop,
+            fill_model: OptionsFillModelFamily::AggregateResearch,
+            filters: OptionsStaticFilterBundle::default(),
+            top_k: 5,
+            min_valid_trades: None,
+            split_ratio_search: 0.5,
+            split_ratio_holdout: 0.25,
+            split_assignment_mode: OptionsSplitAssignmentMode::EventChronological,
+            sealed_finalist_count: 2,
+        };
+
+        let baseline = analyze_options_expression_feasibility_blocking(
+            req.clone(),
+            &test_manifest(),
+            &test_dataset(),
+        )
+        .expect("baseline report");
+        assert_eq!(baseline.event_coverage.search_events_with_candidates, 1);
+        assert_eq!(baseline.cache_stats.structural_cache_hits, 0);
+
+        let mut shifted_manifest = test_manifest();
+        for event in &mut shifted_manifest.events {
+            event.decision_timestamp += 14 * DAY_MS;
+            event.earliest_tradable_timestamp += 14 * DAY_MS;
+            event.base_entry_timestamp =
+                event.base_entry_timestamp.map(|value| value + 14 * DAY_MS);
+            event.base_exit_timestamp = event.base_exit_timestamp.map(|value| value + 14 * DAY_MS);
+        }
+
+        let shifted = analyze_options_expression_feasibility_blocking(
+            req,
+            &shifted_manifest,
+            &test_dataset(),
+        )
+        .expect("shifted report");
+
+        assert_eq!(shifted.overlap_window.search_events_in_dataset_window, 0);
+        assert_eq!(shifted.event_coverage.search_events_with_candidates, 0);
+        assert_eq!(shifted.cache_stats.structural_cache_hits, 0);
+        assert!(shifted.cache_stats.structural_cache_misses >= 2);
+    }
+
+    #[test]
     fn options_expression_feasibility_report_tracks_cache_reuse_on_warm_preview() {
         let _env = lock_test_env();
         reset_options_expression_prepare_caches();
@@ -5960,6 +6070,98 @@ mod tests {
         );
 
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn robust_score_penalizes_worse_holdout_invalid_rate() {
+        let search = metrics_with_invalid_rate(0.20, 0.0);
+        let holdout_good = metrics_with_invalid_rate(0.10, 0.0);
+        let holdout_bad = metrics_with_invalid_rate(0.10, 0.50);
+
+        let good = robust_score(&search, Some(&holdout_good), None, None, None, None);
+        let bad = robust_score(&search, Some(&holdout_bad), None, None, None, None);
+
+        assert!(good > bad);
+    }
+
+    #[test]
+    fn robust_score_penalizes_worse_stress_invalid_rate() {
+        let search = metrics_with_invalid_rate(0.20, 0.0);
+        let stress_good = metrics_with_invalid_rate(0.08, 0.0);
+        let stress_bad = metrics_with_invalid_rate(0.08, 0.50);
+
+        let good = robust_score(&search, None, None, Some(&stress_good), None, None);
+        let bad = robust_score(&search, None, None, Some(&stress_bad), None, None);
+
+        assert!(good > bad);
+    }
+
+    #[test]
+    fn robust_score_penalizes_worse_harsher_stress_invalid_rate() {
+        let search = metrics_with_invalid_rate(0.20, 0.0);
+        let stress = metrics_with_invalid_rate(0.08, 0.0);
+        let harsher_good = metrics_with_invalid_rate(0.04, 0.0);
+        let harsher_bad = metrics_with_invalid_rate(0.04, 0.50);
+
+        let good = robust_score(
+            &search,
+            None,
+            None,
+            Some(&stress),
+            Some(&harsher_good),
+            None,
+        );
+        let bad = robust_score(&search, None, None, Some(&stress), Some(&harsher_bad), None);
+
+        assert!(good > bad);
+    }
+
+    #[test]
+    fn robust_score_missing_holdout_matches_explicit_search_equivalent_holdout() {
+        let search = metrics_with_invalid_rate(0.20, 0.10);
+
+        let implicit = robust_score(&search, None, None, None, None, None);
+        let explicit = robust_score(&search, Some(&search), None, None, None, None);
+
+        assert_eq!(implicit, explicit);
+    }
+
+    #[test]
+    fn robust_score_missing_harsher_matches_explicit_stress_equivalent_harsher() {
+        let search = metrics_with_invalid_rate(0.20, 0.10);
+        let stress = metrics_with_invalid_rate(0.08, 0.25);
+
+        let implicit = robust_score(&search, None, None, Some(&stress), None, None);
+        let explicit = robust_score(&search, None, None, Some(&stress), Some(&stress), None);
+
+        assert_eq!(implicit, explicit);
+    }
+
+    #[test]
+    fn robust_score_equal_lane_invalid_rates_reduce_to_weighted_expectancy() {
+        let common_invalid_rate = 0.25;
+        let search = metrics_with_invalid_rate(0.20, common_invalid_rate);
+        let holdout = metrics_with_invalid_rate(0.10, common_invalid_rate);
+        let stress = metrics_with_invalid_rate(0.05, common_invalid_rate);
+        let harsher = metrics_with_invalid_rate(0.03, common_invalid_rate);
+        let extreme = metrics_with_invalid_rate(-0.02, common_invalid_rate);
+
+        let score = robust_score(
+            &search,
+            Some(&holdout),
+            None,
+            Some(&stress),
+            Some(&harsher),
+            Some(&extreme),
+        );
+        let expected = (1.0 - common_invalid_rate)
+            * (0.45 * search.expectancy_per_premium
+                + 0.25 * holdout.expectancy_per_premium
+                + 0.15 * stress.expectancy_per_premium
+                + 0.10 * harsher.expectancy_per_premium
+                + 0.05 * extreme.expectancy_per_premium);
+
+        assert!((score - expected).abs() < 1e-12);
     }
 
     #[test]

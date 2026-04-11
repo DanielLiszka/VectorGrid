@@ -1972,11 +1972,20 @@ It should also explicitly test whether the next useful derived statistics are cr
 - monotone stress deterioration flags
 - dominance / non-dominance summaries across search, holdout, sealed, and stressed lanes
 
+Current starting truth for Prompt 11:
+
+- Prompt 10 ranking math is already implemented in the current repo and should be treated as fixed for this prompt.
+- current validation hooks already exist in `inferred_validation_verdict()`, `is_stress_fragile()`, `confidence_tag`, and the reopened-artifact validation-frontier UI/reporting surface
+- artifact-summary coherence is already shipped at the compact tuple-coherent level; this prompt should focus only on what improves validation interpretation beyond that baseline
+
 ### Attach These Files
 
 Required:
 
+- `AGENTS.md`
+- `REPO_MAP.md`
 - `options_research/options_expression_future_scope_roadmap_2026-04-07.md`
+- `options_research/options_expression_artifact_summary_coherence_implementation_guide_2026-04-09.md`
 - `crates/app_core/src/options_types.rs`
 - `crates/app_core/src/options_expression.rs`
 - `crates/app_core/src/options_expression_gpu.rs`
@@ -1997,14 +2006,17 @@ What additional confidence, stability, or validation-frontier statistics could t
 Constraints:
 - Stay inside the current options optimization + embedded validation workflow.
 - Do not add a new validation stage.
+- Assume Prompt 10 ranking math is already implemented and fixed in the current repo.
+- Do not recommend derived statistics whose main effect is to rescore tuple ordering rather than improve post-ranking validation interpretation, verdicting, adequacy/frontier reporting, or reopened-artifact summaries.
 - Prefer statistics that can be derived from existing lane metrics or very small additional aggregate state.
 - Do not suggest heavyweight bootstrap or resampling unless you can justify it inside the current runtime philosophy.
+- Do not spend your main recommendation re-solving artifact-summary coherence that the repo already ships.
 - Force yourself to analyze:
   - adequacy / sufficiency signals from split event counts, valid-trade counts, and coverage
   - whether shortlist and finalist-budget policy distort the frontier the user actually sees
   - whether derived statistics should stay tuple-coherent rather than mixing per-lane leaders from different tuples
 - When useful, explicitly consider regret vectors, dominance tags, shrinkage between lanes, lower-confidence-bound style acceptance math, and monotone stress-deterioration summaries.
-- Ground the answer against the current `inferred_validation_verdict()` / `is_stress_fragile()` semantics and say whether your proposal complements them or changes them.
+- Ground the answer against the current `inferred_validation_verdict()` / `is_stress_fragile()` semantics, `confidence_tag`, and the reopened-artifact validation-frontier UI/reporting surfaces, and say whether your proposal complements them or changes them.
 - For each serious candidate statistic, say whether it is trustworthy:
   - globally across all tuples
   - only within retained `top_k`

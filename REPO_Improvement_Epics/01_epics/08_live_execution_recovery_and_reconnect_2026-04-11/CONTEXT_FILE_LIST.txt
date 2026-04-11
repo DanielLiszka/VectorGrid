@@ -1,0 +1,15 @@
+Bundle: 08_live_execution_recovery_and_reconnect_2026-04-11
+
+Files copied into this context packet:
+- `05_live_execution_productization_2026-04-10.md` (original repo path: `REPO_Improvement_Epics/01_epics/05_live_execution_productization_2026-04-10.md`)
+- `08_live_execution_recovery_and_reconnect_2026-04-11.md` (original repo path: `REPO_Improvement_Epics/01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md`)
+- `AGENTS.md` (original repo path: `AGENTS.md`)
+- `commands_data.rs` (original repo path: `src-tauri/src/commands_data.rs`)
+- `commands_execution.rs` (original repo path: `src-tauri/src/commands_execution.rs`)
+- `executionService.ts` (original repo path: `web/src/services/executionService.ts`)
+- `executionStore.ts` (original repo path: `web/src/stores/executionStore.ts`)
+- `ExecutionWorkspacePanel.vue` (original repo path: `web/src/components/ExecutionWorkspacePanel.vue`)
+- `lib.rs` (original repo path: `src-tauri/src/lib.rs`)
+- `polygon.rs` (original repo path: `src-tauri/src/polygon.rs`)
+- `REPO_MAP.md` (original repo path: `REPO_MAP.md`)
+- `state.rs` (original repo path: `src-tauri/src/state.rs`)

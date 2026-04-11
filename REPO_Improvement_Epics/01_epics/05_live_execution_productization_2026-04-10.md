@@ -1,6 +1,6 @@
 # Live Execution Productization Plan
 
-Last updated: 2026-04-10
+Last updated: 2026-04-11
 
 ## Purpose
 
@@ -159,3 +159,5 @@ Public-repo quality focus:
 - `08_live_execution_recovery_and_reconnect_2026-04-11.md`
 - `09_live_mode_discrete_surface_promotion_2026-04-11.md`
 - `10_live_execution_broker_position_order_reconciliation_2026-04-11.md`
+- `11_live_execution_secure_credential_storage_2026-04-11.md`
+- `12_live_execution_chart_and_account_review_completion_2026-04-11.md`

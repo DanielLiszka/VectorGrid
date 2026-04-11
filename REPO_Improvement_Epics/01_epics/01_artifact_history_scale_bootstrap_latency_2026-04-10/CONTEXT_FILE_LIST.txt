@@ -1,0 +1,13 @@
+Bundle: 01_artifact_history_scale_bootstrap_latency_2026-04-10
+
+Files copied into this context packet:
+- `01_artifact_history_scale_bootstrap_latency_2026-04-10.md` (original repo path: `REPO_Improvement_Epics/01_epics/01_artifact_history_scale_bootstrap_latency_2026-04-10.md`)
+- `AGENTS.md` (original repo path: `AGENTS.md`)
+- `commands_artifacts.rs` (original repo path: `src-tauri/src/commands_artifacts.rs`)
+- `HistoryContextDock.vue` (original repo path: `web/src/components/HistoryContextDock.vue`)
+- `HistoryWorkspacePanel.vue` (original repo path: `web/src/components/HistoryWorkspacePanel.vue`)
+- `REPO_MAP.md` (original repo path: `REPO_MAP.md`)
+- `run_artifacts.rs` (original repo path: `src-tauri/src/run_artifacts.rs`)
+- `workflowArtifactsStore.ts` (original repo path: `web/src/stores/workflowArtifactsStore.ts`)
+- `workflowArtifactsSync.ts` (original repo path: `web/src/services/workflowArtifactsSync.ts`)
+- `workflowBootstrap.ts` (original repo path: `web/src/services/workflowBootstrap.ts`)

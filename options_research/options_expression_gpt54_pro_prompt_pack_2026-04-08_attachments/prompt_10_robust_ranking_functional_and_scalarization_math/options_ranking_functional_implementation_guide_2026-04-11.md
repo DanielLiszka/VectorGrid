@@ -1,7 +1,7 @@
 # Options Ranking Functional - Detailed Implementation Guide
 
 Date: 2026-04-11
-Status: validated implementation guide created from the valid portions of Prompt 10 (`options_ranking_functional_direction_FINAL.md`)
+Status: implementation completed for the validated Prompt 10 code scope; local/backend and canonical-slice verification are complete, while exact pre-vs-post churn review remains blocked on missing pre-patch saved artifacts for the fixed DTE7 pair
 
 ## Purpose
 
@@ -77,6 +77,7 @@ The response document is not adopted wholesale. It must be filtered against the 
 - saved artifacts produced before the change will carry old `robust_score` semantics
 - newly produced artifacts will carry new semantics
 - that old/new drift is real even if no schema shape changes
+- for this narrow Prompt 10 wave, explicit score-semantics labeling/versioning is deferred rather than bundled into the ranking patch
 
 ### Stale or partially invalid in the Prompt 10 response
 
@@ -392,7 +393,8 @@ Code-level verification is required before any benchmark or canonical-slice foll
 Run:
 
 - `cargo test -q -p ta_app_core robust_score --lib`
-- `cargo test -q -p ta_app_core sealed_final_rank_uses_sealed_metrics_ordering --lib -- --exact`
+- `cargo test -q -p ta_app_core options_expression::tests::sealed_final_rank_uses_sealed_metrics_ordering --lib -- --exact`
+- `cargo test -q -p ta_app_core options_expression::tests::options_expression_cpu_reference_scores_tuples --lib -- --exact`
 - `cargo test -q -p ta_app_core options_ --lib`
 - `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`
 
@@ -410,6 +412,18 @@ Because the scalar is shared across CPU and GPU ranking paths, confirm:
 - retained tuple ordering changes only because of the intended semantic revision, not because of path divergence
 
 Use existing broad ranking coverage where possible. No new GPU kernel tests should be required.
+
+Executed evidence for this pass:
+
+- `output/prompt10_reruns/spy/2026-04-11T10-54-06/phase05_summary.json`
+- `output/prompt10_reruns/spy/2026-04-11T10-54-06/cpu_vs_gpu_compare.json`
+- `output/prompt10_reruns/qqq/2026-04-11T10-57-15/phase05_summary.json`
+- `output/prompt10_reruns/qqq/2026-04-11T10-57-15/cpu_vs_gpu_compare.json`
+
+Observed parity summary for this pass:
+
+- SPY CPU-vs-GPU artifact compare matched all retained tuples exactly with zero metric deltas.
+- QQQ CPU-vs-GPU artifact compare matched `24/25` retained tuples with identical top tuple, identical best score, and zero metric deltas on matched rows; the single left-only/right-only difference is consistent with a boundary-retention swap rather than broad path divergence.
 
 ### 5.3 Canonical-slice semantic validation
 
@@ -483,59 +497,61 @@ If the team decides that old/new `robust_score` semantic drift across saved arti
 
 ## 7.2 Core backend implementation
 
-- [ ] Add a small `lane_utility(...)` helper near `robust_score(...)` in `crates/app_core/src/options_expression.rs`.
-- [ ] Update `robust_score(...)` to apply lane-local `invalid_rate` to each resolved lane utility instead of using only search-lane coverage.
-- [ ] Preserve the current weights `0.45 / 0.25 / 0.15 / 0.10 / 0.05`.
-- [ ] Preserve the current fallback ladder `S / H / C / U / X`.
-- [ ] Keep the `robust_score(...)` function signature unchanged.
-- [ ] Keep `_sealed` ignored in `robust_score(...)`.
-- [ ] Leave the broad CPU ranking call structure unchanged.
-- [ ] Leave the broad GPU ranking call structure unchanged.
-- [ ] Leave the exactified reranking call structure unchanged.
+- [x] Add a small `lane_utility(...)` helper near `robust_score(...)` in `crates/app_core/src/options_expression.rs`.
+- [x] Update `robust_score(...)` to apply lane-local `invalid_rate` to each resolved lane utility instead of using only search-lane coverage.
+- [x] Preserve the current weights `0.45 / 0.25 / 0.15 / 0.10 / 0.05`.
+- [x] Preserve the current fallback ladder `S / H / C / U / X`.
+- [x] Keep the `robust_score(...)` function signature unchanged.
+- [x] Keep `_sealed` ignored in `robust_score(...)`.
+- [x] Leave the broad CPU ranking call structure unchanged.
+- [x] Leave the broad GPU ranking call structure unchanged.
+- [x] Leave the exactified reranking call structure unchanged.
 
 ## 7.3 Freeze-surface enforcement
 
-- [ ] Do not modify `OptionsExpressionMetrics` for this prompt.
-- [ ] Do not modify `OptionsGpuTupleAggregate` for this prompt.
-- [ ] Do not modify `TupleAggregateMetrics` for this prompt.
-- [ ] Do not modify `metrics_from_aggregate(...)` for this prompt.
-- [ ] Do not modify `compute_metrics(...)` for this prompt.
-- [ ] Do not modify `assign_sealed_final_ranks(...)`.
-- [ ] Do not modify `apply_sealed_finalist_stage(...)`.
-- [ ] Do not modify `validation_verdict` or `inferred_validation_verdict()` semantics.
-- [ ] Do not pull Prompt 9's `mean_return_on_premium` or `return_volatility_on_premium` into ranking in this wave.
-- [ ] Do not redesign tie-break behavior in `sort_ranked_results(...)` in this wave.
+- [x] Do not modify `OptionsExpressionMetrics` for this prompt.
+- [x] Do not modify `OptionsGpuTupleAggregate` for this prompt.
+- [x] Do not modify `TupleAggregateMetrics` for this prompt.
+- [x] Do not modify `metrics_from_aggregate(...)` for this prompt.
+- [x] Do not modify `compute_metrics(...)` for this prompt.
+- [x] Do not modify `assign_sealed_final_ranks(...)`.
+- [x] Do not modify `apply_sealed_finalist_stage(...)`.
+- [x] Do not modify `validation_verdict` or `inferred_validation_verdict()` semantics.
+- [x] Do not pull Prompt 9's `mean_return_on_premium` or `return_volatility_on_premium` into ranking in this wave.
+- [x] Do not redesign tie-break behavior in `sort_ranked_results(...)` in this wave.
 
 ## 7.4 Test implementation
 
-- [ ] Keep `robust_score_excludes_sealed_metrics_from_tuple_ranking()` passing.
-- [ ] Keep `sealed_final_rank_uses_sealed_metrics_ordering()` passing.
-- [ ] Add a test proving worse holdout `invalid_rate` lowers score when expectancies are otherwise equal.
-- [ ] Add a test proving worse stress `invalid_rate` lowers score when expectancies are otherwise equal.
-- [ ] Add a test proving worse harsher-stress `invalid_rate` lowers score when that lane is present.
-- [ ] Add a fallback-equivalence test for missing holdout vs explicit holdout equal to search.
-- [ ] Add a fallback-equivalence test for missing harsher stress vs explicit harsher stress equal to conservative stress.
-- [ ] Add a test proving equal lane invalid rates collapse to the expected weighted-expectancy ordering.
-- [ ] Add a narrow reranking smoke test only if needed to clarify intended exactified behavior.
+- [x] Keep `robust_score_excludes_sealed_metrics_from_tuple_ranking()` passing.
+- [x] Keep `sealed_final_rank_uses_sealed_metrics_ordering()` passing.
+- [x] Add a test proving worse holdout `invalid_rate` lowers score when expectancies are otherwise equal.
+- [x] Add a test proving worse stress `invalid_rate` lowers score when expectancies are otherwise equal.
+- [x] Add a test proving worse harsher-stress `invalid_rate` lowers score when that lane is present.
+- [x] Add a fallback-equivalence test for missing holdout vs explicit holdout equal to search.
+- [x] Add a fallback-equivalence test for missing harsher stress vs explicit harsher stress equal to conservative stress.
+- [x] Add a test proving equal lane invalid rates collapse to the expected weighted-expectancy ordering.
+- [x] Add a narrow reranking smoke test only if needed to clarify intended exactified behavior.
 
 ## 7.5 Verification
 
-- [ ] Run `cargo test -q -p ta_app_core robust_score --lib`.
-- [ ] Run `cargo test -q -p ta_app_core sealed_final_rank_uses_sealed_metrics_ordering --lib -- --exact`.
-- [ ] Run `cargo test -q -p ta_app_core options_ --lib`.
-- [ ] Run `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`.
-- [ ] Confirm no GPU aggregate or schema changes were introduced accidentally.
-- [ ] Confirm broad CPU ranking and broad GPU ranking remain semantically aligned on a representative prepared workload.
-- [ ] Re-run the canonical SPY bounded DTE7 ranking proof slice.
-- [ ] Re-run the canonical QQQ bounded DTE7 ranking proof slice.
+- [x] Run `cargo test -q -p ta_app_core robust_score --lib`.
+- [x] Run `cargo test -q -p ta_app_core options_expression::tests::sealed_final_rank_uses_sealed_metrics_ordering --lib -- --exact`.
+- [x] Run `cargo test -q -p ta_app_core options_ --lib`.
+- [x] Run `cargo test -q -p ta_desktop_demo_app commands_options_expression --lib`.
+- [x] Confirm no GPU aggregate or schema changes were introduced accidentally.
+- [x] Confirm broad CPU ranking and broad GPU ranking remain semantically aligned on representative prepared workloads.
+- [x] Re-run the canonical SPY bounded DTE7 ranking proof slice.
+- [x] Re-run the canonical QQQ bounded DTE7 ranking proof slice.
 - [ ] Compare retained tuple churn and finalist quality before vs after the ranking revision.
-- [ ] Smoke reopen at least one newly produced artifact and confirm summary/compare surfaces remain interpretable after the score semantic change.
+  Blocked in this pass because the local run store does not contain exact pre-patch saved options-expression artifacts for the same canonical `SPY`/`QQQ` DTE7 dataset ids.
+- [x] Smoke reopen at least one newly produced artifact and confirm summary/compare surfaces remain interpretable after the score semantic change.
 - [ ] Reject the change if the churn is not clearly defensible by the lane-local coverage correction.
+  Pending the exact pre-vs-post churn comparison above.
 
 ## 7.6 Rollout awareness
 
-- [ ] Document internally that old and new artifacts will carry different `robust_score` semantics.
-- [ ] Decide whether score-semantics labeling is deferred or needed immediately.
+- [x] Document internally that old and new artifacts will carry different `robust_score` semantics.
+- [x] Decide whether score-semantics labeling is deferred or needed immediately.
 
 ## Final Implementation Rule
 

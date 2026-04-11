@@ -1,0 +1,15 @@
+Bundle: 12_live_execution_chart_and_account_review_completion_2026-04-11
+
+Files copied into this context packet:
+- `05_live_execution_productization_2026-04-10.md` (original repo path: `REPO_Improvement_Epics/01_epics/05_live_execution_productization_2026-04-10.md`)
+- `12_live_execution_chart_and_account_review_completion_2026-04-11.md` (original repo path: `REPO_Improvement_Epics/01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md`)
+- `AGENTS.md` (original repo path: `AGENTS.md`)
+- `analysisService.ts` (original repo path: `web/src/services/analysisService.ts`)
+- `commands_execution.rs` (original repo path: `src-tauri/src/commands_execution.rs`)
+- `executionService.ts` (original repo path: `web/src/services/executionService.ts`)
+- `executionStore.ts` (original repo path: `web/src/stores/executionStore.ts`)
+- `ExecutionWorkspacePanel.vue` (original repo path: `web/src/components/ExecutionWorkspacePanel.vue`)
+- `lib.rs` (original repo path: `src-tauri/src/lib.rs`)
+- `REPO_MAP.md` (original repo path: `REPO_MAP.md`)
+- `SCREENSHOT_01_execution_review_surface.jpg` (original repo path: `current UI screenshot captured via Playwright browser harness`)
+- `SCREENSHOT_02_execution_review_section.jpg` (original repo path: `current UI screenshot captured via Playwright browser harness`)

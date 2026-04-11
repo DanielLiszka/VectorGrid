@@ -38,8 +38,8 @@ If live mode is meant to be a discrete mode, the product needs a clearer boundar
 - `web/src/stores/executionStore.ts`
 - `web/src/services/executionService.ts`
 - `web/src/stores/workflowStore.ts`
-- `web/src/components/AppShell.vue`
-- `web/src/router`
+- `web/src/App.vue`
+- `web/src/components/VueWorkspaceShell.vue`
 - `src-tauri/src/commands_execution.rs`
 
 ## Current Verification Surface

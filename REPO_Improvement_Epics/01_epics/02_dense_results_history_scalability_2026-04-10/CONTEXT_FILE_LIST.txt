@@ -1,0 +1,13 @@
+Bundle: 02_dense_results_history_scalability_2026-04-10
+
+Files copied into this context packet:
+- `02_dense_results_history_scalability_2026-04-10.md` (original repo path: `REPO_Improvement_Epics/01_epics/02_dense_results_history_scalability_2026-04-10.md`)
+- `AGENTS.md` (original repo path: `AGENTS.md`)
+- `ExecutionWorkspacePanel.vue` (original repo path: `web/src/components/ExecutionWorkspacePanel.vue`)
+- `HistoryWorkspacePanel.vue` (original repo path: `web/src/components/HistoryWorkspacePanel.vue`)
+- `OverviewWorkspacePanel.vue` (original repo path: `web/src/components/OverviewWorkspacePanel.vue`)
+- `REPO_MAP.md` (original repo path: `REPO_MAP.md`)
+- `TopWorkspacePanel.vue` (original repo path: `web/src/components/TopWorkspacePanel.vue`)
+- `useHeadlessMatrixTable.ts` (original repo path: `web/src/composables/useHeadlessMatrixTable.ts`)
+- `useVirtualTableRows.ts` (original repo path: `web/src/composables/useVirtualTableRows.ts`)
+- `ValidationWorkspacePanel.vue` (original repo path: `web/src/components/ValidationWorkspacePanel.vue`)

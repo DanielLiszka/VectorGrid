@@ -30,13 +30,13 @@ This ledger is intentionally coarse:
 
 ## Current Totals
 
-- planned epic implementation-plan documents tracked here: `10`
+- planned epic implementation-plan documents tracked here: `12`
 - current completed items: `0`
 - current in-progress items: `0`
 
 ## 01 Epics
 
-- section total: `10`
+- section total: `12`
 
 - [ ] [01_epics/01_artifact_history_scale_bootstrap_latency_2026-04-10.md](../01_epics/01_artifact_history_scale_bootstrap_latency_2026-04-10.md)
 - [ ] [01_epics/02_dense_results_history_scalability_2026-04-10.md](../01_epics/02_dense_results_history_scalability_2026-04-10.md)
@@ -48,6 +48,8 @@ This ledger is intentionally coarse:
 - [ ] [01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md](../01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md)
 - [ ] [01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md](../01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md)
 - [ ] [01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md](../01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md)
+- [ ] [01_epics/11_live_execution_secure_credential_storage_2026-04-11.md](../01_epics/11_live_execution_secure_credential_storage_2026-04-11.md)
+- [ ] [01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md](../01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md)
 
 ## Related Docs
 

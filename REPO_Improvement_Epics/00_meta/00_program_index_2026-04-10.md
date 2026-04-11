@@ -29,13 +29,13 @@ It is the quickest starting point for understanding:
 
 ## Current Status
 
-- active epic catalog: `v2`
-- planned epic docs in current catalog: `10`
+- active epic catalog: `v3`
+- planned epic docs in current catalog: `12`
 - epic-doc creation status: `complete`
-- unique planned epic-doc slots now represented on disk: `10`
-- current total markdown under `REPO_Improvement_Epics/`: `15`
+- unique planned epic-doc slots now represented on disk: `12`
+- current total markdown under `REPO_Improvement_Epics/`: `17`
 - current completed epic items: `0`
-- current open epic items: `10`
+- current open epic items: `12`
 
 ## Current Queue
 
@@ -49,6 +49,8 @@ It is the quickest starting point for understanding:
 - [01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md](../01_epics/08_live_execution_recovery_and_reconnect_2026-04-11.md)
 - [01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md](../01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md)
 - [01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md](../01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md)
+- [01_epics/11_live_execution_secure_credential_storage_2026-04-11.md](../01_epics/11_live_execution_secure_credential_storage_2026-04-11.md)
+- [01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md](../01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md)
 
 ## What Comes Next
 

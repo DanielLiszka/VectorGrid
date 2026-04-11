@@ -9,9 +9,9 @@ Track the creation status of the active second-tier non-options epic program.
 ## Program Summary
 
 - active scope: `non-options second-tier epics only`
-- planned epic docs in current `v2`: `10`
-- created docs under `REPO_Improvement_Epics/` now: `15`
-- unique planned epic-doc entries now represented on disk: `10`
+- planned epic docs in current `v3`: `12`
+- created docs under `REPO_Improvement_Epics/` now: `17`
+- unique planned epic-doc entries now represented on disk: `12`
 - created docs in `00_meta/` now: `4`
 - support docs outside the planned epic slots now on disk: `1`
 - epic-doc coverage status: `complete`
@@ -20,7 +20,7 @@ Track the creation status of the active second-tier non-options epic program.
 ## Current Folder Status
 
 - `00_meta`: `4/4` current epic-program meta docs present
-- `01_epics`: `10/10` planned epic docs present
+- `01_epics`: `12/12` planned epic docs present
 
 ## Recent Additions
 
@@ -45,13 +45,18 @@ Added on 2026-04-11 in the live-mode expansion of epic catalog `v2`:
 - `01_epics/09_live_mode_discrete_surface_promotion_2026-04-11.md`
 - `01_epics/10_live_execution_broker_position_order_reconciliation_2026-04-11.md`
 
+Added on 2026-04-11 in the live-mode completion expansion of epic catalog `v3`:
+
+- `01_epics/11_live_execution_secure_credential_storage_2026-04-11.md`
+- `01_epics/12_live_execution_chart_and_account_review_completion_2026-04-11.md`
+
 ## Completion Check
 
-The current completion audit against the active `v2` epic catalog found:
+The current completion audit against the active `v3` epic catalog found:
 
-- all `10` unique planned epic-doc slots are now represented on disk
+- all `12` unique planned epic-doc slots are now represented on disk
 - all current planned epic docs follow the required 14-section template
-- the remaining files under `REPO_Improvement_Epics/` beyond the `10` planned epic slots are expected support docs:
+- the remaining files under `REPO_Improvement_Epics/` beyond the `12` planned epic slots are expected support docs:
   - `1` root README
   - `4` current-status meta docs
 
